@@ -1,0 +1,455 @@
+import { Component, ElementRef, inject, signal } from '@angular/core';
+import { FormsModule } from '@angular/forms';
+import { MatAutocompleteModule } from '@angular/material/autocomplete';
+import { MatButtonModule } from '@angular/material/button';
+import { MatButtonToggleModule } from '@angular/material/button-toggle';
+import { MatCheckboxModule } from '@angular/material/checkbox';
+import { MAT_DIALOG_DATA, MatDialogModule, MatDialogRef } from '@angular/material/dialog';
+import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatInputModule } from '@angular/material/input';
+import { MatSelectModule } from '@angular/material/select';
+import { firstValueFrom } from 'rxjs';
+import { ApprovalResult } from '../../core/approvals/approvals.api';
+import { errorMessage } from '../../core/http/error-message';
+import { Department, Employee, EmployeeInput, EmploymentType, HrApi, JobRole, WeekDay, weekDays } from '../../core/hr/hr.api';
+import { NotifyService } from '../../core/ui/notify.service';
+import { FormChecks, FormProblem } from '../../core/ui/form-checks';
+import { MoneyPipe } from '../../core/ui/money.pipe';
+import { Company, Country } from '../../core/settings/company';
+
+export interface EmployeeDialogData {
+  // The one changed; none for a new one.
+  employee?: Employee;
+  // A new one's name and number as the attendance device has them.
+  fromDevice?: { name: string; deviceUserId: string };
+  // The departments to put them in, General among them.
+  departments: Department[];
+  canApprove: boolean;
+  today: string;
+}
+
+// "٠١٠ ١٢٣٤-٥٦٧٨" as "01012345678": Arabic-Indic digits as ASCII ones, without the spaces, dashes
+// and dots written between them; as the system keeps a national ID or a mobile.
+export function idDigits(text: string, also = ''): string {
+  return [...text.trim()]
+    .map((c) => {
+      const arabic = '٠١٢٣٤٥٦٧٨٩'.indexOf(c);
+      const persian = '۰۱۲۳۴۵۶۷۸۹'.indexOf(c);
+      return arabic >= 0 ? String(arabic) : persian >= 0 ? String(persian) : c;
+    })
+    .filter((c) => !/\s/.test(c) && c !== '-' && c !== '.' && !also.includes(c))
+    .join('');
+}
+
+// What is wrong with a national ID as typed, as the company's country writes one (an Egyptian
+// card's 14 digits; a Saudi ID's or Iqama's 10, starting 1 or 2), or a passport's letters and
+// digits. Null when it is right, left empty, or the one they have (kept), whatever the country
+// is now.
+export function nationalIdProblem(text: string, country: Country, kept: string | null = null): string | null {
+  const number = idDigits(text).toUpperCase();
+  if (!number || number === kept) {
+    return null;
+  }
+  if (/^\d+$/.test(number)) {
+    if (country === 'SaudiArabia') {
+      return number.length !== 10
+        ? `the ID or Iqama has 10 digits, not ${number.length}`
+        : /^[12]/.test(number)
+          ? null
+          : 'an ID starts 1, an Iqama 2';
+    }
+    return number.length === 14 ? null : `the card has 14 digits, not ${number.length}`;
+  }
+  return /^[A-Z0-9]{5,20}$/.test(number) ? null : "only a passport's letters and digits";
+}
+
+// What the national ID field says it takes, in the company's country.
+export function nationalIdHint(country: Country): string {
+  return country === 'SaudiArabia' ? '10 digits (ID 1…, Iqama 2…), or a passport no.' : '14 digits, or a passport no.';
+}
+
+export function mobileProblem(text: string): string | null {
+  const number = idDigits(text, '()');
+  return !number || /^\+?\d{7,15}$/.test(number) ? null : 'digits only, such as 01012345678';
+}
+
+// An employee added or changed: who they are (their full name as on their ID card, its number,
+// and their mobile) and their department, how they are paid (a monthly
+// salary, or a daily wage for each day worked), when their nine-hour work schedule starts (or flexible
+// hours, with none), their weekly days off, the day they started, and their number on the
+// attendance device. Saved here: a manager's at once, anyone else's sent for
+// approval. Closes with what was saved or asked, or nothing when cancelled.
+@Component({
+  selector: 'app-employee-dialog',
+  imports: [
+    FormsModule,
+    MatAutocompleteModule,
+    MatButtonModule,
+    MatButtonToggleModule,
+    MatCheckboxModule,
+    MatDialogModule,
+    MatFormFieldModule,
+    MatInputModule,
+    MatSelectModule,
+    MoneyPipe,
+  ],
+  template: `
+    <h2 mat-dialog-title>
+      @if (data.employee) {
+        Edit {{ data.employee.name }} <span class="ar">تعديل بيانات الموظف</span>
+      } @else {
+        Add employee <span class="ar">إضافة موظف</span>
+      }
+    </h2>
+    <mat-dialog-content>
+      <div class="form">
+        <mat-form-field class="wide">
+          <mat-label>Full name · الاسم بالكامل</mat-label>
+          <input matInput [(ngModel)]="name" maxlength="200" aria-label="Full name" [errorStateMatcher]="checks.field('Full name')" />
+          <mat-hint>As on their ID card</mat-hint>
+          <mat-error>{{ checks.message('Full name') }}</mat-error>
+        </mat-form-field>
+        <mat-form-field>
+          <mat-label>National ID · رقم البطاقة</mat-label>
+          <input matInput [(ngModel)]="nationalId" maxlength="40" inputmode="numeric" aria-label="National ID" [errorStateMatcher]="checks.field('National ID')" />
+          <mat-hint>{{ idHint }}</mat-hint>
+          <mat-error>{{ checks.message('National ID') }}</mat-error>
+        </mat-form-field>
+        <mat-form-field>
+          <mat-label>Mobile · رقم الموبايل</mat-label>
+          <input matInput type="tel" [(ngModel)]="mobileNumber" maxlength="30" aria-label="Mobile" [errorStateMatcher]="checks.field('Mobile')" />
+          <mat-hint>Such as 01012345678</mat-hint>
+          <mat-error>{{ checks.message('Mobile') }}</mat-error>
+        </mat-form-field>
+        <mat-form-field>
+          <mat-label>Department · القسم</mat-label>
+          <mat-select [(ngModel)]="departmentId" aria-label="Department" [errorStateMatcher]="checks.field('Department')">
+            @for (d of data.departments; track d.id) {
+              <mat-option [value]="d.id">{{ d.name }}</mat-option>
+            }
+          </mat-select>
+          <mat-error>{{ checks.message('Department') }}</mat-error>
+        </mat-form-field>
+        <mat-form-field>
+          <mat-label>Role · الوظيفة</mat-label>
+          <input
+            matInput
+            [(ngModel)]="jobTitle"
+            [matAutocomplete]="roleList"
+            maxlength="100"
+            aria-label="Role"
+            placeholder="Accountant, technician, driver"
+            [errorStateMatcher]="checks.field('Role')"
+          />
+          <mat-autocomplete #roleList="matAutocomplete">
+            @for (r of roles(); track r.id) {
+              <mat-option [value]="r.name">{{ r.name }}</mat-option>
+            }
+          </mat-autocomplete>
+          @if (jobTitle.trim() && !role() && department(); as d) {
+            <mat-hint>A new role in {{ d.name }}</mat-hint>
+          } @else {
+            <mat-hint>One of the department's roles, or a new one</mat-hint>
+          }
+          <mat-error>{{ checks.message('Role') }}</mat-error>
+        </mat-form-field>
+        <div class="pay-type">
+          <span class="label">Paid · نوع العمالة</span>
+          <mat-button-toggle-group [(ngModel)]="employmentType" aria-label="Paid" hideSingleSelectionIndicator>
+            <mat-button-toggle value="Monthly">Monthly<span class="ar">شهرية</span></mat-button-toggle>
+            <mat-button-toggle value="Daily">Daily<span class="ar">يومية</span></mat-button-toggle>
+          </mat-button-toggle-group>
+        </div>
+        <mat-form-field>
+          @if (employmentType === 'Daily') {
+            <mat-label>Daily wage · الأجر اليومي</mat-label>
+          } @else {
+            <mat-label>Base salary · الراتب الأساسي</mat-label>
+          }
+          <input matInput type="number" min="0" step="any" [(ngModel)]="salary" aria-label="Base salary" [errorStateMatcher]="checks.field('Base salary')" />
+          @if (employmentType === 'Daily') {
+            @if (salary !== null && salary > 0) {
+              <mat-hint>A day worked: {{ salary / 9 | money }} an hour; nothing for a day not worked</mat-hint>
+            } @else {
+              <mat-hint>A day worked</mat-hint>
+            }
+          } @else if (salary !== null && salary > 0) {
+            <mat-hint>A month: {{ salary / 30 | money }} a day · {{ salary / 270 | money }} an hour</mat-hint>
+          } @else {
+            <mat-hint>A month</mat-hint>
+          }
+          <mat-error>{{ checks.message('Base salary') }}</mat-error>
+        </mat-form-field>
+        <div class="shift">
+          @if (flexible) {
+            <p class="muted small flexible">No start time: nothing is late for them, and hours past nine in a day are overtime.</p>
+          } @else {
+            <mat-form-field>
+              <mat-label>Work schedule starts · بداية الدوام</mat-label>
+              <input matInput type="time" [(ngModel)]="shiftStart" aria-label="Work schedule starts" [errorStateMatcher]="checks.field('Work schedule starts')" />
+              @if (shiftEnd(); as end) {
+                <mat-hint>Nine hours: ends {{ end }}</mat-hint>
+              }
+              <mat-error>{{ checks.message('Work schedule starts') }}</mat-error>
+            </mat-form-field>
+          }
+          <mat-checkbox [(ngModel)]="flexible">Flexible hours <span class="ar">ساعات مرنة</span></mat-checkbox>
+        </div>
+        <mat-form-field>
+          <mat-label>Started on · تاريخ التعيين</mat-label>
+          <input matInput type="date" [(ngModel)]="hiredOn" aria-label="Started on" [errorStateMatcher]="checks.field('Started on')" />
+          <mat-error>{{ checks.message('Started on') }}</mat-error>
+        </mat-form-field>
+        <div class="wide days">
+          <span class="label">Weekly days off · أيام الراحة</span>
+          <mat-button-toggle-group multiple [(ngModel)]="daysOff" aria-label="Weekly days off" hideMultipleSelectionIndicator>
+            @for (d of week; track d.day) {
+              <mat-button-toggle [value]="d.day" [attr.aria-label]="d.day">{{ d.en }}<span class="ar">{{ d.ar }}</span></mat-button-toggle>
+            }
+          </mat-button-toggle-group>
+          @if (checks.shown() && checks.message('Weekly days off')) {
+            <span class="error small">{{ checks.message('Weekly days off') }}</span>
+          } @else {
+            <span class="muted small">A working day with no punches and no leave is an absence.</span>
+          }
+        </div>
+        <mat-form-field>
+          <mat-label>Device number · رقم البصمة</mat-label>
+          <input matInput [(ngModel)]="deviceUserId" maxlength="24" aria-label="Device number" [errorStateMatcher]="checks.field('Device number')" />
+          <mat-hint>Their number on the K40</mat-hint>
+          <mat-error>{{ checks.message('Device number') }}</mat-error>
+        </mat-form-field>
+        @if (!data.canApprove) {
+          <mat-form-field>
+            <mat-label>Reason · السبب</mat-label>
+            <input matInput [(ngModel)]="reason" maxlength="300" aria-label="Reason" />
+          </mat-form-field>
+        }
+      </div>
+      @if (!data.canApprove) {
+        <p class="ask">A manager approves employees and their changes: nothing changes until then. <span class="ar">يُرسل للمدير للموافقة.</span></p>
+      }
+      @if (error(); as e) {
+        <p class="error" role="alert">{{ e }}</p>
+      }
+    </mat-dialog-content>
+    <mat-dialog-actions align="end">
+      <button mat-button mat-dialog-close>Cancel</button>
+      <button mat-flat-button (click)="save()" [disabled]="saving()">{{ data.canApprove ? 'Save' : 'Send for approval' }}</button>
+    </mat-dialog-actions>
+  `,
+  styles: `
+    .form {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px 12px;
+    }
+    .wide {
+      grid-column: span 2;
+    }
+    .pay-type {
+      display: grid;
+      gap: 4px;
+      align-content: start;
+
+      .label {
+        font: var(--mat-sys-body-small);
+        color: var(--mat-sys-on-surface-variant);
+      }
+    }
+    .shift {
+      display: grid;
+      align-content: start;
+
+      mat-form-field {
+        width: 100%;
+      }
+      .flexible {
+        margin: 8px 0 4px;
+      }
+    }
+    .days {
+      display: grid;
+      gap: 6px;
+      margin: 4px 0 16px;
+
+      .label {
+        font: var(--mat-sys-body-small);
+        color: var(--mat-sys-on-surface-variant);
+      }
+      mat-button-toggle-group {
+        flex-wrap: wrap;
+      }
+    }
+    .ar {
+      direction: rtl;
+      unicode-bidi: isolate;
+      margin-left: 6px;
+      opacity: 0.75;
+      font-size: 0.8em;
+    }
+    mat-button-toggle .ar {
+      display: block;
+      margin: 0;
+      line-height: 1.2;
+    }
+    .ask {
+      padding: 8px 10px;
+      border-radius: 8px;
+      background: color-mix(in srgb, var(--app-warn) 14%, transparent);
+    }
+    .error {
+      color: var(--mat-sys-error);
+    }
+    .muted {
+      color: var(--mat-sys-on-surface-variant);
+    }
+    .small {
+      font-size: 0.85em;
+    }
+    @media (max-width: 600px) {
+      .form {
+        grid-template-columns: minmax(0, 1fr);
+      }
+      .wide {
+        grid-column: auto;
+      }
+    }
+  `,
+})
+export class EmployeeDialog {
+  private readonly api = inject(HrApi);
+  private readonly notify = inject(NotifyService);
+  private readonly company = inject(Company);
+  protected readonly idHint = nationalIdHint(this.company.settings().country);
+  private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
+  private readonly ref = inject<MatDialogRef<EmployeeDialog, Employee | ApprovalResult>>(MatDialogRef);
+  protected readonly data = inject<EmployeeDialogData>(MAT_DIALOG_DATA);
+
+  protected readonly week = weekDays;
+  protected readonly saving = signal(false);
+  protected readonly error = signal<string | null>(null);
+
+  private readonly id = this.data.employee?.id ?? crypto.randomUUID();
+  // Made once: a retry after a lost answer finds what was made.
+  private readonly requestId = crypto.randomUUID();
+
+  protected name = this.data.employee?.name ?? this.data.fromDevice?.name ?? '';
+  protected jobTitle = this.data.employee?.jobTitle ?? '';
+  protected employmentType: EmploymentType = this.data.employee?.employmentType ?? 'Monthly';
+  // The salary, or the daily wage, as they are paid.
+  protected salary: number | null = this.data.employee
+    ? this.data.employee.employmentType === 'Daily'
+      ? this.data.employee.dailyWage
+      : this.data.employee.monthlySalary
+    : null;
+  protected departmentId = this.data.employee?.departmentId ?? this.data.departments.find((d) => d.isGeneral)?.id ?? '';
+  protected flexible = !!this.data.employee && this.data.employee.shiftStartsAt === null;
+  protected shiftStart = (this.data.employee?.shiftStartsAt ?? '10:00:00').slice(0, 5);
+  // Someone new starts with the company's weekends; anyone else keeps their own.
+  protected daysOff: WeekDay[] = [...(this.data.employee?.daysOff ?? this.company.settings().weekends)];
+  protected hiredOn = this.data.employee?.hiredOn ?? this.data.today;
+  protected deviceUserId = this.data.employee?.deviceUserId ?? this.data.fromDevice?.deviceUserId ?? '';
+  protected nationalId = this.data.employee?.nationalId ?? '';
+  protected mobileNumber = this.data.employee?.mobileNumber ?? '';
+  protected reason = '';
+
+  protected readonly checks = new FormChecks(() => this.problems());
+
+  protected department(): Department | undefined {
+    return this.data.departments.find((d) => d.id === this.departmentId);
+  }
+
+  // The department's roles, those matching what is typed.
+  protected roles(): JobRole[] {
+    const typed = this.jobTitle.trim().toLowerCase();
+    return (this.department()?.roles ?? []).filter((r) => r.name.toLowerCase().includes(typed));
+  }
+
+  // The department's role of the name typed, when it has one.
+  protected role(): JobRole | undefined {
+    const typed = this.jobTitle.trim().toLowerCase();
+    return this.department()?.roles.find((r) => r.name.toLowerCase() === typed);
+  }
+
+  // When the nine hours end: "19:00", or "01:00 the next day".
+  protected shiftEnd(): string | null {
+    const match = /^(\d{2}):(\d{2})$/.exec(this.shiftStart ?? '');
+    if (!match) {
+      return null;
+    }
+    const minutes = Number(match[1]) * 60 + Number(match[2]) + 9 * 60;
+    const end = `${String(Math.floor(minutes / 60) % 24).padStart(2, '0')}:${match[2]}`;
+    return minutes >= 24 * 60 ? `${end} the next day` : end;
+  }
+
+  protected problems(): FormProblem[] {
+    const problems: FormProblem[] = [];
+    const add = (field: string, what: string) => problems.push({ where: field, what, field });
+    if (!this.name.trim()) {
+      add('Full name', 'enter their full name');
+    }
+    const card = nationalIdProblem(this.nationalId, this.company.settings().country, this.data.employee?.nationalId ?? null);
+    if (card) {
+      add('National ID', card);
+    }
+    const mobile = mobileProblem(this.mobileNumber);
+    if (mobile) {
+      add('Mobile', mobile);
+    }
+    if (!this.jobTitle.trim()) {
+      add('Role', 'enter what they do');
+    }
+    if (!this.data.departments.some((d) => d.id === this.departmentId)) {
+      add('Department', 'choose their department');
+    }
+    if (this.salary === null || !(this.salary >= 0)) {
+      add('Base salary', this.employmentType === 'Daily' ? 'enter the daily wage' : 'enter the salary');
+    }
+    if (!this.flexible && !/^\d{2}:\d{2}$/.test(this.shiftStart ?? '')) {
+      add('Work schedule starts', 'enter when the work schedule starts');
+    }
+    if (!this.hiredOn) {
+      add('Started on', 'enter the day they started');
+    }
+    if (this.daysOff.length >= 7) {
+      add('Weekly days off', 'leave at least one working day');
+    }
+    if (this.deviceUserId.trim() && !/^[A-Za-z0-9]+$/.test(this.deviceUserId.trim())) {
+      add('Device number', 'use the number as the device shows it: letters and digits');
+    }
+    return problems;
+  }
+
+  protected async save(): Promise<void> {
+    if (this.saving() || !this.checks.passed(this.notify, this.host.nativeElement)) {
+      return;
+    }
+    const input: EmployeeInput = {
+      requestId: this.requestId,
+      name: this.name.trim(),
+      jobTitle: this.role()?.name ?? this.jobTitle.trim(),
+      jobRoleId: this.role()?.id ?? null,
+      employmentType: this.employmentType,
+      monthlySalary: this.employmentType === 'Monthly' ? this.salary! : 0,
+      dailyWage: this.employmentType === 'Daily' ? this.salary! : 0,
+      departmentId: this.departmentId,
+      shiftStartsAt: this.flexible ? null : `${this.shiftStart}:00`,
+      daysOff: this.daysOff,
+      hiredOn: this.hiredOn,
+      deviceUserId: this.deviceUserId.trim() || null,
+      nationalId: this.nationalId.trim() || null,
+      mobileNumber: this.mobileNumber.trim() || null,
+      reason: this.reason.trim() || null,
+    };
+    this.saving.set(true);
+    this.error.set(null);
+    try {
+      this.ref.close(await firstValueFrom(this.api.saveEmployee(this.id, input)));
+    } catch (error) {
+      this.error.set(errorMessage(error, 'The employee could not be saved.'));
+    } finally {
+      this.saving.set(false);
+    }
+  }
+}

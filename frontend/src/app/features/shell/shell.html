@@ -1,0 +1,86 @@
+<mat-toolbar class="toolbar">
+  <a class="brand" routerLink="/hr" [attr.aria-label]="company.name() + ': home'">
+    @if (company.logoUrl(); as logo) {
+      <img class="logo" [src]="logo" alt="" />
+    } @else {
+      <span class="mark"><mat-icon>groups</mat-icon></span>
+    }
+    <span class="brand-text">{{ company.name() }}</span>
+  </a>
+
+  <nav>
+    @if (hr.any()) {
+      <a mat-button routerLink="/hr" routerLinkActive="active" aria-label="HR & Payroll" matTooltip="HR & Payroll · الموارد البشرية والرواتب" [matTooltipDisabled]="!compactNav()">
+        <mat-icon>badge</mat-icon>
+        <span class="nav-text">HR &amp; Payroll</span>
+      </a>
+    }
+    @if (hr.has('Custody')) {
+      <a mat-button routerLink="/custody" routerLinkActive="active" aria-label="Custody & Assets" matTooltip="Custody & Assets · العهدة والأصول" [matTooltipDisabled]="!compactNav()">
+        <mat-icon>inventory_2</mat-icon>
+        <span class="nav-text">Custody</span>
+      </a>
+    }
+    <a *appCan="Permissions.ApprovalDecide" mat-button routerLink="/approvals" routerLinkActive="active" aria-label="Approvals" matTooltip="Approvals · الموافقات" [matTooltipDisabled]="!compactNav()">
+      <mat-icon>fact_check</mat-icon>
+      <span class="nav-text">Approvals</span>
+      @if (approvals.pending().length) {
+        <span class="count" [attr.aria-label]="approvals.pending().length + ' waiting'">{{ approvals.pending().length }}</span>
+      }
+    </a>
+    <a *appCan="Permissions.UsersManage" mat-button routerLink="/users" routerLinkActive="active" aria-label="Users" matTooltip="Users · المستخدمون" [matTooltipDisabled]="!compactNav()">
+      <mat-icon>manage_accounts</mat-icon>
+      <span class="nav-text">Users</span>
+    </a>
+    <a *appCan="Permissions.SettingsManage" mat-button routerLink="/settings" routerLinkActive="active" aria-label="Settings" matTooltip="Company settings · إعدادات الشركة" [matTooltipDisabled]="!compactNav()">
+      <mat-icon>settings</mat-icon>
+      <span class="nav-text">Settings</span>
+    </a>
+  </nav>
+
+  <span class="spacer"></span>
+
+  <span class="links" role="status" aria-live="polite">
+    @if (!connectivity.online()) {
+      <span class="link down" matTooltip="Reconnecting to the server…">
+        <mat-icon>cloud_off</mat-icon>
+        <span class="link-text">Reconnecting…</span>
+      </span>
+    }
+  </span>
+
+  <button mat-button [matMenuTriggerFor]="userMenu" class="user">
+    <span class="avatar" aria-hidden="true">{{ initials() }}</span>
+    <span class="user-name">{{ auth.me()?.fullName }}</span>
+    <mat-icon class="chevron" iconPositionEnd>expand_more</mat-icon>
+  </button>
+  <mat-menu #userMenu="matMenu">
+    <!-- The menu item wraps its content in an inline span of its own, so the name and the
+         role are stacked by a span inside it. -->
+    <div mat-menu-item disabled>
+      <span class="who">
+        <span>{{ auth.me()?.fullName }}</span>
+        <small>{{ auth.me()?.role }} · {{ auth.me()?.email }}</small>
+      </span>
+    </div>
+    <a mat-menu-item routerLink="/account">
+      <mat-icon>key</mat-icon>
+      Account &amp; password
+    </a>
+    <button mat-menu-item (click)="signOut()">
+      <mat-icon>logout</mat-icon>
+      Sign out
+    </button>
+  </mat-menu>
+</mat-toolbar>
+
+@if (!connectivity.online()) {
+  <div class="banner danger" role="alert">
+    <mat-icon>cloud_off</mat-icon>
+    The server cannot be reached. What is on screen stays; changes wait until it reconnects.
+  </div>
+}
+
+<main class="content">
+  <router-outlet />
+</main>

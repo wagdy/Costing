@@ -1,0 +1,16 @@
+# Build output
+bin/
+obj/
+node_modules/
+dist/
+.angular/
+
+# The API's copy of the built app
+backend/src/Costing.Api/wwwroot/
+
+# Local settings and secrets
+.env
+*.user
+.vs/
+.idea/
+.DS_Store

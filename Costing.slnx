@@ -1,0 +1,15 @@
+<Solution>
+  <Folder Name="/backend/" />
+  <Folder Name="/backend/src/">
+    <Project Path="backend/src/Costing.Domain/Costing.Domain.csproj" />
+    <Project Path="backend/src/Costing.Application/Costing.Application.csproj" />
+    <Project Path="backend/src/Costing.Infrastructure/Costing.Infrastructure.csproj" />
+    <Project Path="backend/src/Costing.Api/Costing.Api.csproj" />
+  </Folder>
+  <Folder Name="/backend/tests/">
+    <Project Path="backend/tests/Costing.Domain.Tests/Costing.Domain.Tests.csproj" />
+    <Project Path="backend/tests/Costing.Application.Tests/Costing.Application.Tests.csproj" />
+    <Project Path="backend/tests/Costing.Infrastructure.Tests/Costing.Infrastructure.Tests.csproj" />
+    <Project Path="backend/tests/Costing.Api.Tests/Costing.Api.Tests.csproj" />
+  </Folder>
+</Solution>

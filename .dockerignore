@@ -1,0 +1,18 @@
+# Built on the inside: nothing from this machine's builds, packages or secrets goes in.
+**/bin/
+**/obj/
+**/node_modules/
+**/.angular/
+**/dist/
+backend/src/Costing.Api/wwwroot/
+backend/tests/
+dev/
+docs/
+.git/
+.vs/
+.idea/
+.vscode/
+**/.DS_Store
+**/*.user
+.env
+**/.env

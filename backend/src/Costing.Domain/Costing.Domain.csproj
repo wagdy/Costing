@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- The HR & Assets model: employees, their attendance, leaves, performance and monthly pay,
+       the assets in their custody, the approvals a manager gives, and who may use which tab.
+       No references: everything else depends on it. -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+</Project>

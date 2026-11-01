@@ -1,0 +1,244 @@
+using Microsoft.EntityFrameworkCore;
+using Costing.Application.Common;
+using Costing.Domain.Common;
+using Costing.Domain.Categories;
+using Costing.Domain.Purchases;
+using Costing.Domain.RawMaterials;
+using Costing.Domain.Treasury;
+using Costing.Infrastructure.Common;
+using Costing.Infrastructure.Persistence;
+using static Costing.Infrastructure.Reports.CostingService;
+
+namespace Costing.Infrastructure.Reports;
+
+// One material or expense item's purchases in the period. Quantity is in what the item is bought
+// in (kg, carton) for a material, and as entered for an expense; Unit names it.
+public sealed record ItemSpending(PurchaseItemType ItemType, Guid ItemId, string Name, decimal Quantity, string Unit, decimal Total, int Lines);
+
+// A category's purchases: what went into stock, what was expenses, and its share of the whole.
+public sealed record CategorySpending(
+    Guid CategoryId,
+    string Category,
+    string? CategoryAr,
+    ExpenseLine ExpenseLine,
+    decimal Inventory,
+    decimal Expenses,
+    decimal Total,
+    decimal? SharePercent,
+    IReadOnlyList<ItemSpending> Items);
+
+// Purchases by category over a period, from the posted invoices: each invoice on its own date, or
+// on the day it was posted when it has none; and the expense vouchers paid from the safe, each on
+// its date. Lines with no price are counted, not valued.
+public sealed record SpendingReport(
+    DateOnly From,
+    DateOnly To,
+    decimal Total,
+    decimal Inventory,
+    decimal Expenses,
+    int Invoices,
+    int UnpricedLines,
+    IReadOnlyList<CategorySpending> Categories,
+    int Vouchers = 0);
+
+// One invoice line that bought a material, as its paper has it: Quantity in the unit billed (5 kg),
+// BaseQuantity in the material's own (5,000 g), UnitPrice per unit billed. Voided: the invoice no
+// longer stands, and ReplacedBy names the one that corrected it, if one did; RevisionOf, the one
+// it corrected.
+public sealed record MaterialPurchase(
+    Guid InvoiceId,
+    DateOnly Date,
+    string? Supplier,
+    string? InvoiceNumber,
+    decimal Quantity,
+    string Unit,
+    decimal BaseQuantity,
+    decimal? UnitPrice,
+    decimal? Total,
+    bool Voided,
+    Guid? ReplacedBy,
+    Guid? RevisionOf);
+
+// A material's purchase history card (كارت الصنف): every posted or voided invoice line that bought
+// it, newest first, to hold against the paper invoices. The totals are the standing invoices'
+// only: what came in, what it cost, and the average paid per purchase unit, over the priced lines.
+public sealed record MaterialPurchaseHistory(
+    Guid MaterialId,
+    string Material,
+    UnitOfMeasure Unit,
+    string PurchaseUnit,
+    decimal PurchaseUnitSize,
+    IReadOnlyList<MaterialPurchase> Lines,
+    decimal BaseQuantity,
+    decimal Total,
+    decimal? AveragePerPurchaseUnit,
+    int UnpricedLines);
+
+// What a period's expense lines came to in one category, for the profit and loss.
+public sealed record LoggedExpense(Guid CategoryId, string Category, string? CategoryAr, ExpenseLine ExpenseLine, decimal Amount);
+
+// Purchases added up by category: the Purchases by Category report, and the logged expenses the
+// KPIs and the break-even worksheet take off as overheads. Each line is filed under its item's
+// category as it is now, so moving an item to the right category puts its history right too.
+public sealed class PurchaseSpendingService(CostingDbContext db, IBusinessCalendar clock)
+{
+    // InvoiceId: the invoice's, or an expense voucher's (IsVoucher).
+    private sealed record PostedLine(
+        Guid InvoiceId, PurchaseItemType ItemType, Guid ItemId, string Name, PurchaseCategory? Category, decimal Quantity, string Unit, decimal? Cost,
+        bool IsVoucher = false);
+
+    public async Task<SpendingReport> GetAsync(DateOnly from, DateOnly to, CancellationToken cancellationToken)
+    {
+        if (to < from)
+            throw new DomainException("The first day must come before the last.");
+        if (to > from.AddYears(5))
+            throw new DomainException("Choose five years at most.");
+
+        var lines = await PostedLinesAsync(from, to, cancellationToken);
+        var priced = lines.Where(l => l.Cost is not null).ToList();
+        var total = priced.Sum(l => l.Cost!.Value);
+        var categories = priced
+            .GroupBy(l => l.Category?.Id ?? PurchaseCategory.GeneralId)
+            .Select(g =>
+            {
+                var category = g.First().Category;
+                var inventory = g.Where(l => l.ItemType == PurchaseItemType.Inventory).Sum(l => l.Cost!.Value);
+                var expenses = g.Where(l => l.ItemType == PurchaseItemType.Expense).Sum(l => l.Cost!.Value);
+                return new CategorySpending(
+                    g.Key, category?.Name ?? PurchaseCategory.GeneralName, category?.NameAr, category?.ExpenseLine ?? ExpenseLine.Controllable,
+                    Money(inventory), Money(expenses), Money(inventory + expenses),
+                    total > 0 ? Percent((inventory + expenses) / total) : null,
+                    g.GroupBy(l => (l.ItemType, l.ItemId))
+                        .Select(i => new ItemSpending(
+                            i.Key.ItemType, i.Key.ItemId, i.First().Name, Math.Round(i.Sum(l => l.Quantity), 3), i.First().Unit,
+                            Money(i.Sum(l => l.Cost!.Value)), i.Count()))
+                        .OrderByDescending(i => i.Total)
+                        .ThenBy(i => i.Name, StringComparer.CurrentCultureIgnoreCase)
+                        .ToList());
+            })
+            .OrderByDescending(c => c.Total)
+            .ThenBy(c => c.Category, StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+
+        return new SpendingReport(
+            from, to, Money(total),
+            Money(priced.Where(l => l.ItemType == PurchaseItemType.Inventory).Sum(l => l.Cost!.Value)),
+            Money(priced.Where(l => l.ItemType == PurchaseItemType.Expense).Sum(l => l.Cost!.Value)),
+            lines.Where(l => !l.IsVoucher).Select(l => l.InvoiceId).Distinct().Count(),
+            lines.Count - priced.Count,
+            categories,
+            lines.Count(l => l.IsVoucher));
+    }
+
+    // The period's expense lines by category: overheads for the profit and loss. Stock lines are
+    // left out; they are cost of sales once the recipes use them.
+    public async Task<IReadOnlyList<LoggedExpense>> LoggedExpensesAsync(DateOnly from, DateOnly to, CancellationToken cancellationToken) =>
+        (await PostedLinesAsync(from, to, cancellationToken))
+            .Where(l => l.ItemType == PurchaseItemType.Expense && l.Cost is not null)
+            .GroupBy(l => l.Category?.Id ?? PurchaseCategory.GeneralId)
+            .Select(g => new LoggedExpense(
+                g.Key, g.First().Category?.Name ?? PurchaseCategory.GeneralName, g.First().Category?.NameAr,
+                g.First().Category?.ExpenseLine ?? ExpenseLine.Controllable, Money(g.Sum(l => l.Cost!.Value))))
+            .OrderByDescending(e => e.Amount)
+            .ToList();
+
+    // Every line that bought the material, from posted and voided invoices (a draft has bought
+    // nothing yet), each dated as the reports date it: by the invoice, or the day it was posted.
+    public async Task<MaterialPurchaseHistory> MaterialHistoryAsync(Guid materialId, CancellationToken cancellationToken)
+    {
+        var material = await db.RawMaterials.AsNoTracking().SingleOrDefaultAsync(m => m.Id == materialId, cancellationToken)
+            ?? throw new NotFoundException("Raw material", materialId);
+        var bought = await db.PurchaseInvoices.AsNoTracking()
+            .Where(i => (i.Status == PurchaseInvoiceStatus.Posted || i.Status == PurchaseInvoiceStatus.Voided)
+                && i.Lines.Any(l => l.RawMaterialId == materialId))
+            .Select(i => new
+            {
+                i.Id, i.SupplierId, i.SupplierInvoiceNumber, i.InvoiceDate, i.PostedAtUtc, i.CreatedAtUtc, i.Status, i.ReplacedBy, i.RevisionOf,
+                Lines = i.Lines.Where(l => l.RawMaterialId == materialId).ToList(),
+            })
+            .ToListAsync(cancellationToken);
+        var supplierIds = bought.Where(i => i.SupplierId != null).Select(i => i.SupplierId!.Value).Distinct().ToList();
+        var suppliers = await db.Suppliers.AsNoTracking().Where(s => supplierIds.Contains(s.Id)).ToDictionaryAsync(s => s.Id, s => s.Name, cancellationToken);
+
+        var lines = bought
+            .SelectMany(i => i.Lines.Select(l => new
+            {
+                Posted = i.PostedAtUtc ?? i.CreatedAtUtc,
+                Line = new MaterialPurchase(
+                    i.Id, i.InvoiceDate ?? clock.BusinessDateOf(i.PostedAtUtc ?? i.CreatedAtUtc),
+                    i.SupplierId is { } supplier ? suppliers.GetValueOrDefault(supplier) : null, i.SupplierInvoiceNumber,
+                    l.EnteredQuantity, l.UnitLabel, l.Quantity,
+                    l.Cost is { } cost && l.EnteredQuantity > 0 ? Math.Round(cost / l.EnteredQuantity, 4, MidpointRounding.AwayFromZero) : null,
+                    l.Cost, i.Status == PurchaseInvoiceStatus.Voided, i.ReplacedBy, i.RevisionOf),
+            }))
+            .OrderByDescending(l => l.Line.Date)
+            .ThenByDescending(l => l.Posted)
+            .Select(l => l.Line)
+            .ToList();
+
+        var standing = lines.Where(l => !l.Voided).ToList();
+        var priced = standing.Where(l => l.Total is not null).ToList();
+        var pricedQuantity = priced.Sum(l => l.BaseQuantity);
+        return new MaterialPurchaseHistory(
+            material.Id, material.Name, material.Unit, material.PurchaseUnit, material.PurchaseUnitSize, lines,
+            Math.Round(standing.Sum(l => l.BaseQuantity), 3), Money(priced.Sum(l => l.Total!.Value)),
+            pricedQuantity > 0 ? Money(priced.Sum(l => l.Total!.Value) / pricedQuantity * material.PurchaseUnitSize) : null,
+            standing.Count - priced.Count);
+    }
+
+    private async Task<IReadOnlyList<PostedLine>> PostedLinesAsync(DateOnly from, DateOnly to, CancellationToken cancellationToken)
+    {
+        var (fromUtc, _) = clock.Bounds(from);
+        var (_, toUtc) = clock.Bounds(to);
+        var invoices = await db.PurchaseInvoices.AsNoTracking().Include(i => i.Lines)
+            .Where(i => i.Status == PurchaseInvoiceStatus.Posted
+                && ((i.InvoiceDate != null && i.InvoiceDate >= from && i.InvoiceDate <= to)
+                    || (i.InvoiceDate == null && i.PostedAtUtc >= fromUtc && i.PostedAtUtc < toUtc)))
+            .ToListAsync(cancellationToken);
+        // Expense vouchers that stand: a voided one leaves the reports of its own date.
+        var vouchers = await db.SafeTransactions.AsNoTracking()
+            .Where(t => t.Kind == SafeTransactionKind.ExpenseVoucher && t.ReversalOf == null && t.VoidedAtUtc == null
+                && t.BusinessDate >= from && t.BusinessDate <= to)
+            .Select(t => new { t.Id, t.ExpenseItemId, t.Amount })
+            .ToListAsync(cancellationToken);
+        if (invoices.Count == 0 && vouchers.Count == 0)
+            return [];
+
+        var categories = await db.PurchaseCategories.AsNoTracking().ToDictionaryAsync(c => c.Id, cancellationToken);
+        var materials = await db.RawMaterials.AsNoTracking()
+            .Select(m => new { m.Id, m.Name, m.CategoryId, m.PurchaseUnit, m.PurchaseUnitSize })
+            .ToDictionaryAsync(m => m.Id, cancellationToken);
+        var expenses = await db.ExpenseItems.AsNoTracking()
+            .Select(e => new { e.Id, e.Name, e.CategoryId, e.Unit })
+            .ToDictionaryAsync(e => e.Id, cancellationToken);
+
+        var paidOut = vouchers.Select(v =>
+        {
+            var expense = expenses.GetValueOrDefault(v.ExpenseItemId!.Value);
+            return new PostedLine(
+                v.Id, PurchaseItemType.Expense, v.ExpenseItemId.Value, expense?.Name ?? "A removed expense",
+                expense is null ? null : categories.GetValueOrDefault(expense.CategoryId), 1, expense?.Unit ?? "voucher", -v.Amount, IsVoucher: true);
+        });
+
+        return invoices
+            .SelectMany(i => i.Lines.Select(l =>
+            {
+                if (l.ItemType == PurchaseItemType.Expense)
+                {
+                    var expense = expenses.GetValueOrDefault(l.ExpenseItemId!.Value);
+                    return new PostedLine(
+                        i.Id, l.ItemType, l.ExpenseItemId.Value, expense?.Name ?? "A removed expense",
+                        expense is null ? null : categories.GetValueOrDefault(expense.CategoryId),
+                        l.EnteredQuantity, expense?.Unit ?? l.UnitLabel, l.Cost);
+                }
+
+                var material = materials.GetValueOrDefault(l.RawMaterialId!.Value);
+                return new PostedLine(
+                    i.Id, l.ItemType, l.RawMaterialId.Value, material?.Name ?? "A removed material",
+                    material is null ? null : categories.GetValueOrDefault(material.CategoryId),
+                    material is null ? l.Quantity : l.Quantity / material.PurchaseUnitSize, material?.PurchaseUnit ?? l.UnitLabel, l.Cost);
+            }))
+            .Concat(paidOut)
+            .ToList();
+    }
+}

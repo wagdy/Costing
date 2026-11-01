@@ -1,0 +1,139 @@
+using MediatR;
+using Costing.Application.Approvals;
+using Costing.Application.Categories;
+using Costing.Application.Common;
+using Costing.Domain.Common;
+using Costing.Domain.Approvals;
+using Costing.Domain.Categories;
+using Costing.Domain.RawMaterials;
+
+namespace Costing.Application.RawMaterials;
+
+// What anyone who may see stock sees, cashiers included. No costs: those are a manager's, through
+// the costing screens.
+public sealed record RawMaterialDto(
+    Guid Id,
+    string Name,
+    UnitOfMeasure Unit,
+    decimal QuantityOnHand,
+    decimal ReorderLevel,
+    bool NeedsReorder,
+    string? Code,
+    // Its purchase category's name, and the category.
+    string Category,
+    string PurchaseUnit,
+    decimal PurchaseUnitSize,
+    decimal DefaultYieldPercent,
+    MaterialKind Kind,
+    Guid CategoryId,
+    string? CategoryAr)
+{
+    public static RawMaterialDto From(RawMaterial material, PurchaseCategory? category) => new(
+        material.Id,
+        material.Name,
+        material.Unit,
+        material.QuantityOnHand,
+        material.ReorderLevel,
+        material.NeedsReorder,
+        material.Code,
+        category?.Name ?? PurchaseCategory.GeneralName,
+        material.PurchaseUnit,
+        material.PurchaseUnitSize,
+        material.DefaultYieldPercent,
+        material.Kind,
+        material.CategoryId,
+        category?.NameAr);
+}
+
+// The optional parts describe it for costing. PurchaseUnit and PurchaseUnitSize go together:
+// "kg" and 1000 for a material counted in grams. CostPerPurchaseUnit is the price to start from.
+// No CategoryId: General.
+public sealed record CreateRawMaterialCommand(
+    string Name,
+    UnitOfMeasure Unit,
+    decimal ReorderLevel = 0,
+    string? Code = null,
+    Guid? CategoryId = null,
+    string? PurchaseUnit = null,
+    decimal? PurchaseUnitSize = null,
+    decimal? DefaultYieldPercent = null,
+    decimal? CostPerPurchaseUnit = null) : IRequest<RawMaterialDto>;
+
+internal sealed class CreateRawMaterialCommandHandler(IRawMaterialRepository materials, IPurchaseCategoryRepository categories, IUnitOfWork unitOfWork)
+    : IRequestHandler<CreateRawMaterialCommand, RawMaterialDto>
+{
+    public async Task<RawMaterialDto> Handle(CreateRawMaterialCommand request, CancellationToken cancellationToken)
+    {
+        var category = await categories.ResolveAsync(request.CategoryId, CategoryKind.RawMaterials, null, cancellationToken);
+        var material = new RawMaterial(request.Name, request.Unit, request.ReorderLevel);
+        UpdateRawMaterialCommandHandler.Describe(material, request.Code, category.Id, request.PurchaseUnit, request.PurchaseUnitSize, request.DefaultYieldPercent, request.CostPerPurchaseUnit);
+        materials.Add(material);
+
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+        return RawMaterialDto.From(material, category);
+    }
+}
+
+// No Unit here on purpose. Every recipe quantity and every ledger entry for a material is in
+// its unit, so it is changed by ChangeMaterialUnitCommand, which restates them with it.
+// CostPerPurchaseUnit null leaves the average cost as it is; a value replaces it. No CategoryId: General.
+public sealed record UpdateRawMaterialCommand(
+    Guid RawMaterialId,
+    string Name,
+    decimal ReorderLevel,
+    string? Code = null,
+    Guid? CategoryId = null,
+    string? PurchaseUnit = null,
+    decimal? PurchaseUnitSize = null,
+    decimal? DefaultYieldPercent = null,
+    decimal? CostPerPurchaseUnit = null) : IRequest<RawMaterialDto>;
+
+internal sealed class UpdateRawMaterialCommandHandler(
+    IRawMaterialRepository materials, IPurchaseCategoryRepository categories, IApprovalRequestRepository approvals, IUnitOfWork unitOfWork)
+    : IRequestHandler<UpdateRawMaterialCommand, RawMaterialDto>
+{
+    public async Task<RawMaterialDto> Handle(UpdateRawMaterialCommand request, CancellationToken cancellationToken)
+    {
+        var material = await materials.GetRequiredAsync(request.RawMaterialId, cancellationToken);
+        if (material.IsArchived)
+            throw new DomainException($"{material.Name} has been deleted.");
+        await approvals.EnsureNotPendingAsync(material.Id, cancellationToken);
+        var category = await categories.ResolveAsync(request.CategoryId, CategoryKind.RawMaterials, material.CategoryId, cancellationToken);
+
+        material.Rename(request.Name);
+        material.SetReorderLevel(request.ReorderLevel);
+        Describe(material, request.Code, category.Id, request.PurchaseUnit, request.PurchaseUnitSize, request.DefaultYieldPercent, request.CostPerPurchaseUnit);
+
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+        return RawMaterialDto.From(material, category);
+    }
+
+    // Shared with creating one. The purchase unit first: the starting cost is per that unit.
+    internal static void Describe(
+        RawMaterial material, string? code, Guid categoryId, string? purchaseUnit, decimal? purchaseUnitSize, decimal? defaultYield, decimal? cost)
+    {
+        material.Describe(code, categoryId);
+        if (purchaseUnit is not null || purchaseUnitSize is not null)
+            material.SetPurchaseUnit(purchaseUnit ?? material.PurchaseUnit, purchaseUnitSize ?? material.PurchaseUnitSize);
+        if (defaultYield is { } yield)
+            material.SetDefaultYield(yield);
+        if (cost is { } costPerPurchaseUnit)
+            material.SetCost(costPerPurchaseUnit);
+    }
+}
+
+public sealed record GetRawMaterialsQuery(bool NeedsReorderOnly = false) : IRequest<IReadOnlyList<RawMaterialDto>>;
+
+internal sealed class GetRawMaterialsQueryHandler(IRawMaterialRepository materials, IPurchaseCategoryRepository categories)
+    : IRequestHandler<GetRawMaterialsQuery, IReadOnlyList<RawMaterialDto>>
+{
+    public async Task<IReadOnlyList<RawMaterialDto>> Handle(GetRawMaterialsQuery request, CancellationToken cancellationToken)
+    {
+        var found = request.NeedsReorderOnly
+            ? await materials.GetNeedingReorderAsync(cancellationToken)
+            : await materials.GetAllAsync(cancellationToken);
+
+        // Deleted ones are kept for the records that name them, off the lists.
+        return await categories.DtosAsync(found.Where(m => !m.IsArchived), cancellationToken);
+    }
+}

@@ -1,0 +1,359 @@
+// Shared by the HR and custody screens. Labels carry English and Arabic, as the templates do.
+
+:host {
+  display: block;
+}
+
+// Under the English, on the same side: start and end would flip inside right-to-left text.
+.ar {
+  display: block;
+  direction: rtl;
+  text-align: left;
+  font-size: 0.85em;
+  opacity: 0.75;
+}
+
+.num .ar {
+  text-align: right;
+}
+
+// Beside English: the gap is on the left whatever the span's own direction.
+.inline-ar {
+  direction: rtl;
+  unicode-bidi: isolate;
+  opacity: 0.75;
+  margin-left: 6px;
+}
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  margin-bottom: 12px;
+
+  .spacer {
+    flex: 1;
+  }
+}
+
+// An explanation: a soft box, its Arabic first (right to left, as Arabic reads) and its English
+// under it.
+.note {
+  margin: 16px 0 12px;
+  padding: 12px 16px;
+  border-radius: 14px;
+  border: 1px solid var(--app-line);
+  background: var(--mat-sys-surface-container-low);
+  color: var(--mat-sys-on-surface-variant);
+  font: var(--mat-sys-body-medium);
+  line-height: 1.6;
+
+  .note-ar {
+    padding-bottom: 8px;
+    margin-bottom: 8px;
+    border-bottom: 1px dashed var(--app-line);
+  }
+}
+
+// A note's Arabic, a block of its own above its English: the page's own words in Arabic.
+.note-ar {
+  display: block;
+  direction: rtl;
+  text-align: right;
+  font-size: 1.04em;
+  line-height: 1.8;
+  color: var(--mat-sys-on-surface);
+}
+
+// In a toolbar's line, a hint has no box.
+.toolbar .note {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+
+  .note-ar {
+    padding: 0;
+    margin: 0 0 2px;
+    border: 0;
+  }
+}
+
+// A table with nothing in it: an icon, and what to do, in Arabic and English, in the middle.
+td.empty {
+  padding: 36px 16px;
+  text-align: center;
+  color: var(--mat-sys-on-surface-variant);
+
+  mat-icon {
+    display: block;
+    margin: 0 auto 10px;
+    width: 36px;
+    height: 36px;
+    font-size: 36px;
+    opacity: 0.55;
+  }
+  .note-ar {
+    text-align: center;
+    margin-bottom: 4px;
+  }
+}
+
+// For screen readers only: a column's name where the column is plain to see, such as its buttons.
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+}
+
+.error {
+  color: var(--mat-sys-error);
+}
+
+
+// A status of the old kind, its Arabic under it; a tag (styles.scss) is one line.
+.status:not(.tag) {
+  display: inline-flex;
+  flex-direction: column;
+  padding: 2px 8px;
+  border-radius: 8px;
+  font: var(--mat-sys-label-small);
+  white-space: nowrap;
+
+  &.WithinTarget {
+    background: color-mix(in srgb, var(--app-ok) 18%, transparent);
+  }
+
+  &.AboveTarget,
+  &.MissingPrices {
+    background: color-mix(in srgb, var(--mat-sys-error) 16%, transparent);
+    color: var(--mat-sys-error);
+  }
+
+  &.NoRecipe,
+  &.NoPrice {
+    background: var(--mat-sys-surface-container-high);
+  }
+}
+
+.muted {
+  color: var(--mat-sys-on-surface-variant);
+}
+
+// Variance: red for a shortfall (more left the stores than it should), blue for a surplus.
+// Blue rather than green: a surplus needs looking into too.
+:host {
+  --variance-deficit: var(--mat-sys-error);
+  --variance-surplus: #1565c0;
+}
+
+tr.deficit td,
+.box.deficit {
+  background: color-mix(in srgb, var(--variance-deficit) 9%, var(--mat-sys-surface));
+}
+
+tr.surplus td,
+.box.surplus {
+  background: color-mix(in srgb, var(--variance-surplus) 9%, var(--mat-sys-surface));
+}
+
+tr.deficit td.strong,
+.box.deficit strong {
+  color: var(--variance-deficit);
+}
+
+tr.surplus td.strong,
+.box.surplus strong {
+  color: var(--variance-surplus);
+}
+
+.eval {
+  display: inline-flex;
+  flex-direction: column;
+  padding: 2px 8px;
+  border-radius: 8px;
+  font: var(--mat-sys-label-small);
+  white-space: nowrap;
+  background: var(--mat-sys-surface-container-high);
+
+  &.Unfavourable {
+    background: var(--variance-deficit);
+    color: var(--mat-sys-on-error);
+  }
+
+  &.Favourable {
+    background: var(--variance-surplus);
+    color: #fff;
+  }
+}
+
+@media print {
+  tr.deficit td,
+  tr.surplus td {
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+}
+
+@media print {
+  .toolbar,
+  .no-print {
+    display: none !important;
+  }
+}
+
+// A tag's Arabic beside its English, on one line (here too: a page's .ar is a block).
+.tag .ar {
+  display: inline;
+  margin-left: 4px;
+  font-weight: 500;
+}
+
+// A small tag beside a name: a prep item, an archived supplier.
+.badge {
+  margin-left: 6px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font: var(--mat-sys-label-small);
+  background: var(--mat-sys-tertiary-container);
+  color: var(--mat-sys-on-tertiary-container);
+  white-space: nowrap;
+}
+
+// A record whose change waits for a manager: as it was until then, marked, and locked.
+tr.pending-deletion td {
+  background: color-mix(in srgb, var(--app-warn) 12%, var(--mat-sys-surface));
+}
+
+.pending-badge,
+.voided-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font: var(--mat-sys-label-medium);
+  font-weight: 600;
+  white-space: nowrap;
+
+  .ar {
+    display: inline;
+    margin-left: 0;
+    font-weight: 500;
+  }
+}
+
+// Waiting for a manager: an amber tag.
+.pending-badge {
+  background: var(--tag-warn-bg);
+  color: var(--tag-warn-fg);
+
+  &::before {
+    content: '';
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+  }
+}
+
+// Posted, then deleted with a manager's approval: kept, its stock reversed.
+.voided-badge {
+  background: var(--mat-sys-surface-container-highest);
+  color: var(--mat-sys-on-surface-variant);
+  text-decoration: none;
+}
+
+.locked {
+  color: var(--app-warn);
+  vertical-align: middle;
+}
+
+// A record a manager has been asked about: what was asked, and that it waits.
+.pending-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--app-warn) 16%, var(--mat-sys-surface));
+  color: var(--mat-sys-on-surface);
+
+  > mat-icon {
+    flex: none;
+    color: var(--app-warn);
+  }
+}
+
+// Figures at a glance, a tile each: the treasury's screens.
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.tile {
+  display: grid;
+  gap: 2px;
+  padding: 14px 16px;
+  border-radius: 16px;
+  border: 1px solid var(--app-line);
+  background: var(--mat-sys-surface-container-lowest);
+  box-shadow: var(--app-card-shadow);
+
+  .label {
+    font: var(--mat-sys-label-medium);
+    color: var(--mat-sys-on-surface-variant);
+  }
+  strong {
+    font: var(--mat-sys-headline-small);
+  }
+  &.key {
+    background: var(--mat-sys-secondary-container);
+    color: var(--mat-sys-on-secondary-container);
+    border-color: transparent;
+  }
+}
+
+// What a safe entry is: opening balance, funding, takings, a voucher, a payment.
+.kind {
+  display: inline-block;
+  margin-right: 4px;
+  padding: 0 6px;
+  border-radius: 6px;
+  font: var(--mat-sys-label-small);
+  background: var(--mat-sys-surface-container-high);
+  white-space: nowrap;
+}
+
+// Where an invoice's payment stands: paid, waiting for approval, unpaid, on credit.
+.pay,
+.pay-status {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font: var(--mat-sys-label-small);
+  white-space: nowrap;
+  background: var(--mat-sys-surface-container-high);
+
+  &.Paid {
+    background: color-mix(in srgb, var(--app-ok) 18%, transparent);
+  }
+  &.Pending {
+    background: color-mix(in srgb, var(--app-warn) 22%, transparent);
+    color: var(--app-warn);
+  }
+  &.Unpaid {
+    background: color-mix(in srgb, var(--mat-sys-error) 14%, transparent);
+    color: var(--mat-sys-error);
+  }
+  &.OnCredit {
+    background: var(--mat-sys-secondary-container);
+    color: var(--mat-sys-on-secondary-container);
+  }
+}

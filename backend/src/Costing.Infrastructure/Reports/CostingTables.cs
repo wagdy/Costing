@@ -1,0 +1,221 @@
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata.Builders;
+using Costing.Domain.Common;
+using Costing.Domain.RawMaterials;
+using Costing.Infrastructure.Persistence;
+
+namespace Costing.Infrastructure.Reports;
+
+// The food cost a manager aims at, the Food Cost % Budget on a recipe card: 30% unless set.
+// One row. A dish costing more than this share of its price is "above target".
+public sealed class CostingSettings
+{
+    public const int SingletonId = 1;
+    public const decimal DefaultFoodCostTarget = 30;
+
+    public const decimal DefaultVarianceTolerance = 5;
+
+    public int Id { get; init; } = SingletonId;
+    public decimal FoodCostTargetPercent { get; set; } = DefaultFoodCostTarget;
+
+    // How far actual usage may stray from standard, either way, before the variance report calls
+    // it unfavourable or favourable: the template's ±5%.
+    public decimal VarianceTolerancePercent { get; set; } = DefaultVarianceTolerance;
+
+    // The menu categories that are drinks, by name: their sales and costs are the beverage cost %,
+    // the rest the food cost %. None set, everything is food.
+    public List<string> BeverageCategories { get; set; } = [];
+
+    // The break-even worksheet's four options: weekly sales to try against this year's costs.
+    // Empty until the manager sets them.
+    public List<decimal> BreakEvenScenarios { get; set; } = [];
+}
+
+// The treasury's tax and service settings (إعدادات الضريبة والخدمة). The tax rate is not here: it is
+// the one every bill is charged, set in the delivery system and synced to the till, so the two can
+// never disagree. The service charge is kept for when bills carry one; nothing uses it yet.
+public sealed class FinancialSettings
+{
+    public const int SingletonId = 1;
+
+    public int Id { get; init; } = SingletonId;
+    public decimal ServicePercent { get; set; }
+
+    // The bills' tax (VAT) rate: what a day's takings entered with tax have taken off them. Null
+    // until it is set.
+    public decimal? TaxPercent { get; set; }
+
+    public string? UpdatedBy { get; set; }
+    public DateTime? UpdatedAtUtc { get; set; }
+}
+
+// What a month cost beyond its ingredients, as the manager enters it: what the KPIs need besides
+// sales, and the income statement's lines for the break-even worksheet. Every figure is optional
+// until known; a KPI that needs a missing one says so rather than showing 0.
+public sealed class MonthlyExpenses
+{
+    public int Year { get; init; }
+    public int Month { get; init; }
+
+    // Wages, salaries and staff benefits: the labour cost %.
+    public decimal? WagesAndBenefits { get; set; }
+
+    // Hours worked by all staff in the month: sales per labour hour.
+    public decimal? LabourHours { get; set; }
+
+    // Utilities, marketing, repairs, supplies: the rest of the controllable costs.
+    public decimal? OtherControllableCosts { get; set; }
+
+    // Rent and the like.
+    public decimal? OccupationCost { get; set; }
+
+    public decimal? Interest { get; set; }
+    public decimal? Depreciation { get; set; }
+
+    public DateTime UpdatedAtUtc { get; set; }
+    public string? UpdatedBy { get; set; }
+
+    public void Validate()
+    {
+        if (Month is < 1 or > 12 || Year is < 2000 or > 2100)
+            throw new DomainException("Choose a month.");
+        if (new[] { WagesAndBenefits, LabourHours, OtherControllableCosts, OccupationCost, Interest, Depreciation }.Any(v => v < 0))
+            throw new DomainException("A month's costs and hours cannot be negative.");
+    }
+}
+
+// A cost no recipe names, spread over the meals that share it: frying oil, gas, takeaway boxes.
+// Each month's total is either what that month's purchases of a raw material cost (the oil), or
+// a fixed amount; it is shared out per meal sold in the month, across the whole menu or one
+// category. The template's "total monthly oil cost ÷ total monthly meals sold".
+public sealed class SharedCost
+{
+    public Guid Id { get; init; } = Guid.NewGuid();
+    public string Name { get; set; } = string.Empty;
+
+    // One of the two.
+    public Guid? RawMaterialId { get; set; }
+    public decimal? MonthlyAmount { get; set; }
+
+    // A menu category's name; null for every meal.
+    public string? Category { get; set; }
+
+    public void Validate()
+    {
+        if (string.IsNullOrWhiteSpace(Name))
+            throw new DomainException("Name the shared cost, such as Frying oil.");
+        if ((RawMaterialId is null) == (MonthlyAmount is null))
+            throw new DomainException("A shared cost comes from a raw material's purchases or a fixed monthly amount, one of the two.");
+        if (MonthlyAmount < 0)
+            throw new DomainException("A monthly amount cannot be negative.");
+        Name = Name.Trim();
+        Category = string.IsNullOrWhiteSpace(Category) ? null : Category.Trim();
+    }
+}
+
+// A month's sales as an accountant types them, for the theoretical cost report when the till's
+// own are not to be used (the till was down, or a what-if): how many of each recipe, and how much
+// of each prep item. Kept for the month, with who last entered it, so the report says whose
+// figures it shows.
+public sealed class ManualSalesSheet
+{
+    public int Year { get; init; }
+    public int Month { get; init; }
+    public List<ManualSalesLine> Lines { get; set; } = [];
+    public DateTime UpdatedAtUtc { get; set; }
+    public string? UpdatedBy { get; set; }
+}
+
+public enum ManualSalesItemKind
+{
+    Recipe = 1,
+    PrepItem = 2,
+}
+
+// Portions of a recipe; for a prep item, its display unit (kg, L), as the sheet shows it.
+public sealed class ManualSalesLine
+{
+    public int Year { get; init; }
+    public int Month { get; init; }
+    public ManualSalesItemKind Kind { get; init; }
+    public Guid ItemId { get; init; }
+    public decimal Quantity { get; set; }
+}
+
+internal sealed class ManualSalesSheetConfiguration : IEntityTypeConfiguration<ManualSalesSheet>
+{
+    public void Configure(EntityTypeBuilder<ManualSalesSheet> builder)
+    {
+        builder.ToTable("ManualSalesSheets", CostingDbContext.CostingSchema);
+        builder.HasKey(s => new { s.Year, s.Month });
+        builder.Property(s => s.UpdatedBy).HasMaxLength(200);
+        builder.HasMany(s => s.Lines).WithOne().HasForeignKey(l => new { l.Year, l.Month }).OnDelete(DeleteBehavior.Cascade);
+    }
+}
+
+// ItemId names a recipe or a prep item by its Kind: no foreign key, and one since removed is
+// left out of the report.
+internal sealed class ManualSalesLineConfiguration : IEntityTypeConfiguration<ManualSalesLine>
+{
+    public void Configure(EntityTypeBuilder<ManualSalesLine> builder)
+    {
+        builder.ToTable("ManualSalesLines", CostingDbContext.CostingSchema);
+        builder.HasKey(l => new { l.Year, l.Month, l.Kind, l.ItemId });
+        builder.Property(l => l.Kind).HasConversion<string>().HasMaxLength(32);
+        builder.Property(l => l.Quantity).HasPrecision(18, 3);
+    }
+}
+
+internal sealed class CostingSettingsConfiguration : IEntityTypeConfiguration<CostingSettings>
+{
+    public void Configure(EntityTypeBuilder<CostingSettings> builder)
+    {
+        builder.ToTable("CostingSettings", CostingDbContext.CostingSchema);
+        builder.Property(s => s.Id).ValueGeneratedNever();
+        builder.Property(s => s.FoodCostTargetPercent).HasPrecision(5, 2);
+        builder.Property(s => s.VarianceTolerancePercent).HasPrecision(5, 2).HasDefaultValue(CostingSettings.DefaultVarianceTolerance);
+        builder.Property(s => s.BeverageCategories).HasDefaultValueSql("'{}'::text[]");
+        builder.Property(s => s.BreakEvenScenarios).HasDefaultValueSql("'{}'::numeric[]");
+    }
+}
+
+internal sealed class SharedCostConfiguration : IEntityTypeConfiguration<SharedCost>
+{
+    public void Configure(EntityTypeBuilder<SharedCost> builder)
+    {
+        builder.ToTable("SharedCosts", CostingDbContext.CostingSchema);
+        builder.Property(c => c.Id).ValueGeneratedNever();
+        builder.Property(c => c.Name).HasMaxLength(100);
+        builder.Property(c => c.Category).HasMaxLength(100);
+        builder.Property(c => c.MonthlyAmount).HasPrecision(18, 2);
+        builder.HasOne<RawMaterial>().WithMany().HasForeignKey(c => c.RawMaterialId).OnDelete(DeleteBehavior.Restrict);
+    }
+}
+
+internal sealed class MonthlyExpensesConfiguration : IEntityTypeConfiguration<MonthlyExpenses>
+{
+    public void Configure(EntityTypeBuilder<MonthlyExpenses> builder)
+    {
+        builder.ToTable("MonthlyExpenses", CostingDbContext.CostingSchema);
+        builder.HasKey(e => new { e.Year, e.Month });
+        builder.Property(e => e.WagesAndBenefits).HasPrecision(18, 2);
+        builder.Property(e => e.LabourHours).HasPrecision(10, 2);
+        builder.Property(e => e.OtherControllableCosts).HasPrecision(18, 2);
+        builder.Property(e => e.OccupationCost).HasPrecision(18, 2);
+        builder.Property(e => e.Interest).HasPrecision(18, 2);
+        builder.Property(e => e.Depreciation).HasPrecision(18, 2);
+        builder.Property(e => e.UpdatedBy).HasMaxLength(200);
+    }
+}
+
+internal sealed class FinancialSettingsConfiguration : IEntityTypeConfiguration<FinancialSettings>
+{
+    public void Configure(EntityTypeBuilder<FinancialSettings> builder)
+    {
+        builder.ToTable("FinancialSettings", CostingDbContext.CostingSchema);
+        builder.Property(s => s.Id).ValueGeneratedNever();
+        builder.Property(s => s.ServicePercent).HasPrecision(5, 2);
+        builder.Property(s => s.TaxPercent).HasPrecision(5, 2);
+        builder.Property(s => s.UpdatedBy).HasMaxLength(200);
+    }
+}

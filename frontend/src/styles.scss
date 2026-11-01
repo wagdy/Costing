@@ -1,0 +1,301 @@
+@use '@angular/material' as mat;
+
+// Material 3, in the delivery system's colours (indigo, with a pink accent), so the till and the
+// delivery app look like one product. The system font stack rather than a web font: the till must
+// look right with no internet, and the icon font is bundled with the build for the same reason.
+html {
+  color-scheme: light;
+  @include mat.theme((
+    color: (
+      primary: mat.$blue-palette,
+      tertiary: mat.$rose-palette,
+    ),
+    typography: (
+      plain-family: (system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif),
+      brand-family: (system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif),
+    ),
+    density: 0,
+  ));
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--mat-sys-surface-container-lowest);
+  color: var(--mat-sys-on-surface);
+  font: var(--mat-sys-body-large);
+}
+
+// Status colours used across the till.
+:root {
+  --app-ok: #2e7d32;
+  --app-warn: #b26a00;
+  --app-danger: var(--mat-sys-error);
+
+  // Tags (a status, a state): a soft background and its text in a deeper shade of the same colour.
+  --tag-ok-bg: #e6f4ea;
+  --tag-ok-fg: #1e6b34;
+  --tag-info-bg: #e8f0fe;
+  --tag-info-fg: #1a4fbf;
+  --tag-warn-bg: #fff3d6;
+  --tag-warn-fg: #8a5300;
+  --tag-bad-bg: #fde7e7;
+  --tag-bad-fg: #b3261e;
+  --tag-accent-bg: #f1e9fe;
+  --tag-accent-fg: #6b2fbf;
+  --tag-teal-bg: #e0f4f3;
+  --tag-teal-fg: #0b6b66;
+  --tag-neutral-bg: #eef1f5;
+  --tag-neutral-fg: #4a5568;
+
+  // Surfaces of tables and cards: their borders, hairlines and shadows.
+  --app-line: color-mix(in srgb, var(--mat-sys-outline-variant) 60%, transparent);
+  --app-line-strong: var(--mat-sys-outline-variant);
+  --app-card-shadow: 0 1px 2px rgb(15 23 42 / 4%), 0 6px 20px -10px rgb(15 23 42 / 12%);
+}
+
+// A shift's colour on the roster (ShiftTone): a soft background and its text, from the tones above.
+.tone-Sky {
+  --tone-bg: var(--tag-info-bg);
+  --tone-fg: var(--tag-info-fg);
+}
+.tone-Amber {
+  --tone-bg: var(--tag-warn-bg);
+  --tone-fg: var(--tag-warn-fg);
+}
+.tone-Violet {
+  --tone-bg: var(--tag-accent-bg);
+  --tone-fg: var(--tag-accent-fg);
+}
+.tone-Teal {
+  --tone-bg: var(--tag-teal-bg);
+  --tone-fg: var(--tag-teal-fg);
+}
+.tone-Rose {
+  --tone-bg: #fde8ef;
+  --tone-fg: #b0285b;
+}
+.tone-Slate {
+  --tone-bg: var(--tag-neutral-bg);
+  --tone-fg: var(--tag-neutral-fg);
+}
+
+// The roster's menu of what a day is put on (RosterPage), in the overlay: whose day it is, each
+// shift's colour as a dot, and its hours beside its name.
+.roster-menu {
+  .menu-head {
+    padding: 10px 16px 6px;
+    color: var(--mat-sys-on-surface-variant);
+    font: var(--mat-sys-label-medium);
+    font-weight: 600;
+  }
+  .menu-dot {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    margin-inline-end: 12px;
+    border-radius: 50%;
+    background: var(--tone-fg);
+    box-shadow: 0 0 0 3px var(--tone-bg);
+    vertical-align: middle;
+  }
+  .menu-hours {
+    margin-inline-start: 8px;
+    color: var(--mat-sys-on-surface-variant);
+    font: var(--mat-sys-label-small);
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+// A tag: a pill of one of the tones above, a dot of its colour before its words.
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font: var(--mat-sys-label-medium);
+  font-weight: 600;
+  line-height: 18px;
+  white-space: nowrap;
+  background: var(--tag-bg, var(--tag-neutral-bg));
+  color: var(--tag-fg, var(--tag-neutral-fg));
+
+  &::before {
+    content: '';
+    flex: none;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+    opacity: 0.85;
+  }
+
+  &.ok {
+    --tag-bg: var(--tag-ok-bg);
+    --tag-fg: var(--tag-ok-fg);
+  }
+  &.info {
+    --tag-bg: var(--tag-info-bg);
+    --tag-fg: var(--tag-info-fg);
+  }
+  &.warn {
+    --tag-bg: var(--tag-warn-bg);
+    --tag-fg: var(--tag-warn-fg);
+  }
+  &.bad {
+    --tag-bg: var(--tag-bad-bg);
+    --tag-fg: var(--tag-bad-fg);
+  }
+  &.accent {
+    --tag-bg: var(--tag-accent-bg);
+    --tag-fg: var(--tag-accent-fg);
+  }
+  &.teal {
+    --tag-bg: var(--tag-teal-bg);
+    --tag-fg: var(--tag-teal-fg);
+  }
+  &.faint {
+    opacity: 0.7;
+  }
+}
+
+.snack-error {
+  --mat-snack-bar-container-color: var(--mat-sys-error-container);
+  --mat-snack-bar-supporting-text-color: var(--mat-sys-on-error-container);
+  --mat-snack-bar-button-color: var(--mat-sys-on-error-container);
+}
+
+.snack-attention {
+  --mat-snack-bar-container-color: var(--mat-sys-tertiary-container);
+  --mat-snack-bar-supporting-text-color: var(--mat-sys-on-tertiary-container);
+  --mat-snack-bar-button-color: var(--mat-sys-on-tertiary-container);
+}
+
+// Money lines up.
+.amount {
+  font-variant-numeric: tabular-nums;
+  text-align: end;
+  white-space: nowrap;
+}
+
+.spacer {
+  flex: 1 1 auto;
+}
+
+// Every table (the pages' .table-wrap and table.grid): a rounded card, soft grey headings, hairlines between its rows, and a row lit
+// under the pointer.
+.table-wrap {
+  // Its own box for anything positioned inside (a hidden column label): clipped with the table,
+  // not widening the page.
+  position: relative;
+  overflow-x: auto;
+  border-radius: 16px;
+  border: 1px solid var(--app-line);
+  background: var(--mat-sys-surface-container-lowest);
+  box-shadow: var(--app-card-shadow);
+}
+
+table.grid {
+  width: 100%;
+  border-collapse: collapse;
+  font: var(--mat-sys-body-medium);
+
+  th,
+  td {
+    padding: 12px;
+    border-bottom: 1px solid var(--app-line);
+    text-align: start;
+    vertical-align: middle;
+  }
+
+  // Many columns (the payroll's): closer together.
+  &.dense th,
+  &.dense td {
+    padding-inline: 8px;
+  }
+
+  // A name that opens something: the text's colour, the brand's under the pointer.
+  td a:not(.mat-mdc-button-base) {
+    color: inherit;
+    text-decoration: none;
+
+    &:hover,
+    &:focus-visible {
+      color: var(--mat-sys-primary);
+      text-decoration: underline;
+    }
+  }
+
+  thead th {
+    padding-block: 10px;
+    font: var(--mat-sys-label-medium);
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    color: var(--mat-sys-on-surface-variant);
+    background: var(--mat-sys-surface-container-low);
+    border-bottom-color: var(--app-line-strong);
+
+    .ar {
+      font-weight: 500;
+    }
+  }
+
+  tbody tr {
+    transition: background-color 120ms ease;
+  }
+
+  tbody tr:hover > td {
+    background-color: color-mix(in srgb, var(--mat-sys-primary) 4%, transparent);
+  }
+
+  // The last row's line would double the card's own edge.
+  > tbody:last-child > tr:last-child > td {
+    border-bottom: 0;
+  }
+
+  td strong {
+    font-weight: 600;
+    color: var(--mat-sys-on-surface);
+  }
+
+  .num,
+  .code {
+    white-space: nowrap;
+  }
+
+  .num {
+    text-align: end;
+    font-variant-numeric: tabular-nums;
+  }
+
+  tr.clickable {
+    cursor: pointer;
+  }
+
+  tfoot td {
+    font-weight: 600;
+    color: var(--mat-sys-on-surface);
+    background: var(--mat-sys-surface-container-low);
+    border-top: 1px solid var(--app-line-strong);
+    border-bottom: 0;
+  }
+}
+
+// A tag's Arabic beside its English, on one line.
+.tag .ar {
+  display: inline;
+  margin-left: 4px;
+  font-weight: 500;
+}
+
+// The analytics' period toggles on a phone: three side by side, each named in both languages.
+@media (max-width: 600px) {
+  .periods .mat-button-toggle-label-content {
+    padding: 0 6px;
+  }
+}

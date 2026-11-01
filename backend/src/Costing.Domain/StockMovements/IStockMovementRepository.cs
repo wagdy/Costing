@@ -1,0 +1,14 @@
+using Costing.Domain.Common;
+
+namespace Costing.Domain.StockMovements;
+
+public interface IStockMovementRepository : IRepository<StockMovement>
+{
+    // The outbox delivers at least once, so a handler can see the same event twice. Checking
+    // this first lets it skip the repeat; the unique index on (SourceId, RawMaterialId, Reason)
+    // catches two deliveries racing each other.
+    Task<bool> ExistsAsync(Guid sourceId, StockMovementReason reason, CancellationToken cancellationToken = default);
+
+    // Every entry a purchase, waste entry or stock count made, and any reversing them.
+    Task<IReadOnlyList<StockMovement>> GetBySourceAsync(Guid sourceId, StockMovementReason reason, CancellationToken cancellationToken = default);
+}

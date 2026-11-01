@@ -1,0 +1,25 @@
+# The development database: PostgreSQL on localhost:5436, its data in a named volume.
+#   docker compose -f dev/docker-compose.yml up -d
+# Never `down -v`: -v deletes the volume, and the data with it.
+name: costing-dev
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: costing-dev-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: costing
+      POSTGRES_PASSWORD: costing-dev
+      POSTGRES_DB: costing
+    ports:
+      - "127.0.0.1:5436:5432"
+    volumes:
+      - costing-dev-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U costing -d costing"]
+      interval: 5s
+      retries: 10
+
+volumes:
+  costing-dev-data:

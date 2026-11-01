@@ -1,0 +1,104 @@
+<main class="sign-in">
+  <section class="card">
+    <header class="brand">
+      <div class="mark" [class.logo]="company.logoUrl()">
+        @if (company.logoUrl(); as logo) {
+          <img [src]="logo" alt="" />
+        } @else if (initials()) {
+          <span>{{ initials() }}</span>
+        } @else {
+          <mat-icon>groups</mat-icon>
+        }
+      </div>
+      <h1>{{ company.name() }}</h1>
+      @if (company.settings().name) {
+        <p class="product">HR &amp; Payroll <span class="ar">الموارد البشرية والرواتب</span></p>
+      }
+    </header>
+
+    <div class="welcome">
+      <h2>Sign in <span class="ar">تسجيل الدخول</span></h2>
+      <p>With your email, or your mobile number if you are an employee.</p>
+    </div>
+
+    @if (reason() === 'expired') {
+      <p class="notice" role="status">
+        <mat-icon>lock_clock</mat-icon>
+        <span>Your session has ended. Sign in again. <span class="ar">سجّل الدخول مرة أخرى</span></span>
+      </p>
+    }
+
+    <form (ngSubmit)="submit()" aria-label="Sign in">
+      <mat-form-field class="field" appearance="outline" hideRequiredMarker>
+        <mat-icon matPrefix>{{ who() === 'user' ? 'alternate_email' : who() === 'employee' ? 'smartphone' : 'person_outline' }}</mat-icon>
+        <mat-label>Email or Mobile number</mat-label>
+        <input
+          matInput
+          name="login"
+          autocomplete="username"
+          autocapitalize="none"
+          spellcheck="false"
+          [(ngModel)]="login"
+          [disabled]="busy()"
+          required
+        />
+        <mat-hint>
+          @switch (who()) {
+            @case ('user') {
+              Manager or accountant: your password below
+            }
+            @case ('employee') {
+              Employee: your PIN below <span class="ar">الموظف: الرقم السري</span>
+            }
+            @default {
+              @if (login().trim()) {
+                An email has its &#64;; a mobile number is its digits
+              } @else {
+                Employees: your mobile number <span class="ar">الموظف: رقم الموبايل</span>
+              }
+            }
+          }
+        </mat-hint>
+      </mat-form-field>
+
+      <mat-form-field class="field" appearance="outline" hideRequiredMarker>
+        <mat-icon matPrefix>{{ who() === 'employee' ? 'pin' : 'lock' }}</mat-icon>
+        <mat-label>Password or PIN</mat-label>
+        <input
+          matInput
+          name="secret"
+          [type]="showSecret() ? 'text' : 'password'"
+          [attr.inputmode]="who() === 'employee' ? 'numeric' : null"
+          autocomplete="current-password"
+          [(ngModel)]="secret"
+          [disabled]="busy()"
+          required
+        />
+        <button
+          mat-icon-button
+          matSuffix
+          type="button"
+          (click)="showSecret.set(!showSecret())"
+          [attr.aria-label]="showSecret() ? 'Hide the password' : 'Show the password'"
+        >
+          <mat-icon>{{ showSecret() ? 'visibility_off' : 'visibility' }}</mat-icon>
+        </button>
+      </mat-form-field>
+
+      @if (error(); as message) {
+        <p class="error" role="alert"><mat-icon>error_outline</mat-icon><span>{{ message }}</span></p>
+      }
+
+      <!-- Not disabled while the fields fill: Enter straight after typing (or after the browser fills them in) still signs in. -->
+      <button mat-flat-button class="submit" type="submit" [disabled]="busy()">
+        @if (busy()) {
+          <mat-spinner diameter="20" />
+        }
+        {{ busy() ? 'Signing in…' : 'Sign in' }}
+        @if (!busy()) {
+          <mat-icon iconPositionEnd>arrow_forward</mat-icon>
+        }
+      </button>
+    </form>
+  </section>
+</main>
