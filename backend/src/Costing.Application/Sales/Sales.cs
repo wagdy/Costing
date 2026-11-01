@@ -18,7 +18,7 @@ namespace Costing.Application.Sales;
 
 public sealed record SalesLineDto(
     Guid PublicId, int MenuItemId, int? VariantId, string MenuItemName, string? VariantName, int Quantity, decimal LineTotal, IReadOnlyList<int> AddOnIds,
-    bool OnBill);
+    bool OnBill, LineVoid Voided);
 
 public sealed record SalesReceiptDto(
     Guid Id,
@@ -44,7 +44,8 @@ public sealed record SalesReceiptDto(
 {
     public static SalesReceiptDto From(SalesReceipt r) => new(
         r.Id, r.Reference, r.SoldAtUtc, r.BusinessDate, r.Channel, r.PaymentMethod,
-        r.Lines.Select(l => new SalesLineDto(l.PublicId, l.MenuItemId, l.VariantId, l.MenuItemName, l.VariantName, l.Quantity, l.LineTotal, l.AddOnIds, l.OnBill))
+        r.Lines.Select(l => new SalesLineDto(
+                l.PublicId, l.MenuItemId, l.VariantId, l.MenuItemName, l.VariantName, l.Quantity, l.LineTotal, l.AddOnIds, l.OnBill, l.Voided))
             .ToList(),
         r.BilledSubtotal, r.DiscountAmount, r.DeliveryFee, r.TaxAmount, r.PointsAmount, r.TotalAmount, r.RefundedAmount, r.Notes, r.Source, r.EnteredBy,
         r.EnteredAtUtc, r.VoidedAtUtc, r.VoidedBy);
@@ -60,8 +61,9 @@ public sealed record SalesReport(DateOnly From, DateOnly To, IReadOnlyList<Sales
 
 // One line as entered: an item (a size of it), how many, with which add-ons. LineTotal, what it
 // came to: left out, the menu's price (the size's, or the item's) and its add-ons', times how many.
-// OnBill false: voided before it was paid; it took no stock.
-public sealed record SaleLineInput(int MenuItemId, int? VariantId, int Quantity, decimal? LineTotal = null, IReadOnlyList<int>? AddOnIds = null, bool OnBill = true);
+// Voided: taken off the bill, and when (LineVoid).
+public sealed record SaleLineInput(
+    int MenuItemId, int? VariantId, int Quantity, decimal? LineTotal = null, IReadOnlyList<int>? AddOnIds = null, LineVoid Voided = LineVoid.None);
 
 // A sale as entered. Date is its business day; Time, when it was paid (a time before the business
 // day starts is that night's, past midnight); none, the day's middle. Its id is made by the app.
@@ -81,31 +83,48 @@ public sealed record SaleInput(
     string? Notes = null);
 
 // Turns sold lines into stock movements, each material's share as purchased, by the recipe each
-// sells by. A line already posted is skipped, so a retried sale posts once. Adds the movements;
-// the caller saves.
+// sells by: Sale for a line charged, then VoidReturn for one refunded after payment, and Waste for
+// one voided after the kitchen made it. A line already posted for a reason is skipped, so a
+// retried sale posts once. Adds the movements; the caller saves.
 internal sealed class SaleStockPoster(
     IRecipeRepository recipes,
     IRawMaterialRepository materials,
     IStockMovementRepository movements,
     ILogger<SaleStockPoster> logger)
 {
-    public async Task PostAsync(IReadOnlyList<(Guid LineId, SoldItem Item)> lines, CancellationToken cancellationToken)
+    public Task PostAsync(IReadOnlyCollection<SalesReceiptLine> lines, CancellationToken cancellationToken) =>
+        PostAsync(lines
+            .SelectMany(l => l.Voided switch
+            {
+                LineVoid.None => [(l, StockMovementReason.Sale)],
+                LineVoid.AfterKitchen => [(l, StockMovementReason.Waste)],
+                LineVoid.AfterPayment => new[] { (l, StockMovementReason.Sale), (l, StockMovementReason.VoidReturn) },
+                _ => [],
+            })
+            .ToList(), cancellationToken);
+
+    // Lines refunded on a sale already recorded: only their stock put back. What they sold was
+    // taken when the sale was, under the line a refund split them from.
+    public Task PostReturnsAsync(IReadOnlyCollection<SalesReceiptLine> lines, CancellationToken cancellationToken) =>
+        PostAsync(lines.Select(l => (l, StockMovementReason.VoidReturn)).ToList(), cancellationToken);
+
+    private async Task PostAsync(IReadOnlyList<(SalesReceiptLine Line, StockMovementReason Reason)> posts, CancellationToken cancellationToken)
     {
-        var pending = new List<(Guid LineId, SoldItem Item)>();
-        foreach (var line in lines)
+        var pending = new List<(Guid LineId, SoldItem Item, StockMovementReason Reason)>();
+        foreach (var (line, reason) in posts)
         {
-            if (!await movements.ExistsAsync(line.LineId, StockMovementReason.Sale, cancellationToken))
-                pending.Add(line);
+            if (!await movements.ExistsAsync(line.PublicId, reason, cancellationToken))
+                pending.Add((line.PublicId, new SoldItem(line.MenuItemId, line.VariantId, line.AddOnIds, line.Quantity), reason));
         }
         if (pending.Count == 0)
             return;
 
         var relevant = await recipes.GetByTargetsAsync(StockRequirements.TargetsFor(pending.Select(p => p.Item)), cancellationToken);
-        var needs = pending.Select(p => (p.LineId, Needs: StockRequirements.For(p.Item, relevant))).ToList();
+        var needs = pending.Select(p => (p.LineId, p.Reason, Needs: StockRequirements.For(p.Item, relevant))).ToList();
         var materialsById = (await materials.GetByIdsAsync(needs.SelectMany(n => n.Needs.Keys).Distinct().ToList(), cancellationToken))
             .ToDictionary(m => m.Id);
 
-        foreach (var (lineId, need) in needs)
+        foreach (var (lineId, reason, need) in needs)
         {
             foreach (var (rawMaterialId, quantity) in need)
             {
@@ -116,7 +135,12 @@ internal sealed class SaleStockPoster(
                     continue;
                 }
 
-                movements.Add(material.RecordSale(quantity, lineId));
+                movements.Add(reason switch
+                {
+                    StockMovementReason.Sale => material.RecordSale(quantity, lineId),
+                    StockMovementReason.Waste => material.RecordWaste(quantity, lineId),
+                    _ => material.RecordVoidReturn(quantity, lineId),
+                });
             }
         }
     }
@@ -144,9 +168,7 @@ internal sealed class SaleWriter(IMenuRepository menu, ISalesReceiptRepository s
             input.Id, input.Reference, soldAt, input.Date, input.Channel, input.PaymentMethod, lines, Money(input.DiscountAmount), Money(input.DeliveryFee),
             Money(input.TaxAmount), Money(input.PointsAmount), Money(input.RefundedAmount), input.Notes, source, by);
         sales.Add(receipt);
-        await poster.PostAsync(
-            receipt.Lines.Where(l => l.OnBill).Select(l => (l.PublicId, new SoldItem(l.MenuItemId, l.VariantId, l.AddOnIds, l.Quantity))).ToList(),
-            cancellationToken);
+        await poster.PostAsync(receipt.Lines, cancellationToken);
         return receipt;
     }
 
@@ -169,7 +191,7 @@ internal sealed class SaleWriter(IMenuRepository menu, ISalesReceiptRepository s
         if (line.Quantity <= 0)
             throw new DomainException($"Sell at least one {item.Name}.");
         var total = line.LineTotal ?? ((size?.Price ?? item.Price) + addOns.Sum(a => a.Price)) * line.Quantity;
-        return new SalesReceiptLine(item.Id, size?.Id, item.Name, size?.Name, line.Quantity, Money(total), addOnIds, line.OnBill);
+        return new SalesReceiptLine(item.Id, size?.Id, item.Name, size?.Name, line.Quantity, Money(total), addOnIds, line.Voided);
     }
 
     internal static decimal Money(decimal value) => Math.Round(value, 2, MidpointRounding.AwayFromZero);
@@ -200,6 +222,37 @@ internal sealed class RecordSaleHandler(ISalesReceiptRepository sales, SaleWrite
         var receipt = await writer.RecordAsync(request.Sale, SalesSource.Entered, request.StaffName, null, cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
         return SalesReceiptDto.From(receipt);
+    }
+}
+
+// Handed back after it was paid: Quantity of a line, or the whole sale (no line). Its money is
+// added to the refund, its ingredients put back into stock. Entered as it happened, as a sale is.
+public sealed record RefundSaleCommand(Guid SaleId, Guid? LinePublicId, int? Quantity, string StaffName) : IRequest<SalesReceiptDto>, IRetryOnConflict;
+
+internal sealed class RefundSaleHandler(ISalesReceiptRepository sales, SaleStockPoster poster, IUnitOfWork unitOfWork)
+    : IRequestHandler<RefundSaleCommand, SalesReceiptDto>
+{
+    public async Task<SalesReceiptDto> Handle(RefundSaleCommand request, CancellationToken cancellationToken)
+    {
+        var sale = await sales.GetByIdAsync(request.SaleId, cancellationToken) ?? throw new NotFoundException("Sale", request.SaleId);
+        var refunded = new List<SalesReceiptLine>();
+        if (request.LinePublicId is { } lineId)
+        {
+            var line = sale.Lines.SingleOrDefault(l => l.PublicId == lineId) ?? throw new DomainException("That line is not on this sale.");
+            refunded.Add(sale.Refund(lineId, request.Quantity ?? line.Quantity));
+        }
+        else
+        {
+            var onBill = sale.Lines.Where(l => l.OnBill).ToList();
+            if (onBill.Count == 0)
+                throw new DomainException("Everything on this sale is refunded or voided already.");
+            foreach (var line in onBill)
+                refunded.Add(sale.Refund(line.PublicId, line.Quantity));
+        }
+
+        await poster.PostReturnsAsync(refunded, cancellationToken);
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+        return SalesReceiptDto.From(sale);
     }
 }
 
@@ -246,7 +299,8 @@ public sealed record SaleImportRow(
     decimal? DeliveryFee,
     decimal? Tax,
     decimal? Points,
-    decimal? Refunded);
+    decimal? Refunded,
+    string? Voided = null);
 
 public sealed record SalesImportResult(int Receipts, int Lines, int AlreadyRecorded, IReadOnlyList<SkippedSheetRow> Skipped);
 
@@ -372,8 +426,10 @@ internal sealed class ImportSalesHandler(IMenuRepository menu, ISalesReceiptRepo
             return $"\"{row.Payment}\" is not a way of paying: Cash, Visa or Instapay.";
         if (row.LineTotal < 0)
             return "A line's total cannot be negative.";
+        if (!TryVoid(row.Voided, out var voided))
+            return $"\"{row.Voided}\" is not when a line was voided: Before kitchen, After kitchen or After payment.";
 
-        line = new SaleLineInput(item.Id, variantId, (int)quantity, row.LineTotal, addOnIds);
+        line = new SaleLineInput(item.Id, variantId, (int)quantity, row.LineTotal, addOnIds, voided);
         return null;
     }
 
@@ -389,6 +445,20 @@ internal sealed class ImportSalesHandler(IMenuRepository menu, ISalesReceiptRepo
             _ => 0,
         };
         return channel != 0;
+    }
+
+    private static bool TryVoid(string? text, out LineVoid voided)
+    {
+        var t = (text ?? string.Empty).Trim().ToLowerInvariant().Replace(" ", "").Replace("-", "");
+        (voided, var known) = t switch
+        {
+            "" or "no" or "none" or "لا" => (LineVoid.None, true),
+            "beforekitchen" or "before" or "قبلالمطبخ" => (LineVoid.BeforeKitchen, true),
+            "afterkitchen" or "kitchen" or "waste" or "بعدالمطبخ" or "هالك" => (LineVoid.AfterKitchen, true),
+            "afterpayment" or "refund" or "refunded" or "بعدالدفع" or "مرتجع" => (LineVoid.AfterPayment, true),
+            _ => (LineVoid.None, false),
+        };
+        return known;
     }
 
     private static bool TryPayment(string? text, out PaymentMethod payment)

@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <!-- The API over HTTP, hosted in process (WebApplicationFactory) with everything real behind
-       it: PostgreSQL (HRPAYROLL_TEST_DB, skipped when unset) and a fake attendance device. -->
+       it: PostgreSQL (COSTING_TEST_DB, skipped when unset). -->
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
@@ -13,16 +13,10 @@
   <ItemGroup>
     <PackageReference Include="xunit.v3" Version="4.0.1" />
     <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.12" />
-    <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" Version="10.0.13" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Costing.Api\Costing.Api.csproj" />
-  </ItemGroup>
-
-  <!-- The fake attendance device the Infrastructure tests run against, shared as source. -->
-  <ItemGroup>
-    <Compile Include="..\Costing.Infrastructure.Tests\FakeZkDevice.cs" Link="Fakes\FakeZkDevice.cs" />
   </ItemGroup>
 
   <ItemGroup>

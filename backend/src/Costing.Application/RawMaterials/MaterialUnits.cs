@@ -207,5 +207,5 @@ internal sealed class MaterialUnitWriter(IMaterialUnits units)
     private static string Quantity(decimal value) => Math.Round(value, 3, MidpointRounding.AwayFromZero).ToString("#,0.###", Invariant);
 
     // Costs per unit are small: to the hundredth of a piastre when they need it.
-    private static string Money(decimal value) => $"L.E {Math.Round(value, 4, MidpointRounding.AwayFromZero).ToString("#,0.00##", Invariant)}";
+    private static string Money(decimal value) => CompanyMoney.Text(Math.Round(value, 4, MidpointRounding.AwayFromZero), "#,0.00##");
 }

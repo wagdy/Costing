@@ -240,5 +240,5 @@ internal sealed class PostPurchaseBatchHandler(
         return new PurchaseBatchResult(dtos, paid, advanced);
     }
 
-    private static string Money(decimal value) => $"L.E {value.ToString("N2", CultureInfo.InvariantCulture)}";
+    private static string Money(decimal value) => CompanyMoney.Text(value);
 }

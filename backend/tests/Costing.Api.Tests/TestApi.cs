@@ -1,18 +1,14 @@
-using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Hosting;
-using Microsoft.AspNetCore.Http.Connections;
 using Microsoft.AspNetCore.Mvc.Testing;
-using Microsoft.AspNetCore.SignalR.Client;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Costing.Api.Controllers;
-using Costing.Application.Hr;
 using Costing.Domain.Access;
 using Costing.Infrastructure.Persistence;
 
@@ -30,7 +26,7 @@ public sealed class TestApi : IAsyncDisposable
     private WebApplicationFactory<Program> _factory = null!;
     private string _connectionString = null!;
 
-    public static string? DatabaseServer => Environment.GetEnvironmentVariable("HRPAYROLL_TEST_DB");
+    public static string? DatabaseServer => Environment.GetEnvironmentVariable("COSTING_TEST_DB");
 
     public IServiceProvider Services => _factory.Services;
 
@@ -41,9 +37,9 @@ public sealed class TestApi : IAsyncDisposable
     public static Task<TestApi> StartAsync(IReadOnlyDictionary<string, string>? settings = null)
     {
         if (DatabaseServer is null)
-            Assert.Skip("Set HRPAYROLL_TEST_DB to a PostgreSQL 15+ connection string (without Database=) to run the API tests.");
+            Assert.Skip("Set COSTING_TEST_DB to a PostgreSQL 15+ connection string (without Database=) to run the API tests.");
 
-        var api = new TestApi { _connectionString = $"{DatabaseServer};Database=hr_api_test_{Guid.NewGuid():N}" };
+        var api = new TestApi { _connectionString = $"{DatabaseServer};Database=costing_api_test_{Guid.NewGuid():N}" };
 
         // UseSetting, not ConfigureAppConfiguration: Program reads the connection string and the
         // signing key while building, before anything added later would be seen. "Testing", so
@@ -97,57 +93,26 @@ public sealed class TestApi : IAsyncDisposable
         return await SignInAsync(AccountantEmail, AccountantPassword);
     }
 
-    // The outsider's name, as the employee lists show them.
-    public const string OutsiderName = "Outsider";
-
-    // Someone signed in who holds no HR tab: an employee in the portal, given none. Their token is
-    // good, and refused (403) everywhere but their own portal.
-    public async Task<HttpClient> OutsiderAsync()
+    // A user of the role, added by the manager, signed in. Their user id is in UserIds by email.
+    public async Task<HttpClient> UserAsync(HttpClient manager, string name, UserRole role)
     {
-        var mobile = "0109" + Random.Shared.Next(1_000_000, 9_999_999).ToString(System.Globalization.CultureInfo.InvariantCulture);
-        await using (var scope = Services.CreateAsyncScope())
+        var email = $"{name.ToLowerInvariant()}@example.com";
+        if (!UserIds.ContainsKey(email))
         {
-            var db = scope.ServiceProvider.GetRequiredService<HrDbContext>();
-            var outsider = new Costing.Domain.Employees.Employee(
-                Guid.NewGuid(), OutsiderName, "Clerk", 3_000, new TimeOnly(9, 0), Costing.Domain.Employees.WeekDays.Friday, new DateOnly(2026, 1, 1));
-            outsider.SetMobileNumber(mobile);
-            outsider.SetPinHash(scope.ServiceProvider.GetRequiredService<IPinHasher>().Hash("1357"));
-            db.Employees.Add(outsider);
-            await db.SaveChangesAsync();
+            var response = await manager.PostAsJsonAsync("/api/users", new CreateUserRequest(email, name, role, $"{name}-password"), Json);
+            Assert.True(response.IsSuccessStatusCode, await response.Content.ReadAsStringAsync());
+            UserIds[email] = (await response.Content.ReadFromJsonAsync<UserDto>(Json))!.Id;
         }
 
-        var client = _factory.CreateClient();
-        var response = await client.PostAsJsonAsync("/api/auth/employee-login", new EmployeeLoginRequest(mobile, "1357"));
-        Assert.True(response.IsSuccessStatusCode, await response.Content.ReadAsStringAsync());
-        var signedIn = (await response.Content.ReadFromJsonAsync<EmployeeSignInResponse>(Json))!;
-        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", signedIn.Token);
-        return client;
+        return await SignInAsync(email, $"{name}-password");
     }
 
-    // The HR screens' live connection, as the Angular app opens it: a WebSocket with the token in
-    // the query string, since a browser cannot put it in a header there.
-    public async Task<HubConnection> ConnectHubAsync(HttpClient signedIn, ConcurrentQueue<IReadOnlyList<EmployeeStatusDto>> received)
-    {
-        var token = signedIn.DefaultRequestHeaders.Authorization!.Parameter;
-        var server = _factory.Server;
-        var connection = new HubConnectionBuilder()
-            .WithUrl(new Uri(server.BaseAddress, $"/hubs/hr?access_token={token}"), o =>
-            {
-                o.Transports = HttpTransportType.WebSockets;
-                o.HttpMessageHandlerFactory = _ => server.CreateHandler();
-                o.WebSocketFactory = async (context, cancellationToken) => await server.CreateWebSocketClient().ConnectAsync(context.Uri, cancellationToken);
-            })
-            .AddJsonProtocol(o => o.PayloadSerializerOptions.Converters.Add(new JsonStringEnumConverter()))
-            .Build();
-        connection.On<IReadOnlyList<EmployeeStatusDto>>("EmployeeStatusChanged", received.Enqueue);
-        await connection.StartAsync();
-        return connection;
-    }
+    public Dictionary<string, string> UserIds { get; } = [];
 
-    public async Task<T> Db<T>(Func<HrDbContext, Task<T>> query)
+    public async Task<T> Db<T>(Func<CostingDbContext, Task<T>> query)
     {
         await using var scope = Services.CreateAsyncScope();
-        return await query(scope.ServiceProvider.GetRequiredService<HrDbContext>());
+        return await query(scope.ServiceProvider.GetRequiredService<CostingDbContext>());
     }
 
     // On the Stopwatch, which a laptop's sleep does not move.
@@ -167,8 +132,8 @@ public sealed class TestApi : IAsyncDisposable
     {
         await _factory.DisposeAsync();
 
-        var options = new DbContextOptionsBuilder<HrDbContext>().UseNpgsql(_connectionString).Options;
-        await using var db = new HrDbContext(options);
+        var options = new DbContextOptionsBuilder<CostingDbContext>().UseNpgsql(_connectionString).Options;
+        await using var db = new CostingDbContext(options);
         await db.Database.EnsureDeletedAsync();
     }
 }

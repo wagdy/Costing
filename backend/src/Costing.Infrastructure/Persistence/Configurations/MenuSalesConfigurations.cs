@@ -86,6 +86,9 @@ internal sealed class SalesReceiptConfiguration : IEntityTypeConfiguration<Sales
             line.HasIndex(l => l.MenuItemId);
             line.Property(l => l.MenuItemName).HasMaxLength(MenuItem.MaxNameLength);
             line.Property(l => l.VariantName).HasMaxLength(MenuItem.MaxNameLength);
+            line.Property(l => l.Voided).IsEnumName();
+            line.Ignore(l => l.OnBill);
+            line.Ignore(l => l.Charged);
         });
         builder.Navigation(r => r.Lines).AutoInclude();
     }

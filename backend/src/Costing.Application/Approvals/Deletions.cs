@@ -101,13 +101,16 @@ internal sealed class DeletionTargets(
                 await production.VoidAsync(await BatchAsync(recordId, cancellationToken), by, null, cancellationToken);
                 return [];
 
-            // What each line took put back, exactly as it was taken.
+            // What each line took, wasted or put back, reversed exactly as it was posted.
             case ApprovalModule.Sale:
             {
                 var sale = await SaleAsync(recordId, cancellationToken);
                 var reversals = new List<StockMovement>();
                 foreach (var line in sale.Lines)
-                    reversals.AddRange(await ReverseAsync(line.PublicId, StockMovementReason.Sale, by, cancellationToken));
+                {
+                    foreach (var reason in new[] { StockMovementReason.Sale, StockMovementReason.Waste, StockMovementReason.VoidReturn })
+                        reversals.AddRange(await ReverseAsync(line.PublicId, reason, by, cancellationToken));
+                }
                 sale.Void(by);
                 return reversals;
             }
@@ -192,7 +195,7 @@ internal sealed class DeletionTargets(
             supplier,
             date.ToString("d MMM yyyy", Invariant),
             $"{invoice.Lines.Count} {(invoice.Lines.Count == 1 ? "line" : "lines")}",
-            $"L.E {invoice.Total.ToString("N2", Invariant)}",
+            CompanyMoney.Text(invoice.Total),
         }.Where(p => p is not null));
     }
 
@@ -220,7 +223,7 @@ internal sealed class DeletionTargets(
         var first = entries[0];
         return $"Waste of {descriptions.BusinessDateOf(first.OccurredAtUtc).ToString("d MMM yyyy", Invariant)}" +
                (first.RecordedBy is null ? "" : $" by {first.RecordedBy}") +
-               $": {string.Join(", ", lines.Take(3))}{(lines.Count > 3 ? $" and {lines.Count - 3} more" : "")} · L.E {value.ToString("N2", Invariant)}";
+               $": {string.Join(", ", lines.Take(3))}{(lines.Count > 3 ? $" and {lines.Count - 3} more" : "")} · {CompanyMoney.Text(value)}";
     }
 
     // ---- Stock counts: voided ----

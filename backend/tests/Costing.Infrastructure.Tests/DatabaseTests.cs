@@ -8,7 +8,7 @@ public class DatabaseTests
 {
     private static CancellationToken Cancel => TestContext.Current.CancellationToken;
 
-    // The test server's user is hr, as the dev database's is: its "$user" schema is hr once the
+    // The test server's user is costing, as the dev database's is: its "$user" schema is costing once the
     // first migration made it, so a history of migrations left to the search path would be looked
     // for there, not found, and every migration applied again.
     [Fact]
@@ -25,6 +25,6 @@ public class DatabaseTests
         });
         var history = await app.Db(db => db.Database.SqlQueryRaw<string>(
             "SELECT table_schema AS \"Value\" FROM information_schema.tables WHERE table_name = '__EFMigrationsHistory'").ToListAsync(Cancel));
-        Assert.Equal([HrDbContext.HrSchema], history);
+        Assert.Equal([CostingDbContext.CostingSchema], history);
     }
 }

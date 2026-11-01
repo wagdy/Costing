@@ -7,9 +7,8 @@ using ClosedXML.Excel;
 
 namespace Costing.Api.Tests;
 
-// Company Settings through the API: read by anyone, changed by a manager; the logo; and what the
-// rest of the system takes from them: money in its messages and sheets, the clock, the national
-// IDs, and the portal's port reading them.
+// Company Settings through the API: read by anyone, changed by a manager; the logo; and the money
+// in the system's own messages following them.
 public class SettingsApiTests
 {
     private static CancellationToken Cancel => TestContext.Current.CancellationToken;
@@ -23,7 +22,7 @@ public class SettingsApiTests
     private static object Riyadh(string currency = "SAR", string position = "After") => new
     {
         name = "Acme KSA", currencySymbol = currency, currencyPosition = position, country = "SaudiArabia", timeZoneId = "Asia/Riyadh",
-        workdayStartsAtHour = 4, weekends = new[] { "Friday", "Saturday" },
+        workdayStartsAtHour = 4,
     };
 
     private static MultipartFormDataContent Upload(byte[] content, string type, string name)
@@ -46,11 +45,10 @@ public class SettingsApiTests
             (first.GetProperty("name").GetString(), first.GetProperty("currencySymbol").GetString(), first.GetProperty("currencyPosition").GetString(),
                 first.GetProperty("country").GetString(), first.GetProperty("timeZoneId").GetString(), first.GetProperty("workdayStartsAtHour").GetInt32(),
                 first.GetProperty("hasLogo").GetBoolean()));
-        Assert.Equal(["Friday"], first.GetProperty("weekends").EnumerateArray().Select(d => d.GetString()));
 
         Assert.Equal(HttpStatusCode.Unauthorized, (await anyone.PutAsJsonAsync("/api/settings", Riyadh(), Cancel)).StatusCode);
         Assert.Equal(HttpStatusCode.Forbidden, (await accountant.PutAsJsonAsync("/api/settings", Riyadh(), Cancel)).StatusCode);
-        var refused = await manager.PutAsJsonAsync("/api/settings", new { name = "Acme", currencySymbol = "SAR", currencyPosition = "After", country = "SaudiArabia", timeZoneId = "Mars/Olympus", workdayStartsAtHour = 4, weekends = new[] { "Friday" } }, Cancel);
+        var refused = await manager.PutAsJsonAsync("/api/settings", new { name = "Acme", currencySymbol = "SAR", currencyPosition = "After", country = "SaudiArabia", timeZoneId = "Mars/Olympus", workdayStartsAtHour = 4 }, Cancel);
         Assert.Equal(HttpStatusCode.UnprocessableEntity, refused.StatusCode);
         Assert.Contains("not a time zone", await refused.Content.ReadAsStringAsync(Cancel));
 
@@ -86,46 +84,21 @@ public class SettingsApiTests
     }
 
     [Fact]
-    public async Task The_system_follows_them_money_the_clock_and_national_ids()
+    public async Task The_systems_messages_write_amounts_in_the_currency_saved()
     {
         await using var api = await TestApi.StartAsync();
         var manager = await api.ManagerAsync();
         var accountant = await api.AccountantAsync(manager);
         await Json(await manager.PutAsJsonAsync("/api/settings", Riyadh(), Cancel));
+        var today = DateOnly.Parse((await Json(await manager.GetAsync("/api/financials/today", Cancel))).GetProperty("today").GetString()!, CultureInfo.InvariantCulture);
 
-        // The workday as Riyadh's clock has it.
-        var riyadh = TimeZoneInfo.FindSystemTimeZoneById("Asia/Riyadh");
-        var today = DateOnly.Parse((await Json(await manager.GetAsync("/api/hr/today", Cancel))).GetProperty("today").GetString()!, CultureInfo.InvariantCulture);
-        Assert.Equal(DateOnly.FromDateTime(TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, riyadh).AddHours(-4)), today);
-
-        // A Saudi ID, and money after the amount in what an accountant asks.
-        object Employee(string nationalId) => new
+        // An accountant's opening balance waits for a manager, its summary in riyals.
+        var asked = await Json(await accountant.PostAsJsonAsync("/api/financials/vouchers", new
         {
-            requestId = Guid.NewGuid(), name = "Faisal", jobTitle = "Technician", monthlySalary = 6_000, shiftStartsAt = "09:00:00",
-            daysOff = new[] { "Friday", "Saturday" }, hiredOn = "2026-09-01", nationalId,
-        };
-        var refused = await accountant.PutAsJsonAsync($"/api/hr/employees/{Guid.NewGuid()}", Employee("29001010123456"), Cancel);
-        Assert.Contains("10 digits", await refused.Content.ReadAsStringAsync(Cancel));
-        var asked = await Json(await accountant.PutAsJsonAsync($"/api/hr/employees/{Guid.NewGuid()}", Employee("1012345678"), Cancel));
-        Assert.Equal("New employee · Faisal · Technician · 6,000.00 SAR a month, from 09:00", asked.GetProperty("request").GetProperty("summary").GetString());
-
-        // The payroll sheet's amounts in the company's money, the cells still numbers.
-        var faisal = Guid.NewGuid();
-        await Json(await manager.PutAsJsonAsync($"/api/hr/employees/{faisal}", Employee("1098765432"), Cancel));
-        var sheet = await manager.GetAsync($"/api/hr/payroll/export?month={today.Year:D4}-{today.Month:D2}-01", Cancel);
-        using var workbook = new XLWorkbook(new MemoryStream(await sheet.Content.ReadAsByteArrayAsync(Cancel)));
-        var baseSalary = workbook.Worksheet("Payroll").Cell(5, 7);
-        Assert.Equal((6_000d, "6,000.00 SAR"), (baseSalary.GetDouble(), baseSalary.GetFormattedString()));
-    }
-
-    [Fact]
-    public async Task The_portals_port_reads_them_and_never_changes_them()
-    {
-        await using var api = await TestApi.StartAsync(new Dictionary<string, string> { ["Portal:Port"] = "0" });
-        var phone = api.Anonymous();
-
-        Assert.Equal("My company", (await Json(await phone.GetAsync("/api/settings", Cancel))).GetProperty("name").GetString());
-        Assert.Equal(HttpStatusCode.NotFound, (await phone.PutAsJsonAsync("/api/settings", Riyadh(), Cancel)).StatusCode);
-        Assert.Equal(HttpStatusCode.NotFound, (await phone.DeleteAsync("/api/settings/logo", Cancel)).StatusCode);
+            requestId = Guid.NewGuid(), transactionId = Guid.NewGuid(), kind = "OpeningBalance", amount = 1_250, date = today.ToString("yyyy-MM-dd"),
+            source = "CarriedOver",
+        }, Cancel));
+        Assert.Equal("Requested", asked.GetProperty("outcome").GetString());
+        Assert.Contains("1,250.00 SAR", asked.GetProperty("request").GetProperty("summary").GetString());
     }
 }

@@ -75,6 +75,8 @@ public static class SalesWorkbook
         new("Tax", "Tax · الضريبة", ["tax", "vat", "الضريبة"], "The receipt's, on its first row."),
         new("Points", "Points · النقاط", ["points", "loyalty", "النقاط"], "Paid with loyalty points: the receipt's, on its first row."),
         new("Refunded", "Refunded · المرتجع", ["refunded", "refund", "المرتجع"], "Handed back after it was paid: the receipt's, on its first row."),
+        new("Voided", "Voided · ملغي", ["voided", "void", "void type", "ملغي", "الإلغاء"],
+            "Blank for a line on the bill. Before kitchen (no stock), After kitchen (waste), or After payment (refunded, back to stock)."),
     ];
 
     public static Stream Build() => SheetBook.Build(DataSheetName, Columns,
@@ -87,9 +89,10 @@ public static class SalesWorkbook
         "Each line takes its stock by its recipe, as a bill entered on Sales does.",
     ],
     [
-        ["R-1001", "2026-10-12", "13:40", "Dine in", "Cash", 6101, "", "", 2, 280, 0, 0, 39.2, 0, 0],
-        ["R-1001", "2026-10-12", "13:40", "Dine in", "Cash", 6201, "", "Extra cheese", 1, 110, "", "", "", "", ""],
-        ["R-1002", "2026-10-12", "14:05", "Delivery", "Visa", 6101, "Large", "", 1, 180, 10, 25, 23.8, 0, 0],
+        ["R-1001", "2026-10-12", "13:40", "Dine in", "Cash", 6101, "", "", 2, 280, 0, 0, 39.2, 0, 0, ""],
+        ["R-1001", "2026-10-12", "13:40", "Dine in", "Cash", 6201, "", "Extra cheese", 1, 110, "", "", "", "", "", ""],
+        ["R-1002", "2026-10-12", "14:05", "Delivery", "Visa", 6101, "Large", "", 1, 180, 10, 25, 23.8, 0, 0, ""],
+        ["R-1002", "2026-10-12", "14:05", "Delivery", "Visa", 6201, "", "", 1, 95, "", "", "", "", "", "After kitchen"],
     ]);
 
     public static IReadOnlyList<SaleImportRow> Read(Stream stream)
@@ -98,21 +101,28 @@ public static class SalesWorkbook
         return rows.Select(r => new SaleImportRow(
                 r.Row, r.Text("Reference"), r.Date("Date"), r.Time("Time"), r.Text("Channel"), r.Text("Payment"), r.Text("Item"), r.Text("Size"),
                 r.Text("AddOns"), r.Number("Quantity"), r.Number("LineTotal"), r.Number("Discount"), r.Number("DeliveryFee"), r.Number("Tax"),
-                r.Number("Points"), r.Number("Refunded")))
+                r.Number("Points"), r.Number("Refunded"), r.Text("Voided")))
             .ToList();
     }
 }
 
 internal sealed record Column(string Key, string Header, string[] Names, string Note);
 
+// One cell as read: its value, and the text Excel shows for it. Copied out while the workbook is
+// open, which it is not once the rows are read.
+internal sealed record SheetCell(XLCellValue Value, string Formatted)
+{
+    public static SheetCell Of(IXLCell cell) => new(cell.Value, cell.GetFormattedString());
+}
+
 // One row read: each column's cell, by its key.
-internal sealed class SheetRow(int row, IReadOnlyDictionary<string, IXLCell> cells)
+internal sealed class SheetRow(int row, IReadOnlyDictionary<string, SheetCell> cells)
 {
     private static readonly CultureInfo Invariant = CultureInfo.InvariantCulture;
 
     public int Row => row;
 
-    public bool IsBlank => cells.Values.All(c => c.Value.IsBlank || string.IsNullOrWhiteSpace(c.GetFormattedString()));
+    public bool IsBlank => cells.Values.All(c => c.Value.IsBlank || string.IsNullOrWhiteSpace(c.Formatted));
 
     public string? Text(string key)
     {
@@ -122,7 +132,7 @@ internal sealed class SheetRow(int row, IReadOnlyDictionary<string, IXLCell> cel
         var text = value.IsBlank ? null
             : value.IsNumber ? ((decimal)value.GetNumber()).ToString(Invariant)
             : value.IsText ? value.GetText()
-            : cell.GetFormattedString();
+            : cell.Formatted;
         return string.IsNullOrWhiteSpace(text) ? null : text.Trim();
     }
 
@@ -151,6 +161,8 @@ internal sealed class SheetRow(int row, IReadOnlyDictionary<string, IXLCell> cel
         if (cell.Value.IsNumber)
             return DateOnly.FromDateTime(DateTime.FromOADate(cell.Value.GetNumber()));
         var text = Text(key);
+        if (text is null)
+            return null;
         string[] formats = ["yyyy-MM-dd", "d/M/yyyy", "dd/MM/yyyy", "d-M-yyyy", "d.M.yyyy", "M/d/yyyy"];
         return DateOnly.TryParseExact(text, formats, Invariant, DateTimeStyles.None, out var date)
             ? date
@@ -168,6 +180,8 @@ internal sealed class SheetRow(int row, IReadOnlyDictionary<string, IXLCell> cel
         if (cell.Value.IsNumber)
             return TimeOnly.FromTimeSpan(TimeSpan.FromDays(cell.Value.GetNumber() % 1));
         var text = Text(key);
+        if (text is null)
+            return null;
         return TimeOnly.TryParse(text, Invariant, out var time) ? time : throw new DomainException($"Row {row}: \"{text}\" is not a time: write it 13:40.");
     }
 }
@@ -244,7 +258,7 @@ internal static class SheetBook
             if (used.Count > MaxRows)
                 throw new DomainException($"The sheet has {used.Count:N0} rows: import at most {MaxRows:N0} at a time.");
             return used
-                .Select(r => new SheetRow(r.RowNumber(), found.Map.ToDictionary(m => m.Key, m => r.Cell(m.Value))))
+                .Select(r => new SheetRow(r.RowNumber(), found.Map.ToDictionary(m => m.Key, m => SheetCell.Of(r.Cell(m.Value)))))
                 .Where(r => !r.IsBlank)
                 .ToList();
         }

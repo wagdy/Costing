@@ -1905,8 +1905,8 @@ namespace Costing.Infrastructure.Persistence.Migrations
                                 .HasMaxLength(200)
                                 .HasColumnType("character varying(200)");
 
-                            b1.Property<bool>("OnBill")
-                                .HasColumnType("boolean");
+                            b1.Property<int>("PostedQuantity")
+                                .HasColumnType("integer");
 
                             b1.Property<Guid>("PublicId")
                                 .HasColumnType("uuid");
@@ -1923,6 +1923,11 @@ namespace Costing.Infrastructure.Persistence.Migrations
                             b1.Property<string>("VariantName")
                                 .HasMaxLength(200)
                                 .HasColumnType("character varying(200)");
+
+                            b1.Property<string>("Voided")
+                                .IsRequired()
+                                .HasMaxLength(32)
+                                .HasColumnType("character varying(32)");
 
                             b1.HasKey("Id");
 

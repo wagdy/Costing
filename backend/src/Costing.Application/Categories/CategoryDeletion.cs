@@ -397,5 +397,5 @@ internal sealed class CategoryDeleter(
 
     private static string Quantity(decimal value) => Math.Round(value, 3, MidpointRounding.AwayFromZero).ToString("#,0.###", Invariant);
 
-    private static string Money(decimal value) => $"L.E {value.ToString("#,0.00", Invariant)}";
+    private static string Money(decimal value) => CompanyMoney.Text(value, "#,0.00");
 }

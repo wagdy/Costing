@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- The database (a real PostgreSQL: HRPAYROLL_TEST_DB, skipped when unset), the clock and the attendance devices' protocol against a fake device. Runs on Microsoft.Testing.Platform (the repository's global.json opts dotnet
+  <!-- The costs and the treasury against a real PostgreSQL (COSTING_TEST_DB, skipped when unset), the business calendar and the
+       import sheets. Runs on Microsoft.Testing.Platform (the repository's global.json opts dotnet
        test in); the project is an executable too, so `dotnet run` runs the tests. -->
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>

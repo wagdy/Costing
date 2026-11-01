@@ -37,7 +37,11 @@ public sealed class CompanyProfileStore(IOptions<CompanyOptions> options) : ICom
 
     public CompanyProfile Current => _current;
 
-    public void Set(CompanyProfile profile) => _current = profile;
+    public void Set(CompanyProfile profile)
+    {
+        _current = profile;
+        CompanyMoney.Format = profile.Money;
+    }
 }
 
 // Everything is stored in UTC. This is the one place that knows the company's local time: which

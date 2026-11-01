@@ -714,7 +714,7 @@ public sealed class TreasuryService(CostingDbContext db, IBusinessCalendar clock
             t.RecordedAtUtc, t.ApprovedBy, t.ReversalOf, t.VoidedAtUtc, t.VoidedBy, t.IncludesTax, t.TaxPercent, t.TaxAmount, t.GrossAmount);
     }
 
-    private static string Pounds(decimal value) => $"L.E {value.ToString("N2", Invariant)}";
+    private static string Pounds(decimal value) => Costing.Application.Common.CompanyMoney.Text(value);
 
     private static string SourceName(FundingSource? source) => source switch
     {

@@ -20,6 +20,23 @@ public enum PaymentMethod
     Instapay = 3,
 }
 
+// A line taken off the bill, and when: what it did to the stock, as a point of sale voids it.
+public enum LineVoid
+{
+    // On the bill.
+    None = 0,
+
+    // Before the kitchen had it: never made, no stock taken.
+    BeforeKitchen = 1,
+
+    // After the kitchen made it, before it was paid: its ingredients are waste.
+    AfterKitchen = 2,
+
+    // After it was paid: refunded (RefundedAmount), and its ingredients back into stock. It was
+    // charged, so it stays in the bill's subtotal.
+    AfterPayment = 3,
+}
+
 // How a receipt reached the system.
 public enum SalesSource
 {
@@ -36,10 +53,11 @@ public enum SalesSource
 // entered here, a bill at a time or a day's totals as one, or imported from a sheet.
 //
 // Its lines take stock when it is recorded, each by the recipe its item sells by (a size's, or the
-// dish's; and each add-on's), a portion's share of each ingredient as purchased. Voided, its
-// stock is put back, and it leaves the reports; it is kept, for the record.
+// dish's; and each add-on's), a portion's share of each ingredient as purchased: a line voided
+// after the kitchen made it as waste, and one refunded after payment sold and put back (LineVoid).
+// Voided, all its stock is put back, and it leaves the reports; it is kept, for the record.
 //
-//   subtotal = the lines still on the bill
+//   subtotal = the lines charged: on the bill, or refunded after payment
 //   total    = subtotal - discount + tax + delivery fee - points
 //
 // Its id is made by the app, so a retried entry is recorded once; an imported one also keeps the
@@ -121,8 +139,8 @@ public sealed class SalesReceipt : AggregateRoot
 
     public IReadOnlyCollection<SalesReceiptLine> Lines => _lines.AsReadOnly();
 
-    // The lines still on the bill.
-    public decimal BilledSubtotal => _lines.Where(l => l.OnBill).Sum(l => l.LineTotal);
+    // The lines charged: on the bill, or refunded after payment (their refund is RefundedAmount).
+    public decimal BilledSubtotal => _lines.Where(l => l.Charged).Sum(l => l.LineTotal);
 
     // Off the items, before tax (a promotion).
     public decimal DiscountAmount { get; private set; }
@@ -150,6 +168,37 @@ public sealed class SalesReceipt : AggregateRoot
     public string? VoidedBy { get; private set; }
     public bool IsVoided => VoidedAtUtc is not null;
 
+    // Handed back after it was paid (a void after payment): `quantity` of a line refunded, at its
+    // share of what was charged, so a bill partly paid with points gives back exactly the money
+    // taken; the last line standing gets whatever is left. Part of a line is split off as a line of
+    // its own. Returns the refunded line, for the caller to put its stock back (VoidReturn); the
+    // line it was split from keeps what it took.
+    public SalesReceiptLine Refund(Guid linePublicId, int quantity)
+    {
+        if (IsVoided)
+            throw new DomainException("This sale is voided: there is nothing to refund.");
+        var line = _lines.SingleOrDefault(l => l.PublicId == linePublicId) ?? throw new DomainException("That line is not on this sale.");
+        if (!line.OnBill)
+            throw new DomainException("That line is off the bill already.");
+        if (quantity < 1 || quantity > line.Quantity)
+            throw new DomainException($"Refund 1 to {line.Quantity}.");
+
+        var refunded = line;
+        if (quantity < line.Quantity)
+        {
+            refunded = line.SplitOff(quantity);
+            _lines.Add(refunded);
+        }
+
+        var remaining = TotalAmount - RefundedAmount;
+        var share = _lines.All(l => ReferenceEquals(l, refunded) || !l.OnBill)
+            ? remaining
+            : BilledSubtotal == 0 ? 0 : Math.Min(Math.Round(refunded.LineTotal * TotalAmount / BilledSubtotal, 2, MidpointRounding.AwayFromZero), remaining);
+        refunded.MarkRefunded();
+        RefundedAmount += share;
+        return refunded;
+    }
+
     // Taken back: it leaves the reports, and its stock is put back (the caller posts that).
     public void Void(string voidedBy)
     {
@@ -161,15 +210,14 @@ public sealed class SalesReceipt : AggregateRoot
 }
 
 // One line of a sale: an item (a size of it), how many, with which add-ons, and what the line
-// came to. PublicId names it to the stock it took. OnBill: still charged; a line voided before
-// it was paid never was, and took no stock.
+// came to. PublicId names it to the stock it took. Voided: taken off the bill, and when.
 public sealed class SalesReceiptLine
 {
     private SalesReceiptLine() { }
 
     public SalesReceiptLine(
         int menuItemId, int? variantId, string menuItemName, string? variantName, int quantity, decimal lineTotal, IReadOnlyList<int> addOnIds,
-        bool onBill = true)
+        LineVoid voided = LineVoid.None)
     {
         if (quantity <= 0)
             throw new DomainException("A line sells at least one.");
@@ -181,9 +229,10 @@ public sealed class SalesReceiptLine
         MenuItemName = menuItemName;
         VariantName = variantName;
         Quantity = quantity;
+        PostedQuantity = quantity;
         LineTotal = lineTotal;
         AddOnIds = addOnIds.ToArray();
-        OnBill = onBill;
+        Voided = Enum.IsDefined(voided) ? voided : throw new DomainException("Say when the line was voided.");
     }
 
     public Guid PublicId { get; private set; }
@@ -195,9 +244,33 @@ public sealed class SalesReceiptLine
     public string? VariantName { get; private set; }
 
     public int Quantity { get; private set; }
+
+    // How many its stock was taken for: Quantity until part of it is refunded and split off, when
+    // what it took stays with it. A cost read from what it took is scaled by Quantity over this.
+    public int PostedQuantity { get; private set; }
+
     public decimal LineTotal { get; private set; }
     public int[] AddOnIds { get; private set; } = [];
-    public bool OnBill { get; private set; } = true;
+    public LineVoid Voided { get; private set; }
+
+    // Still on the bill.
+    public bool OnBill => Voided == LineVoid.None;
+
+    // Charged: on the bill, or refunded after it was paid.
+    public bool Charged => Voided is LineVoid.None or LineVoid.AfterPayment;
+
+    // `quantity` of it moved onto a line of its own, at the same price and with the same add-ons.
+    internal SalesReceiptLine SplitOff(int quantity)
+    {
+        var unit = LineTotal / Quantity;
+        var moved = Math.Round(unit * quantity, 2, MidpointRounding.AwayFromZero);
+        var split = new SalesReceiptLine(MenuItemId, VariantId, MenuItemName, VariantName, quantity, moved, AddOnIds);
+        Quantity -= quantity;
+        LineTotal -= moved;
+        return split;
+    }
+
+    internal void MarkRefunded() => Voided = LineVoid.AfterPayment;
 }
 
 public interface ISalesReceiptRepository : IRepository<SalesReceipt>

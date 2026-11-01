@@ -28,3 +28,20 @@ public interface ICompanyProfile
 
     void Set(CompanyProfile profile);
 }
+
+// How amounts are written in the system's own messages ("Takings of 12 Oct · L.E 1,140.00"): the
+// company's currency, as Company Settings has it. Set with the profile (ICompanyProfile.Set), so
+// the messages follow a save at once; L.E until the settings are read.
+public static class CompanyMoney
+{
+    private static volatile MoneyFormat _format = new("L.E", CurrencyPosition.Before);
+
+    public static MoneyFormat Format
+    {
+        get => _format;
+        set => _format = value;
+    }
+
+    // "L.E 1,140.00"; another number format: "#,0.00##" for a unit cost.
+    public static string Text(decimal amount, string numberFormat = "N2") => _format.Format(amount, numberFormat);
+}

@@ -148,6 +148,12 @@ public sealed class SalesController(ISender sender, IBusinessCalendar calendar) 
     public Task<SalesReceiptDto> Record(SaleInput sale, CancellationToken cancellationToken) =>
         sender.Send(new RecordSaleCommand(sale, UserClaims.NameOf(User)), cancellationToken);
 
+    // Handed back after it was paid: a line's quantity, or the whole sale with no line named.
+    [HttpPost("{saleId:guid}/refund")]
+    [Authorize(Policy = Permissions.InventoryManage)]
+    public Task<SalesReceiptDto> Refund(Guid saleId, RefundRequest request, CancellationToken cancellationToken) =>
+        sender.Send(new RefundSaleCommand(saleId, request.LinePublicId, request.Quantity, UserClaims.NameOf(User)), cancellationToken);
+
     [HttpGet("template")]
     public IActionResult Template() => File(SalesWorkbook.Build(), SheetFiles.ContentType, SalesWorkbook.FileName);
 
@@ -162,6 +168,8 @@ public sealed class SalesController(ISender sender, IBusinessCalendar calendar) 
         return await sender.Send(new ImportSalesCommand(SalesWorkbook.Read(stream), UserClaims.NameOf(User)), cancellationToken);
     }
 }
+
+public sealed record RefundRequest(Guid? LinePublicId, int? Quantity);
 
 // Staff (الموظفين): who the safe pays advances and salaries to.
 [ApiController]

@@ -529,9 +529,10 @@ namespace Costing.Infrastructure.Persistence.Migrations
                     MenuItemName = table.Column<string>(type: "character varying(200)", maxLength: 200, nullable: false),
                     VariantName = table.Column<string>(type: "character varying(200)", maxLength: 200, nullable: true),
                     Quantity = table.Column<int>(type: "integer", nullable: false),
+                    PostedQuantity = table.Column<int>(type: "integer", nullable: false),
                     LineTotal = table.Column<decimal>(type: "numeric(10,2)", precision: 10, scale: 2, nullable: false),
                     AddOnIds = table.Column<int[]>(type: "integer[]", nullable: false),
-                    OnBill = table.Column<bool>(type: "boolean", nullable: false),
+                    Voided = table.Column<string>(type: "character varying(32)", maxLength: 32, nullable: false),
                     SalesReceiptId = table.Column<Guid>(type: "uuid", nullable: false)
                 },
                 constraints: table =>

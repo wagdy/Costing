@@ -23,7 +23,11 @@ public sealed record SaleOrder(bool Online, decimal DiscountAmount, decimal Bill
 // before payment never was.
 public sealed record SaleLine(
     Guid PublicId, int MenuItemId, int? VariantId, string MenuItemName, string? VariantName, int Quantity, decimal LineTotal,
-    IReadOnlyList<int> AddOnIds, bool OnBill);
+    IReadOnlyList<int> AddOnIds, bool OnBill, int? PostedQuantity = null)
+{
+    // The part of what it took that is still sold: all of it, unless part of the line was refunded.
+    public decimal PostedShare => PostedQuantity is > 0 and var posted && posted != Quantity ? (decimal)Quantity / posted : 1;
+}
 
 // Every sale in a period for the cost reports: the receipts entered or imported on the Sales tab,
 // by when they were paid, voided ones left out. From inclusive, to exclusive.
@@ -38,7 +42,8 @@ public sealed class SalesLedger(CostingDbContext db)
         return receipts.Select(r => new SaleOrder(
                 r.IsOnline, r.DiscountAmount, r.BilledSubtotal, r.DeliveryFee,
                 r.Lines.Select(l => new SaleLine(
-                    l.PublicId, l.MenuItemId, l.VariantId, l.MenuItemName, l.VariantName, l.Quantity, l.LineTotal, l.AddOnIds, l.OnBill)).ToList())
+                    l.PublicId, l.MenuItemId, l.VariantId, l.MenuItemName, l.VariantName, l.Quantity, l.LineTotal, l.AddOnIds, l.OnBill, l.PostedQuantity))
+                    .ToList())
             {
                 SoldAtUtc = r.SoldAtUtc,
                 PaymentMethod = r.PaymentMethod,

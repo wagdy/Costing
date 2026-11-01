@@ -665,7 +665,7 @@ public sealed class CostingService(CostingDbContext db, IBusinessCalendar clock,
             var name = l.VariantName is null ? l.MenuItemName : $"{l.MenuItemName} ({l.VariantName})";
             if (posted.Count > 0)
                 return new SoldLine(l.MenuItemId, l.VariantId, name, nameAr, item?.Category ?? string.Empty, l.Quantity, l.LineTotal,
-                    posted.Sum(m => -m.Quantity * (m.UnitCost ?? 0)), true, posted.Any(m => m.UnitCost is null), false);
+                    posted.Sum(m => -m.Quantity * (m.UnitCost ?? 0)) * l.PostedShare, true, posted.Any(m => m.UnitCost is null), false);
 
             var needs = StockRequirements.For(new SoldItem(l.MenuItemId, l.VariantId, l.AddOnIds, l.Quantity), recipes);
             return new SoldLine(l.MenuItemId, l.VariantId, name, nameAr, item?.Category ?? string.Empty, l.Quantity, l.LineTotal,

@@ -234,5 +234,5 @@ internal sealed class InvoiceCorrector(
 
     private static string? Day(DateOnly? day) => day?.ToString("d MMM yyyy", Invariant);
 
-    private static string Money(decimal value) => $"L.E {value.ToString("N2", Invariant)}";
+    private static string Money(decimal value) => CompanyMoney.Text(value);
 }

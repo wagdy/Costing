@@ -225,7 +225,7 @@ internal sealed class ProductionWriter(
         $"Batch of {item?.Name ?? "a removed prep item"} made {descriptions.BusinessDateOf(order.ProducedAtUtc).ToString("d MMM yyyy", Invariant)}" +
         $"{(order.ProducedBy is { Length: > 0 } by ? $" by {by}" : "")} · " +
         $"{(item is null ? order.ProducedQuantity.ToString("0.###", Invariant) : PrepItemCosting.Amount(order.ProducedQuantity, item))} · " +
-        $"L.E {order.TotalCost.ToString("N2", Invariant)}";
+        CompanyMoney.Text(order.TotalCost);
 
     // What a request would make, for the manager: the quantities and what each ingredient gives,
     // as new, or for a correction against the batch as it was made.

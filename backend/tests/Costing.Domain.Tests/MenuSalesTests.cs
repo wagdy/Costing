@@ -10,8 +10,8 @@ namespace Costing.Domain.Tests;
 // and who works which section.
 public class MenuSalesTests
 {
-    private static SalesReceiptLine Line(int quantity, decimal total, bool onBill = true) =>
-        new(6101, null, "Margherita", null, quantity, total, [], onBill);
+    private static SalesReceiptLine Line(int quantity, decimal total, LineVoid voided = LineVoid.None) =>
+        new(6101, null, "Margherita", null, quantity, total, [], voided);
 
     private static SalesReceipt Sale(IReadOnlyList<SalesReceiptLine> lines, decimal discount = 0, decimal delivery = 0, decimal tax = 0, decimal points = 0,
         decimal refunded = 0) =>
@@ -21,7 +21,7 @@ public class MenuSalesTests
     [Fact]
     public void A_sale_adds_up_as_a_bill_does_the_lines_on_it_less_the_discount_with_tax_and_delivery_less_points()
     {
-        var sale = Sale([Line(2, 280), Line(1, 140, onBill: false)], discount: 20, delivery: 25, tax: 36.4m, points: 10, refunded: 50);
+        var sale = Sale([Line(2, 280), Line(1, 140, LineVoid.BeforeKitchen)], discount: 20, delivery: 25, tax: 36.4m, points: 10, refunded: 50);
 
         Assert.Equal(("R-1", 280m, 311.4m, 50m), (sale.Reference, sale.BilledSubtotal, sale.TotalAmount, sale.RefundedAmount));
         Assert.Equal(DateTimeKind.Utc, sale.SoldAtUtc.Kind);
@@ -93,5 +93,27 @@ public class MenuSalesTests
         hassan.Deactivate();
         Assert.False(hassan.IsActive);
         Assert.Throws<DomainException>(() => hassan.Change(" ", null));
+    }
+
+    [Fact]
+    public void A_refund_after_payment_splits_off_what_is_handed_back_at_its_share_of_what_was_charged()
+    {
+        // Two at 100 and one at 50, 14% tax, 20 of it paid with points: 255 charged.
+        var two = Line(2, 200);
+        var sale = Sale([two, Line(1, 50)], tax: 35, points: 30);
+        Assert.Equal(255m, sale.TotalAmount);
+
+        // One of the two: its share, 100 of 250's 255.
+        var refunded = sale.Refund(two.PublicId, 1);
+        Assert.Equal((1, 100m, LineVoid.AfterPayment, 102m), (refunded.Quantity, refunded.LineTotal, refunded.Voided, sale.RefundedAmount));
+        Assert.Equal((1, 100m, 2), (two.Quantity, two.LineTotal, two.PostedQuantity));
+        // Still charged: the subtotal and the total stand.
+        Assert.Equal((250m, 255m), (sale.BilledSubtotal, sale.TotalAmount));
+
+        // The rest, the last on the bill: whatever is left of what was charged.
+        sale.Refund(two.PublicId, 1);
+        sale.Refund(sale.Lines.Single(l => l.OnBill).PublicId, 1);
+        Assert.Equal(255m, sale.RefundedAmount);
+        Assert.Contains("off the bill already", Assert.Throws<DomainException>(() => sale.Refund(two.PublicId, 1)).Message);
     }
 }
