@@ -10,7 +10,7 @@ import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatSelectModule } from '@angular/material/select';
 import { MatTooltipModule } from '@angular/material/tooltip';
 import { firstValueFrom } from 'rxjs';
-import { CostingApi, ApprovalRequest, MaterialCost, RawMaterialImportResult, unitLabels } from '../../core/costing/costing.api';
+import { CostingApi, ApprovalRequest, MaterialCost, unitLabels } from '../../core/costing/costing.api';
 import { errorMessage } from '../../core/http/error-message';
 import { MoneyPipe } from '../../core/ui/money.pipe';
 import { NotifyService } from '../../core/ui/notify.service';
@@ -18,12 +18,14 @@ import { Approvals, pendingLabel } from './approvals';
 import { saveBlob } from '../../core/ui/save-blob';
 import { MaterialDialog, MaterialDialogResult } from './material-dialog';
 import { MaterialHistoryDialog } from './material-history-dialog';
-import { MaterialImportDialog } from './material-import-dialog';
+import { SheetImportData, SheetImportDialog } from './sheet-import-dialog';
+import { todayIso } from './financials';
 
 // Raw materials and what they cost: AP$ per purchase unit (the weighted average of what was paid),
-// the default yield, and EP$ after it. Stock on hand and its value too. Many at once from Excel:
-// the template to fill in, and the filled-in sheet imported, each row a stock item. Shown one stock
-// category at a time when the list is long.
+// the default yield, and EP$ after it. Stock on hand and its value too. To and from Excel: the list
+// exported, and a sheet imported (the template filled in, or an export edited or brought from
+// another installation), each row a material added or changed. Shown one stock category at a time
+// when the list is long.
 @Component({
   selector: 'app-materials-page',
   imports: [
@@ -56,14 +58,12 @@ import { MaterialImportDialog } from './material-import-dialog';
       </mat-form-field>
       <span class="spacer"></span>
       <span class="muted">Stock value · قيمة المخزون: <strong>{{ stockValue() | money }}</strong></span>
-      <button mat-stroked-button (click)="downloadTemplate()" [disabled]="busy()">
-        <mat-icon>download</mat-icon> Excel template<span class="inline-ar">نموذج إكسل</span>
+      <button mat-stroked-button (click)="exportExcel()" [disabled]="busy()">
+        <mat-icon>download</mat-icon> Export Excel<span class="inline-ar">تصدير إلى إكسل</span>
       </button>
-      <button mat-stroked-button (click)="picker.click()" [disabled]="busy()">
-        <mat-icon>upload_file</mat-icon> Import from Excel<span class="inline-ar">استيراد</span>
+      <button mat-stroked-button (click)="importExcel()" [disabled]="busy()">
+        <mat-icon>upload_file</mat-icon> Import Excel<span class="inline-ar">استيراد من إكسل</span>
       </button>
-      <input #picker type="file" hidden accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        (change)="importFile(picker)" aria-label="Excel file to import" />
       <button mat-flat-button (click)="edit(null)"><mat-icon>add</mat-icon> New material</button>
     </div>
     @if (busy()) {
@@ -282,36 +282,42 @@ export class MaterialsPage {
     await this.load();
   }
 
-  protected async downloadTemplate(): Promise<void> {
+  // The list as it is, under the template's columns: edited and imported back, or imported into
+  // another installation.
+  protected async exportExcel(): Promise<void> {
     this.busy.set(true);
     try {
-      saveBlob(await firstValueFrom(this.api.rawMaterialsTemplate()), 'raw-materials-template.xlsx');
+      saveBlob(await firstValueFrom(this.api.exportRawMaterials()), `raw-materials-${todayIso()}.xlsx`);
+      this.notify.info('Raw materials exported to Excel. · تم تصدير الخامات إلى إكسل.');
     } catch (error) {
-      this.notify.error(error, 'The template could not be downloaded.');
+      this.notify.error(error, 'The raw materials could not be exported. · تعذّر تصدير الخامات.');
     } finally {
       this.busy.set(false);
     }
   }
 
-  // The sheet chosen: imported, what it did shown, and the list read again. The picker is cleared,
-  // so the same file can be chosen again once it is put right.
-  protected async importFile(picker: HTMLInputElement): Promise<void> {
-    const file = picker.files?.[0];
-    picker.value = '';
-    if (!file) {
-      return;
-    }
-    this.busy.set(true);
-    try {
-      const result = await firstValueFrom(this.api.importRawMaterials(file));
-      this.dialog.open<MaterialImportDialog, RawMaterialImportResult>(MaterialImportDialog, { data: result, width: '640px', maxWidth: '95vw' });
-      if (result.created.length) {
-        await this.load();
-      }
-    } catch (error) {
-      this.notify.error(error, 'The file could not be imported.');
-    } finally {
-      this.busy.set(false);
+  // A sheet imported in the dialog, which says what it did; the list read again when it changed it.
+  protected async importExcel(): Promise<void> {
+    const data: SheetImportData = {
+      title: { en: 'Import raw materials from Excel', ar: 'استيراد الخامات من إكسل' },
+      noun: { one: 'material', many: 'materials', ar: 'الخامة' },
+      rules: [
+        {
+          en: 'A row is the material of its code, else of its name: it is changed as the row says. A new name adds a material.',
+          ar: 'الصف يخص الخامة صاحبة الكود، وإلا صاحبة الاسم، فتُعدّل كما في الصف. والاسم الجديد يضيف خامة.',
+        },
+        { en: 'A blank cell leaves that detail as it is. A unit is Kg, Liter or Piece.', ar: 'الخلية الفارغة تترك البيان كما هو. الوحدة: كيلو أو لتر أو قطعة.' },
+        { en: 'Stock on hand is not imported: it comes by purchases and stock counts.', ar: 'الرصيد لا يُستورد: يأتي من المشتريات والجرد.' },
+      ],
+      templateName: 'raw-materials-template.xlsx',
+      template: () => this.api.rawMaterialsTemplate(),
+      upload: (file) => this.api.importRawMaterials(file),
+    };
+    const changed = await firstValueFrom(
+      this.dialog.open<SheetImportDialog, SheetImportData, boolean>(SheetImportDialog, { data, width: '760px', maxWidth: '96vw' }).afterClosed(),
+    );
+    if (changed) {
+      await this.load();
     }
   }
 

@@ -333,4 +333,85 @@ public class CostingApiTests
         var card = await Json(await manager.GetAsync($"/api/costing/recipe-card?targetKind=MenuItem&catalogItemId=6101&variantId={large}", Cancel));
         Assert.Equal((45m, 180m), (card.GetProperty("costPerPortion").GetDecimal(), card.GetProperty("menuPrice").GetDecimal()));
     }
+
+    // Raw materials and expense items kept on one installation (a laptop's), written out, and the
+    // files imported into another (the one online): the same list there, and imported again,
+    // nothing left to change.
+    [Fact]
+    public async Task The_raw_materials_and_expense_items_go_to_another_installation_by_their_export()
+    {
+        await using var local = await TestApi.StartAsync();
+        var here = await local.ManagerAsync();
+        var mozzarella = (await Json(await here.PostAsJsonAsync("/api/inventory/raw-materials", new
+        {
+            name = "Mozzarella", unit = "Gram", code = "DAI-1", purchaseUnit = "kg", purchaseUnitSize = 1000, costPerPurchaseUnit = 300,
+            reorderLevel = 2000, defaultYieldPercent = 95,
+        }, Cancel))).GetProperty("id").GetGuid();
+        // A delivery at another price moves the average: 2 kg at 300 and 3 kg at 340.
+        await Json(await here.PostAsJsonAsync("/api/inventory/purchases", new
+        {
+            purchaseId = Guid.NewGuid(), lines = new[] { new { rawMaterialId = mozzarella, quantity = 2000, cost = 600 } },
+        }, Cancel));
+        await Json(await here.PostAsJsonAsync("/api/inventory/purchases", new
+        {
+            purchaseId = Guid.NewGuid(), lines = new[] { new { rawMaterialId = mozzarella, quantity = 3000, cost = 1020 } },
+        }, Cancel));
+        await Json(await here.PostAsJsonAsync("/api/inventory/raw-materials", new
+        {
+            name = "Eggs", unit = "Piece", purchaseUnit = "tray", purchaseUnitSize = 30, costPerPurchaseUnit = 127.5,
+        }, Cancel));
+        await Json(await here.PutAsJsonAsync($"/api/inventory/expense-items/{Guid.NewGuid()}", new { name = "Electricity", nameAr = "الكهرباء", unit = "month" }, Cancel));
+
+        var materialsFile = await here.GetAsync("/api/inventory/raw-materials/export", Cancel);
+        Assert.Equal(
+            ("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "raw-materials.xlsx"),
+            (materialsFile.Content.Headers.ContentType!.MediaType, materialsFile.Content.Headers.ContentDisposition!.FileNameStar ?? materialsFile.Content.Headers.ContentDisposition.FileName));
+        var materials = await materialsFile.Content.ReadAsByteArrayAsync(Cancel);
+        var expenses = await (await here.GetAsync("/api/inventory/expense-items/export", Cancel)).Content.ReadAsByteArrayAsync(Cancel);
+
+        await using var online = await TestApi.StartAsync();
+        var there = await online.ManagerAsync();
+        var imported = await Json(await there.PostAsync("/api/inventory/raw-materials/import", File(materials, "raw-materials.xlsx"), Cancel));
+        Assert.Equal((2, 0), (imported.GetProperty("created").GetArrayLength(), imported.GetProperty("skipped").GetArrayLength()));
+        Assert.Equal(1, (await Json(await there.PostAsync("/api/inventory/expense-items/import", File(expenses, "expense-items.xlsx"), Cancel))).GetProperty("created").GetArrayLength());
+
+        // The same materials there, each as it is here but its stock, which comes by purchases and counts.
+        static async Task<List<string>> Listed(HttpClient client) =>
+            (await Json(await client.GetAsync("/api/costing/materials", Cancel))).EnumerateArray()
+                .Select(m => string.Join(" | ", m.GetProperty("code").GetString(), m.GetProperty("name").GetString(), m.GetProperty("category").GetString(),
+                    m.GetProperty("unit").GetString(), m.GetProperty("purchaseUnit").GetString(), m.GetProperty("purchaseUnitSize").GetDecimal().ToString("0.###", CultureInfo.InvariantCulture),
+                    m.GetProperty("costPerPurchaseUnit").GetDecimal().ToString("0.####", CultureInfo.InvariantCulture),
+                    m.GetProperty("reorderLevel").GetDecimal().ToString("0.###", CultureInfo.InvariantCulture), m.GetProperty("defaultYieldPercent").GetDecimal().ToString("0.##", CultureInfo.InvariantCulture)))
+                .Order()
+                .ToList();
+        Assert.Equal(await Listed(here), await Listed(there));
+        Assert.Contains(" | Eggs | General | Piece | tray | 30 | 127.5 | 0 | 100", await Listed(there));
+        Assert.Contains("DAI-1 | Mozzarella | General | Gram | kg | 1000 | 324 | 2000 | 95", await Listed(there));
+        Assert.Equal(0m, await OnHandAsync(there, (await Json(await there.GetAsync("/api/inventory/raw-materials", Cancel))).EnumerateArray().Single(m => m.GetProperty("name").GetString() == "Mozzarella").GetProperty("id").GetGuid()));
+        var electricity = (await Json(await there.GetAsync("/api/inventory/expense-items", Cancel))).EnumerateArray().Single();
+        Assert.Equal(("Electricity", "الكهرباء", "month", "General expenses"),
+            (electricity.GetProperty("name").GetString(), electricity.GetProperty("nameAr").GetString(), electricity.GetProperty("unit").GetString(), electricity.GetProperty("category").GetString()));
+
+        // Imported again: everything there already, nothing changed.
+        var again = await Json(await there.PostAsync("/api/inventory/raw-materials/import", File(materials, "raw-materials.xlsx"), Cancel));
+        Assert.Equal((0, 0, 2), (again.GetProperty("created").GetArrayLength(), again.GetProperty("updated").GetArrayLength(), again.GetProperty("unchanged").GetInt32()));
+
+        // A storekeeper works Raw materials, not Expense items.
+        var storekeeper = await online.UserAsync(there, "Samir", UserRole.Storekeeper);
+        Assert.Equal(HttpStatusCode.OK, (await storekeeper.GetAsync("/api/inventory/raw-materials/export", Cancel)).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await storekeeper.GetAsync("/api/inventory/expense-items/export", Cancel)).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await storekeeper.PostAsync("/api/inventory/expense-items/import", File(expenses, "expense-items.xlsx"), Cancel)).StatusCode);
+
+        // Not a workbook: refused as a whole, in both languages.
+        var refused = await there.PostAsync("/api/inventory/raw-materials/import", File("not a sheet"u8.ToArray(), "notes.xlsx"), Cancel);
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, refused.StatusCode);
+        Assert.Contains("تعذّرت قراءة الملف", await refused.Content.ReadAsStringAsync(Cancel));
+    }
+
+    private static MultipartFormDataContent File(byte[] content, string name)
+    {
+        var file = new ByteArrayContent(content);
+        file.Headers.ContentType = new MediaTypeHeaderValue("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+        return new MultipartFormDataContent { { file, "file", name } };
+    }
 }

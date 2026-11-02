@@ -1294,6 +1294,25 @@ export class CostingApi {
     return this.http.post<RawMaterialImportResult>('/api/inventory/raw-materials/import', form);
   }
 
+  // The raw materials as they are, under the template's columns: imported back as they are.
+  exportRawMaterials(): Observable<Blob> {
+    return this.http.get('/api/inventory/raw-materials/export', { responseType: 'blob' });
+  }
+
+  expenseItemsTemplate(): Observable<Blob> {
+    return this.http.get('/api/inventory/expense-items/template', { responseType: 'blob' });
+  }
+
+  exportExpenseItems(): Observable<Blob> {
+    return this.http.get('/api/inventory/expense-items/export', { responseType: 'blob' });
+  }
+
+  importExpenseItems(file: File): Observable<ExpenseItemImportResult> {
+    const form = new FormData();
+    form.append('file', file, file.name);
+    return this.http.post<ExpenseItemImportResult>('/api/inventory/expense-items/import', form);
+  }
+
   materialPurchases(id: string): Observable<MaterialPurchaseHistory> {
     return this.http.get<MaterialPurchaseHistory>(`/api/costing/materials/${id}/purchases`);
   }
@@ -1599,16 +1618,40 @@ export interface ImportedRawMaterial {
   costPerPurchaseUnit: number | null;
 }
 
+// A row left out, and why; in Arabic too where the import says it.
 export interface SkippedSheetRow {
   row: number;
   name: string | null;
   reason: string;
+  reasonAr?: string | null;
 }
 
-export interface RawMaterialImportResult {
-  created: ImportedRawMaterial[];
+// One already there, changed by its row: what changed, by the sheet's column.
+export type SheetChange = 'Name' | 'Code' | 'Category' | 'PurchaseUnit' | 'Cost' | 'ReorderLevel' | 'Yield' | 'NameAr' | 'Unit';
+
+export interface UpdatedSheetItem {
+  row: number;
+  id: string;
+  name: string;
+  changes: SheetChange[];
+}
+
+// What importing a sheet of raw materials or expense items did: those added, those changed, how
+// many were as the sheet has them already, the rows skipped and why, and the categories added.
+export interface SheetImportResult {
+  created: { row: number; id: string; name: string }[];
+  updated: UpdatedSheetItem[];
+  unchanged: number;
   skipped: SkippedSheetRow[];
   categoriesAdded: string[];
+}
+
+export interface RawMaterialImportResult extends SheetImportResult {
+  created: ImportedRawMaterial[];
+}
+
+export interface ExpenseItemImportResult extends SheetImportResult {
+  created: { row: number; id: string; name: string; category: string }[];
 }
 
 // Prep items brought in from a sheet of batch recipes (المصنعات): each made, or asked of a manager

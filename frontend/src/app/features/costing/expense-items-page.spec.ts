@@ -6,6 +6,7 @@ import { CostingApi, ExpenseItem } from '../../core/costing/costing.api';
 import { NotifyService } from '../../core/ui/notify.service';
 import { ExpenseItemDialog } from './expense-item-dialog';
 import { ExpenseItemsPage } from './expense-items-page';
+import { SheetImportData, SheetImportDialog } from './sheet-import-dialog';
 
 function item(overrides: Partial<ExpenseItem>): ExpenseItem {
   return {
@@ -23,6 +24,9 @@ describe('the expense items', () => {
   const expenseItems = vi.fn();
   const deleteExpenseItem = vi.fn();
   const restoreExpenseItem = vi.fn();
+  const exportExpenseItems = vi.fn();
+  const importExpenseItems = vi.fn();
+  const expenseItemsTemplate = vi.fn();
   const open = vi.fn();
   const notify = { info: vi.fn(), error: vi.fn() };
 
@@ -30,7 +34,7 @@ describe('the expense items', () => {
     TestBed.configureTestingModule({
       providers: [
         provideRouter([]),
-        { provide: CostingApi, useValue: { expenseItems, deleteExpenseItem, restoreExpenseItem } },
+        { provide: CostingApi, useValue: { expenseItems, deleteExpenseItem, restoreExpenseItem, exportExpenseItems, importExpenseItems, expenseItemsTemplate } },
         { provide: MatDialog, useValue: { open } },
         { provide: NotifyService, useValue: notify },
       ],
@@ -50,8 +54,43 @@ describe('the expense items', () => {
     expenseItems.mockReset().mockReturnValue(of([spray, power, old]));
     deleteExpenseItem.mockReset();
     restoreExpenseItem.mockReset().mockReturnValue(of(old));
+    exportExpenseItems.mockReset().mockReturnValue(of(new Blob(['xlsx'])));
+    importExpenseItems.mockReset().mockReturnValue(of({ created: [], updated: [], unchanged: 0, skipped: [], categoriesAdded: [] }));
+    expenseItemsTemplate.mockReset().mockReturnValue(of(new Blob(['xlsx'])));
     open.mockReset();
     notify.info.mockReset();
+  });
+
+  it('exports the list to Excel, and imports a sheet in the dialog, reading the list again when it changed it', async () => {
+    const { el, page } = await render();
+    expect([...el.querySelectorAll('.toolbar button')].map(text)).toEqual([
+      'download Export Excel تصدير إلى إكسل',
+      'upload_file Import Excel استيراد من إكسل',
+      'add Add expense item',
+    ]);
+
+    let saved: HTMLAnchorElement | undefined;
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+      saved = this;
+    });
+    URL.createObjectURL = vi.fn(() => 'blob:export');
+    URL.revokeObjectURL = vi.fn();
+    await page['exportExcel']();
+    expect(saved!.download).toMatch(/^expense-items-\d{4}-\d{2}-\d{2}\.xlsx$/);
+    expect(notify.info).toHaveBeenCalledWith('Expense items exported to Excel. · تم تصدير المصروفات إلى إكسل.');
+    click.mockRestore();
+
+    open.mockReturnValue({ afterClosed: () => of(true) });
+    await page['importExcel']();
+    expect(open).toHaveBeenCalledWith(SheetImportDialog, expect.objectContaining({ width: '760px' }));
+    const data = open.mock.lastCall![1].data as SheetImportData;
+    expect([data.title.ar, data.templateName]).toEqual(['استيراد المصروفات العمومية من إكسل', 'expense-items-template.xlsx']);
+    const file = new File(['xlsx'], 'expenses.xlsx');
+    data.upload(file).subscribe();
+    data.template().subscribe();
+    expect(importExpenseItems).toHaveBeenCalledWith(file);
+    expect(expenseItemsTemplate).toHaveBeenCalled();
+    expect(expenseItems).toHaveBeenCalledTimes(2);
   });
 
   it('lists each under its category, with what was spent on it; archived ones only when asked', async () => {

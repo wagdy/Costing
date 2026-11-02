@@ -87,24 +87,39 @@ public sealed class InventoryController(ISender sender) : ControllerBase
     [Authorize(Policy = Permissions.InventoryManage)]
     public async Task<IActionResult> GetRawMaterialsTemplate(CancellationToken cancellationToken)
     {
-        var categories = await sender.Send(new GetPurchaseCategoriesQuery(), cancellationToken);
-        return File(RawMaterialWorkbook.Build(categories.Select(c => c.Name).ToList()), RawMaterialWorkbook.ContentType, RawMaterialWorkbook.FileName);
+        var sheet = await sender.Send(new GetRawMaterialSheetQuery(), cancellationToken);
+        return File(RawMaterialWorkbook.Build(sheet.Categories), RawMaterialWorkbook.ContentType, RawMaterialWorkbook.FileName);
     }
 
-    // A filled-in template: every good row made a purchased stock item, the rest said why not.
+    // The raw materials as they are, under the template's columns: edited and imported back, or
+    // imported into another installation.
+    [HttpGet("raw-materials/export")]
+    [CostingTab(CostingTabs.Materials)]
+    [Authorize(Policy = Permissions.InventoryManage)]
+    public async Task<IActionResult> ExportRawMaterials(CancellationToken cancellationToken)
+    {
+        var sheet = await sender.Send(new GetRawMaterialSheetQuery(), cancellationToken);
+        return File(RawMaterialWorkbook.Build(sheet.Categories, sheet.Lines), RawMaterialWorkbook.ContentType, RawMaterialWorkbook.ExportFileName);
+    }
+
+    // A filled-in sheet: each good row a material added or changed, the rest said why not.
     [HttpPost("raw-materials/import")]
     [CostingTab(CostingTabs.Materials)]
     [Authorize(Policy = Permissions.InventoryManage)]
     [RequestSizeLimit(MaxImportBytes + 64 * 1024)]
     public async Task<RawMaterialImportResult> ImportRawMaterials(IFormFile file, CancellationToken cancellationToken)
     {
-        if (file.Length > MaxImportBytes)
-            throw new Costing.Domain.Common.DomainException("The file is larger than 5 MB: a sheet of materials is far smaller. Is it the right file?");
-        await using var stream = file.OpenReadStream();
+        await using var stream = OpenSheet(file);
         return await sender.Send(new ImportRawMaterialsCommand(RawMaterialWorkbook.Read(stream)), cancellationToken);
     }
 
     private const int MaxImportBytes = 5 * 1024 * 1024;
+
+    private static Stream OpenSheet(IFormFile file) =>
+        file.Length > MaxImportBytes
+            ? throw new Costing.Domain.Common.DomainException(
+                "The file is larger than 5 MB: a sheet of these is far smaller. Is it the right file? · الملف أكبر من 5 ميجابايت: هل هو الملف الصحيح؟")
+            : file.OpenReadStream();
 
     // Goods received in one request, filed as a posted invoice paid from the safe (waiting for a
     // manager's approval when someone else sends it). PurchaseId is made by the till,
@@ -324,6 +339,35 @@ public sealed class InventoryController(ISender sender) : ControllerBase
     [Authorize(Policy = Permissions.InventoryManage)]
     public Task<IReadOnlyList<ExpenseItemDto>> GetExpenseItems([FromQuery] bool includeArchived, CancellationToken cancellationToken) =>
         sender.Send(new GetExpenseItemsQuery(includeArchived), cancellationToken);
+
+    // The expense items to and from a spreadsheet, as the raw materials are.
+    [HttpGet("expense-items/template")]
+    [CostingTab(CostingTabs.ExpenseItems)]
+    [Authorize(Policy = Permissions.InventoryManage)]
+    public async Task<IActionResult> GetExpenseItemsTemplate(CancellationToken cancellationToken)
+    {
+        var sheet = await sender.Send(new GetExpenseItemSheetQuery(), cancellationToken);
+        return File(ExpenseItemWorkbook.Build(sheet.Categories), ExpenseItemWorkbook.ContentType, ExpenseItemWorkbook.FileName);
+    }
+
+    [HttpGet("expense-items/export")]
+    [CostingTab(CostingTabs.ExpenseItems)]
+    [Authorize(Policy = Permissions.InventoryManage)]
+    public async Task<IActionResult> ExportExpenseItems(CancellationToken cancellationToken)
+    {
+        var sheet = await sender.Send(new GetExpenseItemSheetQuery(), cancellationToken);
+        return File(ExpenseItemWorkbook.Build(sheet.Categories, sheet.Lines), ExpenseItemWorkbook.ContentType, ExpenseItemWorkbook.ExportFileName);
+    }
+
+    [HttpPost("expense-items/import")]
+    [CostingTab(CostingTabs.ExpenseItems)]
+    [Authorize(Policy = Permissions.InventoryManage)]
+    [RequestSizeLimit(MaxImportBytes + 64 * 1024)]
+    public async Task<ExpenseItemImportResult> ImportExpenseItems(IFormFile file, CancellationToken cancellationToken)
+    {
+        await using var stream = OpenSheet(file);
+        return await sender.Send(new ImportExpenseItemsCommand(ExpenseItemWorkbook.Read(stream)), cancellationToken);
+    }
 
     [HttpPut("expense-items/{expenseItemId:guid}")]
     [CostingTab(CostingTabs.ExpenseItems)]
@@ -705,8 +749,6 @@ public sealed record SaveSupplierRequest(string Name, string? ContactPerson = nu
 public sealed record SavePurchaseCategoryRequest(string Name, string? NameAr = null, ExpenseLine? ExpenseLine = null, CategoryKind? Kind = null);
 
 public sealed record SaveExpenseItemRequest(string Name, Guid? CategoryId = null, string? NameAr = null, string? Unit = null);
-
-public sealed record ExpenseAssetCategoryRequest(Guid? AssetCategoryId);
 
 public sealed record DeletePurchaseCategoryRequest(
     Guid RequestId,

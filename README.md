@@ -4,7 +4,8 @@ Food costing, stock and the restaurant's money for one business, standalone: no 
 HR system needed beside it. Bilingual (English and Arabic, right-to-left) throughout.
 
 - **Raw materials**: units (a purchase unit and the unit it is used in), average cost, stock on
-  hand, reorder levels, categories, and an Excel import.
+  hand, reorder levels, categories, and Excel export and import (to update them in bulk, or to
+  move them to another installation).
 - **Recipes**: recipe cards for menu items, their sizes and add-ons, and prep items (مصنعات) made
   from other materials, each costed from the materials' prices as they are now.
 - **Production**: prep items made in batches, their materials taken from stock, their cost per
@@ -15,7 +16,8 @@ HR system needed beside it. Bilingual (English and Arabic, right-to-left) throug
   before the kitchen takes nothing; after the kitchen, it is waste; refunded after payment, its
   share of the charge goes back and its stock returns. A sale voided puts back all it took.
 - **Purchases**: suppliers' invoices (stock or general expenses), a day's purchases entered as one
-  batch, invoice corrections, suppliers and categories.
+  batch, invoice corrections, suppliers and categories. Expense items export to Excel and import
+  back, as the raw materials do.
 - **Stock counts and waste**: counts drafted then posted, spoilage, and breakage.
 - **Financials**: the safe, its funding, the day's takings (gross, with the tax in them taken off
   at the tax rate), expense vouchers, what suppliers are owed and paid, the staff the safe pays and

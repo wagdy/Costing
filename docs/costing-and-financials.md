@@ -58,6 +58,39 @@ until a manager ticks a user's own:
 those. `GET /api/access` lists every user's sections and `PUT /api/access/{userId}` sets them
 (`{ tabs: [...] }`, or `{ tabs: null }` for their role's), for `users.manage`.
 
+## Raw materials and expense items in Excel
+
+Both pages have **Export Excel** (تصدير إلى إكسل) and **Import Excel** (استيراد من إكسل). The
+export is the list as it is, under the template's columns, so it imports back as it is: edited
+and imported into the same installation, or imported into another (a laptop's list into the one
+online). The import dialog takes the file dropped or chosen, offers the template, and says what it
+did: those added, those changed and in what, those already as the sheet has them, and each row
+skipped by its number on the sheet and why, in English and Arabic.
+
+| Sheet | Columns |
+| --- | --- |
+| Raw Materials | Code, Material Name, Category, Unit of Measure (Kg, Liter, Piece), Purchase Unit, Purchase Unit Holds (in kg, litres or pieces), Cost per Purchase Unit, Reorder Level (in purchase units), Yield % |
+| Expense Items | Expense Name, Arabic Name, Category, Unit |
+
+Columns are found by their heading, in English or Arabic, wherever they are; the earlier
+template's four columns (its Initial Cost is per kg, litre or piece) still import.
+
+- **A row is the material of its code, else of its name** (capitals and spacing aside), and that
+  one is changed as the row says; a new name adds one. An expense item is found by its name. A
+  blank cell leaves that detail as it is.
+- **Never twice:** a name or code already on an earlier row, a code that is one material's while
+  the name is another's, or a code two materials share is skipped, said why.
+- **Skipped, not changed:** a deleted material or archived expense item (restore it first), a prep
+  item (Recipes → Prep items), one waiting for a manager's approval, and a unit other than the one
+  a material is counted in (changed on Raw materials, which restates its stock and recipes).
+- **The cost replaces the average only when it differs** from the one written out (to 4 decimals),
+  so an export imported back leaves each average as it was, not rounded.
+- **Stock on hand is neither exported nor imported:** it comes by purchases and stock counts.
+- A category not on the list is added, as a raw materials or a general expenses one; one of the
+  other kind is refused. "General" and "General expenses" are the built-in ones.
+- Up to 2,000 rows a file and 5 MB; the Raw materials tab exports and imports the materials, the
+  Expense items tab the expense items (`inventory.manage` both).
+
 ## The menu
 
 The menu the recipes sell by and the sales name. An item's number is its code on every report:

@@ -15,12 +15,16 @@ import { CostingApi, ExpenseItem } from '../../core/costing/costing.api';
 import { errorMessage } from '../../core/http/error-message';
 import { MoneyPipe } from '../../core/ui/money.pipe';
 import { NotifyService } from '../../core/ui/notify.service';
+import { saveBlob } from '../../core/ui/save-blob';
 import { ExpenseItemDialog, ExpenseItemDialogData } from './expense-item-dialog';
+import { todayIso } from './financials';
+import { SheetImportData, SheetImportDialog } from './sheet-import-dialog';
 
 // The expense items (المصروفات العمومية): what is bought but never stock (cleaning supplies,
 // repairs, bills), each under a category that says where it counts in the profit and loss. They
 // never appear on the stock list or in recipes. One on an invoice is archived rather than
-// deleted, as a supplier is; either way it is asked first, in the row.
+// deleted, as a supplier is; either way it is asked first, in the row. To and from Excel, as the
+// raw materials are: the list exported, and a sheet imported, each row an item added or changed.
 @Component({
   selector: 'app-expense-items-page',
   imports: [
@@ -58,8 +62,17 @@ import { ExpenseItemDialog, ExpenseItemDialogData } from './expense-item-dialog'
         </mat-checkbox>
         <span class="spacer"></span>
         <a mat-button routerLink="/costing/purchases/categories" [queryParams]="{ tab: 'expenses' }"><mat-icon>category</mat-icon> Categories <span class="inline-ar">الأقسام</span></a>
+        <button mat-stroked-button (click)="exportExcel()" [disabled]="busy()">
+          <mat-icon>download</mat-icon> Export Excel <span class="inline-ar">تصدير إلى إكسل</span>
+        </button>
+        <button mat-stroked-button (click)="importExcel()" [disabled]="busy()">
+          <mat-icon>upload_file</mat-icon> Import Excel <span class="inline-ar">استيراد من إكسل</span>
+        </button>
         <button mat-flat-button (click)="add()"><mat-icon>add</mat-icon> Add expense item</button>
       </div>
+      @if (busy()) {
+        <mat-progress-bar mode="indeterminate" />
+      }
       <div class="table-wrap">
         <table class="grid">
           <thead>
@@ -206,6 +219,8 @@ export class ExpenseItemsPage {
   protected readonly items = signal<ExpenseItem[]>([]);
   protected readonly loading = signal(true);
   protected readonly saving = signal(false);
+  // An export being written.
+  protected readonly busy = signal(false);
   protected readonly error = signal<string | null>(null);
   protected readonly search = signal('');
   protected readonly showArchived = signal(false);
@@ -225,6 +240,43 @@ export class ExpenseItemsPage {
 
   protected async add(): Promise<void> {
     if (await this.open({})) {
+      await this.load();
+    }
+  }
+
+  protected async exportExcel(): Promise<void> {
+    this.busy.set(true);
+    try {
+      saveBlob(await firstValueFrom(this.api.exportExpenseItems()), `expense-items-${todayIso()}.xlsx`);
+      this.notify.info('Expense items exported to Excel. · تم تصدير المصروفات إلى إكسل.');
+    } catch (error) {
+      this.notify.error(error, 'The expense items could not be exported. · تعذّر تصدير المصروفات.');
+    } finally {
+      this.busy.set(false);
+    }
+  }
+
+  // A sheet imported in the dialog, which says what it did; the list read again when it changed it.
+  protected async importExcel(): Promise<void> {
+    const data: SheetImportData = {
+      title: { en: 'Import expense items from Excel', ar: 'استيراد المصروفات العمومية من إكسل' },
+      noun: { one: 'expense item', many: 'expense items', ar: 'بند المصروف' },
+      rules: [
+        {
+          en: 'A name already on the list changes that expense item; a new name adds one.',
+          ar: 'الاسم الموجود يعدّل البند، والاسم الجديد يضيف بندًا.',
+        },
+        { en: 'A blank cell leaves that detail as it is. A new category is added as a general expenses one.', ar: 'الخلية الفارغة تترك البيان كما هو. القسم الجديد يُضاف كقسم مصروفات عمومية.' },
+        { en: 'What they cost is on the purchase invoices, never on the sheet.', ar: 'التكلفة تُسجل في فواتير الشراء وليس في الملف.' },
+      ],
+      templateName: 'expense-items-template.xlsx',
+      template: () => this.api.expenseItemsTemplate(),
+      upload: (file) => this.api.importExpenseItems(file),
+    };
+    const changed = await firstValueFrom(
+      this.dialog.open<SheetImportDialog, SheetImportData, boolean>(SheetImportDialog, { data, width: '760px', maxWidth: '96vw' }).afterClosed(),
+    );
+    if (changed) {
       await this.load();
     }
   }

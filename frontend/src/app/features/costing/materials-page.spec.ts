@@ -1,39 +1,36 @@
 import { TestBed } from '@angular/core/testing';
 import { HttpErrorResponse } from '@angular/common/http';
-import { MAT_DIALOG_DATA, MatDialog } from '@angular/material/dialog';
+import { MatDialog } from '@angular/material/dialog';
 import { of, throwError } from 'rxjs';
 import { CostingApi, MaterialCost, RawMaterialImportResult } from '../../core/costing/costing.api';
 import { NotifyService } from '../../core/ui/notify.service';
 import { Approvals } from './approvals';
 import { MaterialHistoryDialog } from './material-history-dialog';
-import { MaterialImportDialog } from './material-import-dialog';
 import { MaterialsPage } from './materials-page';
+import { SheetImportData, SheetImportDialog } from './sheet-import-dialog';
 
 const result: RawMaterialImportResult = {
-  created: [
-    { row: 2, id: 'c', name: 'Chicken breast', category: 'Poultry', unit: 'Gram', purchaseUnit: 'kg', costPerPurchaseUnit: 185 },
-    { row: 3, id: 'm', name: 'Milk', category: 'Dairy', unit: 'Millilitre', purchaseUnit: 'L', costPerPurchaseUnit: 42.5 },
-  ],
-  skipped: [
-    { row: 4, name: 'Tomatoes', reason: 'Tomatoes is already on the list.' },
-    { row: 5, name: null, reason: 'No material name.' },
-  ],
+  created: [{ row: 2, id: 'c', name: 'Chicken breast', category: 'Poultry', unit: 'Gram', purchaseUnit: 'kg', costPerPurchaseUnit: 185 }],
+  updated: [],
+  unchanged: 0,
+  skipped: [],
   categoriesAdded: ['Poultry'],
 };
 
 const text = (el: Element) => el.textContent!.replace(/\s+/g, ' ').trim();
 
-describe('raw materials from Excel', () => {
+describe('raw materials to and from Excel', () => {
   const materials = vi.fn();
   const rawMaterialsTemplate = vi.fn();
   const importRawMaterials = vi.fn();
+  const exportRawMaterials = vi.fn();
   const open = vi.fn();
   const notify = { info: vi.fn(), error: vi.fn() };
 
   async function render() {
     TestBed.configureTestingModule({
       providers: [
-        { provide: CostingApi, useValue: { materials, rawMaterialsTemplate, importRawMaterials } },
+        { provide: CostingApi, useValue: { materials, rawMaterialsTemplate, importRawMaterials, exportRawMaterials } },
         { provide: MatDialog, useValue: { open } },
         { provide: NotifyService, useValue: notify },
         { provide: Approvals, useValue: { refresh: vi.fn(), pendingFor: vi.fn() } },
@@ -45,74 +42,67 @@ describe('raw materials from Excel', () => {
     return { el: fixture.nativeElement as HTMLElement, page: fixture.componentInstance as unknown as Record<string, any> };
   }
 
-  // A file input as the browser leaves it once a file is chosen.
-  function picked(file: File | null): HTMLInputElement {
-    const input = document.createElement('input');
-    input.type = 'file';
-    Object.defineProperty(input, 'files', { value: file ? [file] : [] });
-    return input;
-  }
-
   beforeEach(() => {
     materials.mockReset().mockReturnValue(of([]));
     rawMaterialsTemplate.mockReset().mockReturnValue(of(new Blob(['xlsx'])));
     importRawMaterials.mockReset().mockReturnValue(of(result));
-    open.mockReset();
+    exportRawMaterials.mockReset().mockReturnValue(of(new Blob(['xlsx'])));
+    open.mockReset().mockReturnValue({ afterClosed: () => of(true) });
+    notify.info.mockReset();
     notify.error.mockReset();
   });
 
-  it('offers the template and the import beside a new material', async () => {
+  it('offers the export and the import beside a new material', async () => {
     const { el } = await render();
 
     expect([...el.querySelectorAll('.toolbar button')].map(text)).toEqual([
-      'download Excel templateنموذج إكسل',
-      'upload_file Import from Excelاستيراد',
+      'download Export Excelتصدير إلى إكسل',
+      'upload_file Import Excelاستيراد من إكسل',
       'add New material',
     ]);
-    expect(el.querySelector<HTMLInputElement>('input[type=file]')!.accept).toContain('.xlsx');
   });
 
-  it('downloads the template under its own name', async () => {
+  it('exports the list under the day it was written, and says so in both languages', async () => {
     const { page } = await render();
-    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
     let saved: HTMLAnchorElement | undefined;
-    click.mockImplementation(function (this: HTMLAnchorElement) {
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
       saved = this;
     });
-    URL.createObjectURL = vi.fn(() => 'blob:template');
+    URL.createObjectURL = vi.fn(() => 'blob:export');
     URL.revokeObjectURL = vi.fn();
 
-    await page['downloadTemplate']();
+    await page['exportExcel']();
 
-    expect(rawMaterialsTemplate).toHaveBeenCalled();
-    expect(saved!.download).toBe('raw-materials-template.xlsx');
+    expect(exportRawMaterials).toHaveBeenCalled();
+    expect(saved!.download).toMatch(/^raw-materials-\d{4}-\d{2}-\d{2}\.xlsx$/);
+    expect(notify.info).toHaveBeenCalledWith('Raw materials exported to Excel. · تم تصدير الخامات إلى إكسل.');
+    expect(page['busy']()).toBe(false);
+
+    exportRawMaterials.mockReturnValue(throwError(() => new HttpErrorResponse({ status: 500 })));
+    await page['exportExcel']();
+    expect(notify.error).toHaveBeenCalledWith(expect.anything(), 'The raw materials could not be exported. · تعذّر تصدير الخامات.');
     click.mockRestore();
   });
 
-  it('imports the chosen sheet, shows what it did, and reads the list again', async () => {
+  it('imports in the dialog, its template and upload the raw materials’, and reads the list again when it changed it', async () => {
     const { page } = await render();
+
+    await page['importExcel']();
+
+    expect(open).toHaveBeenCalledWith(SheetImportDialog, expect.objectContaining({ width: '760px' }));
+    const data = open.mock.lastCall![1].data as SheetImportData;
+    expect([data.title.en, data.templateName, data.noun.many]).toEqual(['Import raw materials from Excel', 'raw-materials-template.xlsx', 'materials']);
     const file = new File(['xlsx'], 'materials.xlsx');
-    const input = picked(file);
-
-    await page['importFile'](input);
-
+    data.upload(file).subscribe();
+    data.template().subscribe();
     expect(importRawMaterials).toHaveBeenCalledWith(file);
-    expect(open).toHaveBeenCalledWith(MaterialImportDialog, expect.objectContaining({ data: result }));
+    expect(rawMaterialsTemplate).toHaveBeenCalled();
     expect(materials).toHaveBeenCalledTimes(2);
-    expect(page['busy']()).toBe(false);
-  });
 
-  it('says why a file is refused, and sends nothing when none is chosen', async () => {
-    const { page } = await render();
-    importRawMaterials.mockReturnValue(throwError(() => new Error('That file could not be read as an Excel workbook (.xlsx).')));
-
-    await page['importFile'](picked(new File(['?'], 'notes.xlsx')));
-    expect(notify.error).toHaveBeenCalledWith(expect.anything(), 'The file could not be imported.');
-    expect(open).not.toHaveBeenCalled();
-
-    importRawMaterials.mockClear();
-    await page['importFile'](picked(null));
-    expect(importRawMaterials).not.toHaveBeenCalled();
+    // Closed with nothing changed: not read again.
+    open.mockReturnValue({ afterClosed: () => of(false) });
+    await page['importExcel']();
+    expect(materials).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -223,22 +213,5 @@ describe('a material’s purchase history from its row', () => {
     expect(open).toHaveBeenCalledWith(MaterialHistoryDialog, { data: tomatoes, width: '960px', maxWidth: '95vw' });
     // The row's own click, which opens the material to change, is not set off.
     expect(open).toHaveBeenCalledTimes(1);
-  });
-});
-
-describe('what an import did', () => {
-  it('counts what was added and lists each row skipped and why', async () => {
-    TestBed.configureTestingModule({ providers: [{ provide: MAT_DIALOG_DATA, useValue: result }] });
-    const fixture = TestBed.createComponent(MaterialImportDialog);
-    await fixture.whenStable();
-    fixture.detectChanges();
-    const el = fixture.nativeElement as HTMLElement;
-
-    expect(text(el.querySelector('.added')!)).toBe('2 materials added, as stock items. أُضيفت 2 خامة.');
-    expect(text(el)).toContain('New categories: Poultry.');
-    expect([...el.querySelectorAll('tbody tr')].map((r) => [...r.querySelectorAll('td')].map(text))).toEqual([
-      ['4', 'Tomatoes', 'Tomatoes is already on the list.'],
-      ['5', '—', 'No material name.'],
-    ]);
   });
 });
