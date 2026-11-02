@@ -227,6 +227,33 @@ system's; here only:
   (`PayrollMonth`, paid once the month has started), from Staff → Pay salary. The KPIs' labour
   cost for a month is the salaries paid for it.
 
+## Stock counts: opening and periodic
+
+A count is drafted (it saves itself as it is filled in, on any device) and then posted. Each count
+is one of two kinds, chosen when it starts and changeable while it is a draft:
+
+| | Opening stock (جرد افتتاحي) | Periodic count (جرد دوري) |
+| --- | --- | --- |
+| When | Once, when costing starts | Every week, at the same point, kitchen closed |
+| Sets stock to | What was counted: where it begins | What was counted |
+| In the ledger | `OpeningStock` | `CountAdjustment`: the shortage or surplus |
+| Valued at | Each material's cost now; a prep item never made, its recipe's | The average cost then |
+| On the KPIs and profit | Nothing | Count differences, in the cost of sales |
+| Variance report | Where it can start, never where it ends | Where it starts or ends |
+
+**The opening stock** is for starting with no purchase history: a periodic count against the zero
+on the books would book the whole shelf as a surplus and inflate the month's gross profit. Posted,
+it shows each material at what it was counted at, the cost it opened at and its worth, and the
+total opening stock value. A material with no price has its stock set and its worth unknown until
+it is priced. A prep item never made, with no cost of its own, takes its recipe's cost today as its
+average from then on, as its first batch would.
+
+**A material is opened once.** An opening count that names a material already in a posted count
+(not voided) is refused, naming it: what is found from then on is a shortage or a surplus, so it is
+counted periodically. A material forgotten the first time can be opened in a second opening count.
+Voiding an opening count (on approval) takes its stock back out and lets its materials be opened
+again.
+
 ## Waste and breakage
 
 Spoilage takes materials or prep items from stock at their cost. Breakage (كسر) is something

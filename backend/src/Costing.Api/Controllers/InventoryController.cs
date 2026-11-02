@@ -573,7 +573,7 @@ public sealed class InventoryController(ISender sender) : ControllerBase
     [CostingTab(CostingTabs.Counts)]
     [Authorize(Policy = Permissions.InventoryManage)]
     public Task<StockCountDto> SaveStockCount(Guid stockCountId, SaveStockCountRequest request, CancellationToken cancellationToken) =>
-        sender.Send(new SaveStockCountCommand(stockCountId, request.Lines, StaffName), cancellationToken);
+        sender.Send(new SaveStockCountCommand(stockCountId, request.Lines ?? [], StaffName, request.Kind), cancellationToken);
 
     // Sets stock to what was counted. Posting again returns the posted count.
     [HttpPost("stock-counts/{stockCountId:guid}/post")]
@@ -719,7 +719,8 @@ public sealed class InventoryController(ISender sender) : ControllerBase
         new(requestId, module, recordId, reason, StaffId, StaffName, CanApprove);
 }
 
-public sealed record SaveStockCountRequest(IReadOnlyList<StockCountLine> Lines);
+// Kind: periodic or opening stock; none keeps the draft's (a new one is periodic).
+public sealed record SaveStockCountRequest(IReadOnlyList<StockCountLine> Lines, Costing.Domain.StockCounts.StockCountKind? Kind = null);
 
 public sealed record CorrectPurchaseInvoiceRequest(
     Guid RequestId,

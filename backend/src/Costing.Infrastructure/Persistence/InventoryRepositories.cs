@@ -126,6 +126,16 @@ internal sealed class StockCountRepository(CostingDbContext db) : IStockCountRep
 
     public async Task<IReadOnlyList<StockCount>> GetAllAsync(CancellationToken cancellationToken = default) =>
         await WithLines.AsNoTracking().ToListAsync(cancellationToken);
+
+    public async Task<IReadOnlyDictionary<Guid, DateTime>> CountedBeforeAsync(
+        IReadOnlyCollection<Guid> rawMaterialIds, Guid exceptStockCountId, CancellationToken cancellationToken = default) =>
+        await db.Set<StockCountLine>().AsNoTracking()
+            .Where(l => rawMaterialIds.Contains(l.RawMaterialId))
+            .Join(db.StockCounts.Where(c => c.Status == StockCountStatus.Posted && c.Id != exceptStockCountId),
+                l => l.StockCountId, c => c.Id, (l, c) => new { l.RawMaterialId, PostedAtUtc = c.PostedAtUtc!.Value })
+            .GroupBy(x => x.RawMaterialId)
+            .Select(g => new { RawMaterialId = g.Key, First = g.Min(x => x.PostedAtUtc) })
+            .ToDictionaryAsync(x => x.RawMaterialId, x => x.First, cancellationToken);
 }
 
 internal sealed class PurchaseInvoiceRepository(CostingDbContext db) : IPurchaseInvoiceRepository

@@ -61,7 +61,8 @@ public sealed record VarianceRow(
     decimal? UnexplainedValue,
     VarianceEvaluation Evaluation);
 
-public sealed record VarianceCount(Guid Id, DateTime PostedAtUtc, string? PostedBy);
+// Opening: the opening stock (جرد افتتاحي), which the report starts from but never ends at.
+public sealed record VarianceCount(Guid Id, DateTime PostedAtUtc, string? PostedBy, bool Opening = false);
 
 public sealed record SoldWithoutStock(string ItemCode, string MenuItem, int Quantity);
 
@@ -105,12 +106,18 @@ public sealed class VarianceService(CostingDbContext db, SalesLedger ledger)
         var posted = await db.StockCounts.AsNoTracking()
             .Where(c => c.Status == StockCountStatus.Posted)
             .OrderBy(c => c.PostedAtUtc)
-            .Select(c => new VarianceCount(c.Id, c.PostedAtUtc!.Value, c.PostedBy))
+            .Select(c => new VarianceCount(c.Id, c.PostedAtUtc!.Value, c.PostedBy, c.Kind == StockCountKind.Opening))
             .ToListAsync(cancellationToken);
 
+        // Ends at a periodic count: the opening stock is where stock begins, with nothing to measure up to it.
         var to = toId is { } t
-            ? posted.Find(c => c.Id == t) ?? throw new DomainException("Choose a posted count to end at.")
-            : posted.LastOrDefault() ?? throw new DomainException("Post a stock count first: the report measures between two counts.");
+            ? posted.Find(c => c.Id == t && !c.Opening) ?? throw new DomainException(
+                posted.Any(c => c.Id == t)
+                    ? "The report ends at a periodic count: the opening stock is where it starts. · ينتهي التقرير بجرد دوري، والجرد الافتتاحي بدايته."
+                    : "Choose a posted count to end at.")
+            : posted.LastOrDefault(c => !c.Opening) ?? throw new DomainException(posted.Count == 0
+                ? "Post a stock count first: the report measures between two counts."
+                : "Post a periodic count: the report measures from the opening stock to it. · رحّل جردًا دوريًا: يُقاس الانحراف من الجرد الافتتاحي إليه.");
         var from = fromId is { } f
             ? posted.Find(c => c.Id == f) ?? throw new DomainException("Choose a posted count to start from.")
             : posted.LastOrDefault(c => c.PostedAtUtc < to.PostedAtUtc)

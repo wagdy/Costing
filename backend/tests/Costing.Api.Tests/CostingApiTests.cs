@@ -538,6 +538,39 @@ public class CostingApiTests
         Assert.Equal($"Alfredo pasta is on the menu already, as {number}.", again.GetProperty("skipped").EnumerateArray().Single().GetProperty("reason").GetString());
     }
 
+    [Fact]
+    public async Task An_opening_count_sets_the_stock_it_starts_from_and_says_it_is_one()
+    {
+        await using var api = await TestApi.StartAsync();
+        var manager = await api.ManagerAsync();
+        var flour = (await Json(await manager.PostAsJsonAsync("/api/inventory/raw-materials", new
+        {
+            name = "Flour", unit = "Gram", purchaseUnit = "kg", purchaseUnitSize = 1000, costPerPurchaseUnit = 30,
+        }, Cancel))).GetProperty("id").GetGuid();
+        var id = Guid.NewGuid();
+
+        var draft = await Json(await manager.PutAsJsonAsync($"/api/inventory/stock-counts/{id}", new
+        {
+            kind = "Opening", lines = new[] { new { rawMaterialId = flour, countedQuantity = 25_000 } },
+        }, Cancel));
+        Assert.Equal("Opening", draft.GetProperty("kind").GetString());
+        var posted = await Json(await manager.PostAsync($"/api/inventory/stock-counts/{id}/post", null, Cancel));
+        var line = posted.GetProperty("lines").EnumerateArray().Single();
+        Assert.Equal((0m, 0.03m), (line.GetProperty("bookQuantity").GetDecimal(), line.GetProperty("unitCost").GetDecimal()));
+        Assert.Equal(25_000m, await OnHandAsync(manager, flour));
+        var listed = (await Json(await manager.GetAsync("/api/inventory/stock-counts", Cancel))).EnumerateArray().Single();
+        Assert.Equal(("Posted", "Opening"), (listed.GetProperty("status").GetString(), listed.GetProperty("kind").GetString()));
+
+        // Opened once: the flour again is refused, and said why.
+        var again = await manager.PostAsJsonAsync("/api/inventory/stock-counts", new
+        {
+            stockCountId = Guid.NewGuid(), kind = "Opening", lines = new[] { new { rawMaterialId = flour, countedQuantity = 20_000 } },
+        }, Cancel);
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, again.StatusCode);
+        Assert.Contains("Flour was counted already", await again.Content.ReadAsStringAsync(Cancel));
+        Assert.Equal(25_000m, await OnHandAsync(manager, flour));
+    }
+
     private static MultipartFormDataContent File(byte[] content, string name)
     {
         var file = new ByteArrayContent(content);

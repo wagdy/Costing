@@ -226,6 +226,22 @@ public sealed class RawMaterial : AggregateRoot
         return Move(countedQuantity - QuantityOnHand, StockMovementReason.CountAdjustment, stockCountId, AverageCost);
     }
 
+    // Its stock as found when costing starts (جرد افتتاحي): set to what was counted, at the cost it
+    // has, as where its stock begins rather than a difference. One with no cost of its own yet (a
+    // prep item never made) is valued at unitCost, its recipe's today, from then on.
+    public StockMovement OpenStock(decimal countedQuantity, Guid stockCountId, decimal? unitCost = null)
+    {
+        if (countedQuantity < 0)
+            throw new DomainException("A counted quantity cannot be negative.");
+        if (unitCost is { } cost && (AverageCost ?? 0) == 0)
+        {
+            if (cost < 0)
+                throw new DomainException("A cost cannot be negative.");
+            AverageCost = cost;
+        }
+        return Move(countedQuantity - QuantityOnHand, StockMovementReason.OpeningStock, stockCountId, AverageCost);
+    }
+
     // Weighted by quantity against what is on the shelf; stock below zero counts as none, since
     // nothing is left to average with.
     private void AverageWith(decimal quantity, decimal unitCost)

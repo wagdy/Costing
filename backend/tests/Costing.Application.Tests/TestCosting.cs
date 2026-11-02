@@ -361,6 +361,13 @@ public sealed class CountStore : IStockCountRepository
     public void Remove(StockCount draft) => _counts.Remove(draft);
     public Task<StockCount?> GetDraftAsync(CancellationToken cancellationToken = default) => Task.FromResult(_counts.FirstOrDefault(c => c.Status == StockCountStatus.Draft));
     public Task<IReadOnlyList<StockCount>> GetAllAsync(CancellationToken cancellationToken = default) => Task.FromResult<IReadOnlyList<StockCount>>(_counts.ToList());
+    public Task<IReadOnlyDictionary<Guid, DateTime>> CountedBeforeAsync(
+        IReadOnlyCollection<Guid> rawMaterialIds, Guid exceptStockCountId, CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyDictionary<Guid, DateTime>>(_counts
+            .Where(c => c.Status == StockCountStatus.Posted && c.Id != exceptStockCountId)
+            .SelectMany(c => c.Lines.Where(l => rawMaterialIds.Contains(l.RawMaterialId)).Select(l => (l.RawMaterialId, Posted: c.PostedAtUtc!.Value)))
+            .GroupBy(x => x.RawMaterialId)
+            .ToDictionary(g => g.Key, g => g.Min(x => x.Posted)));
 }
 
 public sealed class InvoiceStore : IPurchaseInvoiceRepository, IPurchaseAttachmentStore

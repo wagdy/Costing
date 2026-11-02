@@ -24,4 +24,8 @@ public enum StockMovementReason
 
     // A prep item made: the dough, into stock at what its ingredients cost.
     ProductionOutput = 8,
+
+    // Stock as found when costing starts (جرد افتتاحي): where it begins, not a shortage or a
+    // surplus, so no report counts it as a loss or a gain.
+    OpeningStock = 9,
 }

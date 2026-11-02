@@ -78,7 +78,8 @@ internal sealed class DeletionTargets(
             case ApprovalModule.StockCount:
             {
                 var count = await CountAsync(recordId, cancellationToken);
-                var reversals = await ReverseAsync(count.Id, StockMovementReason.CountAdjustment, by, cancellationToken);
+                var reversals = await ReverseAsync(
+                    count.Id, count.IsOpening ? StockMovementReason.OpeningStock : StockMovementReason.CountAdjustment, by, cancellationToken);
                 count.Void(by);
                 return reversals;
             }
@@ -240,7 +241,7 @@ internal sealed class DeletionTargets(
     }
 
     private string DescribeCount(StockCount count) =>
-        $"Stock count posted {descriptions.BusinessDateOf(count.PostedAtUtc!.Value).ToString("d MMM yyyy", Invariant)}" +
+        $"{(count.IsOpening ? "Opening stock count" : "Stock count")} posted {descriptions.BusinessDateOf(count.PostedAtUtc!.Value).ToString("d MMM yyyy", Invariant)}" +
         $"{(count.PostedBy is { Length: > 0 } by ? $" by {by}" : "")} · {count.Lines.Count} {(count.Lines.Count == 1 ? "material" : "materials")}";
 
     // ---- Raw materials: archived ----

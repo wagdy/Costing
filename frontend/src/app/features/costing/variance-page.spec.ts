@@ -1,7 +1,7 @@
 import { TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
 import { of } from 'rxjs';
-import { CostingApi, VarianceReport, VarianceRow } from '../../core/costing/costing.api';
+import { CostingApi, StockCountSummary, VarianceReport, VarianceRow } from '../../core/costing/costing.api';
 import { VariancePage } from './variance-page';
 
 function row(overrides: Partial<VarianceRow>): VarianceRow {
@@ -55,10 +55,10 @@ const report: VarianceReport = {
 };
 
 describe('the variance report', () => {
-  async function render() {
-    const variance = vi.fn().mockReturnValue(of(report));
+  async function render(counts: StockCountSummary[] = [], shown: VarianceReport = report) {
+    const variance = vi.fn().mockReturnValue(of(shown));
     TestBed.configureTestingModule({
-      providers: [provideRouter([]), { provide: CostingApi, useValue: { variance, stockCounts: () => of([]) } }],
+      providers: [provideRouter([]), { provide: CostingApi, useValue: { variance, stockCounts: () => of(counts) } }],
     });
     const fixture = TestBed.createComponent(VariancePage);
     await fixture.whenStable();
@@ -105,5 +105,22 @@ describe('the variance report', () => {
     const { fixture } = await render();
 
     expect((fixture.nativeElement as HTMLElement).textContent).toContain('Garlic Bread × 2');
+  });
+
+  it('starts from the opening stock, says so, and ends only at a periodic count', async () => {
+    const count = (id: string, kind: StockCountSummary['kind'], postedAtUtc: string): StockCountSummary => ({
+      id, kind, status: 'Posted', startedAtUtc: postedAtUtc, startedBy: 'Omar', postedAtUtc, postedBy: 'Omar', materials: 3,
+    });
+    const { fixture } = await render(
+      [count('b', 'Periodic', '2026-10-08T22:00:00Z'), count('a', 'Opening', '2026-10-01T22:00:00Z')],
+      { ...report, from: { ...report.from, opening: true } },
+    );
+    const page = fixture.componentInstance as unknown as Record<string, any>;
+
+    expect(page['posted']().map((c: StockCountSummary) => c.id)).toEqual(['b', 'a']);
+    expect(page['periodic']().map((c: StockCountSummary) => c.id)).toEqual(['b']);
+    expect((fixture.nativeElement as HTMLElement).querySelector('.report-head .muted')!.textContent!.replace(/\s+/g, ' ')).toContain(
+      '(opening stockجرد افتتاحي)',
+    );
   });
 });

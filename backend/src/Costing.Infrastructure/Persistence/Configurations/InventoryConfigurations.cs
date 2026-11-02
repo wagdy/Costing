@@ -141,6 +141,8 @@ internal sealed class StockCountConfiguration : IEntityTypeConfiguration<StockCo
     {
         builder.ToTable("StockCounts", CostingDbContext.CostingSchema);
         builder.Property(c => c.Status).IsEnumName();
+        builder.Property(c => c.Kind).IsEnumName().HasDefaultValue(StockCountKind.Periodic).HasSentinel((StockCountKind)0);
+        builder.Ignore(c => c.IsOpening);
         builder.Property(c => c.StartedBy).HasMaxLength(200);
         builder.Property(c => c.PostedBy).HasMaxLength(200);
         builder.Property(c => c.VoidedBy).HasMaxLength(200);

@@ -32,14 +32,16 @@ import { MoneyPipe } from '../../core/ui/money.pipe';
         <mat-label>From count · جرد البداية</mat-label>
         <mat-select [ngModel]="report()?.from?.id" (ngModelChange)="pick('from', $event)">
           @for (c of posted(); track c.id) {
-            <mat-option [value]="c.id">{{ c.postedAtUtc | date: 'EEE d MMM, HH:mm' }} · {{ c.postedBy }}</mat-option>
+            <mat-option [value]="c.id">
+              {{ c.postedAtUtc | date: 'EEE d MMM, HH:mm' }} · {{ c.kind === 'Opening' ? 'Opening stock · جرد افتتاحي' : c.postedBy }}
+            </mat-option>
           }
         </mat-select>
       </mat-form-field>
       <mat-form-field subscriptSizing="dynamic">
         <mat-label>To count · جرد النهاية</mat-label>
         <mat-select [ngModel]="report()?.to?.id" (ngModelChange)="pick('to', $event)">
-          @for (c of posted(); track c.id) {
+          @for (c of periodic(); track c.id) {
             <mat-option [value]="c.id">{{ c.postedAtUtc | date: 'EEE d MMM, HH:mm' }} · {{ c.postedBy }}</mat-option>
           }
         </mat-select>
@@ -59,6 +61,9 @@ import { MoneyPipe } from '../../core/ui/money.pipe';
         <h2>Variance analysis <span class="inline-ar">تحليل الانحراف</span></h2>
         <div class="muted">
           From<span class="inline-ar">من</span>: <strong>{{ r.from.postedAtUtc | date: 'd MMM y, HH:mm' }}</strong>
+          @if (r.from.opening) {
+            (opening stock<span class="inline-ar">جرد افتتاحي</span>)
+          }
           &nbsp; To<span class="inline-ar">إلى</span>: <strong>{{ r.to.postedAtUtc | date: 'd MMM y, HH:mm' }}</strong>
           &nbsp;·&nbsp; Tolerance<span class="inline-ar">الحد المسموح</span>: <strong>±{{ r.tolerancePercent | number: '1.0-1' }}%</strong>
         </div>
@@ -251,6 +256,8 @@ export class VariancePage {
 
   protected readonly counts = signal<StockCountSummary[]>([]);
   protected readonly posted = computed(() => this.counts().filter((c) => c.status === 'Posted'));
+  // The report ends at a periodic count: the opening stock is only ever where it starts.
+  protected readonly periodic = computed(() => this.posted().filter((c) => c.kind !== 'Opening'));
   // What was asked for; null ids are the server's choice, the last two counts. The selects show
   // the counts the report actually covers.
   private readonly request = signal<{ from: string | null; to: string | null }>({ from: null, to: null });

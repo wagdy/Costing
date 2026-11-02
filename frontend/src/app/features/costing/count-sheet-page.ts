@@ -2,13 +2,14 @@ import { DatePipe, DecimalPipe } from '@angular/common';
 import { Component, DestroyRef, computed, effect, inject, input, signal, untracked } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
+import { MatButtonToggleModule } from '@angular/material/button-toggle';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatIconModule } from '@angular/material/icon';
 import { MatInputModule } from '@angular/material/input';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { Router, RouterLink } from '@angular/router';
 import { firstValueFrom } from 'rxjs';
-import { CostingApi, MaterialCost, StockCount, countUnit } from '../../core/costing/costing.api';
+import { CostingApi, MaterialCost, StockCount, StockCountKind, countKindLabels, countUnit, recipeCostOf } from '../../core/costing/costing.api';
 import { errorMessage } from '../../core/http/error-message';
 import { MoneyPipe } from '../../core/ui/money.pipe';
 import { NotifyService } from '../../core/ui/notify.service';
@@ -26,9 +27,25 @@ const autosaveAfterMs = 1500;
 // itself as it goes; an empty field is not counted, which is not the same as 0. It does not
 // show what the records expect: the counter counts the shelf rather than confirming a number.
 // Posted, it shows what was counted against what the records said, and what the difference was worth.
+//
+// Periodic (جرد دوري) or the opening stock (جرد افتتاحي), chosen as it starts and changeable while
+// a draft. The opening stock is where stock begins: as it is filled in it shows what it is worth at
+// today's costs, and posted, what each material opened at, with no difference beside it.
 @Component({
   selector: 'app-count-sheet-page',
-  imports: [DatePipe, DecimalPipe, FormsModule, MatButtonModule, MatFormFieldModule, MatIconModule, MatInputModule, MatProgressBarModule, MoneyPipe, RouterLink],
+  imports: [
+    DatePipe,
+    DecimalPipe,
+    FormsModule,
+    MatButtonModule,
+    MatButtonToggleModule,
+    MatFormFieldModule,
+    MatIconModule,
+    MatInputModule,
+    MatProgressBarModule,
+    MoneyPipe,
+    RouterLink,
+  ],
   template: `
     <div class="toolbar no-print">
       <a mat-button routerLink="/costing/counts"><mat-icon>arrow_back</mat-icon> All counts</a>
@@ -43,8 +60,8 @@ const autosaveAfterMs = 1500;
       <p class="error">{{ error() }}</p>
     } @else if (posted(); as count) {
       <h2 class="title">
-        Stock count, posted {{ count.postedAtUtc | date: 'EEE d MMM y, HH:mm' }}
-        <span class="inline-ar">جرد مُرحّل</span>
+        {{ kindLabels[count.kind].en }}, posted {{ count.postedAtUtc | date: 'EEE d MMM y, HH:mm' }}
+        <span class="inline-ar">{{ kindLabels[count.kind].ar }} مُرحّل</span>
       </h2>
       <p class="muted">Started by {{ count.startedBy }}, posted by {{ count.postedBy }}.</p>
       @if (count.status === 'Voided') {
@@ -54,43 +71,105 @@ const autosaveAfterMs = 1500;
           longer measures from it.
         </p>
       }
-      <div class="table-wrap">
-        <table class="grid">
-          <thead>
-            <tr>
-              <th>Code<span class="ar">الكود</span></th>
-              <th>Material<span class="ar">الخامة</span></th>
-              <th class="num">Counted<span class="ar">المجرود</span></th>
-              <th class="num">Records said<span class="ar">الرصيد الدفتري</span></th>
-              <th class="num">Difference<span class="ar">الفرق</span></th>
-              <th class="num">Worth<span class="ar">القيمة</span></th>
-            </tr>
-          </thead>
-          <tbody>
-            @for (row of postedRows(); track row.id) {
-              <tr [class.deficit]="row.difference < 0" [class.surplus]="row.difference > 0">
-                <td class="code">{{ row.code ?? '' }}</td>
-                <td>{{ row.name }}</td>
-                <td class="num">{{ row.counted | number: '1.0-3' }} {{ row.unit }}</td>
-                <td class="num">{{ row.book | number: '1.0-3' }} {{ row.unit }}</td>
-                <td class="num">{{ row.difference > 0 ? '+' : '' }}{{ row.difference | number: '1.0-3' }} {{ row.unit }}</td>
-                <td class="num">{{ row.value === null ? 'No price' : (row.value | money) }}</td>
+      @if (count.kind === 'Opening') {
+        <div class="table-wrap">
+          <table class="grid opening">
+            <thead>
+              <tr>
+                <th>Code<span class="ar">الكود</span></th>
+                <th>Material<span class="ar">الخامة</span></th>
+                <th class="num">Opened at<span class="ar">رصيد البداية</span></th>
+                <th class="num">Cost<span class="ar">التكلفة</span></th>
+                <th class="num">Worth<span class="ar">القيمة</span></th>
               </tr>
-            }
-          </tbody>
-          <tfoot>
-            <tr>
-              <td colspan="5">Net difference · صافي الفرق</td>
-              <td class="num">{{ postedTotal() | money }}</td>
-            </tr>
-          </tfoot>
-        </table>
-      </div>
-      <p class="note">
-        Stock was set to what was counted. Why the records were out is in the
-        <a routerLink="/costing/reports/variance">variance report</a>, which sets it against sales, deliveries and waste.
-      </p>
+            </thead>
+            <tbody>
+              @for (row of openingRows(); track row.id) {
+                <tr>
+                  <td class="code">{{ row.code ?? '' }}</td>
+                  <td>{{ row.name }}</td>
+                  <td class="num">{{ row.counted | number: '1.0-3' }} {{ row.unit }}</td>
+                  <td class="num">{{ row.cost === null ? '—' : (row.cost | money) + ' / ' + row.unit }}</td>
+                  <td class="num">{{ row.worth === null ? 'No price' : (row.worth | money) }}</td>
+                </tr>
+              }
+            </tbody>
+            <tfoot>
+              <tr>
+                <td colspan="4">Opening stock value · قيمة المخزون الافتتاحي</td>
+                <td class="num">{{ openingTotal() | money }}</td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+        @if (openingUnpriced(); as n) {
+          <p class="warn">
+            {{ n === 1 ? '1 material has' : n + ' materials have' }} no price: its stock is set, its worth unknown until it is priced.
+            <span class="note-ar" lang="ar" dir="rtl">خامات بلا سعر: رصيدها مُسجل وقيمتها غير معروفة حتى تُسعّر.</span>
+          </p>
+        }
+        <p class="note">
+          This is where stock begins, at the cost each has: no shortage or surplus was recorded, and nothing went into the profit. The first
+          periodic count is measured from it.
+          <span class="note-ar" lang="ar" dir="rtl">هذا رصيد البداية بتكلفة كل خامة: لا عجز ولا زيادة ولا أثر على الأرباح، ويُقاس أول جرد دوري منه.</span>
+        </p>
+      } @else {
+        <div class="table-wrap">
+          <table class="grid">
+            <thead>
+              <tr>
+                <th>Code<span class="ar">الكود</span></th>
+                <th>Material<span class="ar">الخامة</span></th>
+                <th class="num">Counted<span class="ar">المجرود</span></th>
+                <th class="num">Records said<span class="ar">الرصيد الدفتري</span></th>
+                <th class="num">Difference<span class="ar">الفرق</span></th>
+                <th class="num">Worth<span class="ar">القيمة</span></th>
+              </tr>
+            </thead>
+            <tbody>
+              @for (row of postedRows(); track row.id) {
+                <tr [class.deficit]="row.difference < 0" [class.surplus]="row.difference > 0">
+                  <td class="code">{{ row.code ?? '' }}</td>
+                  <td>{{ row.name }}</td>
+                  <td class="num">{{ row.counted | number: '1.0-3' }} {{ row.unit }}</td>
+                  <td class="num">{{ row.book | number: '1.0-3' }} {{ row.unit }}</td>
+                  <td class="num">{{ row.difference > 0 ? '+' : '' }}{{ row.difference | number: '1.0-3' }} {{ row.unit }}</td>
+                  <td class="num">{{ row.value === null ? 'No price' : (row.value | money) }}</td>
+                </tr>
+              }
+            </tbody>
+            <tfoot>
+              <tr>
+                <td colspan="5">Net difference · صافي الفرق</td>
+                <td class="num">{{ postedTotal() | money }}</td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+        <p class="note">
+          Stock was set to what was counted. Why the records were out is in the
+          <a routerLink="/costing/reports/variance">variance report</a>, which sets it against sales, deliveries and waste.
+        </p>
+      }
     } @else {
+      <div class="kind-choice">
+        <mat-button-toggle-group [value]="kind()" (change)="chooseKind($event.value)" aria-label="Kind of count" hideSingleSelectionIndicator>
+          <mat-button-toggle value="Opening">Opening stock <span class="inline-ar">جرد افتتاحي</span></mat-button-toggle>
+          <mat-button-toggle value="Periodic">Periodic count <span class="inline-ar">جرد دوري</span></mat-button-toggle>
+        </mat-button-toggle-group>
+        @if (kind() === 'Opening') {
+          <p class="note kind-note">
+            Where each material's stock begins, at the cost it has: no shortage or surplus is recorded, and nothing goes into the profit. A
+            material is opened once; a prep item never made is valued by its recipe.
+            <span class="note-ar" lang="ar" dir="rtl">رصيد البداية لكل خامة بتكلفتها: لا يُسجل عجز أو زيادة ولا أثر على الأرباح. تُجرد الخامة افتتاحيًا مرة واحدة، والمصنّع الذي لم يُصنع بعد يُقيّم بوصفته.</span>
+          </p>
+        } @else {
+          <p class="note kind-note">
+            What you count is set against the records: the difference is a shortage or a surplus, in the variance report and the month's cost.
+            <span class="note-ar" lang="ar" dir="rtl">يُقارن المجرود بالرصيد الدفتري: الفرق عجز أو زيادة يظهر في تقرير الانحراف وتكلفة الشهر.</span>
+          </p>
+        }
+      </div>
       <div class="toolbar sticky">
         <mat-form-field subscriptSizing="dynamic">
           <mat-label>Find · بحث</mat-label>
@@ -98,18 +177,32 @@ const autosaveAfterMs = 1500;
         </mat-form-field>
         <span class="progress">
           {{ countedCount() }} of {{ materials().length }} counted<span class="muted"> (empty is not counted, 0 is none left)</span>
+          @if (kind() === 'Opening') {
+            <span class="worth">
+              · worth {{ draftValue().value | money }} at today's costs
+              @if (draftValue().unpriced) {
+                <span class="muted">({{ draftValue().unpriced }} with no price)</span>
+              }
+              <span class="inline-ar">القيمة بتكلفة اليوم</span>
+            </span>
+          }
           <span class="muted save-state">· {{ saveState() }}</span>
         </span>
         <span class="spacer"></span>
         @if (confirming() === 'post') {
           <span>
-            Set stock to what was counted for {{ countedCount() }} {{ countedCount() === 1 ? 'material' : 'materials' }}?
+            @if (kind() === 'Opening') {
+              Open the stock of {{ countedCount() }} {{ countedCount() === 1 ? 'material' : 'materials' }} at what was counted, with no shortage or
+              surplus?
+            } @else {
+              Set stock to what was counted for {{ countedCount() }} {{ countedCount() === 1 ? 'material' : 'materials' }}?
+            }
             @if (materials().length - countedCount() > 0) {
               {{ materials().length - countedCount() }} not counted keep their stock.
             }
           </span>
           <button mat-button (click)="confirming.set(null)">Keep counting</button>
-          <button mat-flat-button (click)="post()" [disabled]="busy()">Post the count</button>
+          <button mat-flat-button (click)="post()" [disabled]="busy()">{{ kind() === 'Opening' ? 'Post the opening stock' : 'Post the count' }}</button>
         } @else if (confirming() === 'discard') {
           <span>Throw this count away?</span>
           <button mat-button (click)="confirming.set(null)">Keep it</button>
@@ -119,7 +212,7 @@ const autosaveAfterMs = 1500;
             <button mat-button (click)="confirming.set('discard')"><mat-icon>delete</mat-icon> Discard</button>
           }
           <button mat-flat-button (click)="confirming.set('post')" [disabled]="countedCount() === 0 || busy()">
-            <mat-icon>fact_check</mat-icon> Post the count
+            <mat-icon>fact_check</mat-icon> {{ kind() === 'Opening' ? 'Post the opening stock' : 'Post the count' }}
           </button>
         }
       </div>
@@ -152,6 +245,21 @@ const autosaveAfterMs = 1500;
   `,
   styleUrl: './costing.scss',
   styles: `
+    .kind-choice {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 8px;
+
+      .kind-note {
+        flex: 1 1 320px;
+        margin: 0;
+      }
+    }
+    .worth {
+      margin-inline-start: 4px;
+    }
     .title {
       margin: 0 0 4px;
       font: var(--mat-sys-title-large);
@@ -207,9 +315,13 @@ export class CountSheetPage {
   private readonly api = inject(CostingApi);
   private readonly notify = inject(NotifyService);
   private readonly router = inject(Router);
+  protected readonly kindLabels = countKindLabels;
 
   // From the route: /costing/counts/:id. A new count's id, before its first save, finds nothing.
   readonly id = input.required<string>();
+  // From the query: the kind a new count starts as (?kind=Opening).
+  readonly kindParam = input<string | undefined>(undefined, { alias: 'kind' });
+  protected readonly kind = signal<StockCountKind>('Periodic');
 
   protected readonly materials = signal<MaterialCost[]>([]);
   protected readonly count = signal<StockCount | null>(null);
@@ -270,6 +382,52 @@ export class CountSheetPage {
 
   protected readonly postedTotal = computed(() => this.postedRows().reduce((sum, r) => sum + (r.value ?? 0), 0));
 
+  // The opening stock posted: each material at what it was counted at, and the cost it opened at.
+  protected readonly openingRows = computed(() => {
+    const count = this.posted();
+    if (!count) {
+      return [];
+    }
+    return count.lines
+      .map((line) => {
+        const m = this.materials().find((x) => x.id === line.rawMaterialId);
+        const unit = m ? countUnit(m.unit, m.purchaseUnitSize) : { label: '', size: 1 };
+        return {
+          id: line.rawMaterialId,
+          code: m?.code ?? null,
+          name: m?.name ?? 'A removed material',
+          unit: unit.label,
+          counted: line.countedQuantity / unit.size,
+          cost: line.unitCost === null ? null : line.unitCost * unit.size,
+          worth: line.unitCost === null ? null : line.countedQuantity * line.unitCost,
+        };
+      })
+      .sort((a, b) => (b.worth ?? -1) - (a.worth ?? -1) || a.name.localeCompare(b.name));
+  });
+
+  protected readonly openingTotal = computed(() => this.openingRows().reduce((sum, r) => sum + (r.worth ?? 0), 0));
+  protected readonly openingUnpriced = computed(() => this.openingRows().filter((r) => r.worth === null).length);
+
+  // An opening stock being filled in, at today's costs: a prep item never made at its recipe's.
+  protected readonly draftValue = computed(() => {
+    const byId = new Map(this.materials().map((m) => [m.id, m]));
+    let value = 0;
+    let unpriced = 0;
+    for (const [id, quantity] of Object.entries(this.counted())) {
+      const m = byId.get(id);
+      if (!m || !this.valid(quantity)) {
+        continue;
+      }
+      const cost = recipeCostOf(m);
+      if (cost === null) {
+        unpriced++;
+      } else {
+        value += quantity * this.sizeOf(m) * cost;
+      }
+    }
+    return { value, unpriced };
+  });
+
   private saveTimer: ReturnType<typeof setTimeout> | null = null;
   private saving: Promise<void> | null = null;
   private dirty = false;
@@ -307,6 +465,20 @@ export class CountSheetPage {
     this.saveTimer = setTimeout(() => void this.saveNow(), autosaveAfterMs);
   }
 
+  // Told it is the other kind: saved so, if it is saved already; else its first save says it.
+  protected chooseKind(kind: StockCountKind): void {
+    if (kind === this.kind()) {
+      return;
+    }
+    this.kind.set(kind);
+    this.problem.set(null);
+    if (this.saved() || this.countedCount() > 0) {
+      this.dirty = true;
+      this.saveState.set('Not saved yet');
+      void this.saveNow();
+    }
+  }
+
   protected async post(): Promise<void> {
     this.busy.set(true);
     this.problem.set(null);
@@ -318,7 +490,11 @@ export class CountSheetPage {
       const count = await firstValueFrom(this.api.postStockCount(this.id()));
       this.count.set(count);
       this.confirming.set(null);
-      this.notify.info('Count posted: stock is set to what was counted.');
+      this.notify.info(
+        count.kind === 'Opening'
+          ? 'Opening stock posted: stock starts from what was counted. · تم ترحيل الجرد الافتتاحي.'
+          : 'Count posted: stock is set to what was counted.',
+      );
     } catch (error) {
       this.problem.set(errorMessage(error, 'The count could not be posted.'));
     } finally {
@@ -372,7 +548,7 @@ export class CountSheetPage {
     this.dirty = false;
     this.saveState.set('Saving…');
     try {
-      await firstValueFrom(this.api.saveStockCount(this.id(), lines));
+      await firstValueFrom(this.api.saveStockCount(this.id(), lines, this.kind()));
       this.saved.set(true);
       this.saveState.set(`Saved ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`);
     } catch (error) {
@@ -404,6 +580,7 @@ export class CountSheetPage {
       this.materials.set(materials);
       this.count.set(count);
       this.saved.set(count !== null);
+      this.kind.set(count?.kind ?? (this.kindParam() === 'Opening' ? 'Opening' : 'Periodic'));
       const units = new Map(materials.map((m) => [m.id, this.sizeOf(m)]));
       this.counted.set(Object.fromEntries((count?.lines ?? []).map((l) => [l.rawMaterialId, l.countedQuantity / (units.get(l.rawMaterialId) ?? 1)])));
       if (count) {

@@ -16,7 +16,8 @@ namespace Costing.Infrastructure.Persistence;
 internal sealed class ItemConversions(CostingDbContext db) : IItemConversions
 {
     // What a material's ledger may hold to be made an expense: its purchases, counts and waste.
-    private static readonly StockMovementReason[] Kept = [StockMovementReason.Purchase, StockMovementReason.CountAdjustment, StockMovementReason.Spoilage];
+    private static readonly StockMovementReason[] Kept =
+        [StockMovementReason.Purchase, StockMovementReason.CountAdjustment, StockMovementReason.OpeningStock, StockMovementReason.Spoilage];
 
     public async Task<IReadOnlyList<string>> ExpenseBlockersAsync(
         IReadOnlyList<RawMaterial> materials, IReadOnlyDictionary<Guid, Guid> namesakes, Guid? exceptRequestId, CancellationToken cancellationToken)

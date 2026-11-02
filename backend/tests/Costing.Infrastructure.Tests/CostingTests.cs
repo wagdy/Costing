@@ -325,6 +325,57 @@ public class CostingTests
         Assert.Equal((135m, 12m), (s.FoodRecipeCost, s.BeverageRecipeCost));
     }
 
+    // The opening stock (جرد افتتاحي) when costing starts: where stock begins, valued at its cost,
+    // and no gain in the month's profit for stock found against the nothing recorded before it.
+    // The first periodic count is measured from it.
+    [Fact]
+    public async Task The_opening_stock_is_no_gain_in_the_profit_and_the_variance_report_starts_from_it()
+    {
+        await using var node = await TestSystem.StartAsync();
+        Assert.True(await MenuSynced(node));
+        var ct = TestContext.Current.CancellationToken;
+        async Task<Guid> Piece(string name, decimal cost) =>
+            (await node.Send(new CreateRawMaterialCommand(name, UnitOfMeasure.Piece, PurchaseUnit: "piece", PurchaseUnitSize: 1, CostPerPurchaseUnit: cost))).Id;
+        var patty = await Piece("Beef patty", 20);
+        var bun = await Piece("Bun", 5);
+        await node.Send(new SetRecipeCommand(RecipeTargetKind.MenuItem, TestMenu.Burger, null, [new(patty, 1), new(bun, 1)]));
+
+        var opening = Guid.NewGuid();
+        await node.Send(new SaveStockCountCommand(opening, [new(patty, 50), new(bun, 50)], "Omar", StockCountKind.Opening));
+        var posted = await node.Send(new PostStockCountCommand(opening, "Omar"));
+        Assert.Equal(1_000m + 250m, posted.Lines.Sum(l => l.CountedQuantity * l.UnitCost!.Value));
+        Assert.Equal(2, await node.Db(db => db.StockMovements.CountAsync(m => m.SourceId == opening && m.Reason == StockMovementReason.OpeningStock)));
+        Assert.Equal(StockCountKind.Opening, await node.Db(db => db.StockCounts.Where(c => c.Id == opening).Select(c => c.Kind).SingleAsync()));
+
+        using var scope = node.Scope();
+        var kpis = node.Service<KpiService>(scope);
+        var variance = node.Service<VarianceService>(scope);
+        var today = node.Service<IBusinessCalendar>(scope).BusinessDateOf(DateTime.UtcNow);
+        var month = (await kpis.GetAsync(today.Year, today.Month, ct)).Statement;
+        Assert.Equal((0m, 0m, 0m), (month.CountDifferences, month.CostOfSales, month.GrossProfit));
+        Assert.Contains("Post a periodic count", (await Assert.ThrowsAsync<DomainException>(() => variance.GetVarianceAsync(null, null, ct))).Message);
+
+        // Two burgers sold; a week later a patty is missing.
+        var order = await node.Send(new OpenOrderCommand(OrderType.DineIn, TableNumber: "O1"));
+        await node.Send(new AddOrderItemCommand(order.PublicId, TestMenu.Burger, 2));
+        await node.Send(new SendToKitchenCommand(order.PublicId));
+        await node.Send(new CheckoutCommand(order.PublicId, PaymentMethod.Cash));
+        Assert.True(await TestSystem.WaitFor(async () => await node.Db(db => db.StockMovements.CountAsync(m => m.Reason == StockMovementReason.Sale)) == 2));
+        var week = Guid.NewGuid();
+        await node.Send(new RecordStockCountCommand(week, [new(patty, 47), new(bun, 48)], "Omar"));
+
+        // Only the missing patty is a loss: 20.
+        month = (await kpis.GetAsync(today.Year, today.Month, ct)).Statement;
+        Assert.Equal((20m, 50m + 20m), (month.CountDifferences, month.CostOfSales));
+
+        var report = await variance.GetVarianceAsync(null, null, ct);
+        Assert.Equal((opening, true, week, false), (report.From.Id, report.From.Opening, report.To.Id, report.To.Opening));
+        var row = report.Rows.Single(r => r.Material == "Beef patty");
+        Assert.Equal((50m, 2m, 3m, 1m, 20m), (row.Opening, row.StandardUsage, row.ActualUsage, row.VarianceQuantity, row.VarianceValue));
+        Assert.StartsWith("The report ends at a periodic count",
+            (await Assert.ThrowsAsync<DomainException>(() => variance.GetVarianceAsync(null, opening, ct))).Message);
+    }
+
     // The same through the database, which keeps a unit cost to six places: what the costing
     // screens show for 5 kg at L.E 100 and 2,500 g at L.E 62.50 is right to the cent.
 

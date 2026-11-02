@@ -11,6 +11,11 @@ public interface IStockCountRepository : IRepository<StockCount>
 
     Task<IReadOnlyList<StockCount>> GetAllAsync(CancellationToken cancellationToken = default);
 
+    // Of these materials, those in a posted count other than this one (not voided), each with when
+    // it was first posted: an opening count does not count them again.
+    Task<IReadOnlyDictionary<Guid, DateTime>> CountedBeforeAsync(
+        IReadOnlyCollection<Guid> rawMaterialIds, Guid exceptStockCountId, CancellationToken cancellationToken = default);
+
     // Only a draft is ever removed. A posted count is part of the stock's history.
     void Remove(StockCount draft);
 }

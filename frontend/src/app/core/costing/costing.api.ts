@@ -415,6 +415,16 @@ export interface KpiReport {
 // Voided: posted, then deleted with a manager's approval, its adjustments reversed.
 export type StockCountStatus = 'Draft' | 'Posted' | 'Voided';
 
+// Periodic (جرد دوري): what is found against the records is a shortage or a surplus. Opening
+// (جرد افتتاحي): where each material's stock begins when costing starts, valued at its cost, with
+// no shortage or surplus and nothing in the profit. A material is opened once.
+export type StockCountKind = 'Periodic' | 'Opening';
+
+export const countKindLabels: Record<StockCountKind, { en: string; ar: string }> = {
+  Periodic: { en: 'Periodic count', ar: 'جرد دوري' },
+  Opening: { en: 'Opening stock', ar: 'جرد افتتاحي' },
+};
+
 export interface StockCountSummary {
   id: string;
   status: StockCountStatus;
@@ -425,6 +435,7 @@ export interface StockCountSummary {
   materials: number;
   voidedAtUtc?: string | null;
   voidedBy?: string | null;
+  kind: StockCountKind;
 }
 
 // Quantities in the material's unit (grams, millilitres, pieces). Book quantity and cost are
@@ -446,6 +457,7 @@ export interface StockCount {
   lines: StockCountLine[];
   voidedAtUtc?: string | null;
   voidedBy?: string | null;
+  kind: StockCountKind;
 }
 
 export interface SpoilageLine {
@@ -499,8 +511,9 @@ export interface VarianceRow {
 }
 
 export interface VarianceReport {
-  from: { id: string; postedAtUtc: string; postedBy: string | null };
-  to: { id: string; postedAtUtc: string; postedBy: string | null };
+  // From may be the opening stock; to is always a periodic count.
+  from: { id: string; postedAtUtc: string; postedBy: string | null; opening?: boolean };
+  to: { id: string; postedAtUtc: string; postedBy: string | null; opening?: boolean };
   tolerancePercent: number;
   rows: VarianceRow[];
   unfavourableCount: number;
@@ -1602,8 +1615,9 @@ export class CostingApi {
   }
 
   // The whole list each time: a material left out is not counted.
-  saveStockCount(id: string, lines: { rawMaterialId: string; countedQuantity: number }[]): Observable<StockCount> {
-    return this.http.put<StockCount>(`/api/inventory/stock-counts/${id}`, { lines });
+  // Kind: periodic or opening stock, as it starts or changed while a draft.
+  saveStockCount(id: string, lines: { rawMaterialId: string; countedQuantity: number }[], kind?: StockCountKind): Observable<StockCount> {
+    return this.http.put<StockCount>(`/api/inventory/stock-counts/${id}`, kind ? { lines, kind } : { lines });
   }
 
   postStockCount(id: string): Observable<StockCount> {

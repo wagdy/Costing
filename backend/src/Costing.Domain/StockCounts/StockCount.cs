@@ -1,4 +1,5 @@
 using Costing.Domain.Common;
+using Costing.Domain.Production;
 using Costing.Domain.RawMaterials;
 using Costing.Domain.StockMovements;
 
@@ -17,10 +18,22 @@ public enum StockCountStatus
     Voided = 3,
 }
 
+public enum StockCountKind
+{
+    // The weekly count (جرد دوري): what is found against the records is a shortage or a surplus.
+    Periodic = 1,
+
+    // The stock found when costing starts (جرد افتتاحي): where each material's stock begins, valued
+    // at its cost, with no shortage or surplus against the records before it. Once per material:
+    // one counted already is counted periodically from then on.
+    Opening = 2,
+}
+
 // A physical count of the stores, material by material. Filled in as a draft, then posted: each
-// counted material's stock is set to what was on the shelf (a CountAdjustment in the ledger),
-// and what the ledger said at that moment is kept beside it, with the average cost then.
-// Posted counts are the fixed points the variance report measures between.
+// counted material's stock is set to what was on the shelf (a CountAdjustment in the ledger, or
+// for an opening count OpeningStock), and what the ledger said at that moment is kept beside it,
+// with the average cost then. Posted counts are the fixed points the variance report measures
+// between: an opening count only ever as the first.
 //
 // A material with no line was not counted, which is not the same as counted at nothing: its
 // stock is left alone.
@@ -31,15 +44,18 @@ public sealed class StockCount : AggregateRoot
     private StockCount() { }
 
     // The id is made by the till, so a retry after a lost answer reaches the same count.
-    public StockCount(Guid id, string startedBy)
+    public StockCount(Guid id, string startedBy, StockCountKind kind = StockCountKind.Periodic)
     {
         Id = id;
         StartedBy = startedBy;
         StartedAtUtc = DateTime.UtcNow;
         Status = StockCountStatus.Draft;
+        SetKind(kind);
     }
 
     public StockCountStatus Status { get; private set; }
+    public StockCountKind Kind { get; private set; } = StockCountKind.Periodic;
+    public bool IsOpening => Kind == StockCountKind.Opening;
     public DateTime StartedAtUtc { get; private set; }
     public string StartedBy { get; private set; } = string.Empty;
     public DateTime? PostedAtUtc { get; private set; }
@@ -48,6 +64,16 @@ public sealed class StockCount : AggregateRoot
     public string? VoidedBy { get; private set; }
 
     public IReadOnlyList<StockCountLine> Lines => _lines.AsReadOnly();
+
+    // Periodic or opening, while it is a draft: started as one, it can be told it is the other.
+    public void SetKind(StockCountKind kind)
+    {
+        if (!Enum.IsDefined(kind))
+            throw new DomainException("Choose the kind of count: periodic or opening stock. · اختر نوع الجرد: دوري أو افتتاحي.");
+        if (Status != StockCountStatus.Draft && kind != Kind)
+            throw new DomainException($"This count has been {Status.ToString().ToLowerInvariant()}: its kind stays.");
+        Kind = kind;
+    }
 
     // Replaces the draft's figures with these, in each material's unit (grams, millilitres, pieces).
     public void Record(IReadOnlyCollection<(Guid RawMaterialId, decimal Counted)> counted)
@@ -74,7 +100,11 @@ public sealed class StockCount : AggregateRoot
     // the differences, for the caller to add in the same unit of work. Counting should happen
     // with the kitchen closed: a sale while the count is open is taken from stock the count
     // then overwrites.
-    public IReadOnlyList<StockMovement> Post(IReadOnlyDictionary<Guid, RawMaterial> materials, string postedBy)
+    //
+    // An opening count's entries are OpeningStock, not CountAdjustment: where stock begins. A prep
+    // item in it never made yet, with no cost of its own, is valued by its recipe today (costs);
+    // each line keeps the cost it was valued at.
+    public IReadOnlyList<StockMovement> Post(IReadOnlyDictionary<Guid, RawMaterial> materials, string postedBy, RecipeCosts? costs = null)
     {
         if (Status != StockCountStatus.Draft)
             throw new DomainException($"This count has already been {Status.ToString().ToLowerInvariant()}.");
@@ -86,8 +116,18 @@ public sealed class StockCount : AggregateRoot
         {
             var material = materials.GetValueOrDefault(line.RawMaterialId)
                 ?? throw new NotFoundException(nameof(RawMaterial), line.RawMaterialId);
-            line.Close(material.QuantityOnHand, material.AverageCost);
-            movements.Add(material.AdjustToCount(line.CountedQuantity, Id));
+            var book = material.QuantityOnHand;
+            if (IsOpening)
+            {
+                var byRecipe = costs?.Of(material.Id) is { ByRecipe: true, PerUnit: { } perUnit } ? perUnit : (decimal?)null;
+                movements.Add(material.OpenStock(line.CountedQuantity, Id, byRecipe));
+                line.Close(book, material.AverageCost);
+            }
+            else
+            {
+                line.Close(book, material.AverageCost);
+                movements.Add(material.AdjustToCount(line.CountedQuantity, Id));
+            }
         }
 
         Status = StockCountStatus.Posted;
