@@ -408,6 +408,82 @@ public class CostingApiTests
         Assert.Contains("تعذّرت قراءة الملف", await refused.Content.ReadAsStringAsync(Cancel));
     }
 
+    // Recipes and prep items through the API: the smart template and the export, a dropdown of
+    // ingredients with their units on a hidden sheet; an export imported back changes nothing,
+    // one edited replaces the recipes it names and costs them; a prep item imported by anyone but
+    // a manager waits for one.
+    [Fact]
+    public async Task Recipes_and_prep_items_come_and_go_by_their_smart_sheets()
+    {
+        await using var api = await TestApi.StartAsync();
+        var manager = await api.ManagerAsync();
+        var (mozzarella, large, _) = await PizzaAsync(manager);
+        var flour = (await Json(await manager.PostAsJsonAsync("/api/inventory/raw-materials", new
+        {
+            name = "Flour", unit = "Gram", purchaseUnit = "kg", purchaseUnitSize = 1000, costPerPurchaseUnit = 30,
+        }, Cancel))).GetProperty("id").GetGuid();
+        await Json(await manager.PostAsJsonAsync("/api/inventory/prep-items", new
+        {
+            name = "Pizza dough", unit = "Gram", batchQuantity = 1000, ingredients = new[] { new { rawMaterialId = flour, quantity = 600 } },
+        }, Cancel));
+
+        // The template: no rows, every ingredient with its unit on the hidden sheet.
+        using (var template = new XLWorkbook(await (await manager.GetAsync("/api/inventory/recipes/sheet/template", Cancel)).Content.ReadAsStreamAsync(Cancel)))
+        {
+            Assert.Empty(template.Worksheet("Recipes").RowsUsed().Skip(1));
+            var ingredients = template.Worksheet("Ingredients");
+            Assert.Equal(XLWorksheetVisibility.Hidden, ingredients.Visibility);
+            Assert.Equal(["Flour (Kg)", "Mozzarella (Kg)", "Pizza dough · مصنّع (Kg)"], ingredients.Column(1).CellsUsed().Skip(1).Select(c => c.GetString()));
+        }
+
+        var exported = await manager.GetAsync("/api/inventory/recipes/sheet/export", Cancel);
+        Assert.Equal("recipes.xlsx", exported.Content.Headers.ContentDisposition!.FileNameStar ?? exported.Content.Headers.ContentDisposition.FileName);
+        var recipes = await exported.Content.ReadAsByteArrayAsync(Cancel);
+        var again = await Json(await manager.PostAsync("/api/inventory/recipes/sheet/import", File(recipes, "recipes.xlsx"), Cancel));
+        Assert.Equal((0, 0, 2), (again.GetProperty("created").GetArrayLength(), again.GetProperty("updated").GetArrayLength(), again.GetProperty("unchanged").GetInt32()));
+
+        // Edited: the margherita's mozzarella 200 g, and a recipe for the large size.
+        using (var book = new XLWorkbook(new MemoryStream(recipes)))
+        {
+            var sheet = book.Worksheet("Recipes");
+            var margherita = sheet.RowsUsed().Single(r => r.Cell(1).GetString() == "6101 · Margherita");
+            Assert.Equal(("Mozzarella (Kg)", 0.15), (margherita.Cell(2).GetString(), margherita.Cell(3).GetDouble()));
+            margherita.Cell(3).Value = 0.2;
+            var next = sheet.LastRowUsed()!.RowNumber() + 1;
+            sheet.Cell(next, 1).Value = $"6101-{large} · Margherita (Large)";
+            sheet.Cell(next, 2).Value = "Mozzarella (Kg)";
+            sheet.Cell(next, 3).Value = 0.25;
+            sheet.Cell(next + 1, 2).Value = "Pizza dough · مصنّع (Kg)";
+            sheet.Cell(next + 1, 3).Value = 0.3;
+            var imported = await Json(await manager.PostAsync("/api/inventory/recipes/sheet/import", Sheet(book, "recipes.xlsx"), Cancel));
+            Assert.Equal((1, 1), (imported.GetProperty("created").GetArrayLength(), imported.GetProperty("updated").GetArrayLength()));
+            var costs = imported.GetProperty("costed").EnumerateArray().ToDictionary(c => c.GetProperty("name").GetString()!);
+            // 200 g of mozzarella at 300 a kg; the large size 75 of it and dough not priced yet.
+            Assert.Equal((60m, "portion"), (costs["6101 · Margherita"].GetProperty("costPer").GetDecimal(), costs["6101 · Margherita"].GetProperty("per").GetString()));
+            Assert.Equal(["Pizza dough"], costs[$"6101-{large} · Margherita (Large)"].GetProperty("missingPrices").EnumerateArray().Select(m => m.GetString()));
+        }
+        var card = await Json(await manager.GetAsync("/api/costing/recipe-card?targetKind=MenuItem&catalogItemId=6101", Cancel));
+        Assert.Equal(200m, card.GetProperty("lines").EnumerateArray().Single(l => l.GetProperty("rawMaterialId").GetGuid() == mozzarella).GetProperty("quantity").GetDecimal());
+
+        // The prep items' sheet, imported by a cost controller: asked of a manager, nothing changed yet.
+        var controller = await api.UserAsync(manager, "Karim", UserRole.CostController);
+        using (var prep = new XLWorkbook(await (await controller.GetAsync("/api/inventory/prep-items/sheet/export", Cancel)).Content.ReadAsStreamAsync(Cancel)))
+        {
+            var sheet = prep.Worksheet("Prep Items");
+            Assert.Equal(["Pizza dough", "Flour (Kg)", "0.6", "1", "Kg"], sheet.Row(2).Cells(1, 5).Select(c => c.GetFormattedString()));
+            sheet.Cell(2, 3).Value = 0.65;
+            var asked = await Json(await controller.PostAsync("/api/inventory/prep-items/sheet/import", Sheet(prep, "prep-items.xlsx"), Cancel));
+            Assert.Equal((0, 1), (asked.GetProperty("updated").GetArrayLength(), asked.GetProperty("requested").GetInt32()));
+        }
+        Assert.Contains((await Json(await manager.GetAsync("/api/inventory/approval-requests", Cancel))).GetProperty("pending").EnumerateArray(),
+            r => r.GetProperty("module").GetString() == "PrepItem");
+
+        // Recipes are not an accountant's section.
+        var accountant = await api.AccountantAsync(manager);
+        Assert.Equal(HttpStatusCode.Forbidden, (await accountant.GetAsync("/api/inventory/recipes/sheet/export", Cancel)).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await accountant.PostAsync("/api/inventory/recipes/sheet/import", File(recipes, "recipes.xlsx"), Cancel)).StatusCode);
+    }
+
     private static MultipartFormDataContent File(byte[] content, string name)
     {
         var file = new ByteArrayContent(content);

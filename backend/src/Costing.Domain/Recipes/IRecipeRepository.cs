@@ -5,6 +5,10 @@ namespace Costing.Domain.Recipes;
 // Returns recipes with their Ingredients loaded. Nothing removes one: a deleted recipe is marked so.
 public interface IRecipeRepository : IRepository<Recipe>
 {
+    // Every recipe, on the menu or off it, the deleted ones too: a recipes sheet is written from
+    // them and read back against them.
+    Task<IReadOnlyList<Recipe>> GetAllAsync(CancellationToken cancellationToken = default);
+
     // The active recipe linked to the target, if any.
     Task<Recipe?> GetByTargetAsync(RecipeTarget target, CancellationToken cancellationToken = default);
 

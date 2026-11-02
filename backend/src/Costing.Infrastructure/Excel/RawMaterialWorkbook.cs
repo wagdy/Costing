@@ -39,13 +39,13 @@ public static class RawMaterialWorkbook
         new("PurchaseUnit", PurchaseUnitHeader, ["purchase unit", "bought in", "وحدة الشراء"],
             "Optional: what it is bought in, such as kg, carton or sack. Blank: the unit itself."),
         new("Holds", HoldsHeader, ["purchase unit holds", "holds", "pack size", "سعة وحدة الشراء", "العبوة"],
-            "How many kg, litres or pieces one purchase unit holds: 1 for a kg, 30 for a carton of 30 eggs, 25 for a 25 kg sack.", "0.###"),
+            "How many kg, litres or pieces one purchase unit holds: 1 for a kg, 30 for a carton of 30 eggs, 25 for a 25 kg sack."),
         new("Cost", CostHeader, ["cost per purchase unit", "initial cost", "cost", "تكلفة وحدة الشراء", "التكلفة المبدئية", "التكلفة"],
             "Optional: the price of one purchase unit. It replaces the average cost only when it differs; purchases move it from there.", "0.00##"),
         new("ReorderLevel", ReorderHeader, ["reorder level", "reorder at", "min stock", "حد الطلب", "حد إعادة الطلب"],
-            "Optional: reorder when stock falls to this many purchase units.", "0.###"),
+            "Optional: reorder when stock falls to this many purchase units."),
         new("Yield", YieldHeader, ["yield %", "yield", "default yield", "نسبة الصافي", "الصافي"],
-            "Optional: what is left after trimming, 1 to 100. Blank: 100 for a new material.", "0.##"),
+            "Optional: what is left after trimming, 1 to 100. Blank: 100 for a new material."),
     ];
 
     private static readonly string[] Help =

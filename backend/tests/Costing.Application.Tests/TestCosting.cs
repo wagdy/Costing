@@ -329,6 +329,7 @@ public sealed class RecipeStore : IRecipeRepository
 
     public Task<Recipe?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default) => Task.FromResult(_recipes.SingleOrDefault(r => r.Id == id));
     public void Add(Recipe aggregate) => _recipes.Add(aggregate);
+    public Task<IReadOnlyList<Recipe>> GetAllAsync(CancellationToken cancellationToken = default) => Task.FromResult<IReadOnlyList<Recipe>>(_recipes.ToList());
     public Task<int> CountUsingAsync(Guid rawMaterialId, CancellationToken cancellationToken = default) =>
         Task.FromResult(_recipes.Count(r => !r.IsDeleted && r.Ingredients.Any(i => i.RawMaterialId == rawMaterialId)));
     // The ones sales go by: not deleted, and linked to the menu.

@@ -2,6 +2,7 @@ import { DatePipe, DecimalPipe } from '@angular/common';
 import { Component, computed, effect, inject, input, signal, untracked } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
+import { MatDialog } from '@angular/material/dialog';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatIconModule } from '@angular/material/icon';
 import { MatInputModule } from '@angular/material/input';
@@ -14,7 +15,11 @@ import { CostStatus, CostingApi, ApprovalRequest, RecipeCategory, RecipeCostCard
 import { errorMessage } from '../../core/http/error-message';
 import { MoneyPipe } from '../../core/ui/money.pipe';
 import { NotifyService } from '../../core/ui/notify.service';
+import { saveBlob } from '../../core/ui/save-blob';
 import { Approvals, pendingLabel } from './approvals';
+import { todayIso } from './financials';
+import { recipeSheetRules } from './recipe-sheet-rules';
+import { SheetImportData, SheetImportDialog } from './sheet-import-dialog';
 
 // What the table shows: the recipes (all, on the menu, off it), the menu items still without
 // one, or the deleted ones.
@@ -25,7 +30,9 @@ export type RecipeSort = 'recipe' | 'category' | 'cost' | 'foodCost';
 
 // The recipes: each with what it is linked to on the menu (or that it is off the menu), what a
 // portion costs against its price, and View, Edit and Delete. Deleting marks it deleted: it stays
-// for the record and can be restored. A menu item with no recipe yet is a click from one.
+// for the record and can be restored. A menu item with no recipe yet is a click from one. To and
+// from Excel: every recipe a row per ingredient, the ingredient chosen from a dropdown that says
+// its unit; a sheet imported replaces the recipes it names, and says what each costs now.
 @Component({
   selector: 'app-recipes-page',
   imports: [
@@ -83,8 +90,17 @@ export type RecipeSort = 'recipe' | 'category' | 'cost' | 'foodCost';
         </mat-form-field>
       }
       <span class="spacer"></span>
+      <button mat-stroked-button (click)="exportExcel()" [disabled]="busy()">
+        <mat-icon>download</mat-icon> Export Excel <span class="inline-ar">تصدير إلى إكسل</span>
+      </button>
+      <button mat-stroked-button (click)="importExcel()" [disabled]="busy()">
+        <mat-icon>upload_file</mat-icon> Import Excel <span class="inline-ar">استيراد من إكسل</span>
+      </button>
       <a mat-flat-button class="create" routerLink="new"><mat-icon>add</mat-icon> Create New Recipe</a>
     </div>
+    @if (busy()) {
+      <mat-progress-bar mode="indeterminate" />
+    }
     @if (!loading() && !error()) {
       <p class="muted counts">
         {{ counts().recipes }} {{ counts().recipes === 1 ? 'recipe' : 'recipes' }}: {{ counts().linked }} linked to the menu,
@@ -294,6 +310,7 @@ export class RecipesPage {
   private readonly api = inject(CostingApi);
   private readonly router = inject(Router);
   private readonly notify = inject(NotifyService);
+  private readonly dialog = inject(MatDialog);
   protected readonly approvals = inject(Approvals);
 
   protected readonly statusLabels = statusLabels;
@@ -304,6 +321,8 @@ export class RecipesPage {
   protected readonly menu = signal<RecipeCostCard[]>([]);
   protected readonly loading = signal(true);
   protected readonly saving = signal(false);
+  // An export being written.
+  protected readonly busy = signal(false);
   protected readonly error = signal<string | null>(null);
   protected readonly search = signal('');
   protected readonly view = signal<RecipesView>('active');
@@ -407,6 +426,43 @@ export class RecipesPage {
   }
 
   // Deleted for a manager (it can be restored from Deleted); asked of one for anyone else.
+  protected async exportExcel(): Promise<void> {
+    this.busy.set(true);
+    try {
+      saveBlob(await firstValueFrom(this.api.exportRecipes()), `recipes-${todayIso()}.xlsx`);
+      this.notify.info('Recipes exported to Excel. · تم تصدير الوصفات إلى إكسل.');
+    } catch (error) {
+      this.notify.error(error, 'The recipes could not be exported. · تعذّر تصدير الوصفات.');
+    } finally {
+      this.busy.set(false);
+    }
+  }
+
+  // A sheet imported in the dialog, which says what it did and what each recipe costs now; the
+  // list read again when it changed it.
+  protected async importExcel(): Promise<void> {
+    const data: SheetImportData = {
+      title: { en: 'Import recipes from Excel', ar: 'استيراد الوصفات من إكسل' },
+      noun: { one: 'recipe', many: 'recipes', ar: 'الوصفة' },
+      rules: [
+        {
+          en: 'One ingredient a row: the recipe (a menu item, size or add-on from the list, or a recipe of your own), the ingredient from the list, and its quantity.',
+          ar: 'مكوّن في كل صف: الوصفة (صنف أو حجم أو إضافة من القائمة، أو وصفة خاصة)، والمكوّن من القائمة، وكميته.',
+        },
+        ...recipeSheetRules,
+      ],
+      templateName: 'recipes-template.xlsx',
+      template: () => this.api.recipesTemplate(),
+      upload: (file) => this.api.importRecipes(file),
+    };
+    const changed = await firstValueFrom(
+      this.dialog.open<SheetImportDialog, SheetImportData, boolean>(SheetImportDialog, { data, width: '860px', maxWidth: '96vw' }).afterClosed(),
+    );
+    if (changed) {
+      await this.load();
+    }
+  }
+
   protected async remove(card: RecipeCostCard): Promise<void> {
     this.saving.set(true);
     try {

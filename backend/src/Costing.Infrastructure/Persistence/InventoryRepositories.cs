@@ -47,6 +47,9 @@ internal sealed class RecipeRepository(CostingDbContext db) : IRecipeRepository
 
     public void Add(Recipe aggregate) => db.Recipes.Add(aggregate);
 
+    public async Task<IReadOnlyList<Recipe>> GetAllAsync(CancellationToken cancellationToken = default) =>
+        await WithIngredients.ToListAsync(cancellationToken);
+
     // The ones sales go by: not deleted, and linked to the menu.
     private IQueryable<Recipe> Active => WithIngredients.Where(r => r.DeletedAtUtc == null && r.CatalogItemId != null);
 

@@ -91,6 +91,44 @@ template's four columns (its Initial Cost is per kg, litre or piece) still impor
 - Up to 2,000 rows a file and 5 MB; the Raw materials tab exports and imports the materials, the
   Expense items tab the expense items (`inventory.manage` both).
 
+## Recipes and prep items in Excel
+
+Recipes and Prep items each have **Export Excel** and **Import Excel**, through the same import
+dialog. The sheet is a row per ingredient; the export is the recipes as they are, and the template
+the same sheet with no rows.
+
+| Sheet | Columns |
+| --- | --- |
+| Recipes | Recipe, Ingredient, Quantity (for the whole recipe); Portions and Recipe Category on any of its rows |
+| Prep Items | Prep Item, Ingredient, Quantity per Batch; Batch Makes and Kept in (Kg, Liter, Piece) on any of its rows |
+
+- **The ingredient is chosen from a dropdown** that offers only the materials and prep items there
+  are, each labelled with the unit its quantity is written in: "Flour (Kg)", "Pizza dough · مصنّع
+  (Kg)". The quantity is in that unit, 0.2 for 200 g; the import converts it to the material's
+  grams, millilitres or pieces. The list is a hidden sheet, **Ingredients**: every material and
+  prep item with its code, its kind and its system unit. A label typed by hand is still read (by
+  its name or code), but a unit in brackets that is not the material's ("Flour (g)") is refused.
+- **The recipe column** offers the menu's items, sizes and add-ons by their codes ("6101 ·
+  Margherita", "6101-2 · Margherita (Large)", "A3 · Extra cheese") and the recipes off the menu;
+  a name of a menu item, size or add-on is linked to it, and a new name adds a recipe off the menu.
+- **Grouped by name:** a recipe's rows (a blank name is the row above's) replace its whole
+  ingredient list, each ingredient keeping its yield. Its portions and category change only when
+  given; a new category is added. A prep item's batch, blank, stays as it was; a new one's is the
+  weight of its ingredients, said so, and a new prep item is filed under مصنعات.
+- **All or nothing per recipe:** one row that cannot be read (an ingredient not there, a wrong
+  unit, no quantity) leaves its recipe as it was, and each such row is said why. One waiting for a
+  manager, deleted, or named twice is skipped. A prep item made with another new one on the sheet
+  is made after it; ones made with each other are skipped.
+- **No prices on the sheet:** each recipe imported is costed from its ingredients' average costs
+  now (as purchased, its yields lost): the whole recipe and one portion, or the batch and one kg,
+  litre or piece. An ingredient with no price yet is named. A quantity that reads as grams
+  written as kilos (over 5 kg a portion, or 200 kg a batch) is said, as is one ingredient twice
+  (its quantities added together).
+- **Who:** the Recipes tab (`inventory.manage`). Recipes are saved at once, as on the recipe card;
+  prep items at once for a manager and asked of one for anyone else, each a request on Approvals.
+- The kitchen's own batch recipes sheet (المصنعات, each prep item's name on a row of its own)
+  still imports new prep items, from **Batch recipes sheet** on Prep items.
+
 ## The menu
 
 The menu the recipes sell by and the sales name. An item's number is its code on every report:

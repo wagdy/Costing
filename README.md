@@ -7,7 +7,8 @@ HR system needed beside it. Bilingual (English and Arabic, right-to-left) throug
   hand, reorder levels, categories, and Excel export and import (to update them in bulk, or to
   move them to another installation).
 - **Recipes**: recipe cards for menu items, their sizes and add-ons, and prep items (مصنعات) made
-  from other materials, each costed from the materials' prices as they are now.
+  from other materials, each costed from the materials' prices as they are now. Both export to a
+  smart Excel sheet (each ingredient chosen from a dropdown that says its unit) and import back.
 - **Production**: prep items made in batches, their materials taken from stock, their cost per
   unit worked out from what went in.
 - **Menu**: categories, items numbered as their codes on every report, sizes and add-ons, kept

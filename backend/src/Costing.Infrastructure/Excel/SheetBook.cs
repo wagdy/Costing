@@ -10,8 +10,15 @@ namespace Costing.Infrastructure.Excel;
 internal sealed record Column(string Key, string Header, string[] Names, string Note, string? NumberFormat = null);
 
 // A column's dropdown: the values offered, from a hidden sheet, and what is said of one typed that
-// is not on it. OthersAllowed: a warning that lets it stand (a new category); else it is refused.
-internal sealed record SheetList(IReadOnlyList<string> Values, bool OthersAllowed, string Title, string Message);
+// is not on it. OthersAllowed: a note that lets it stand (a new category); else a warning, which
+// still lets a person keep it (كيلو for Kg); Strict: refused outright (an ingredient not on the
+// list). Reference: a reference sheet's column to offer instead of Values, as "Ingredients!A".
+internal sealed record SheetList(
+    IReadOnlyList<string> Values, bool OthersAllowed, string Title, string Message, string? Reference = null, bool Strict = false);
+
+// A sheet of reference data the workbook carries (the ingredients and their units): its columns'
+// headings and its rows, hidden unless it is meant to be read.
+internal sealed record ReferenceSheet(string Name, string[] Headers, IReadOnlyList<object?[]> Rows, bool Hidden = true);
 
 // One cell as read: its value, and the text Excel shows for it. Copied out while the workbook is
 // open, which it is not once the rows are read.
@@ -109,10 +116,10 @@ internal static class SheetBook
     private const int SpareRows = 1000;
 
     // rows: the sheet filled in (an export), in the columns' order; none for a template. lists: a
-    // dropdown for a column, by its key.
+    // dropdown for a column, by its key. references: sheets of reference data a dropdown may offer.
     public static Stream Build(
         string sheetName, Column[] columns, string[] help, object[][] examples, IReadOnlyList<object?[]>? rows = null,
-        IReadOnlyDictionary<string, SheetList>? lists = null)
+        IReadOnlyDictionary<string, SheetList>? lists = null, IReadOnlyList<ReferenceSheet>? references = null)
     {
         using var workbook = new XLWorkbook();
         var sheet = workbook.Worksheets.Add(sheetName);
@@ -146,8 +153,10 @@ internal static class SheetBook
         if (rows.Count > 0)
             sheet.Range(1, 1, rows.Count + 1, columns.Length).SetAutoFilter();
 
+        foreach (var reference in references ?? [])
+            AddReference(workbook, reference);
         if (lists is { Count: > 0 })
-            AddLists(workbook, sheet, columns, lists, lastRow);
+            AddLists(workbook, sheet, columns, lists, lastRow, references ?? []);
 
         var helpSheet = workbook.Worksheets.Add(HelpSheetName);
         for (var i = 0; i < help.Length; i++)
@@ -172,29 +181,63 @@ internal static class SheetBook
         return stream;
     }
 
-    // Each list on a hidden sheet, a column of it each, and a dropdown from it on its column.
-    private static void AddLists(XLWorkbook workbook, IXLWorksheet sheet, Column[] columns, IReadOnlyDictionary<string, SheetList> lists, int lastRow)
+    // A reference sheet: bold headings, its rows, each column as wide as it needs; hidden unless meant to be read.
+    private static void AddReference(XLWorkbook workbook, ReferenceSheet reference)
     {
-        var listsSheet = workbook.Worksheets.Add(ListsSheetName);
+        var sheet = workbook.Worksheets.Add(reference.Name);
+        for (var c = 0; c < reference.Headers.Length; c++)
+        {
+            sheet.Cell(1, c + 1).Value = reference.Headers[c];
+            sheet.Cell(1, c + 1).Style.Font.Bold = true;
+            var longest = reference.Rows.Select(r => c < r.Length ? Convert.ToString(r[c], CultureInfo.InvariantCulture)?.Length ?? 0 : 0).DefaultIfEmpty(0).Max();
+            sheet.Column(c + 1).Width = Math.Min(60, Math.Max(reference.Headers[c].Length + 4, longest + 3));
+        }
+        for (var r = 0; r < reference.Rows.Count; r++)
+            for (var c = 0; c < reference.Rows[r].Length; c++)
+                if (reference.Rows[r][c] is { } value)
+                    sheet.Cell(r + 2, c + 1).Value = XLCellValue.FromObject(value);
+        sheet.SheetView.FreezeRows(1);
+        if (reference.Hidden)
+            sheet.Visibility = XLWorksheetVisibility.Hidden;
+    }
+
+    // Each list on a hidden sheet, a column of it each, or a reference sheet's column; and a
+    // dropdown from it on its column.
+    private static void AddLists(
+        XLWorkbook workbook, IXLWorksheet sheet, Column[] columns, IReadOnlyDictionary<string, SheetList> lists, int lastRow, IReadOnlyList<ReferenceSheet> references)
+    {
+        IXLWorksheet? listsSheet = null;
         var at = 0;
         foreach (var (key, list) in lists)
         {
             var column = Array.FindIndex(columns, c => c.Key == key) + 1;
             if (column == 0)
                 continue;
-            at++;
-            listsSheet.Cell(1, at).Value = key;
-            for (var i = 0; i < list.Values.Count; i++)
-                listsSheet.Cell(i + 2, at).Value = list.Values[i];
-            var letter = XLHelper.GetColumnLetterFromNumber(at);
+            string range;
+            if (list.Reference?.Split('!') is [var referenceName, var referenceColumn])
+            {
+                var count = references.Single(r => r.Name == referenceName).Rows.Count;
+                range = $"'{referenceName}'!${referenceColumn}$2:${referenceColumn}${Math.Max(count, 1) + 1}";
+            }
+            else
+            {
+                listsSheet ??= workbook.Worksheets.Add(ListsSheetName);
+                at++;
+                listsSheet.Cell(1, at).Value = key;
+                for (var i = 0; i < list.Values.Count; i++)
+                    listsSheet.Cell(i + 2, at).Value = list.Values[i];
+                var letter = XLHelper.GetColumnLetterFromNumber(at);
+                range = $"'{ListsSheetName}'!${letter}$2:${letter}${Math.Max(list.Values.Count, 1) + 1}";
+            }
             var validation = sheet.Range(2, column, lastRow, column).CreateDataValidation();
-            validation.List($"'{ListsSheetName}'!${letter}$2:${letter}${Math.Max(list.Values.Count, 1) + 1}", true);
+            validation.List(range, true);
             validation.IgnoreBlanks = true;
-            validation.ErrorStyle = list.OthersAllowed ? XLErrorStyle.Information : XLErrorStyle.Warning;
+            validation.ErrorStyle = list.Strict ? XLErrorStyle.Stop : list.OthersAllowed ? XLErrorStyle.Information : XLErrorStyle.Warning;
             validation.ErrorTitle = list.Title;
             validation.ErrorMessage = list.Message;
         }
-        listsSheet.Visibility = XLWorksheetVisibility.Hidden;
+        if (listsSheet is not null)
+            listsSheet.Visibility = XLWorksheetVisibility.Hidden;
     }
 
     // The rows of a filled-in sheet: the first visible sheet with the required column. Blank rows

@@ -7,6 +7,7 @@ import { CostingApi, PrepImportResult } from '../../core/costing/costing.api';
 import { NotifyService } from '../../core/ui/notify.service';
 import { PrepImportDialog } from './prep-import-dialog';
 import { PrepItemsPage } from './prep-items-page';
+import { SheetImportData, SheetImportDialog } from './sheet-import-dialog';
 
 const result: PrepImportResult = {
   imported: [
@@ -26,6 +27,10 @@ const text = (el: Element) => el.textContent!.replace(/\s+/g, ' ').trim();
 
 describe('prep items from a sheet of batch recipes', () => {
   const importPrepItems = vi.fn();
+  const importPrepItemsSheet = vi.fn();
+  const exportPrepItems = vi.fn();
+  const prepItemsTemplate = vi.fn();
+  const approvalRequests = vi.fn();
   const prepItems = vi.fn();
   const open = vi.fn();
   const notify = { info: vi.fn(), error: vi.fn() };
@@ -36,7 +41,7 @@ describe('prep items from a sheet of batch recipes', () => {
         provideRouter([]),
         {
           provide: CostingApi,
-          useValue: { importPrepItems, prepItems, approvalRequests: () => of({ pending: [], decided: [] }), recipeCategories: () => of([]) },
+          useValue: { importPrepItems, importPrepItemsSheet, exportPrepItems, prepItemsTemplate, prepItems, approvalRequests, recipeCategories: () => of([]) },
         },
         { provide: AuthService, useValue: { me: () => null, can: () => true } },
         { provide: MatDialog, useValue: { open } },
@@ -58,19 +63,57 @@ describe('prep items from a sheet of batch recipes', () => {
 
   beforeEach(() => {
     importPrepItems.mockReset().mockReturnValue(of(result));
+    exportPrepItems.mockReset().mockReturnValue(of(new Blob(['xlsx'])));
+    approvalRequests.mockReset().mockReturnValue(of({ pending: [], decided: [] }));
     prepItems.mockReset().mockReturnValue(of([]));
     open.mockReset();
     notify.error.mockReset();
+    notify.info.mockReset();
   });
 
-  it('offers the import beside adding one', async () => {
+  it('offers the smart sheet’s export and import, and the batch recipes sheet, beside adding one', async () => {
     const { el } = await render();
 
     expect([...el.querySelectorAll('.toolbar button, .toolbar a')].map(text)).toEqual([
       'precision_manufacturing Make a batch',
-      'upload_file Import from Excelاستيراد',
+      'download Export Excel تصدير إلى إكسل',
+      'upload_file Import Excel استيراد من إكسل',
+      'post_add Batch recipes sheetملف المصنعات',
       'add Add prep item',
     ]);
+  });
+
+  it('exports the prep items, and imports the smart sheet in the dialog, the requests read again when asked of a manager', async () => {
+    const { page } = await render();
+    let saved: HTMLAnchorElement | undefined;
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+      saved = this;
+    });
+    URL.createObjectURL = vi.fn(() => 'blob:export');
+    URL.revokeObjectURL = vi.fn();
+    await page['exportExcel']();
+    expect(saved!.download).toMatch(/^prep-items-\d{4}-\d{2}-\d{2}\.xlsx$/);
+    expect(notify.info).toHaveBeenCalledWith('Prep items exported to Excel. · تم تصدير الأصناف المُصنَّعة إلى إكسل.');
+    click.mockRestore();
+
+    // Nothing saved, only asked: the list as it was, the requests read again.
+    open.mockReturnValue({ afterClosed: () => of(false) });
+    const requestsBefore = approvalRequests.mock.calls.length;
+    await page['importExcel']();
+    expect(open).toHaveBeenCalledWith(SheetImportDialog, expect.objectContaining({ width: '860px' }));
+    const data = open.mock.lastCall![1].data as SheetImportData;
+    expect([data.title.en, data.templateName, data.rules.length]).toEqual(['Import prep items from Excel', 'prep-items-template.xlsx', 5]);
+    const file = new File(['xlsx'], 'prep.xlsx');
+    data.upload(file);
+    data.template();
+    expect(importPrepItemsSheet).toHaveBeenCalledWith(file);
+    expect(prepItemsTemplate).toHaveBeenCalled();
+    expect(prepItems).toHaveBeenCalledTimes(1);
+    expect(approvalRequests.mock.calls.length).toBeGreaterThan(requestsBefore);
+
+    open.mockReturnValue({ afterClosed: () => of(true) });
+    await page['importExcel']();
+    expect(prepItems).toHaveBeenCalledTimes(2);
   });
 
   it('imports the chosen sheet, shows what it did, and reads the list again', async () => {

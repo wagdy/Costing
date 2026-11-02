@@ -8,6 +8,7 @@ import { MatIconModule } from '@angular/material/icon';
 import { MatInputModule } from '@angular/material/input';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatSelectModule } from '@angular/material/select';
+import { MatTooltipModule } from '@angular/material/tooltip';
 import { Router, RouterLink } from '@angular/router';
 import { firstValueFrom } from 'rxjs';
 import { CostingApi, PrepImportResult, PrepItem, RecipeCategory } from '../../core/costing/costing.api';
@@ -15,13 +16,19 @@ import { errorMessage } from '../../core/http/error-message';
 import { MoneyPipe } from '../../core/ui/money.pipe';
 import { NotifyService } from '../../core/ui/notify.service';
 import { Approvals, pendingLabel } from './approvals';
+import { saveBlob } from '../../core/ui/save-blob';
+import { todayIso } from './financials';
 import { PrepImportDialog } from './prep-import-dialog';
+import { recipeSheetRules } from './recipe-sheet-rules';
+import { SheetImportData, SheetImportDialog } from './sheet-import-dialog';
 
 // The prep items: made in the kitchen from their own recipes, kept in stock, used by dishes.
 // Each with what it costs by its recipe at today's prices, what the batches on the shelf cost,
 // and how much is on the shelf. A row opens its profile. New ones asked for by an accountant are
-// listed first, waiting for a manager: they are not prep items until approved. Many at once from a
-// sheet of batch recipes (المصنعات): each prep item's name on a row of its own, then its ingredients.
+// listed first, waiting for a manager: they are not prep items until approved. To and from Excel:
+// every prep item a row per ingredient, the ingredient chosen from a dropdown that says its unit;
+// a sheet imported replaces the batch recipes it names. New ones from the kitchen's own sheet of
+// batch recipes (المصنعات) too: each prep item's name on a row of its own, then its ingredients.
 // Sorted under the kitchen's recipe categories, as the dishes are, and shown one category at a time.
 @Component({
   selector: 'app-prep-items-page',
@@ -35,6 +42,7 @@ import { PrepImportDialog } from './prep-import-dialog';
     MatInputModule,
     MatProgressBarModule,
     MatSelectModule,
+    MatTooltipModule,
     MoneyPipe,
     RouterLink,
   ],
@@ -67,8 +75,15 @@ import { PrepImportDialog } from './prep-import-dialog';
         </mat-form-field>
         <span class="spacer"></span>
         <a mat-button routerLink="../production"><mat-icon>precision_manufacturing</mat-icon> Make a batch</a>
-        <button mat-stroked-button (click)="picker.click()" [disabled]="busy()">
-          <mat-icon>upload_file</mat-icon> Import from Excel<span class="inline-ar">استيراد</span>
+        <button mat-stroked-button (click)="exportExcel()" [disabled]="busy()">
+          <mat-icon>download</mat-icon> Export Excel <span class="inline-ar">تصدير إلى إكسل</span>
+        </button>
+        <button mat-stroked-button (click)="importExcel()" [disabled]="busy()">
+          <mat-icon>upload_file</mat-icon> Import Excel <span class="inline-ar">استيراد من إكسل</span>
+        </button>
+        <button mat-button class="batch-sheet" (click)="picker.click()" [disabled]="busy()"
+          matTooltip="New prep items from a sheet of batch recipes: each name on a row of its own, then its ingredients">
+          <mat-icon>post_add</mat-icon> Batch recipes sheet<span class="inline-ar">ملف المصنعات</span>
         </button>
         <input #picker type="file" hidden accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
           (change)="importFile(picker)" aria-label="Excel sheet of batch recipes to import" />
@@ -211,6 +226,50 @@ export class PrepItemsPage {
 
   protected open(item: PrepItem): void {
     void this.router.navigate(['/costing/recipes/prep', item.id]);
+  }
+
+  protected async exportExcel(): Promise<void> {
+    this.busy.set(true);
+    try {
+      saveBlob(await firstValueFrom(this.api.exportPrepItems()), `prep-items-${todayIso()}.xlsx`);
+      this.notify.info('Prep items exported to Excel. · تم تصدير الأصناف المُصنَّعة إلى إكسل.');
+    } catch (error) {
+      this.notify.error(error, 'The prep items could not be exported. · تعذّر تصدير الأصناف المُصنَّعة.');
+    } finally {
+      this.busy.set(false);
+    }
+  }
+
+  // The smart sheet imported in the dialog, which says what it did and what a batch of each costs
+  // now; the list read again when it changed it.
+  protected async importExcel(): Promise<void> {
+    const data: SheetImportData = {
+      title: { en: 'Import prep items from Excel', ar: 'استيراد الأصناف المُصنَّعة من إكسل' },
+      noun: { one: 'prep item', many: 'prep items', ar: 'الصنف المُصنَّع' },
+      rules: [
+        {
+          en: 'One ingredient a row: the prep item, the ingredient from the list, and its quantity for one batch; what a batch makes on any of its rows.',
+          ar: 'مكوّن في كل صف: الصنف المُصنَّع، والمكوّن من القائمة، وكميته في التشغيلة؛ وكمية التشغيلة في أي من صفوفه.',
+        },
+        ...recipeSheetRules,
+        {
+          en: 'Imported by anyone but a manager, each goes to a manager for approval.',
+          ar: 'استيراد غير المدير يذهب إلى المدير للموافقة على كل صنف.',
+        },
+      ],
+      templateName: 'prep-items-template.xlsx',
+      template: () => this.api.prepItemsTemplate(),
+      upload: (file) => this.api.importPrepItemsSheet(file),
+    };
+    const changed = await firstValueFrom(
+      this.dialog.open<SheetImportDialog, SheetImportData, boolean>(SheetImportDialog, { data, width: '860px', maxWidth: '96vw' }).afterClosed(),
+    );
+    if (changed) {
+      await this.load();
+    } else {
+      // Asked of a manager: the requests are listed first.
+      void this.approvals.refresh();
+    }
   }
 
   // The sheet chosen: imported, what it did shown, and the list read again. The picker is cleared,

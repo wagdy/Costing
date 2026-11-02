@@ -6,6 +6,7 @@ import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { Observable, firstValueFrom } from 'rxjs';
 import { SheetChange, SheetImportResult } from '../../core/costing/costing.api';
 import { errorMessage } from '../../core/http/error-message';
+import { MoneyPipe } from '../../core/ui/money.pipe';
 import { saveBlob } from '../../core/ui/save-blob';
 
 // What the dialog imports: its name for what is on the sheet, its rules, the template to start
@@ -30,16 +31,27 @@ export const sheetChangeLabels: Record<SheetChange, { en: string; ar: string }> 
   Yield: { en: 'yield', ar: 'نسبة الصافي' },
   NameAr: { en: 'Arabic name', ar: 'الاسم بالعربي' },
   Unit: { en: 'unit', ar: 'الوحدة' },
+  Ingredients: { en: 'ingredients', ar: 'المكونات' },
+  Portions: { en: 'portions', ar: 'عدد الحصص' },
+  Batch: { en: 'batch', ar: 'كمية التشغيلة' },
+};
+
+// A costed row's unit as the table writes it: "a portion · للحصة", "a Kg · للكيلو".
+const perLabels: Record<string, { en: string; ar: string }> = {
+  portion: { en: 'a portion', ar: 'للحصة' },
+  Kg: { en: 'a Kg', ar: 'للكيلو' },
+  Liter: { en: 'a liter', ar: 'للتر' },
+  Piece: { en: 'a piece', ar: 'للقطعة' },
 };
 
 // Importing from Excel (الاستيراد من إكسل): what a sheet does, its template, and the file dropped or
 // chosen; then what it did: those added, those changed and in what, those as the sheet has them
-// already, and each row skipped by its number on the sheet and why, for the sheet to be put right
-// and imported again. Closes with whether anything was added or changed, for the list to be read
+// already, those sent for a manager's approval, what each recipe or prep item costs now, and each
+// row skipped by its number on the sheet and why, for the sheet to be put right and imported again. Closes with whether anything was added or changed, for the list to be read
 // again.
 @Component({
   selector: 'app-sheet-import-dialog',
-  imports: [MatButtonModule, MatDialogModule, MatIconModule, MatProgressBarModule],
+  imports: [MatButtonModule, MatDialogModule, MatIconModule, MatProgressBarModule, MoneyPipe],
   template: `
     <h2 mat-dialog-title>{{ data.title.en }} <span class="inline-ar">{{ data.title.ar }}</span></h2>
     <mat-dialog-content>
@@ -49,12 +61,59 @@ export const sheetChangeLabels: Record<SheetChange, { en: string; ar: string }> 
           <span class="count changed"><strong>{{ r.updated.length }}</strong> changed <span class="ar">عُدّل</span></span>
           <span class="count same"><strong>{{ r.unchanged }}</strong> unchanged <span class="ar">بلا تغيير</span></span>
           <span class="count skipped" [class.bad]="r.skipped.length"><strong>{{ r.skipped.length }}</strong> skipped <span class="ar">لم يُستورد</span></span>
+          @if (r.requested) {
+            <span class="count requested"><strong>{{ r.requested }}</strong> sent for approval <span class="ar">بانتظار موافقة المدير</span></span>
+          }
         </div>
         @if (summary(r); as said) {
           <p class="summary">{{ said }}</p>
         }
         @if (r.categoriesAdded.length) {
           <p class="muted">New categories · أقسام جديدة: {{ r.categoriesAdded.join(', ') }}</p>
+        }
+        @if (r.requested) {
+          <p class="muted">A manager approves each on Approvals; nothing changes until then. · يوافق المدير على كل منها من صفحة الطلبات المعلقة.</p>
+        }
+        @if (r.costed?.length) {
+          <h3>What each costs now <span class="inline-ar">التكلفة الحالية</span></h3>
+          <div class="table-wrap">
+            <table class="grid costed-rows">
+              <thead>
+                <tr>
+                  <th class="num">Row<span class="ar">الصف</span></th>
+                  <th>{{ capital(data.noun.one) }}<span class="ar">{{ data.noun.ar }}</span></th>
+                  <th class="num">Ingredients<span class="ar">المكونات</span></th>
+                  <th class="num">Cost<span class="ar">التكلفة</span></th>
+                  <th class="num">Cost per<span class="ar">تكلفة الوحدة</span></th>
+                  <th>Check<span class="ar">للمراجعة</span></th>
+                </tr>
+              </thead>
+              <tbody>
+                @for (c of r.costed; track c.row) {
+                  <tr>
+                    <td class="num">{{ c.row }}</td>
+                    <td>
+                      {{ c.name }}
+                      @if (c.requested) {
+                        <div class="muted small">Sent for approval · بانتظار الموافقة</div>
+                      }
+                    </td>
+                    <td class="num">{{ c.ingredients }}</td>
+                    <td class="num">{{ c.cost ?? 0 | money }}</td>
+                    <td class="num">{{ c.costPer ?? 0 | money }} <span class="muted small">{{ per(c.per) }}</span></td>
+                    <td>
+                      @if (c.missingPrices.length) {
+                        <div class="warn-text">No price yet · لا يوجد سعر: {{ c.missingPrices.join(', ') }}</div>
+                      }
+                      @for (n of c.notes; track $index) {
+                        <div class="small">{{ n }}</div>
+                      }
+                    </td>
+                  </tr>
+                }
+              </tbody>
+            </table>
+          </div>
         }
         @if (r.updated.length) {
           <h3>Changed <span class="inline-ar">ما تم تعديله</span></h3>
@@ -223,6 +282,17 @@ export const sheetChangeLabels: Record<SheetChange, { en: string; ar: string }> 
       background: var(--mat-sys-error-container);
       color: var(--mat-sys-on-error-container);
     }
+    .count.requested {
+      background: var(--mat-sys-tertiary-container);
+      color: var(--mat-sys-on-tertiary-container);
+    }
+    .small {
+      font-size: 0.85em;
+    }
+    .warn-text {
+      color: var(--mat-sys-error);
+      font-size: 0.85em;
+    }
     .summary {
       font: var(--mat-sys-title-small);
     }
@@ -324,6 +394,11 @@ export class SheetImportDialog {
 
   protected changes(changes: SheetChange[]): string {
     return changes.map((c) => `${sheetChangeLabels[c]?.en ?? c} · ${sheetChangeLabels[c]?.ar ?? ''}`).join('، ');
+  }
+
+  protected per(per: string): string {
+    const label = perLabels[per] ?? { en: `a ${per}`, ar: '' };
+    return `${label.en} · ${label.ar}`;
   }
 
   protected capital(word: string): string {

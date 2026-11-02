@@ -135,4 +135,33 @@ describe('importing a sheet', () => {
     expect(saved!.download).toBe('raw-materials-template.xlsx');
     click.mockRestore();
   });
+
+  it('says what each recipe costs now, with what has no price yet and what to check, and those sent for approval', async () => {
+    upload.mockReturnValue(of({
+      created: [{ row: 2, id: 'b', name: '1 · Burger' }],
+      updated: [{ row: 5, id: 'd', name: 'Pizza dough', changes: ['Ingredients', 'Batch'] }],
+      unchanged: 3,
+      skipped: [],
+      categoriesAdded: [],
+      requested: 1,
+      costed: [
+        { row: 2, name: '1 · Burger', ingredients: 2, cost: 69.67, costPer: 69.67, per: 'portion', missingPrices: [], notes: [], requested: false },
+        {
+          row: 5, name: 'Pizza dough', ingredients: 3, cost: 25.44, costPer: 21.2, per: 'Kg', missingPrices: ['Yeast'],
+          notes: ['Flour: 600 Kg in one batch. Was it written in grams?'], requested: true,
+        },
+      ],
+    }));
+    const { el, choose } = await render();
+
+    await choose(new File(['xlsx'], 'recipes.xlsx'));
+
+    expect(text(el.querySelector('.count.requested')!)).toBe('1 sent for approval بانتظار موافقة المدير');
+    expect([...el.querySelectorAll('.costed-rows tbody tr')].map((r) => [...r.querySelectorAll('td')].map(text))).toEqual([
+      ['2', '1 · Burger', '2', 'L.E 69.67', 'L.E 69.67 a portion · للحصة', ''],
+      ['5', 'Pizza dough Sent for approval · بانتظار الموافقة', '3', 'L.E 25.44', 'L.E 21.20 a Kg · للكيلو',
+        'No price yet · لا يوجد سعر: YeastFlour: 600 Kg in one batch. Was it written in grams?'],
+    ]);
+    expect([...el.querySelectorAll('.changed-rows tbody td')].map(text)).toEqual(['5', 'Pizza dough', 'ingredients · المكونات، batch · كمية التشغيلة']);
+  });
 });

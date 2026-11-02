@@ -1490,6 +1490,36 @@ export class CostingApi {
     return this.http.post<PrepImportResult>('/api/inventory/prep-items/import', form);
   }
 
+  // Recipes and prep items to and from their smart sheets: a row per ingredient, chosen from a
+  // dropdown of the materials and prep items with their units. The template is the export, empty.
+  recipesTemplate(): Observable<Blob> {
+    return this.http.get('/api/inventory/recipes/sheet/template', { responseType: 'blob' });
+  }
+
+  exportRecipes(): Observable<Blob> {
+    return this.http.get('/api/inventory/recipes/sheet/export', { responseType: 'blob' });
+  }
+
+  importRecipes(file: File): Observable<RecipeImportResult> {
+    const form = new FormData();
+    form.append('file', file, file.name);
+    return this.http.post<RecipeImportResult>('/api/inventory/recipes/sheet/import', form);
+  }
+
+  prepItemsTemplate(): Observable<Blob> {
+    return this.http.get('/api/inventory/prep-items/sheet/template', { responseType: 'blob' });
+  }
+
+  exportPrepItems(): Observable<Blob> {
+    return this.http.get('/api/inventory/prep-items/sheet/export', { responseType: 'blob' });
+  }
+
+  importPrepItemsSheet(file: File): Observable<RecipeImportResult> {
+    const form = new FormData();
+    form.append('file', file, file.name);
+    return this.http.post<RecipeImportResult>('/api/inventory/prep-items/sheet/import', form);
+  }
+
   prepItems(): Observable<PrepItem[]> {
     return this.http.get<PrepItem[]>('/api/inventory/prep-items');
   }
@@ -1627,7 +1657,19 @@ export interface SkippedSheetRow {
 }
 
 // One already there, changed by its row: what changed, by the sheet's column.
-export type SheetChange = 'Name' | 'Code' | 'Category' | 'PurchaseUnit' | 'Cost' | 'ReorderLevel' | 'Yield' | 'NameAr' | 'Unit';
+export type SheetChange =
+  | 'Name'
+  | 'Code'
+  | 'Category'
+  | 'PurchaseUnit'
+  | 'Cost'
+  | 'ReorderLevel'
+  | 'Yield'
+  | 'NameAr'
+  | 'Unit'
+  | 'Ingredients'
+  | 'Portions'
+  | 'Batch';
 
 export interface UpdatedSheetItem {
   row: number;
@@ -1644,6 +1686,30 @@ export interface SheetImportResult {
   unchanged: number;
   skipped: SkippedSheetRow[];
   categoriesAdded: string[];
+  // Recipes and prep items: what each imported costs now, by its ingredients' prices.
+  costed?: CostedSheetItem[];
+  // Prep items asked of a manager rather than saved: nothing changes until approved.
+  requested?: number;
+}
+
+// A recipe or a prep item imported, costed: its whole recipe or batch, and one portion or one
+// kg, litre or piece of it (per: "portion", "Kg"). An ingredient with no price yet is named;
+// notes say what to check, such as a quantity that reads as grams written as kilos.
+export interface CostedSheetItem {
+  row: number;
+  name: string;
+  ingredients: number;
+  cost: number | null;
+  costPer: number | null;
+  per: string;
+  missingPrices: string[];
+  notes: string[];
+  requested: boolean;
+}
+
+export interface RecipeImportResult extends SheetImportResult {
+  costed: CostedSheetItem[];
+  requested: number;
 }
 
 export interface RawMaterialImportResult extends SheetImportResult {

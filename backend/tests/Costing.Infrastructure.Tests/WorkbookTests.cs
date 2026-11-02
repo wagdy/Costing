@@ -1,6 +1,8 @@
 using ClosedXML.Excel;
 using Costing.Application.Expenses;
+using Costing.Application.Production;
 using Costing.Application.RawMaterials;
+using Costing.Application.Recipes;
 using Costing.Infrastructure.Excel;
 
 namespace Costing.Infrastructure.Tests;
@@ -171,5 +173,80 @@ public class WorkbookTests
         Assert.Contains("تعذّرت قراءة الملف", notExcel.Message);
         var noName = Assert.Throws<Costing.Domain.Common.DomainException>(() => ExpenseItemWorkbook.Read(Sheet(["Category", "Unit"], ["Repairs", "visit"])));
         Assert.StartsWith("No sheet has the Expense Name heading.", noName.Message);
+    }
+
+    private static readonly SheetIngredient[] Ingredients =
+    [
+        new("Flour (Kg)", "Flour", null, false, "Kg", "كيلو"),
+        new("Mozzarella (Kg)", "Mozzarella", "DAI-1", false, "Kg", "كيلو"),
+        new("Pizza dough · مصنّع (Kg)", "Pizza dough", null, true, "Kg", "كيلو"),
+    ];
+
+    [Fact]
+    public void The_recipes_sheet_offers_each_ingredient_with_its_unit_from_a_hidden_sheet_and_refuses_any_other()
+    {
+        var sheet = new RecipeSheet(
+            [new("1 · Burger", "Mozzarella (Kg)", 0.15m, 1, "Mains"), new("1 · Burger", "Pizza dough · مصنّع (Kg)", 0.25m, null, null)],
+            ["1 · Burger", "Staff meal"], Ingredients, ["Mains"]);
+        using var book = new XLWorkbook(RecipeWorkbook.Build(sheet, withRows: true));
+
+        var data = book.Worksheet(RecipeWorkbook.DataSheetName);
+        Assert.Equal([RecipeWorkbook.ItemHeader, "Ingredient · المكون", RecipeWorkbook.QuantityHeader, RecipeWorkbook.PortionsHeader, RecipeWorkbook.CategoryHeader],
+            data.Row(1).CellsUsed().Select(c => c.GetString()));
+        // Every material and prep item, its code, its kind and its system unit, out of sight.
+        var reference = book.Worksheet("Ingredients");
+        Assert.Equal(XLWorksheetVisibility.Hidden, reference.Visibility);
+        Assert.Equal(["Pizza dough · مصنّع (Kg)", "Pizza dough", "", "Prep item · مُصنَّع", "Kg", "كيلو"], reference.Row(4).Cells(1, 6).Select(c => c.GetString()));
+        Assert.Equal("DAI-1", reference.Cell(3, 3).GetString());
+        // The ingredient column's dropdown is that sheet's first column, and nothing else is taken.
+        var ingredient = data.DataValidations.Single(v => v.Ranges.Any(r => r.RangeAddress.FirstAddress.ColumnNumber == 2));
+        Assert.Equal(("'Ingredients'!$A$2:$A$4", XLErrorStyle.Stop), (ingredient.Value, ingredient.ErrorStyle));
+        // A new recipe's name is let stand.
+        var item = data.DataValidations.Single(v => v.Ranges.Any(r => r.RangeAddress.FirstAddress.ColumnNumber == 1));
+        Assert.Equal(XLErrorStyle.Information, item.ErrorStyle);
+        Assert.Empty(book.Worksheets.Where(w => w.Name.Contains("cost", StringComparison.OrdinalIgnoreCase)));
+
+        var stream = new MemoryStream();
+        book.SaveAs(stream);
+        stream.Position = 0;
+        Assert.Equal(
+            [new RecipeSheetRow(2, "1 · Burger", "Mozzarella (Kg)", "0.15", "1", "Mains"), new RecipeSheetRow(3, "1 · Burger", "Pizza dough · مصنّع (Kg)", "0.25", null, null)],
+            RecipeWorkbook.Read(stream));
+    }
+
+    [Fact]
+    public void The_template_has_the_columns_and_lists_and_no_rows_and_a_sheet_headed_in_arabic_reads_as_written()
+    {
+        var empty = new RecipeSheet([], ["1 · Burger"], Ingredients, []);
+        using (var template = new XLWorkbook(RecipeWorkbook.Build(empty, withRows: false)))
+            Assert.Empty(template.Worksheet(RecipeWorkbook.DataSheetName).RowsUsed().Skip(1));
+        Assert.Empty(RecipeWorkbook.Read(RecipeWorkbook.Build(empty, withRows: false)));
+
+        var row = Assert.Single(RecipeWorkbook.Read(Sheet(["الكمية", "الوصفة", "المكون"], [0.2, "بيتزا", "دقيق (كيلو)"])));
+        Assert.Equal(new RecipeSheetRow(2, "بيتزا", "دقيق (كيلو)", "0.2"), row);
+    }
+
+    [Fact]
+    public void The_prep_items_sheet_is_written_and_read_as_the_recipes_are()
+    {
+        var sheet = new PrepRecipeSheet(
+            [new("Pizza dough", "Flour (Kg)", 0.6m, 1, "Kg"), new("Pizza dough", "Mozzarella (Kg)", 0.05m, null, null), new("Croutons", null, null, 50, "Piece")],
+            ["Croutons", "Pizza dough"], Ingredients);
+        using var written = PrepRecipeWorkbook.Build(sheet, withRows: true);
+        using (var book = new XLWorkbook(written))
+        {
+            Assert.Equal(XLWorksheetVisibility.Hidden, book.Worksheet("Ingredients").Visibility);
+            var unit = book.Worksheet(PrepRecipeWorkbook.DataSheetName).DataValidations.Single(v => v.Ranges.Any(r => r.RangeAddress.FirstAddress.ColumnNumber == 5));
+            Assert.Equal(XLErrorStyle.Warning, unit.ErrorStyle);
+        }
+
+        written.Position = 0;
+        Assert.Equal(
+            [
+                new PrepRecipeSheetRow(2, "Pizza dough", "Flour (Kg)", "0.6", "1", "Kg"),
+                new PrepRecipeSheetRow(3, "Pizza dough", "Mozzarella (Kg)", "0.05", null, null),
+                new PrepRecipeSheetRow(4, "Croutons", null, null, "50", "Piece"),
+            ],
+            PrepRecipeWorkbook.Read(written));
     }
 }

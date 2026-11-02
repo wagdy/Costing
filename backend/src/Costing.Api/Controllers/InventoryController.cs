@@ -428,6 +428,56 @@ public sealed class InventoryController(ISender sender) : ControllerBase
         return await sender.Send(new ImportPrepItemsCommand(PrepItemWorkbook.Read(stream), StaffId, StaffName, CanApprove), cancellationToken);
     }
 
+    // Recipes and prep items to and from a spreadsheet: a row per ingredient, chosen from a
+    // dropdown of the materials and prep items with their units. The template is the export with
+    // no rows. A recipe's rows replace its ingredients; anyone with Recipes may import recipes,
+    // and prep items are saved for a manager and asked of one for anyone else.
+    [HttpGet("recipes/sheet/template")]
+    [CostingTab(CostingTabs.Recipes)]
+    [Authorize(Policy = Permissions.InventoryManage)]
+    public async Task<IActionResult> GetRecipesTemplate(CancellationToken cancellationToken) =>
+        File(RecipeWorkbook.Build(await sender.Send(new GetRecipeSheetQuery(), cancellationToken), withRows: false), RecipeWorkbook.ContentType, RecipeWorkbook.FileName);
+
+    [HttpGet("recipes/sheet/export")]
+    [CostingTab(CostingTabs.Recipes)]
+    [Authorize(Policy = Permissions.InventoryManage)]
+    public async Task<IActionResult> ExportRecipes(CancellationToken cancellationToken) =>
+        File(RecipeWorkbook.Build(await sender.Send(new GetRecipeSheetQuery(), cancellationToken), withRows: true), RecipeWorkbook.ContentType, RecipeWorkbook.ExportFileName);
+
+    [HttpPost("recipes/sheet/import")]
+    [CostingTab(CostingTabs.Recipes)]
+    [Authorize(Policy = Permissions.InventoryManage)]
+    [RequestSizeLimit(MaxImportBytes + 64 * 1024)]
+    public async Task<RecipeImportResult> ImportRecipes(IFormFile file, CancellationToken cancellationToken)
+    {
+        await using var stream = OpenSheet(file);
+        return await sender.Send(new ImportRecipesCommand(RecipeWorkbook.Read(stream)), cancellationToken);
+    }
+
+    [HttpGet("prep-items/sheet/template")]
+    [CostingTab(CostingTabs.Recipes)]
+    [Authorize(Policy = Permissions.InventoryManage)]
+    public async Task<IActionResult> GetPrepItemsTemplate(CancellationToken cancellationToken) =>
+        File(PrepRecipeWorkbook.Build(await sender.Send(new GetPrepRecipeSheetQuery(), cancellationToken), withRows: false), PrepRecipeWorkbook.ContentType,
+            PrepRecipeWorkbook.FileName);
+
+    [HttpGet("prep-items/sheet/export")]
+    [CostingTab(CostingTabs.Recipes)]
+    [Authorize(Policy = Permissions.InventoryManage)]
+    public async Task<IActionResult> ExportPrepItems(CancellationToken cancellationToken) =>
+        File(PrepRecipeWorkbook.Build(await sender.Send(new GetPrepRecipeSheetQuery(), cancellationToken), withRows: true), PrepRecipeWorkbook.ContentType,
+            PrepRecipeWorkbook.ExportFileName);
+
+    [HttpPost("prep-items/sheet/import")]
+    [CostingTab(CostingTabs.Recipes)]
+    [Authorize(Policy = Permissions.InventoryManage)]
+    [RequestSizeLimit(MaxImportBytes + 64 * 1024)]
+    public async Task<RecipeImportResult> ImportPrepItemsSheet(IFormFile file, CancellationToken cancellationToken)
+    {
+        await using var stream = OpenSheet(file);
+        return await sender.Send(new ImportPrepRecipesCommand(PrepRecipeWorkbook.Read(stream), StaffId, StaffName, CanApprove), cancellationToken);
+    }
+
     private async Task<IActionResult> SavePrepItem(Guid? prepItemId, SavePrepItemRequest request, CancellationToken cancellationToken)
     {
         var command = request.ToCommand(prepItemId);

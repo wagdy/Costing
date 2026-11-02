@@ -8,6 +8,7 @@ import { CostingApi, ApprovalRequest, RecipeCategory, RecipeCostCard } from '../
 import { NotifyService } from '../../core/ui/notify.service';
 import { DeleteRequestDialog } from './approvals';
 import { RecipesPage } from './recipes-page';
+import { SheetImportData, SheetImportDialog } from './sheet-import-dialog';
 
 // Mona's request to delete a recipe, waiting for a manager.
 function request(recipeId: string): ApprovalRequest {
@@ -85,6 +86,9 @@ describe('the recipes', () => {
   const restoreRecipe = vi.fn();
   const requestDeletion = vi.fn();
   const approvalRequests = vi.fn();
+  const exportRecipes = vi.fn();
+  const importRecipes = vi.fn();
+  const recipesTemplate = vi.fn();
   // The delete dialog, answered with a reason.
   const open = vi.fn();
   const notify = { info: vi.fn(), error: vi.fn() };
@@ -97,7 +101,7 @@ describe('the recipes', () => {
         {
           provide: CostingApi,
           useValue: {
-            recipes, menu: () => of(menu), deleteRecipe, restoreRecipe, requestDeletion, approvalRequests,
+            recipes, menu: () => of(menu), deleteRecipe, restoreRecipe, requestDeletion, approvalRequests, exportRecipes, importRecipes, recipesTemplate,
             recipeCategories: () => of([mains, sauces]),
           },
         },
@@ -128,6 +132,40 @@ describe('the recipes', () => {
     open.mockReset().mockReturnValue({ afterClosed: () => of({ reason: 'Duplicate' }) });
     notify.info.mockReset();
     notify.error.mockReset();
+    exportRecipes.mockReset().mockReturnValue(of(new Blob(['xlsx'])));
+  });
+
+  it('exports the recipes to Excel, and imports a sheet in the dialog, reading the list again when it changed it', async () => {
+    const { el, page } = await render();
+    expect([...el.querySelectorAll('.toolbar button, .toolbar a')].map(text).slice(-3)).toEqual([
+      'download Export Excel تصدير إلى إكسل',
+      'upload_file Import Excel استيراد من إكسل',
+      'add Create New Recipe',
+    ]);
+
+    let saved: HTMLAnchorElement | undefined;
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+      saved = this;
+    });
+    URL.createObjectURL = vi.fn(() => 'blob:export');
+    URL.revokeObjectURL = vi.fn();
+    await page['exportExcel']();
+    expect(saved!.download).toMatch(/^recipes-\d{4}-\d{2}-\d{2}\.xlsx$/);
+    expect(notify.info).toHaveBeenCalledWith('Recipes exported to Excel. · تم تصدير الوصفات إلى إكسل.');
+    click.mockRestore();
+
+    open.mockReturnValue({ afterClosed: () => of(true) });
+    const loads = recipes.mock.calls.length;
+    await page['importExcel']();
+    expect(open).toHaveBeenCalledWith(SheetImportDialog, expect.objectContaining({ width: '860px' }));
+    const data = open.mock.lastCall![1].data as SheetImportData;
+    expect([data.title.ar, data.templateName, data.noun.many]).toEqual(['استيراد الوصفات من إكسل', 'recipes-template.xlsx', 'recipes']);
+    const file = new File(['xlsx'], 'recipes.xlsx');
+    data.upload(file);
+    data.template();
+    expect(importRecipes).toHaveBeenCalledWith(file);
+    expect(recipesTemplate).toHaveBeenCalled();
+    expect(recipes.mock.calls.length).toBeGreaterThan(loads);
   });
 
   it('lists the recipes, each linked to the menu or standalone, with View, Edit and Delete', async () => {
