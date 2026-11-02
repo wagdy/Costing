@@ -7,18 +7,18 @@
         } @else if (initials()) {
           <span>{{ initials() }}</span>
         } @else {
-          <mat-icon>groups</mat-icon>
+          <mat-icon>calculate</mat-icon>
         }
       </div>
       <h1>{{ company.name() }}</h1>
       @if (company.settings().name) {
-        <p class="product">HR &amp; Payroll <span class="ar">الموارد البشرية والرواتب</span></p>
+        <p class="product">Costing &amp; Financials <span class="ar">التكاليف والماليات</span></p>
       }
     </header>
 
     <div class="welcome">
       <h2>Sign in <span class="ar">تسجيل الدخول</span></h2>
-      <p>With your email, or your mobile number if you are an employee.</p>
+      <p>With your email and your password. <span class="ar">بالبريد الإلكتروني وكلمة المرور</span></p>
     </div>
 
     @if (reason() === 'expired') {
@@ -30,11 +30,12 @@
 
     <form (ngSubmit)="submit()" aria-label="Sign in">
       <mat-form-field class="field" appearance="outline" hideRequiredMarker>
-        <mat-icon matPrefix>{{ who() === 'user' ? 'alternate_email' : who() === 'employee' ? 'smartphone' : 'person_outline' }}</mat-icon>
-        <mat-label>Email or Mobile number</mat-label>
+        <mat-icon matPrefix>alternate_email</mat-icon>
+        <mat-label>Email · البريد الإلكتروني</mat-label>
         <input
           matInput
           name="login"
+          type="email"
           autocomplete="username"
           autocapitalize="none"
           spellcheck="false"
@@ -42,33 +43,15 @@
           [disabled]="busy()"
           required
         />
-        <mat-hint>
-          @switch (who()) {
-            @case ('user') {
-              Manager or accountant: your password below
-            }
-            @case ('employee') {
-              Employee: your PIN below <span class="ar">الموظف: الرقم السري</span>
-            }
-            @default {
-              @if (login().trim()) {
-                An email has its &#64;; a mobile number is its digits
-              } @else {
-                Employees: your mobile number <span class="ar">الموظف: رقم الموبايل</span>
-              }
-            }
-          }
-        </mat-hint>
       </mat-form-field>
 
       <mat-form-field class="field" appearance="outline" hideRequiredMarker>
-        <mat-icon matPrefix>{{ who() === 'employee' ? 'pin' : 'lock' }}</mat-icon>
-        <mat-label>Password or PIN</mat-label>
+        <mat-icon matPrefix>lock</mat-icon>
+        <mat-label>Password · كلمة المرور</mat-label>
         <input
           matInput
           name="secret"
           [type]="showSecret() ? 'text' : 'password'"
-          [attr.inputmode]="who() === 'employee' ? 'numeric' : null"
           autocomplete="current-password"
           [(ngModel)]="secret"
           [disabled]="busy()"

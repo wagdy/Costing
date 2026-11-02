@@ -8,8 +8,8 @@ using Costing.Domain.Company;
 
 namespace Costing.Api.Controllers;
 
-// Company Settings (إعدادات الشركة). Read by anyone, signed in or not: the sign-in page and the
-// portal show the company's name and logo before anyone signs in, and nothing here is a secret.
+// Company Settings (إعدادات الشركة). Read by anyone, signed in or not: the sign-in page shows the
+// company's name and logo before anyone signs in, and nothing here is a secret.
 // Changed by a manager (settings.manage).
 [ApiController]
 [Route("api/settings")]
@@ -19,8 +19,8 @@ public sealed class SettingsController(ISender sender) : ControllerBase
     [AllowAnonymous]
     public Task<CompanySettingsDto> Get(CancellationToken cancellationToken) => sender.Send(new GetCompanySettingsQuery(), cancellationToken);
 
-    // The time zone moves how new punches fall into workdays from now on; the weekends are only
-    // what a new employee starts with.
+    // The time zone moves which business day new sales, takings and entries fall on from now on;
+    // what is recorded already stays on its day.
     [HttpPut]
     [Authorize(Policy = Permissions.SettingsManage)]
     public Task<CompanySettingsDto> Update(CompanySettingsInput request, CancellationToken cancellationToken) =>

@@ -7,8 +7,8 @@ namespace Costing.Domain.Common;
 public sealed class NotFoundException(string entityName, object id)
     : Exception($"{entityName} {id} was not found.");
 
-// Allowed to call the endpoint, but not to do this to this record now: an employee in the portal
-// acting on a tab they do not hold. The message is shown to the user as it is.
+// Allowed to call the endpoint, but not to do this to this record now. The message is shown to
+// the user as it is.
 public sealed class ForbiddenException(string message) : Exception(message);
 
 // The save collided with another: someone changed the same record meanwhile, or a unique

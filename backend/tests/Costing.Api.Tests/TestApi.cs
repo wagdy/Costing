@@ -12,6 +12,10 @@ using Costing.Api.Controllers;
 using Costing.Domain.Access;
 using Costing.Infrastructure.Persistence;
 
+// How money is written is the process's own (CompanyMoney: one company per deployment), and each
+// test's API sets it as it starts: the tests run one at a time, so none reads another's currency.
+[assembly: Xunit.v3.Parallelization(Mode = Xunit.Sdk.ParallelMode.None)]
+
 namespace Costing.Api.Tests;
 
 // The API exactly as Program.cs builds it, in process, on its own database. On start it has

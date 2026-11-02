@@ -1,12 +1,10 @@
 import { inject } from '@angular/core';
 import { CanActivateFn, Router } from '@angular/router';
-import { PortalAuth } from '../portal/portal-auth';
 import { AuthService } from './auth.service';
 import { Permission } from './permissions';
 
-// Where a user lands: HR & Payroll, which sends whoever holds none of its tabs on to Custody &
-// Assets, or to their own account (HrAccess.outside).
-export const homePath = '/hr';
+// Where a user lands: Costing & Financials, on the first section they work.
+export const homePath = '/costing';
 
 // Signed in, as /api/auth/me confirmed at start-up or sign-in.
 export const signedInGuard: CanActivateFn = () => {
@@ -14,15 +12,9 @@ export const signedInGuard: CanActivateFn = () => {
   return auth.isSignedIn() ? true : inject(Router).createUrlTree(['/sign-in']);
 };
 
-// The sign-in: one already signed in goes on, a user to the system and an employee to their
-// portal.
-export const signedOutGuard: CanActivateFn = () => {
-  const router = inject(Router);
-  if (inject(AuthService).isSignedIn()) {
-    return router.createUrlTree([homePath]);
-  }
-  return inject(PortalAuth).isSignedIn() ? router.createUrlTree(['/my-profile']) : true;
-};
+// The sign-in: one already signed in goes on to the system.
+export const signedOutGuard: CanActivateFn = () =>
+  inject(AuthService).isSignedIn() ? inject(Router).createUrlTree([homePath]) : true;
 
 // A section only some roles have: its link is hidden from the rest, and this keeps a typed
 // address from opening it. The API refuses the data either way.

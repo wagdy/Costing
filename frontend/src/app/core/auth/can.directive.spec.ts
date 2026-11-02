@@ -12,7 +12,7 @@ import { Permissions } from './permissions';
 @Component({
   imports: [CanDirective],
   template: `
-    <button *appCan="P.HrManage" id="change">Change</button>
+    <button *appCan="P.InventoryManage" id="change">Change</button>
     <button *appCan="P.ApprovalDecide" id="approve">Approve</button>
     <a *appCan="P.UsersManage" id="users">Users</a>
     <span *appCan="[P.ApprovalDecide, P.UsersManage]" id="any-manager">manager</span>
@@ -60,8 +60,8 @@ describe('role-based buttons', () => {
 
     expect(auth.me()?.role).toBe('Accountant');
     expect(auth.can(Permissions.UsersManage)).toBe(false);
-    expect(auth.can(Permissions.HrManage)).toBe(true);
-    expect(localStorage.getItem('hr-payroll.token')).toBe('token-user-accountant');
+    expect(auth.can(Permissions.InventoryManage)).toBe(true);
+    expect(localStorage.getItem('costing.token')).toBe('token-user-accountant');
   });
 
   it('shows an accountant changes, and nothing a manager decides', async () => {
@@ -95,6 +95,6 @@ describe('role-based buttons', () => {
     await changed;
 
     expect(auth.token()).toBe('token-new');
-    expect(localStorage.getItem('hr-payroll.token')).toBe('token-new');
+    expect(localStorage.getItem('costing.token')).toBe('token-new');
   });
 });

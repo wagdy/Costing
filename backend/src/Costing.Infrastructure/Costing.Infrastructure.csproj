@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- The database (PostgreSQL), the attendance devices (ZKTeco, over ADMS and TCP 4370), Excel,
-       and the system's users. Implements the application's ports. -->
+  <!-- The database (PostgreSQL), the cost reports and the treasury's, the Excel sheets, and the
+       system's users. Implements the application's ports. -->
 
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>

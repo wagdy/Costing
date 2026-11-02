@@ -36,6 +36,8 @@ export const MinPasswordLength = 8;
 export const roleLabels: Record<UserRole, { en: string; ar: string }> = {
   Manager: { en: 'Manager', ar: 'مدير' },
   Accountant: { en: 'Accountant', ar: 'محاسب' },
+  CostController: { en: 'Cost controller', ar: 'مراقب تكاليف' },
+  Storekeeper: { en: 'Storekeeper', ar: 'أمين المخزن' },
 };
 
 @Injectable({ providedIn: 'root' })

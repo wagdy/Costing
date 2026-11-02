@@ -92,8 +92,8 @@ public sealed class CostingController(
         return variance.GetSpoilageAsync(to.AddDays(-Math.Clamp(days, 1, 366)), to.AddMinutes(1), cancellationToken);
     }
 
-    // Breakage (كسر) in the last so many business days: consumable assets checked out of custody as
-    // broken, at their cost, beside the spoilage. Voided ones too, marked.
+    // Breakage (كسر) in the last so many business days: what was broken, at its cost, beside the
+    // spoilage. Voided ones too, marked.
     [HttpGet("breakage")]
     [CostingTab(CostingTabs.Waste | CostingTabs.Reports)]
     public Task<IReadOnlyList<Costing.Application.Waste.BreakageEntryDto>> GetBreakage(

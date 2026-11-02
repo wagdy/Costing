@@ -1,80 +1,87 @@
-# HR & Payroll
+# Costing & Financials
 
-HR, attendance, payroll, and custody of company assets for one company, with an employee
-self-service portal. Bilingual (English and Arabic) throughout.
+Food costing, stock and the restaurant's money for one business, standalone: no point of sale or
+HR system needed beside it. Bilingual (English and Arabic, right-to-left) throughout.
 
-- **Employees**: profiles with their ID card, departments and job roles, monthly or daily pay,
-  a nine-hour work schedule or flexible hours, and an Excel import and export.
-- **Attendance**: punches pushed by a ZKTeco device (ADMS) or read from it over TCP 4370, worked
-  out into days: late, leaving early, away, overtime, absences, forgotten punch-outs, public
-  holidays and administrative penalties. Who is in now, live.
-- **Payroll**: each month's payslip from base salary to net payable, incentives and allowances,
-  advances deducted (an employee's own, or their share of a lump sum), finalized by a manager
-  and paid by salary payments. A day's labour cost and each department's.
-- **Leaves**: leave types, yearly balances, and requests a manager approves.
-- **Performance & disciplinary**: KPIs, evaluations, warnings and penalty deductions.
-- **Custody & Assets**: assets by category, check-in and check-out vouchers, and what is in
-  whose custody. What breaks or is lost only changes the asset's status.
+- **Raw materials**: units (a purchase unit and the unit it is used in), average cost, stock on
+  hand, reorder levels, categories, and an Excel import.
+- **Recipes**: recipe cards for menu items, their sizes and add-ons, and prep items (مصنعات) made
+  from other materials, each costed from the materials' prices as they are now.
+- **Production**: prep items made in batches, their materials taken from stock, their cost per
+  unit worked out from what went in.
+- **Menu**: categories, items numbered as their codes on every report, sizes and add-ons, kept
+  here or imported from a point of sale's export.
+- **Sales**: bills entered or imported, each line taking its stock by its recipe. A line voided
+  before the kitchen takes nothing; after the kitchen, it is waste; refunded after payment, its
+  share of the charge goes back and its stock returns. A sale voided puts back all it took.
+- **Purchases**: suppliers' invoices (stock or general expenses), a day's purchases entered as one
+  batch, invoice corrections, suppliers and categories.
+- **Stock counts and waste**: counts drafted then posted, spoilage, and breakage.
+- **Financials**: the safe, its funding, the day's takings (gross, with the tax in them taken off
+  at the tax rate), expense vouchers, what suppliers are owed and paid, the staff the safe pays and
+  their advances and salaries, and the tax and service settings.
+- **Reports**: spending by category, theoretical cost, variance against the counts, KPIs (food
+  cost, labour cost, prime cost) and break-even.
+- **Approvals**: deletes, voids and corrections asked for by anyone but a manager wait for a
+  manager's approval.
+- **Users and permissions**: users sign in with an email and a password, as a Manager, an
+  Accountant, a Cost Controller or a Storekeeper. Each role works its own sections until a manager
+  ticks a user's on Permissions; the API holds every request to them.
 - **Company Settings**: the company's name and logo, the currency (on every screen, sheet and
-  message), the country (its national IDs and public holidays), the time zone and workday, and
-  the weekends new employees start with.
-- **Roles and approvals**: users sign in with an email and a password, as a Manager or an
-  Accountant. An accountant works the tabs a manager gives them, and their changes wait for a
-  manager's approval. Everyone signs in on one page: a user with their email and password, an
-  employee with their mobile number and a PIN, who goes to their own portal and can be given HR
-  tabs to work there.
+  message), the country, the time zone and the hour its business day starts.
 
 The design, rule by rule, is in [docs/](docs/).
 
 ## Stack
 
 - **Backend**: .NET 10, ASP.NET Core Web API, Clean Architecture (`Costing.Domain`,
-  `Costing.Application` with MediatR, `Costing.Infrastructure` with EF Core on PostgreSQL,
-  `Costing.Api`), SignalR for live attendance.
+  `Costing.Application` with MediatR, `Costing.Infrastructure` with EF Core on PostgreSQL and
+  ClosedXML for the sheets, `Costing.Api`).
 - **Frontend**: Angular 21 (standalone components, signals, zoneless), Angular Material,
   Vitest.
-- **Database**: PostgreSQL 16, schemas `hr` and `identity`.
+- **Database**: PostgreSQL 16, schemas `costing` and `identity`. The migrations are applied on
+  start.
 
 ## Running it locally
 
 You need the .NET 10 SDK, Node 22 with npm, and Docker.
 
-1. Start the development database (PostgreSQL on `127.0.0.1:5435`):
+1. Start the development database (PostgreSQL on `127.0.0.1:5436`):
 
    ```bash
    docker compose -f dev/docker-compose.yml up -d
    ```
 
-2. Start the API on <http://localhost:5090>. It applies the migrations and makes the first
-   manager from `Auth:FirstManager` in `appsettings.Development.json`. It also listens on the
-   office network on two ports of their own: **5092** for the attendance device (ADMS, nothing
-   but `/iclock`) and **5093** for the employee portal on phones. The Devices tab shows this
-   machine's network address and the device's port to enter on the device:
+2. Start the API on <http://localhost:5100>. It applies the migrations and makes the first
+   manager from `Auth:FirstManager` in `appsettings.Development.json`:
 
    ```bash
    dotnet run --project backend/src/Costing.Api --launch-profile http
    ```
 
-3. Start the app on <http://localhost:4220>, which forwards `/api` and `/hubs` to the API:
+3. Start the app on <http://localhost:4230>, which forwards `/api` to the API:
 
    ```bash
    cd frontend && npm ci && npm start
    ```
 
-Sign in with the first manager's email and password, then add the other users on Users.
+Sign in with the first manager's email and password, change the password on Your account, then
+add the other users on Users and give them their sections on Costing → Permissions.
+
+The values in `appsettings.Development.json` are for a local machine only: the database password
+is the development container's, and the signing key and first manager's password are placeholders.
 
 ## Configuration
 
 | Setting | What it is |
 | --- | --- |
-| `ConnectionStrings:Costing` | The PostgreSQL database |
+| `ConnectionStrings:Costing` | The PostgreSQL database (or `DATABASE_URL`, `postgres://user:password@host:port/database`, which wins) |
+| `Database:MigrateOnStartup` | Apply the migrations on start (true) |
 | `Auth:SigningKey` | The key tokens are signed with, 32 bytes at least: `openssl rand -base64 48` |
 | `Auth:TokenLifetimeHours` | How long a sign-in lasts (12 hours) |
 | `Auth:FirstManager` | `Email`, `Name` and `Password` of the manager made when there is none |
-| `Company:*` | The company's settings for the first start only: `Name`, `TimeZoneId` (`Africa/Cairo`), `WorkdayStartsAtHour` (4: a night past midnight belongs to the day before), `Country` (`Egypt` or `SaudiArabia`), `CurrencySymbol` and `CurrencyPosition` (`Before` or `After`), `Weekends`. After that a manager changes them on Settings |
-| `Portal:Port` | A port that answers only the employee portal, for the office Wi-Fi (5093 in development; unset: none), listened on for the network in `Urls` too |
-| `Attendance:DevicePort` | A port that answers only the attendance device (5092 in development; unset: the device uses the API's port). The API must also listen on it for the network, in `Urls`: `http://0.0.0.0:5092` |
-| `Cors:AllowedOrigins` | Browser origins allowed to call the API from elsewhere |
+| `Company:*` | The company's settings for the first start only: `Name`, `TimeZoneId` (`Africa/Cairo`), `WorkdayStartsAtHour` (4: a night past midnight belongs to the day before), `Country` (`Egypt` or `SaudiArabia`), `CurrencySymbol` and `CurrencyPosition` (`Before` or `After`). After that a manager changes them on Settings |
+| `Cors:AllowedOrigins` | Browser origins allowed to call the API from elsewhere (the dev server's in development) |
 
 ## Tests
 
@@ -84,14 +91,14 @@ dotnet test --project backend/tests/Costing.Application.Tests
 ```
 
 The Infrastructure and Api tests run against PostgreSQL, each test in a database of its own.
-Without `HRPAYROLL_TEST_DB` they are skipped, so check `skipped: 0`:
+Without `COSTING_TEST_DB` they are skipped, so check `skipped: 0`:
 
 ```bash
-HRPAYROLL_TEST_DB="Host=localhost;Port=5435;Username=hr;Password=hr-dev" dotnet test --project backend/tests/Costing.Infrastructure.Tests
+COSTING_TEST_DB="Host=localhost;Port=5436;Username=costing;Password=costing-dev" dotnet test --project backend/tests/Costing.Infrastructure.Tests
 ```
 
 ```bash
-HRPAYROLL_TEST_DB="Host=localhost;Port=5435;Username=hr;Password=hr-dev" dotnet test --project backend/tests/Costing.Api.Tests
+COSTING_TEST_DB="Host=localhost;Port=5436;Username=costing;Password=costing-dev" dotnet test --project backend/tests/Costing.Api.Tests
 ```
 
 ```bash
@@ -103,13 +110,12 @@ cd frontend && npx ng test --watch=false
 The `Dockerfile` builds the app and the API into one image, the API serving the app beside `/api`:
 
 ```bash
-docker build -t hr-payroll .
+docker build -t costing .
 ```
 
-It listens on `PORT` (8080 unless the platform says) and on the attendance device's own port
-5092. The database comes from `DATABASE_URL` (`postgres://user:password@host:port/database`) or
-`ConnectionStrings__Costing`; the migrations are applied on start. Set `Auth__SigningKey` and
-the first manager (`Auth__FirstManager__*`) from the environment, never in a committed file.
+It listens on `PORT` (8080 unless the platform says). The database comes from `DATABASE_URL` or
+`ConnectionStrings__Costing`; the migrations are applied on start. Set `Auth__SigningKey` and the
+first manager (`Auth__FirstManager__*`) from the environment, never in a committed file. `/health`
+says the process is up, `/health/ready` that it reaches its database too.
 
-To deploy on Railway, with the device calling in over the internet, see
-[docs/deploy-railway.md](docs/deploy-railway.md).
+To deploy on Railway, see [docs/deploy-railway.md](docs/deploy-railway.md).

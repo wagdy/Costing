@@ -13,10 +13,10 @@ import { ResetPasswordDialog, UserDialog, UserDialogData } from './user-dialogs'
 
 const rank = (user: User) => (user.role === 'Manager' ? 0 : 1);
 
-// Users (المستخدمون): who signs in to the system, a manager's to keep. Each is a manager or an
-// accountant, signs in with their email and a password, and is deactivated rather than deleted.
-// There is always one active manager. Employees are not here: they sign in to their portal with
-// the mobile number and PIN set on their profile.
+// Users (المستخدمون): who signs in to the system, a manager's to keep. Each is a manager, an
+// accountant, a cost controller or a storekeeper, signs in with their email and a password, and is
+// deactivated rather than deleted. There is always one active manager. The sections each works are
+// on Costing → Permissions.
 @Component({
   selector: 'app-users-page',
   imports: [DatePipe, MatButtonModule, MatIconModule, MatProgressBarModule],
@@ -25,7 +25,7 @@ const rank = (user: User) => (user.role === 'Manager' ? 0 : 1);
       <h1>Users <span class="inline-ar">المستخدمون</span></h1>
     </header>
     <div class="toolbar">
-      <p class="note"><span class="note-ar" lang="ar" dir="rtl">من يسجّل الدخول إلى النظام: المديرون، والمحاسبون الذين يعملون على تبويبات الموارد البشرية التي يمنحها لهم المدير.</span> Who signs in to the system: managers, and accountants who work the HR tabs a manager gives them.</p>
+      <p class="note"><span class="note-ar" lang="ar" dir="rtl">من يسجّل الدخول إلى النظام: المديرون، والمحاسبون ومراقبو التكاليف وأمناء المخزن الذين يعملون في الأقسام التي يحددها المدير في صفحة الصلاحيات.</span> Who signs in to the system: managers, and the accountants, cost controllers and storekeepers who work the sections a manager gives them on Permissions.</p>
       <span class="spacer"></span>
       <button mat-flat-button (click)="add()"><mat-icon>person_add</mat-icon> Add a user</button>
     </div>

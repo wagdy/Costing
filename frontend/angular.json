@@ -7,7 +7,7 @@
   },
   "newProjectRoot": "projects",
   "projects": {
-    "hr-payroll": {
+    "costing": {
       "projectType": "application",
       "schematics": {
         "@schematics/angular:component": {
@@ -67,20 +67,23 @@
           "builder": "@angular/build:dev-server",
           "configurations": {
             "production": {
-              "buildTarget": "hr-payroll:build:production"
+              "buildTarget": "costing:build:production"
             },
             "development": {
-              "buildTarget": "hr-payroll:build:development"
+              "buildTarget": "costing:build:development"
             }
           },
           "defaultConfiguration": "development",
           "options": {
             "proxyConfig": "proxy.conf.json",
-            "port": 4220
+            "port": 4230
           }
         },
         "test": {
-          "builder": "@angular/build:unit-test"
+          "builder": "@angular/build:unit-test",
+          "options": {
+            "runnerConfig": "vitest.config.ts"
+          }
         }
       }
     }

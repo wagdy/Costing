@@ -15,7 +15,7 @@ describe('the company’s settings in the app', () => {
     const get = vi.fn().mockReturnValue(of(aCompany({ currencySymbol: 'SAR', currencyPosition: 'After', hasLogo: true, logoVersion: 42 })));
     TestBed.configureTestingModule({ providers: [{ provide: SettingsApi, useValue: { get } }] });
     const company = TestBed.inject(Company);
-    expect([company.name(), company.money(10)]).toEqual(['HR & Payroll', '10.00']);
+    expect([company.name(), company.money(10)]).toEqual(['Costing & Financials', 'L.E 10.00']);
 
     await TestBed.runInInjectionContext(() => loadCompany());
     expect([company.name(), company.money(10), company.logoUrl()]).toEqual(['Acme', '10.00 SAR', '/api/settings/logo?v=42']);

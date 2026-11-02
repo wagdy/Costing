@@ -54,7 +54,7 @@ export interface UserDialogData {
             <mat-option [value]="r">{{ labels[r].en }} · {{ labels[r].ar }}</mat-option>
           }
         </mat-select>
-        <mat-hint>{{ role === 'Manager' ? 'Does everything, and approves what accountants ask.' : 'Works the HR tabs a manager gives them; their changes wait for a manager.' }}</mat-hint>
+        <mat-hint>{{ roleHints[role] }}</mat-hint>
       </mat-form-field>
       @if (data.user) {
         <mat-checkbox [(ngModel)]="isActive" [disabled]="!!data.self">Active: can sign in · نشط</mat-checkbox>
@@ -78,8 +78,15 @@ export interface UserDialogData {
 })
 export class UserDialog {
   protected readonly data = inject<UserDialogData>(MAT_DIALOG_DATA);
-  protected readonly roles: UserRole[] = ['Manager', 'Accountant'];
+  protected readonly roles: UserRole[] = ['Manager', 'Accountant', 'CostController', 'Storekeeper'];
   protected readonly labels = roleLabels;
+  // What each does, until a manager ticks their sections on Permissions.
+  protected readonly roleHints: Record<UserRole, string> = {
+    Manager: 'Works every section, and approves what the others ask.',
+    Accountant: 'Purchases, the safe and the reports; their changes wait for a manager.',
+    CostController: 'Recipes, the menu, sales, counts and the cost reports; their changes wait for a manager.',
+    Storekeeper: 'The stock: materials, purchases, counts, waste and production; sees no costs.',
+  };
   protected readonly minLength = MinPasswordLength;
   protected fullName = this.data.user?.fullName ?? '';
   protected email = this.data.user?.email ?? '';

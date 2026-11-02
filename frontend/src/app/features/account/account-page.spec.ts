@@ -2,7 +2,7 @@ import { HttpErrorResponse } from '@angular/common/http';
 import { signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { AuthService } from '../../core/auth/auth.service';
-import { HrAccess } from '../../core/hr/hr-access';
+import { CostingAccess } from '../../core/costing/costing-tabs';
 import { NotifyService } from '../../core/ui/notify.service';
 import { accountantMe } from '../../../testing/fixtures';
 import { AccountPage } from './account-page';
@@ -17,7 +17,7 @@ describe('their own account', () => {
     TestBed.configureTestingModule({
       providers: [
         { provide: AuthService, useValue: { me: signal(accountantMe), changePassword } },
-        { provide: HrAccess, useValue: { tabs: signal(new Set(tabs)) } },
+        { provide: CostingAccess, useValue: { tabs: signal(new Set(tabs)) } },
         { provide: NotifyService, useValue: notify },
       ],
     });
@@ -43,15 +43,15 @@ describe('their own account', () => {
     notify.info.mockReset();
   });
 
-  it('says who they are, and that a manager gives the tabs they do not hold yet', async () => {
+  it('says who they are, and that a manager gives the sections they do not work yet', async () => {
     const { el } = await render();
 
     expect([...el.querySelectorAll('.who dt, .who dd')].map(text)).toEqual(['Name', 'Mona', 'Email', 'mona@example.com', 'Role', 'Accountantمحاسب']);
-    expect(text(el.querySelector('.note')!)).toContain('You hold no HR tab yet.');
+    expect(text(el.querySelector('.note')!)).toContain('You work no section of Costing & Financials yet.');
   });
 
   it('changes the password with the current one, typed twice the same', async () => {
-    const { el, type, send } = await render(['Employees']);
+    const { el, type, send } = await render(['Materials']);
     expect(el.querySelector('.note')).toBeNull();
 
     type('current', 'change-me-now');

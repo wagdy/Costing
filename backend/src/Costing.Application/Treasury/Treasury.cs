@@ -16,8 +16,8 @@ namespace Costing.Application.Treasury;
 // safe as its opening balance, as funding, or as a day's takings; it goes out as expense
 // vouchers, supplier payments, invoices paid in cash, employees' advances and salaries, from the
 // safe or straight from a day's takings. An invoice on credit is owed to its supplier until a
-// payment voucher pays it. An advance is owed by the employee until the payslip of the month it
-// counts in deducts it: the first month whose payroll is not finalized, from the advance's own.
+// payment voucher pays it. An advance is owed by the employee until the payroll of its own month
+// deducts it.
 //
 // A day's takings are entered gross, as the POS totals them, once. What was paid straight out of
 // them by then came out of the drawer, so the safe gets the rest; what is paid out of them, or put

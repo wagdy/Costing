@@ -1,13 +1,12 @@
 # syntax=docker/dockerfile:1
 
-# HR & Payroll as one image: the Angular app built, then served by the .NET API from its wwwroot.
+# Costing & Financials as one image: the Angular app built, then served by the .NET API from its
+# wwwroot.
 #
-#   docker build -t hr-payroll .
-#   docker run -p 8080:8080 -p 5092:5092 -e PORT=8080 -e DATABASE_URL=postgres://… -e Auth__SigningKey=… hr-payroll
+#   docker build -t costing .
+#   docker run -p 8080:8080 -e DATABASE_URL=postgres://… -e Auth__SigningKey=… costing
 #
-# On Railway: the API listens on Railway's PORT (the HTTPS domain), and on the attendance device's
-# own port 5092 (Attendance__DevicePort), which a Railway TCP Proxy exposes for the device's plain
-# HTTP. See docs/deploy-railway.md.
+# On Railway: the API listens on Railway's PORT, behind its HTTPS domain. See docs/deploy-railway.md.
 
 # ---- 1. The Angular app ----
 FROM node:22-bookworm-slim AS app
@@ -42,11 +41,10 @@ COPY --from=api /publish ./
 # the first manager come from the platform's variables, never from this file.
 ENV ASPNETCORE_ENVIRONMENT=Production \
     ASPNETCORE_FORWARDEDHEADERS_ENABLED=true \
-    PORT=8080 \
-    Attendance__DevicePort=5092
+    PORT=8080
 
-# The web port (PORT) and the attendance device's own port.
-EXPOSE 8080 5092
+# The web port (PORT): the app and its API.
+EXPOSE 8080
 
 USER $APP_UID
 ENTRYPOINT ["dotnet", "Costing.Api.dll"]

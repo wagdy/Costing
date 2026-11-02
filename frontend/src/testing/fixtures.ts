@@ -1,15 +1,16 @@
 import { Me } from '../app/core/api/models';
-import { DeviceConnection } from '../app/core/hr/hr.api';
+import { allCostingTabs } from '../app/core/costing/costing-tabs';
 import { CompanySettings } from '../app/core/settings/company';
 
-// What GET /api/auth/me returns for each role: the API's RolePermissions table.
+// What GET /api/auth/me returns for each role: the API's RolePermissions table, and the sections
+// each works by its role.
 export const managerMe: Me = {
   id: 'user-manager',
   fullName: 'Omar',
   email: 'omar@example.com',
   role: 'Manager',
-  permissions: ['approval.decide', 'hr.manage', 'hr.view', 'settings.manage', 'users.manage'],
-  hrTabs: ['Now', 'Employees', 'Departments', 'Attendance', 'Corrections', 'Payroll', 'Advances', 'Holidays', 'Devices', 'Custody'],
+  permissions: ['approval.decide', 'costing.view', 'inventory.manage', 'inventory.view', 'settings.manage', 'users.manage'],
+  tabs: [...allCostingTabs],
 };
 
 export const accountantMe: Me = {
@@ -17,22 +18,23 @@ export const accountantMe: Me = {
   fullName: 'Mona',
   email: 'mona@example.com',
   role: 'Accountant',
-  permissions: ['hr.manage', 'hr.view'],
-  hrTabs: [],
+  permissions: ['costing.view', 'inventory.manage', 'inventory.view'],
+  tabs: ['Materials', 'Sales', 'Purchases', 'ExpenseItems', 'Financials', 'Reports'],
+};
+
+export const storekeeperMe: Me = {
+  id: 'user-storekeeper',
+  fullName: 'Samir',
+  email: 'samir@example.com',
+  role: 'Storekeeper',
+  permissions: ['inventory.manage', 'inventory.view'],
+  tabs: ['Materials', 'Production', 'Purchases', 'Counts', 'Waste'],
 };
 
 // What GET /api/settings returns: a company in Egypt, its money written "L.E 1,400.00".
 export function aCompany(overrides: Partial<CompanySettings> = {}): CompanySettings {
   return {
     name: 'Acme', currencySymbol: 'L.E', currencyPosition: 'Before', country: 'Egypt', timeZoneId: 'Africa/Cairo', workdayStartsAtHour: 4,
-    weekends: ['Friday'], hasLogo: false, logoVersion: 0, ...overrides,
-  };
-}
-
-// What GET /api/hr/devices/connection returns: the API on 5090, the device on its own port 5092
-// and the portal on 5093, both reached from the network at this machine's address.
-export function aConnection(overrides: Partial<DeviceConnection> = {}): DeviceConnection {
-  return {
-    devicePort: 5092, portalPort: 5093, serverPort: 5090, addresses: ['192.168.1.57'], deviceOnNetwork: true, portalOnNetwork: true, ...overrides,
+    hasLogo: false, logoVersion: 0, ...overrides,
   };
 }

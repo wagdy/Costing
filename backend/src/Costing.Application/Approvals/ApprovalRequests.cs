@@ -33,7 +33,7 @@ public interface IRecordDescriptions
     // until the business day starts.
     DateOnly LocalDateOf(DateTime utc);
 
-    // The restaurant's wall clock at a moment: what an attendance device's clock shows.
+    // The restaurant's wall clock at a moment.
     DateTime LocalTimeOf(DateTime utc);
 }
 

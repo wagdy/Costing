@@ -27,7 +27,7 @@ public class DatabaseConnectionTests
     [Fact]
     public void Database_url_comes_before_the_connection_string_and_one_of_them_is_needed()
     {
-        const string local = "Host=localhost;Port=5435;Database=costing;Username=hr;Password=hr-dev";
+        const string local = "Host=localhost;Port=5436;Database=costing;Username=costing;Password=costing-dev";
         Assert.Equal(local, DatabaseConnection.Resolve(Settings(("ConnectionStrings:Costing", local))));
         Assert.Equal(local, DatabaseConnection.Resolve(Settings(("ConnectionStrings:Costing", local), ("DATABASE_URL", ""))));
 

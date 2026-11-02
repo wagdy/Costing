@@ -4,9 +4,9 @@ namespace Costing.Domain.Waste;
 
 // Breakage (كسر) in Costing → Waste: plates, glasses and other consumables broken on a business
 // day, at their cost, the second kind of waste beside spoiled stock. Not stock: nothing comes off
-// the shelves; the cost is the day's. Entered on Waste, or made by an HR system's custody
-// check-out with the reason Breakage (AssetItemId, AssetTransactionId: none for one entered here).
-// What broke is said by its name as it was, and who held it.
+// the shelves; the cost is the day's. Entered on Waste. AssetItemId and AssetTransactionId name an
+// asset system's own record of it, when one sends it; none for one entered here. What broke is
+// said by its name as it was, and who broke it.
 public sealed class BreakageEntry : AggregateRoot
 {
     public const int MaxDescriptionLength = 150;

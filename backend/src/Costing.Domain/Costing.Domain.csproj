@@ -1,8 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- The HR & Assets model: employees, their attendance, leaves, performance and monthly pay,
-       the assets in their custody, the approvals a manager gives, and who may use which tab.
-       No references: everything else depends on it. -->
+  <!-- The costing model: raw materials and their stock, recipes and prep items, production, the
+       menu and its sales, purchases, counts and waste, the safe, the approvals a manager gives,
+       and who works which section. No references: everything else depends on it. -->
 
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>

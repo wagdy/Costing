@@ -1,5 +1,5 @@
 import { BreakpointObserver } from '@angular/cdk/layout';
-import { Component, OnDestroy, OnInit, computed, inject } from '@angular/core';
+import { Component, OnInit, computed, inject } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
@@ -12,31 +12,27 @@ import { AuthService } from '../../core/auth/auth.service';
 import { CanDirective } from '../../core/auth/can.directive';
 import { Permissions } from '../../core/auth/permissions';
 import { ConnectivityService } from '../../core/connectivity/connectivity.service';
-import { HrAccess } from '../../core/hr/hr-access';
-import { HrHubService } from '../../core/realtime/hr-hub.service';
 import { Company } from '../../core/settings/company';
-import { Approvals } from '../approvals/approvals';
+import { roleLabels } from '../../core/users/users.api';
+import { Approvals } from '../costing/approvals';
 
-// Everything after sign-in: the toolbar with its sections and the connection's state, the banner
-// while the server cannot be reached, and the live connection to it, which lives as long as this
-// does.
+// Everything after sign-in: the toolbar with its sections and the connection's state, and the
+// banner while the server cannot be reached.
 @Component({
   selector: 'app-shell',
   imports: [CanDirective, MatButtonModule, MatIconModule, MatMenuModule, MatToolbarModule, MatTooltipModule, RouterLink, RouterLinkActive, RouterOutlet],
   templateUrl: './shell.html',
   styleUrl: './shell.scss',
 })
-export class Shell implements OnInit, OnDestroy {
+export class Shell implements OnInit {
   protected readonly auth = inject(AuthService);
-  // HR & Payroll for whoever holds a tab of it, Custody & Assets for whoever holds its tab.
-  protected readonly hr = inject(HrAccess);
   protected readonly connectivity = inject(ConnectivityService);
-  // The Approvals link's count of what waits for a manager.
+  // What waits for a manager, counted beside Costing & Financials.
   protected readonly approvals = inject(Approvals);
   protected readonly Permissions = Permissions;
+  protected readonly roleLabels = roleLabels;
   // The company's name and logo, beside the sections.
   protected readonly company = inject(Company);
-  private readonly hub = inject(HrHubService);
   // The signed-in user's first letters, in the avatar on their menu.
   protected readonly initials = computed(() =>
     (this.auth.me()?.fullName ?? '')
@@ -56,16 +52,10 @@ export class Shell implements OnInit, OnDestroy {
   );
 
   ngOnInit(): void {
-    void this.hub.start();
     void this.approvals.refresh();
   }
 
-  ngOnDestroy(): void {
-    void this.hub.stop();
-  }
-
-  protected async signOut(): Promise<void> {
-    await this.hub.stop();
+  protected signOut(): void {
     this.auth.signOut();
   }
 }

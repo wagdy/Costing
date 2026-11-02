@@ -1,10 +1,9 @@
 import { HttpClient } from '@angular/common/http';
 import { Injectable, computed, inject, signal } from '@angular/core';
 import { Observable, firstValueFrom } from 'rxjs';
-import type { WeekDay } from '../hr/hr.api';
 
 // Company Settings (إعدادات الشركة), as the API keeps them (/api/settings): read by anyone, the
-// sign-in page and the portal too; changed by a manager.
+// sign-in page too; changed by a manager.
 export type Country = 'Egypt' | 'SaudiArabia';
 export type CurrencyPosition = 'Before' | 'After';
 
@@ -15,10 +14,8 @@ export interface CompanySettings {
   country: Country;
   // IANA id: "Africa/Cairo".
   timeZoneId: string;
-  // The hour the workday starts: before it, a night past midnight is still the evening's day.
+  // The hour the business day starts: before it, a night past midnight is still the evening's day.
   workdayStartsAtHour: number;
-  // What a new employee starts with as their days off; nobody's change with them.
-  weekends: WeekDay[];
   hasLogo: boolean;
   // Changes with the logo: its address asks for the new one.
   logoVersion: number;
@@ -31,14 +28,15 @@ export const countryLabels: Record<Country, { en: string; ar: string }> = {
   SaudiArabia: { en: 'Saudi Arabia', ar: 'المملكة العربية السعودية' },
 };
 
-const numbers = new Map<number, Intl.NumberFormat>();
+const numbers = new Map<string, Intl.NumberFormat>();
 
-// An amount as the company writes it: "L.E 1,400.00", "1,400.00 SAR", or the number alone.
-export function formatMoney(amount: number, symbol: string, position: CurrencyPosition, digits = 2): string {
-  let format = numbers.get(digits);
+// An amount as the company writes it: "L.E 1,400.00", "1,400.00 SAR", or the number alone. A unit
+// cost may take more digits when it has them (maxDigits): "L.E 0.0833 a g", "L.E 1.80 a piece".
+export function formatMoney(amount: number, symbol: string, position: CurrencyPosition, digits = 2, maxDigits = digits): string {
+  let format = numbers.get(`${digits}-${maxDigits}`);
   if (!format) {
-    format = new Intl.NumberFormat('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits });
-    numbers.set(digits, format);
+    format = new Intl.NumberFormat('en-US', { minimumFractionDigits: digits, maximumFractionDigits: maxDigits });
+    numbers.set(`${digits}-${maxDigits}`, format);
   }
   const number = format.format(amount ?? 0);
   if (!symbol) {
@@ -49,28 +47,29 @@ export function formatMoney(amount: number, symbol: string, position: CurrencyPo
 
 // The company's settings as the app holds them, read once at start-up and replaced as a manager
 // saves them. Nothing but signals, so the money pipe and any screen read it without asking the
-// server; with nothing read yet, amounts are numbers alone.
+// server; with nothing read yet, amounts are in L.E, the server's own default.
 @Injectable({ providedIn: 'root' })
 export class Company {
   readonly settings = signal<CompanySettings>({
     name: '',
-    currencySymbol: '',
+    currencySymbol: 'L.E',
     currencyPosition: 'Before',
     country: 'Egypt',
     timeZoneId: 'Africa/Cairo',
     workdayStartsAtHour: 4,
-    weekends: [],
     hasLogo: false,
     logoVersion: 0,
   });
 
+  // The currency it writes amounts in: "L.E", "SAR", or none.
+  readonly currency = computed(() => this.settings().currencySymbol);
   // The company's name, or the system's own until it has one.
-  readonly name = computed(() => this.settings().name || 'HR & Payroll');
+  readonly name = computed(() => this.settings().name || 'Costing & Financials');
   readonly logoUrl = computed(() => (this.settings().hasLogo ? `/api/settings/logo?v=${this.settings().logoVersion}` : null));
 
-  money(amount: number, digits = 2): string {
+  money(amount: number, digits = 2, maxDigits = digits): string {
     const s = this.settings();
-    return formatMoney(amount, s.currencySymbol, s.currencyPosition, digits);
+    return formatMoney(amount, s.currencySymbol, s.currencyPosition, digits, maxDigits);
   }
 }
 

@@ -26,8 +26,7 @@ export interface SideSection {
 // left, or on the right for right-to-left (its sides are logical, start and end). It stays in view
 // under the shell's bar as the page scrolls. On a phone they are a drawer, opened from a bar above
 // the page that names the section open, with a dot when something waits in one; picking one,
-// Escape or the backdrop closes it, and Tab stays in it while open. HR & Payroll's and Custody &
-// Assets', in the system and in the portal alike.
+// Escape or the backdrop closes it, and Tab stays in it while open. Costing & Financials'.
 @Component({
   selector: 'app-side-layout',
   imports: [A11yModule, MatButtonModule, MatIconModule, RouterLink, RouterLinkActive],
@@ -92,7 +91,7 @@ export interface SideSection {
     </div>
   `,
   styles: `
-    // The shell's sticky bar above this (--app-sticky-top, none in the portal): the sidebar and the
+    // The shell's sticky bar above this (--app-sticky-top): the sidebar and the
     // phone's bar stay in view under it.
     .side-layout {
       display: grid;

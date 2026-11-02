@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- The use cases, as MediatR requests: HR & Payroll, Custody & Assets and the approvals they
-       share. Infrastructure supplies the repositories, the clock and the devices. -->
+  <!-- The use cases, as MediatR requests: the stock, the costs, the menu and sales, the safe, and
+       the approvals they share. Infrastructure supplies the repositories and the clock. -->
 
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>

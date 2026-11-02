@@ -2,161 +2,206 @@ import { Routes } from '@angular/router';
 import { inject } from '@angular/core';
 import { homePath, permissionGuard, signedInGuard, signedOutGuard } from './core/auth/guards';
 import { Permissions } from './core/auth/permissions';
-import { HrAccess, hrGiveGuard, hrGuard, hrTabGuard, portalHrMatch } from './core/hr/hr-access';
-import { portalGuard } from './core/portal/portal-auth';
+import { CostingAccess, costingTabGuard } from './core/costing/costing-tabs';
 
-// HR & Payroll's tabs, the system's and the portal's alike: each guarded by its tab (HrAccess), so
-// a typed address opens only a tab held. Opens on the first one held.
-const hrChildren: Routes = [
-  { path: '', pathMatch: 'full', redirectTo: () => `/hr/${inject(HrAccess).first() ?? 'now'}` },
+// Costing & Financials' sections: each guarded by its tab (CostingAccess), so a typed address opens
+// only a section the user works. Opens on the first one they do.
+const costingChildren: Routes = [
+  { path: '', pathMatch: 'full', redirectTo: () => `/costing/${inject(CostingAccess).first() ?? 'approvals'}` },
   {
-    // Who is in now, live from the attendance device.
-    path: 'now',
-    canActivate: [hrTabGuard('Now')],
-    loadComponent: () => import('./features/hr/now-page').then((m) => m.NowPage),
+    path: 'materials',
+    canActivate: [costingTabGuard('Materials')],
+    loadComponent: () => import('./features/costing/materials-page').then((m) => m.MaterialsPage),
   },
   {
-    // HR analytics (لوحة التحليلات): attendance, labour cost by department and turnover, for a month
-    // or the 3 or 12 to it.
-    path: 'analytics',
-    canActivate: [hrTabGuard('Analytics')],
-    loadComponent: () => import('./features/hr/analytics-page').then((m) => m.AnalyticsPage),
-  },
-  {
-    path: 'employees',
-    canActivate: [hrTabGuard('Employees')],
-    loadComponent: () => import('./features/hr/employees-page').then((m) => m.EmployeesPage),
-  },
-  {
-    // An employee's profile: their details, ID card and the month's payslip.
-    path: 'employees/:employeeId',
-    canActivate: [hrTabGuard('Employees')],
-    loadComponent: () => import('./features/hr/employee-profile-page').then((m) => m.EmployeeProfilePage),
-  },
-  {
-    path: 'departments',
-    canActivate: [hrTabGuard('Departments')],
-    loadComponent: () => import('./features/hr/departments-page').then((m) => m.DepartmentsPage),
-  },
-  {
-    // ?date=, or ?employee=&month= for one employee's month.
-    path: 'attendance',
-    canActivate: [hrTabGuard('Attendance')],
-    loadComponent: () => import('./features/hr/attendance-page').then((m) => m.AttendancePage),
-  },
-  {
-    // Shift rostering (جداول الشفتات): a week's grid of who is on which shift, or off. ?week= its
-    // first day.
-    path: 'roster',
-    canActivate: [hrTabGuard('Roster')],
-    loadComponent: () => import('./features/hr/roster-page').then((m) => m.RosterPage),
-  },
-  {
-    // ?month= its first day.
-    path: 'payroll',
-    canActivate: [hrTabGuard('Payroll')],
-    loadComponent: () => import('./features/hr/payroll-page').then((m) => m.PayrollPage),
-  },
-  {
-    path: 'payroll/:employeeId',
-    canActivate: [hrTabGuard('Payroll')],
-    loadComponent: () => import('./features/hr/payslip-page').then((m) => m.PayslipPage),
-  },
-  {
-    // The month's advances, and those handed out with no one named, to give out.
-    path: 'advances',
-    canActivate: [hrTabGuard('Advances')],
-    loadComponent: () => import('./features/hr/hr-advances-page').then((m) => m.HrAdvancesPage),
-  },
-  {
-    // Suspended days for a manager's punch-out, and the month's administrative penalties.
-    path: 'corrections',
-    canActivate: [hrTabGuard('Corrections')],
-    loadComponent: () => import('./features/hr/corrections-page').then((m) => m.CorrectionsPage),
-  },
-  {
-    // Leaves & Holidays (الإجازات والعطلات): the leave requests waiting for a manager and the
-    // year's, everyone's balances, the leave types, and the year's public holidays (opening on the
-    // workday's).
-    path: 'leaves',
-    canActivate: [hrTabGuard('Holidays')],
-    loadComponent: () => import('./features/hr/leaves-shell').then((m) => m.LeavesShell),
+    path: 'recipes',
+    canActivate: [costingTabGuard('Recipes')],
+    loadComponent: () => import('./features/costing/recipes-shell').then((m) => m.RecipesShell),
     children: [
-      { path: '', pathMatch: 'full', redirectTo: 'requests' },
-      { path: 'requests', loadComponent: () => import('./features/hr/leave-requests-page').then((m) => m.LeaveRequestsPage) },
-      { path: 'balances', loadComponent: () => import('./features/hr/leave-balances-page').then((m) => m.LeaveBalancesPage) },
-      { path: 'types', loadComponent: () => import('./features/hr/leave-types-page').then((m) => m.LeaveTypesPage) },
-      { path: 'holidays', loadComponent: () => import('./features/hr/holidays-page').then((m) => m.HolidaysPage) },
+      {
+        path: '',
+        pathMatch: 'full',
+        loadComponent: () => import('./features/costing/recipes-page').then((m) => m.RecipesPage),
+      },
+      {
+        // ?targetKind=&catalogItemId=&variantId= to start linked to a menu item.
+        path: 'new',
+        data: { mode: 'new' },
+        loadComponent: () => import('./features/costing/recipe-card-page').then((m) => m.RecipeCardPage),
+      },
+      {
+        path: 'recipe/:recipeId',
+        data: { mode: 'view' },
+        loadComponent: () => import('./features/costing/recipe-card-page').then((m) => m.RecipeCardPage),
+      },
+      {
+        path: 'recipe/:recipeId/edit',
+        data: { mode: 'edit' },
+        loadComponent: () => import('./features/costing/recipe-card-page').then((m) => m.RecipeCardPage),
+      },
+      {
+        path: 'prep',
+        loadComponent: () => import('./features/costing/prep-items-page').then((m) => m.PrepItemsPage),
+      },
+      {
+        // 'new' for one not saved yet.
+        path: 'prep/:id',
+        loadComponent: () => import('./features/costing/prep-item-page').then((m) => m.PrepItemPage),
+      },
+      {
+        path: 'categories',
+        loadComponent: () => import('./features/costing/recipe-categories-page').then((m) => m.RecipeCategoriesPage),
+      },
+      // Where production was, under Recipes, before it was a section of its own.
+      { path: 'production', redirectTo: '/costing/production' },
+      {
+        // A menu item's card by its menu numbers (?variantId= for a size): sent on to the recipe it
+        // sells by.
+        path: ':kind/:id',
+        data: { mode: 'menu' },
+        loadComponent: () => import('./features/costing/recipe-card-page').then((m) => m.RecipeCardPage),
+      },
     ],
   },
-  // The public holidays' address before they were a part of Leaves & Holidays.
-  { path: 'holidays', redirectTo: 'leaves/holidays' },
   {
-    path: 'devices',
-    canActivate: [hrTabGuard('Devices')],
-    loadComponent: () => import('./features/hr/devices-page').then((m) => m.DevicesPage),
+    // Production orders: prep items made in batches. ?prepItemId= to start with one chosen.
+    path: 'production',
+    canActivate: [costingTabGuard('Production')],
+    loadComponent: () => import('./features/costing/production-page').then((m) => m.ProductionPage),
   },
   {
-    // Employee permissions (صلاحيات الموظفين): who holds which tab; a manager's.
+    // The menu: categories, items and sizes, add-ons.
+    path: 'menu',
+    canActivate: [costingTabGuard('Menu')],
+    loadComponent: () => import('./features/costing/menu-page').then((m) => m.MenuPage),
+  },
+  {
+    // Sales: entered, imported, refunded and voided.
+    path: 'sales',
+    canActivate: [costingTabGuard('Sales')],
+    loadComponent: () => import('./features/costing/sales-page').then((m) => m.SalesPage),
+  },
+  {
+    path: 'purchases',
+    canActivate: [costingTabGuard('Purchases')],
+    loadComponent: () => import('./features/costing/purchases-shell').then((m) => m.PurchasesShell),
+    children: [
+      { path: '', pathMatch: 'full', redirectTo: 'new' },
+      {
+        path: 'new',
+        loadComponent: () => import('./features/costing/purchases-page').then((m) => m.PurchasesPage),
+      },
+      {
+        path: 'batch',
+        loadComponent: () => import('./features/costing/purchase-batch-page').then((m) => m.PurchaseBatchPage),
+      },
+      {
+        path: 'invoices',
+        loadComponent: () => import('./features/costing/invoices-page').then((m) => m.InvoicesPage),
+      },
+      {
+        path: 'invoices/:id',
+        loadComponent: () => import('./features/costing/invoice-page').then((m) => m.InvoicePage),
+      },
+      {
+        path: 'suppliers',
+        loadComponent: () => import('./features/costing/suppliers-page').then((m) => m.SuppliersPage),
+      },
+      { path: 'spending', redirectTo: '/costing/reports/spending' },
+      { path: 'expense-items', redirectTo: '/costing/expense-items' },
+      {
+        path: 'categories',
+        loadComponent: () => import('./features/costing/purchase-categories-page').then((m) => m.PurchaseCategoriesPage),
+      },
+    ],
+  },
+  { path: 'invoices', pathMatch: 'full', redirectTo: 'purchases/invoices' },
+  { path: 'invoices/:id', redirectTo: 'purchases/invoices/:id' },
+  {
+    // General expenses (OPEX): bought, never stock.
+    path: 'expense-items',
+    canActivate: [costingTabGuard('ExpenseItems')],
+    loadComponent: () => import('./features/costing/expense-items-page').then((m) => m.ExpenseItemsPage),
+  },
+  {
+    path: 'counts',
+    canActivate: [costingTabGuard('Counts')],
+    loadComponent: () => import('./features/costing/counts-page').then((m) => m.CountsPage),
+  },
+  {
+    path: 'counts/:id',
+    canActivate: [costingTabGuard('Counts')],
+    loadComponent: () => import('./features/costing/count-sheet-page').then((m) => m.CountSheetPage),
+  },
+  {
+    path: 'waste',
+    canActivate: [costingTabGuard('Waste')],
+    loadComponent: () => import('./features/costing/waste-page').then((m) => m.WastePage),
+  },
+  {
+    // Financials (الماليات): the safe, its funding, takings, expense vouchers, what suppliers are owed
+    // and paid, the staff it pays and their advances, the tax and service.
+    path: 'financials',
+    canActivate: [costingTabGuard('Financials')],
+    loadComponent: () => import('./features/costing/financials-shell').then((m) => m.FinancialsShell),
+    children: [
+      { path: '', pathMatch: 'full', redirectTo: 'safe' },
+      { path: 'safe', loadComponent: () => import('./features/costing/safe-page').then((m) => m.SafePage) },
+      { path: 'funding', loadComponent: () => import('./features/costing/funding-page').then((m) => m.FundingPage) },
+      { path: 'reconciliation', loadComponent: () => import('./features/costing/reconciliation-page').then((m) => m.ReconciliationPage) },
+      { path: 'daily-cash', loadComponent: () => import('./features/costing/daily-cash-page').then((m) => m.DailyCashPage) },
+      { path: 'expenses', loadComponent: () => import('./features/costing/expense-vouchers-page').then((m) => m.ExpenseVouchersPage) },
+      {
+        // ?supplier= for one supplier's statement of account.
+        path: 'suppliers',
+        loadComponent: () => import('./features/costing/supplier-debts-page').then((m) => m.SupplierDebtsPage),
+      },
+      { path: 'payments', loadComponent: () => import('./features/costing/supplier-payments-page').then((m) => m.SupplierPaymentsPage) },
+      { path: 'advances', loadComponent: () => import('./features/costing/advances-page').then((m) => m.AdvancesPage) },
+      { path: 'staff', loadComponent: () => import('./features/costing/staff-page').then((m) => m.StaffPage) },
+      { path: 'tax-service', loadComponent: () => import('./features/costing/tax-service-page').then((m) => m.TaxServicePage) },
+    ],
+  },
+  {
+    // Reports (التقارير): where the money went, and the food cost reports.
+    path: 'reports',
+    canActivate: [costingTabGuard('Reports')],
+    loadComponent: () => import('./features/costing/costing-reports-shell').then((m) => m.CostingReportsShell),
+    children: [
+      { path: '', pathMatch: 'full', redirectTo: 'spending' },
+      { path: 'spending', loadComponent: () => import('./features/costing/spending-page').then((m) => m.SpendingPage) },
+      { path: 'theoretical', loadComponent: () => import('./features/costing/theoretical-page').then((m) => m.TheoreticalPage) },
+      { path: 'variance', loadComponent: () => import('./features/costing/variance-page').then((m) => m.VariancePage) },
+      { path: 'kpis', loadComponent: () => import('./features/costing/kpis-page').then((m) => m.KpisPage) },
+      { path: 'break-even', loadComponent: () => import('./features/costing/break-even-page').then((m) => m.BreakEvenPage) },
+    ],
+  },
+  { path: 'theoretical', redirectTo: 'reports/theoretical' },
+  { path: 'variance', redirectTo: 'reports/variance' },
+  { path: 'kpis', redirectTo: 'reports/kpis' },
+  { path: 'break-even', redirectTo: 'reports/break-even' },
+  {
+    // The cost targets, beverage categories, shared costs and monthly expenses.
+    path: 'settings',
+    canActivate: [costingTabGuard('CostSettings')],
+    loadComponent: () => import('./features/costing/settings-page').then((m) => m.SettingsPage),
+  },
+  {
+    // What waits for a manager: everyone who enters things sees their own; a manager decides.
+    path: 'approvals',
+    canActivate: [permissionGuard(Permissions.InventoryManage)],
+    loadComponent: () => import('./features/costing/approvals-page').then((m) => m.ApprovalsPage),
+  },
+  {
+    // Who works which section; a manager's.
     path: 'permissions',
-    canActivate: [hrGiveGuard],
-    loadComponent: () => import('./features/hr/permissions-page').then((m) => m.PermissionsPage),
-  },
-];
-
-// Custody & Assets' pages, the system's and the portal's alike.
-const custodyChildren: Routes = [
-  { path: '', pathMatch: 'full', redirectTo: 'assets' },
-  {
-    path: 'categories',
-    loadComponent: () => import('./features/custody/categories-page').then((m) => m.CategoriesPage),
-  },
-  {
-    path: 'assets',
-    loadComponent: () => import('./features/custody/assets-page').then((m) => m.AssetsPage),
-  },
-  {
-    path: 'vouchers',
-    loadComponent: () => import('./features/custody/vouchers-page').then((m) => m.VouchersPage),
-  },
-  {
-    // The consumables used up from the store (جرد الاستهلاكيات): their stock, received, used up
-    // and counted.
-    path: 'consumables',
-    loadComponent: () => import('./features/custody/consumables-page').then((m) => m.ConsumablesPage),
+    canActivate: [permissionGuard(Permissions.UsersManage)],
+    loadComponent: () => import('./features/costing/permissions-page').then((m) => m.PermissionsPage),
   },
 ];
 
 export const routes: Routes = [
-  // The employee portal: the employee's own page, outside the system's shell, so none of its
-  // navigation is there; the employee's token reaches /api/portal alone. They sign in on the one
-  // sign-in, with their mobile number; /portal, the address they were given, opens it.
-  { path: 'portal', pathMatch: 'full', redirectTo: 'sign-in' },
   {
-    path: 'my-profile',
-    canActivate: [portalGuard],
-    loadComponent: () => import('./features/portal/my-profile-page').then((m) => m.MyProfilePage),
-  },
-  {
-    // The HR tabs a manager gave an employee, in the portal: the system's own screens, only
-    // theirs, and nothing else of the system around them. /hr is this only while no user is
-    // signed in here; for a user it is its own section, below.
-    path: 'hr',
-    canMatch: [portalHrMatch],
-    canActivate: [portalGuard, hrGuard],
-    loadComponent: () => import('./features/portal/portal-hr-frame').then((m) => m.PortalHrFrame),
-    children: [{ path: '', loadComponent: () => import('./features/hr/hr-shell').then((m) => m.HrShell), children: hrChildren }],
-  },
-  {
-    // Custody & Assets, given as a tab, in the portal the same way.
-    path: 'custody',
-    canMatch: [portalHrMatch],
-    canActivate: [portalGuard, hrTabGuard('Custody')],
-    loadComponent: () => import('./features/portal/portal-hr-frame').then((m) => m.PortalHrFrame),
-    children: [{ path: '', loadComponent: () => import('./features/custody/custody-shell').then((m) => m.CustodyShell), children: custodyChildren }],
-  },
-  {
-    // Everyone's: a user with their email, an employee with their mobile number.
     path: 'sign-in',
     canActivate: [signedOutGuard],
     loadComponent: () => import('./features/sign-in/sign-in-page').then((m) => m.SignInPage),
@@ -168,26 +213,10 @@ export const routes: Routes = [
     children: [
       { path: '', pathMatch: 'full', redirectTo: homePath },
       {
-        // HR & Payroll (الموارد البشرية والرواتب): employees, their attendance and their pay; each
-        // tab for whoever holds it.
-        path: 'hr',
-        canActivate: [hrGuard],
-        loadComponent: () => import('./features/hr/hr-shell').then((m) => m.HrShell),
-        children: hrChildren,
-      },
-      {
-        // Custody & Assets: what the company owns, and whose custody each thing is in; for
-        // whoever holds its tab.
-        path: 'custody',
-        canActivate: [hrTabGuard('Custody')],
-        loadComponent: () => import('./features/custody/custody-shell').then((m) => m.CustodyShell),
-        children: custodyChildren,
-      },
-      {
-        // A manager's: what accountants have asked for, waiting for a decision.
-        path: 'approvals',
-        canActivate: [permissionGuard(Permissions.ApprovalDecide)],
-        loadComponent: () => import('./features/approvals/approvals-page').then((m) => m.ApprovalsPage),
+        // Costing & Financials (التكاليف والماليات): each section for whoever works it.
+        path: 'costing',
+        loadComponent: () => import('./features/costing/costing-shell').then((m) => m.CostingShell),
+        children: costingChildren,
       },
       {
         // Who signs in to the system; a manager's.
@@ -196,14 +225,13 @@ export const routes: Routes = [
         loadComponent: () => import('./features/users/users-page').then((m) => m.UsersPage),
       },
       {
-        // Company Settings: the name and logo, the currency, the country, the time zone, the
-        // weekends; a manager's.
+        // Company Settings: the name and logo, the currency, the country, the time zone; a manager's.
         path: 'settings',
         canActivate: [permissionGuard(Permissions.SettingsManage)],
         loadComponent: () => import('./features/settings/settings-page').then((m) => m.SettingsPage),
       },
       {
-        // Their own account and password; where a user holding no tab lands.
+        // Their own account and password; where a user working no section lands.
         path: 'account',
         loadComponent: () => import('./features/account/account-page').then((m) => m.AccountPage),
       },

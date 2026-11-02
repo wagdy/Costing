@@ -3,10 +3,9 @@ import { Injectable, computed, inject, signal } from '@angular/core';
 import { Router } from '@angular/router';
 import { firstValueFrom } from 'rxjs';
 import { Me, SignInResponse } from '../api/models';
-import { PortalAuth } from '../portal/portal-auth';
-import { Permission, Permissions } from './permissions';
+import { Permission } from './permissions';
 
-const TokenKey = 'hr-payroll.token';
+const TokenKey = 'costing.token';
 
 // Who is signed in to the system, and what they may do.
 //
@@ -14,18 +13,11 @@ const TokenKey = 'hr-payroll.token';
 // response, not from the token, not from anything stored in the browser. The stored token is
 // only a candidate until the API has said whose it is, so a role changed or a user deactivated
 // takes effect here the next time /me is asked.
-//
-// With no user signed in and an employee signed in to the portal, the employee is the one acting
-// (employeeActing): in the HR tabs a manager gave them (/hr), they may do what an accountant does
-// there, see HR and change it, their changes asked of a manager, and nothing else. Their token,
-// not this one, then goes to /api/hr (authInterceptor).
-const ActingEmployee: ReadonlySet<Permission> = new Set([Permissions.HrView, Permissions.HrManage]);
 
 @Injectable({ providedIn: 'root' })
 export class AuthService {
   private readonly http = inject(HttpClient);
   private readonly router = inject(Router);
-  private readonly portal = inject(PortalAuth);
 
   private readonly _token = signal<string | null>(readStoredToken());
   private readonly _me = signal<Me | null>(null);
@@ -34,10 +26,9 @@ export class AuthService {
   readonly token = this._token.asReadonly();
   readonly me = this._me.asReadonly();
   readonly isSignedIn = computed(() => this._me() !== null);
-  readonly employeeActing = computed(() => this._me() === null && this.portal.isSignedIn());
 
   can(permission: Permission): boolean {
-    return this.employeeActing() ? ActingEmployee.has(permission) : this.permissions().has(permission);
+    return this.permissions().has(permission);
   }
 
   canAny(permissions: readonly Permission[]): boolean {

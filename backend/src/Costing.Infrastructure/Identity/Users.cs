@@ -9,8 +9,8 @@ using Costing.Infrastructure.Persistence.Configurations;
 
 namespace Costing.Infrastructure.Identity;
 
-// Someone who runs HR in this system: a manager or an accountant, signing in with their email
-// and password. Employees are not users: they have the self-service portal, with a PIN.
+// Someone who works in this system: a manager, an accountant, a cost controller or a storekeeper,
+// signing in with their email and password.
 public sealed class UserAccount
 {
     public const int MaxEmailLength = 256;
@@ -190,7 +190,7 @@ public sealed class UserDirectory(CostingDbContext db, ILogger<UserDirectory> lo
         if (name.Length is 0 or > UserAccount.MaxNameLength)
             throw new DomainException("Enter their full name.");
         if (!Enum.IsDefined(role))
-            throw new DomainException("Choose their role: manager or accountant.");
+            throw new DomainException("Choose their role: manager, accountant, cost controller or storekeeper.");
         var normalized = Normalize(trimmed);
         if (await db.Users.AnyAsync(u => u.Id != user.Id && u.NormalizedEmail == normalized, cancellationToken))
             throw new DomainException($"{trimmed} is someone else's already.");

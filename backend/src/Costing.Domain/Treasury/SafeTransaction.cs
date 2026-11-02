@@ -37,11 +37,11 @@ public enum SafeTransactionKind
     InvoicePayment = 6,
 
     // A cash advance to an employee (سلفة), from the safe or a day's takings. Not an expense: it
-    // is owed by the employee until the payslip of its month (PayrollMonth) deducts it, and the
+    // is owed by the employee until the payroll of its month (PayrollMonth) deducts it, and the
     // wages are counted there.
     EmployeeAdvance = 7,
 
-    // An employee's salary paid (صرف راتب): their payslip's net for a month, or part of it.
+    // An employee's salary paid (صرف راتب): their net pay for a month, or part of it.
     SalaryPayment = 8,
 }
 

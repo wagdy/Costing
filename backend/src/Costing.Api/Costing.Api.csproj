@@ -1,7 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk.Web">
 
-  <!-- The HTTP API, the live hub, the attendance devices' ADMS endpoint and the Angular app's
-       files. -->
+  <!-- The HTTP API and the Angular app's files. -->
 
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>

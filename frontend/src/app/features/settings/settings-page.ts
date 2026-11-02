@@ -10,7 +10,6 @@ import { MatInputModule } from '@angular/material/input';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatSelectModule } from '@angular/material/select';
 import { firstValueFrom } from 'rxjs';
-import { WeekDay, weekDays } from '../../core/hr/hr.api';
 import { errorMessage } from '../../core/http/error-message';
 import { Company, CompanySettings, Country, CurrencyPosition, SettingsApi, countryLabels, formatMoney } from '../../core/settings/company';
 import { NotifyService } from '../../core/ui/notify.service';
@@ -22,10 +21,9 @@ function timeZones(saved: string): string[] {
 }
 
 // Company Settings (إعدادات الشركة), a manager's: the company's name and logo, how money is written
-// everywhere (screens, Excel sheets and the API's messages), the country (its national IDs and the
-// public holidays offered), the time zone and the hour the workday starts, and the weekends a new
-// employee starts with. Changing the time zone is said plainly before it is saved: it moves how
-// new punches fall into workdays, and the attendance devices take it only when restarted.
+// everywhere (screens, Excel sheets and the API's messages), the country, and the time zone and
+// the hour the business day starts. Changing the time zone is said plainly before it is saved: it
+// moves which day new sales and entries fall on.
 @Component({
   selector: 'app-settings-page',
   imports: [
@@ -64,7 +62,7 @@ function timeZones(saved: string): string[] {
           @if (company.settings().hasLogo) {
             <button mat-button type="button" (click)="removeLogo()" [disabled]="busy()"><mat-icon>delete</mat-icon> Take it off</button>
           }
-          <span class="muted small">PNG, JPEG or WebP, a megabyte at most. Shown on the sign-in page, the top bar, the portal and payslips.</span>
+          <span class="muted small">PNG, JPEG or WebP, a megabyte at most. Shown on the sign-in page and the top bar.</span>
           <input #picker type="file" hidden accept="image/png,image/jpeg,image/webp" (change)="uploadLogo(picker)" aria-label="Logo file" />
         </div>
       </div>
@@ -86,7 +84,7 @@ function timeZones(saved: string): string[] {
     </section>
 
     <section class="card" aria-labelledby="place-title">
-      <h2 id="place-title">Country, time and weekends <span class="inline-ar">الدولة والوقت والإجازة الأسبوعية</span></h2>
+      <h2 id="place-title">Country and time <span class="inline-ar">الدولة والوقت</span></h2>
       <div class="row">
         <mat-form-field>
           <mat-label>Country · الدولة</mat-label>
@@ -95,7 +93,7 @@ function timeZones(saved: string): string[] {
               <mat-option [value]="c">{{ countryLabels[c].en }} · {{ countryLabels[c].ar }}</mat-option>
             }
           </mat-select>
-          <mat-hint>Its national IDs, and the public holidays offered</mat-hint>
+          <mat-hint>Where the company is</mat-hint>
         </mat-form-field>
         <mat-form-field class="zone">
           <mat-label>Time zone · المنطقة الزمنية</mat-label>
@@ -107,8 +105,8 @@ function timeZones(saved: string): string[] {
           </mat-autocomplete>
         </mat-form-field>
         <mat-form-field>
-          <mat-label>Workday starts · بداية يوم العمل</mat-label>
-          <mat-select name="hour" [(ngModel)]="workdayStartsAtHour" aria-label="Workday starts">
+          <mat-label>Business day starts · بداية يوم العمل</mat-label>
+          <mat-select name="hour" [(ngModel)]="workdayStartsAtHour" aria-label="Business day starts">
             @for (h of hours; track h) {
               <mat-option [value]="h">{{ h < 10 ? '0' + h : h }}:00</mat-option>
             }
@@ -123,26 +121,15 @@ function timeZones(saved: string): string[] {
           <div>
             <strong>Changing the time zone from {{ company.settings().timeZoneId }} to {{ timeZoneId() }}</strong>
             <p>
-              From the moment it is saved, new punches fall into workdays by the new zone's clock, and today's workday may change. Days already
-              worked out and finalized pay stay as they are.
+              From the moment it is saved, new sales, takings and entries fall on business days by the new zone's clock, and today's business day
+              may change. What is recorded already stays on its day.
             </p>
-            <p><strong>You must restart every attendance device afterwards</strong>: a device takes the new time zone only when it starts again. Until then
-              it keeps stamping punches by the old one.</p>
-            <p class="inline-ar">تغيير المنطقة الزمنية يغيّر توزيع البصمات الجديدة على أيام العمل، ويجب إعادة تشغيل أجهزة البصمة بعد الحفظ.</p>
-            <mat-checkbox name="zoneUnderstood" [(ngModel)]="zoneUnderstood">I understand, and will restart the attendance devices</mat-checkbox>
+            <p class="inline-ar">تغيير المنطقة الزمنية يغيّر توزيع المبيعات والقيود الجديدة على أيام العمل، وما سُجل يبقى في يومه.</p>
+            <mat-checkbox name="zoneUnderstood" [(ngModel)]="zoneUnderstood">I understand</mat-checkbox>
           </div>
         </div>
       }
 
-      <div class="weekends">
-        <span class="label">Weekends · الإجازة الأسبوعية</span>
-        <mat-button-toggle-group multiple name="weekends" [(ngModel)]="weekends" aria-label="Weekends" hideMultipleSelectionIndicator>
-          @for (d of days; track d.day) {
-            <mat-button-toggle [value]="d.day">{{ d.en }}</mat-button-toggle>
-          }
-        </mat-button-toggle-group>
-        <span class="muted small">What a new employee starts with as their days off. Nobody's days off already set change.</span>
-      </div>
     </section>
 
     @if (error(); as message) {
@@ -236,13 +223,6 @@ function timeZones(saved: string): string[] {
         margin: 6px 0;
       }
     }
-    .weekends {
-      display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      gap: 8px 12px;
-      margin-top: 8px;
-    }
     .label {
       font: var(--mat-sys-label-large);
     }
@@ -267,7 +247,6 @@ export class SettingsPage {
 
   protected readonly countries: Country[] = ['Egypt', 'SaudiArabia'];
   protected readonly countryLabels = countryLabels;
-  protected readonly days = weekDays;
   protected readonly hours = Array.from({ length: 13 }, (_, h) => h);
   private readonly zones = timeZones(this.company.settings().timeZoneId);
 
@@ -277,7 +256,6 @@ export class SettingsPage {
   protected country: Country = this.company.settings().country;
   protected readonly timeZoneId = signal(this.company.settings().timeZoneId);
   protected workdayStartsAtHour = this.company.settings().workdayStartsAtHour;
-  protected weekends: WeekDay[] = [...this.company.settings().weekends];
   protected zoneUnderstood = false;
   protected readonly busy = signal(false);
   protected readonly error = signal<string | null>(null);
@@ -305,12 +283,11 @@ export class SettingsPage {
           country: this.country,
           timeZoneId: this.timeZoneId().trim(),
           workdayStartsAtHour: this.workdayStartsAtHour,
-          weekends: this.weekends,
         }),
       );
       this.saved(saved);
       this.zoneUnderstood = false;
-      this.notify.info(zoneChanged ? 'Settings saved. Restart every attendance device now, for it to take the new time zone.' : 'Settings saved.');
+      this.notify.info(zoneChanged ? 'Settings saved. New entries fall on business days by the new time zone.' : 'Settings saved.');
     } catch (error) {
       this.error.set(errorMessage(error, 'The settings could not be saved.'));
     } finally {

@@ -58,13 +58,12 @@ describe('the company settings', () => {
     await refresh();
     expect(save).toHaveBeenCalledWith({
       name: 'Acme', currencySymbol: 'SAR', currencyPosition: 'After', country: 'Egypt', timeZoneId: 'Africa/Cairo', workdayStartsAtHour: 4,
-      weekends: ['Friday'],
     });
     expect(TestBed.inject(Company).money(5)).toBe('5.00 SAR');
     expect(notify.info).toHaveBeenCalledWith('Settings saved.');
   });
 
-  it('warns plainly of a time zone change, and saves it only once the manager says they will restart the devices', async () => {
+  it('warns plainly of a time zone change, and saves it only once the manager says they understand', async () => {
     const { el, page, refresh, saveButton } = await render();
 
     page['timeZoneId'].set('Asia/Riyadh');
@@ -72,8 +71,8 @@ describe('the company settings', () => {
     const warning = el.querySelector('.zone-warning')!;
     expect(warning.getAttribute('role')).toBe('alert');
     expect(text(warning)).toContain('Changing the time zone from Africa/Cairo to Asia/Riyadh');
-    expect(text(warning)).toContain('new punches fall into workdays by the new zone');
-    expect(text(warning)).toContain('You must restart every attendance device afterwards');
+    expect(text(warning)).toContain('new sales, takings and entries fall on business days by the new zone');
+    expect(text(warning)).toContain('What is recorded already stays on its day.');
     expect(saveButton().disabled).toBe(true);
 
     page['zoneUnderstood'] = true;
@@ -83,7 +82,7 @@ describe('the company settings', () => {
     await refresh();
 
     expect(save.mock.lastCall![0]).toMatchObject({ timeZoneId: 'Asia/Riyadh' });
-    expect(notify.info).toHaveBeenCalledWith('Settings saved. Restart every attendance device now, for it to take the new time zone.');
+    expect(notify.info).toHaveBeenCalledWith('Settings saved. New entries fall on business days by the new time zone.');
     // Saved: the zone is the company's now, and nothing is left to warn of.
     expect(el.querySelector('.zone-warning')).toBeNull();
   });

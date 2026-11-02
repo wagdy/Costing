@@ -5,7 +5,7 @@ import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatIconModule } from '@angular/material/icon';
 import { MatInputModule } from '@angular/material/input';
 import { AuthService } from '../../core/auth/auth.service';
-import { HrAccess } from '../../core/hr/hr-access';
+import { CostingAccess } from '../../core/costing/costing-tabs';
 import { errorMessage } from '../../core/http/error-message';
 import { NotifyService } from '../../core/ui/notify.service';
 import { MinPasswordLength, roleLabels } from '../../core/users/users.api';
@@ -30,7 +30,7 @@ import { MinPasswordLength, roleLabels } from '../../core/users/users.api';
         <dd>{{ labels[me.role].en }}<span class="inline-ar">{{ labels[me.role].ar }}</span></dd>
       </dl>
       @if (noTabs()) {
-        <p class="note"><span class="note-ar" lang="ar" dir="rtl">ليس لديك أي تبويب في الموارد البشرية بعد. يمنحها المدير من تبويب صلاحيات الموظفين.</span> You hold no HR tab yet. A manager gives them on HR &amp; Payroll's Permissions tab.</p>
+        <p class="note"><span class="note-ar" lang="ar" dir="rtl">ليس لديك أي قسم في التكاليف والماليات بعد. يمنحها المدير من صفحة الصلاحيات.</span> You work no section of Costing &amp; Financials yet. A manager gives them on Permissions.</p>
       }
     }
 
@@ -89,7 +89,7 @@ import { MinPasswordLength, roleLabels } from '../../core/users/users.api';
 })
 export class AccountPage {
   protected readonly auth = inject(AuthService);
-  private readonly access = inject(HrAccess);
+  private readonly access = inject(CostingAccess);
   private readonly notify = inject(NotifyService);
 
   protected readonly labels = roleLabels;

@@ -26,7 +26,7 @@ namespace Costing.Application.Purchases;
 // to them, never more, and taken off it on their account.
 //
 // An employee's advance (سلفة) can be paid in it as well, as a payment is: from the safe or the
-// day's takings, never on credit, and owed by the employee until the payslip of its month deducts it.
+// day's takings, never on credit, and owed by the employee until the payroll of its month deducts it.
 //
 // All or nothing: every invoice, payment and advance is checked before any is saved, and each
 // problem is said by the one it is on. InvoiceId and a payment's or advance's TransactionId are

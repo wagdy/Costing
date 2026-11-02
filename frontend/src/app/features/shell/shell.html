@@ -1,30 +1,18 @@
 <mat-toolbar class="toolbar">
-  <a class="brand" routerLink="/hr" [attr.aria-label]="company.name() + ': home'">
+  <a class="brand" routerLink="/costing" [attr.aria-label]="company.name() + ': home'">
     @if (company.logoUrl(); as logo) {
       <img class="logo" [src]="logo" alt="" />
     } @else {
-      <span class="mark"><mat-icon>groups</mat-icon></span>
+      <span class="mark"><mat-icon>calculate</mat-icon></span>
     }
     <span class="brand-text">{{ company.name() }}</span>
   </a>
 
   <nav>
-    @if (hr.any()) {
-      <a mat-button routerLink="/hr" routerLinkActive="active" aria-label="HR & Payroll" matTooltip="HR & Payroll · الموارد البشرية والرواتب" [matTooltipDisabled]="!compactNav()">
-        <mat-icon>badge</mat-icon>
-        <span class="nav-text">HR &amp; Payroll</span>
-      </a>
-    }
-    @if (hr.has('Custody')) {
-      <a mat-button routerLink="/custody" routerLinkActive="active" aria-label="Custody & Assets" matTooltip="Custody & Assets · العهدة والأصول" [matTooltipDisabled]="!compactNav()">
-        <mat-icon>inventory_2</mat-icon>
-        <span class="nav-text">Custody</span>
-      </a>
-    }
-    <a *appCan="Permissions.ApprovalDecide" mat-button routerLink="/approvals" routerLinkActive="active" aria-label="Approvals" matTooltip="Approvals · الموافقات" [matTooltipDisabled]="!compactNav()">
-      <mat-icon>fact_check</mat-icon>
-      <span class="nav-text">Approvals</span>
-      @if (approvals.pending().length) {
+    <a mat-button routerLink="/costing" routerLinkActive="active" aria-label="Costing & Financials" matTooltip="Costing & Financials · التكاليف والماليات" [matTooltipDisabled]="!compactNav()">
+      <mat-icon>calculate</mat-icon>
+      <span class="nav-text">Costing &amp; Financials</span>
+      @if (approvals.canApprove() && approvals.pending().length) {
         <span class="count" [attr.aria-label]="approvals.pending().length + ' waiting'">{{ approvals.pending().length }}</span>
       }
     </a>
@@ -60,7 +48,7 @@
     <div mat-menu-item disabled>
       <span class="who">
         <span>{{ auth.me()?.fullName }}</span>
-        <small>{{ auth.me()?.role }} · {{ auth.me()?.email }}</small>
+        <small>@if (auth.me(); as me) {{{ roleLabels[me.role].en }} · {{ me.email }}}</small>
       </span>
     </div>
     <a mat-menu-item routerLink="/account">

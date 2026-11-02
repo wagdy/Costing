@@ -14,3 +14,9 @@ backend/src/Costing.Api/wwwroot/
 .vs/
 .idea/
 .DS_Store
+.env.*
+.vscode/
+
+# Database dumps
+dev/backups/
+*.dump

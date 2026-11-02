@@ -11,8 +11,8 @@ namespace Costing.Api.Auth;
 
 public sealed class TokenService(IOptions<AuthOptions> options, TimeProvider time)
 {
-    public const string Issuer = "hr-payroll";
-    public const string Audience = "hr-payroll";
+    public const string Issuer = "costing";
+    public const string Audience = "costing";
 
     private static readonly JsonWebTokenHandler Handler = new();
 
@@ -25,10 +25,6 @@ public sealed class TokenService(IOptions<AuthOptions> options, TimeProvider tim
         new Claim(UserClaims.PasswordSetAt, user.PasswordSetAtUtc.Ticks.ToString(CultureInfo.InvariantCulture)),
     ]);
 
-    // An employee's, for the self-service portal: their id, the role Employee, and when their PIN
-    // was set. Their HR & Payroll tabs too, a claim each ("hr_tabs": ["Now", "Attendance"]), for
-    // the portal to show; every request checks them against the ones they have now
-    // (AuthenticationSetup).
     private (string Token, DateTime ExpiresAtUtc) Create(IReadOnlyList<Claim> claims)
     {
         var expiresAtUtc = time.GetUtcNow().UtcDateTime.AddHours(options.Value.TokenLifetimeHours);
