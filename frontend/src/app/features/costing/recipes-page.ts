@@ -11,11 +11,15 @@ import { MatSelectModule } from '@angular/material/select';
 import { MatTooltipModule } from '@angular/material/tooltip';
 import { Router, RouterLink } from '@angular/router';
 import { firstValueFrom } from 'rxjs';
+import { AuthService } from '../../core/auth/auth.service';
+import { Permissions } from '../../core/auth/permissions';
 import { CostStatus, CostingApi, ApprovalRequest, RecipeCategory, RecipeCostCard, statusLabels } from '../../core/costing/costing.api';
+import { CostingAccess } from '../../core/costing/costing-tabs';
 import { errorMessage } from '../../core/http/error-message';
 import { MoneyPipe } from '../../core/ui/money.pipe';
 import { NotifyService } from '../../core/ui/notify.service';
 import { saveBlob } from '../../core/ui/save-blob';
+import { AddToMenuData, AddToMenuDialog } from './add-to-menu-dialog';
 import { Approvals, pendingLabel } from './approvals';
 import { todayIso } from './financials';
 import { recipeSheetRules } from './recipe-sheet-rules';
@@ -32,7 +36,9 @@ export type RecipeSort = 'recipe' | 'category' | 'cost' | 'foodCost';
 // portion costs against its price, and View, Edit and Delete. Deleting marks it deleted: it stays
 // for the record and can be restored. A menu item with no recipe yet is a click from one. To and
 // from Excel: every recipe a row per ingredient, the ingredient chosen from a dropdown that says
-// its unit; a sheet imported replaces the recipes it names, and says what each costs now.
+// its unit; a sheet imported replaces the recipes it names, and says what each costs now. A recipe
+// off the menu is put on it from here (Add to menu · إضافة للمنيو), one or all those shown: a menu
+// item of its name, linked to it, so selling it on Sales takes its stock by the recipe.
 @Component({
   selector: 'app-recipes-page',
   imports: [
@@ -90,6 +96,12 @@ export type RecipeSort = 'recipe' | 'category' | 'cost' | 'foodCost';
         </mat-form-field>
       }
       <span class="spacer"></span>
+      @if (canAddToMenu() && toMenu().length) {
+        <button mat-stroked-button class="to-menu" (click)="addToMenu(toMenu())" [disabled]="busy()"
+          matTooltip="Each standalone recipe shown becomes a menu item, sold on Sales by its recipe">
+          <mat-icon>restaurant_menu</mat-icon> Add {{ toMenu().length }} to menu <span class="inline-ar">إضافة للمنيو</span>
+        </button>
+      }
       <button mat-stroked-button (click)="exportExcel()" [disabled]="busy()">
         <mat-icon>download</mat-icon> Export Excel <span class="inline-ar">تصدير إلى إكسل</span>
       </button>
@@ -216,6 +228,10 @@ export type RecipeSort = 'recipe' | 'category' | 'cost' | 'foodCost';
                   } @else if (pendingOf(c)) {
                     <mat-icon class="locked" matTooltip="Waiting for a manager's approval: locked until decided" aria-label="Locked: deletion requested">lock_clock</mat-icon>
                   } @else {
+                    @if (c.isStandalone && canAddToMenu()) {
+                      <button mat-icon-button class="to-menu" (click)="addToMenu([c])" matTooltip="Add to menu · إضافة للمنيو"
+                        [attr.aria-label]="'Add ' + c.recipe + ' to the menu'"><mat-icon>restaurant_menu</mat-icon></button>
+                    }
                     <button mat-icon-button (click)="edit(c)" matTooltip="Edit" [attr.aria-label]="'Edit ' + c.recipe"><mat-icon>edit</mat-icon></button>
                     <button mat-icon-button class="danger" (click)="remove(c)" [disabled]="saving()"
                       matTooltip="Delete" [attr.aria-label]="'Delete ' + c.recipe">
@@ -293,6 +309,10 @@ export type RecipeSort = 'recipe' | 'category' | 'cost' | 'foodCost';
     .danger {
       color: var(--mat-sys-error);
     }
+    .to-menu {
+      color: var(--mat-sys-primary);
+      white-space: nowrap;
+    }
     .spacer {
       flex: 1;
     }
@@ -312,6 +332,8 @@ export class RecipesPage {
   private readonly notify = inject(NotifyService);
   private readonly dialog = inject(MatDialog);
   protected readonly approvals = inject(Approvals);
+  private readonly access = inject(CostingAccess);
+  private readonly auth = inject(AuthService);
 
   protected readonly statusLabels = statusLabels;
   protected readonly statuses = Object.keys(statusLabels).filter((s) => s !== 'NoRecipe') as CostStatus[];
@@ -362,6 +384,12 @@ export class RecipesPage {
       (c) => !c.hasRecipe && (!needle || [c.itemCode, c.linkedTo, c.recipe, c.category].some((v) => v?.toLowerCase().includes(needle))),
     );
   });
+
+  // Whoever works the menu puts a recipe on it.
+  protected readonly canAddToMenu = computed(() => this.access.has('Menu') && this.auth.can(Permissions.InventoryManage));
+
+  // The standalone ones shown, none waiting for a manager: put on the menu together.
+  protected readonly toMenu = computed(() => this.shown().filter((c) => c.isStandalone && !c.isDeleted && !this.pendingOf(c)));
 
   protected readonly counts = computed(() => {
     const active = this.recipes().filter((c) => !c.isDeleted);
@@ -459,6 +487,19 @@ export class RecipesPage {
       this.dialog.open<SheetImportDialog, SheetImportData, boolean>(SheetImportDialog, { data, width: '860px', maxWidth: '96vw' }).afterClosed(),
     );
     if (changed) {
+      await this.load();
+    }
+  }
+
+  // Each a menu item of its name, at the price and in the category given in the dialog; the list
+  // read again unless none went on (closed by Escape or outside it, it may have done some).
+  protected async addToMenu(recipes: RecipeCostCard[]): Promise<void> {
+    const added = await firstValueFrom(
+      this.dialog
+        .open<AddToMenuDialog, AddToMenuData, boolean>(AddToMenuDialog, { data: { recipes }, width: recipes.length > 1 ? '1000px' : '820px', maxWidth: '96vw' })
+        .afterClosed(),
+    );
+    if (added !== false) {
       await this.load();
     }
   }

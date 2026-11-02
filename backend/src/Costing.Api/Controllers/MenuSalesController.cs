@@ -5,6 +5,7 @@ using Costing.Api.Auth;
 using Costing.Application.Access;
 using Costing.Application.Common;
 using Costing.Application.Menu;
+using Costing.Application.Recipes;
 using Costing.Application.Sales;
 using Costing.Application.Staff;
 using Costing.Application.Waste;
@@ -52,6 +53,14 @@ public sealed class MenuController(ISender sender) : ControllerBase
     [Authorize(Policy = Permissions.InventoryManage)]
     public Task<MenuItemDto> AddItem(MenuItemRequest request, CancellationToken cancellationToken) =>
         sender.Send(request.Command(null), cancellationToken);
+
+    // Recipes off the menu put on it, each a menu item of its name linked to it: sold on Sales from
+    // then on, taking its stock by the recipe. The Menu tab's, as it adds items.
+    [HttpPost("from-recipes")]
+    [CostingTab(CostingTabs.Menu)]
+    [Authorize(Policy = Permissions.InventoryManage)]
+    public Task<RecipesToMenuResult> AddRecipesToMenu(AddRecipesToMenuRequest request, CancellationToken cancellationToken) =>
+        sender.Send(new AddRecipesToMenuCommand(request.Recipes ?? []), cancellationToken);
 
     [HttpPut("items/{itemId:int}")]
     [CostingTab(CostingTabs.Menu)]
@@ -123,6 +132,8 @@ public sealed record MenuItemRequest(
 }
 
 public sealed record AddOnRequest(string Name, string? NameAr, decimal Price);
+
+public sealed record AddRecipesToMenuRequest(IReadOnlyList<RecipeToMenu>? Recipes);
 
 // Sales (المبيعات): what the menu sold, entered or imported. A void is asked through the
 // approvals (deletion-requests, module Sale), as the other voids are.

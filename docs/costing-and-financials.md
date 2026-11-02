@@ -164,6 +164,27 @@ Kept on the Menu page, or imported from a sheet (`GET /api/menu/template`, then 
 is known changes that item; an unknown category is added; a row that cannot be read is left out
 and said why, the others imported.
 
+### Putting recipes on the menu (إضافة للمنيو)
+
+A recipe off the menu (standalone) does not sell until it is on it. **Add to menu** on Recipes, on
+one recipe's row or for all the standalone ones shown (a category or a search narrows them), puts
+each on the menu in one step (`POST /api/menu/from-recipes`, the Menu tab and changing stock
+records):
+
+- **A new menu item of its name**, numbered as the next item is, at the selling price and in the
+  menu category given. Each starts from the recipe's planned price and its kitchen category; one
+  with no category or price waits for them, and the food cost % shows as the price is typed. A
+  category not on the menu yet is added.
+- **A menu item of its name there already** (not deleted, any case or spacing) with no recipe of
+  its own is the one it is linked to, at its own price and category: never a second item of that
+  name. One that sells by another recipe already is left alone, and said so.
+- The recipe is linked to its item at once, keeping its own name, kitchen category and planned
+  price. From then on it is on Sales like any item: chosen on a new sale, or imported by its name
+  or code, **each sold takes its stock by the recipe** and counts on the reports.
+
+Each recipe is checked on its own: one deleted, on the menu already, or waiting for a manager's
+approval is not added and said why, in English and Arabic, and the rest are.
+
 ## Sales
 
 A sale (`SalesReceipt`) is a bill: its day and time, its reference, how it was sold (dine in,

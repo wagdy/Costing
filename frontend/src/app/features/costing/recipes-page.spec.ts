@@ -6,6 +6,7 @@ import { AuthService } from '../../core/auth/auth.service';
 import { Permissions } from '../../core/auth/permissions';
 import { CostingApi, ApprovalRequest, RecipeCategory, RecipeCostCard } from '../../core/costing/costing.api';
 import { NotifyService } from '../../core/ui/notify.service';
+import { AddToMenuDialog } from './add-to-menu-dialog';
 import { DeleteRequestDialog } from './approvals';
 import { RecipesPage } from './recipes-page';
 import { SheetImportData, SheetImportDialog } from './sheet-import-dialog';
@@ -93,8 +94,9 @@ describe('the recipes', () => {
   const open = vi.fn();
   const notify = { info: vi.fn(), error: vi.fn() };
 
-  // A manager approves deletions; anyone else (an accountant) asks for them.
-  async function render({ manager = true } = {}) {
+  // A manager approves deletions; anyone else (an accountant) asks for them. Whoever works the
+  // menu (its tab, and changing stock records) puts a recipe on it.
+  async function render({ manager = true, menuTab = false, canManage = true } = {}) {
     TestBed.configureTestingModule({
       providers: [
         provideRouter([]),
@@ -107,7 +109,13 @@ describe('the recipes', () => {
         },
         { provide: NotifyService, useValue: notify },
         { provide: MatDialog, useValue: { open } },
-        { provide: AuthService, useValue: { me: () => null, can: (p: string) => p !== Permissions.ApprovalDecide || manager } },
+        {
+          provide: AuthService,
+          useValue: {
+            me: () => (menuTab ? { tabs: ['Recipes', 'Menu'] } : null),
+            can: (p: string) => (p !== Permissions.ApprovalDecide || manager) && (p !== Permissions.InventoryManage || canManage),
+          },
+        },
       ],
     });
     const fixture = TestBed.createComponent(RecipesPage);
@@ -277,6 +285,51 @@ describe('the recipes', () => {
     ]);
     button(rows()[1], 'Create recipe').click();
     expect(navigate).toHaveBeenCalledWith(['/costing/recipes/new'], { queryParams: { targetKind: 'MenuItem', catalogItemId: 10, variantId: 101 } });
+  });
+
+  it('puts a standalone recipe on the menu, one or all those shown, for whoever works the menu', async () => {
+    recipes.mockReturnValue(of([burger, trial, garlicDip, old]));
+    const { el, page, rows, button } = await render({ menuTab: true });
+    const toolbarButton = () => {
+      rows();
+      return [...el.querySelectorAll('.toolbar button.to-menu')].map(text);
+    };
+
+    // Not for one on the menu already.
+    expect(rows().map((r) => [...r.querySelectorAll('td.actions button')].map((b) => b.getAttribute('aria-label')))).toEqual([
+      ['View Classic Cheeseburger', 'Edit Classic Cheeseburger', 'Delete Classic Cheeseburger'],
+      ['View Garlic dip', 'Add Garlic dip to the menu', 'Edit Garlic dip', 'Delete Garlic dip'],
+      ['View Smash trial', 'Add Smash trial to the menu', 'Edit Smash trial', 'Delete Smash trial'],
+    ]);
+    expect(toolbarButton()).toEqual(['restaurant_menu Add 2 to menu إضافة للمنيو']);
+
+    open.mockReturnValue({ afterClosed: () => of(true) });
+    button(rows()[2], 'Add Smash trial').click();
+    await vi.waitFor(() => expect(recipes).toHaveBeenCalledTimes(2));
+    expect(open).toHaveBeenLastCalledWith(AddToMenuDialog, expect.objectContaining({ data: { recipes: [trial] }, width: '820px' }));
+
+    // Those shown: in one category, the one there.
+    page['category'].set('sauces');
+    expect(toolbarButton()).toEqual(['restaurant_menu Add 1 to menu إضافة للمنيو']);
+    page['category'].set(null);
+    open.mockReturnValue({ afterClosed: () => of(false) });
+    await page['addToMenu'](page['toMenu']());
+    expect(open).toHaveBeenLastCalledWith(AddToMenuDialog, expect.objectContaining({ data: { recipes: [garlicDip, trial] }, width: '1000px' }));
+    // Cancelled: not read again.
+    expect(recipes).toHaveBeenCalledTimes(2);
+
+    page['view'].set('linked');
+    expect(toolbarButton()).toEqual([]);
+  });
+
+  it('does not offer the menu to one without its tab, or who cannot change stock records', async () => {
+    recipes.mockReturnValue(of([trial]));
+    const withoutTab = await render();
+    expect(withoutTab.el.querySelector('.to-menu')).toBeNull();
+    TestBed.resetTestingModule();
+
+    const storekeeper = await render({ menuTab: true, canManage: false });
+    expect(storekeeper.el.querySelector('.to-menu')).toBeNull();
   });
 
   describe('by category', () => {

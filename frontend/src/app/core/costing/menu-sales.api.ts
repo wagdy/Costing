@@ -77,6 +77,21 @@ export interface MenuImportResult {
   skipped: SkippedRow[];
 }
 
+// Recipes off the menu put on it: each a menu item of its name, at the price and in the category
+// given, linked to it; one of a name on the menu already linked to that item as it is.
+export interface RecipeToMenuInput {
+  recipeId: string;
+  category: string | null;
+  price: number | null;
+  nameAr?: string | null;
+}
+
+export interface RecipesToMenuResult {
+  linked: { recipeId: string; recipe: string; menuItemId: number; category: string; price: number; created: boolean }[];
+  skipped: { recipeId: string; recipe: string | null; reason: string; reasonAr: string }[];
+  categoriesAdded: string[];
+}
+
 // Sales (المبيعات): bills entered or imported, each taking its stock by recipe.
 export type SalesChannel = 'DineIn' | 'Takeaway' | 'Delivery' | 'Online';
 export type PaymentMethod = 'Cash' | 'Visa' | 'Instapay';
@@ -284,6 +299,10 @@ export class MenuSalesApi {
 
   restoreAddOn(id: number): Observable<MenuAddOn> {
     return this.http.post<MenuAddOn>(`/api/menu/add-ons/${id}/restore`, {});
+  }
+
+  addRecipesToMenu(recipes: RecipeToMenuInput[]): Observable<RecipesToMenuResult> {
+    return this.http.post<RecipesToMenuResult>('/api/menu/from-recipes', { recipes });
   }
 
   menuTemplate(): Observable<Blob> {

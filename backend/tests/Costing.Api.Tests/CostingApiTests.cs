@@ -486,6 +486,58 @@ public class CostingApiTests
         Assert.Equal(HttpStatusCode.Forbidden, (await accountant.PostAsync("/api/inventory/recipes/sheet/import", File(recipes, "recipes.xlsx"), Cancel)).StatusCode);
     }
 
+    // Recipes off the menu put on it: a menu item each, linked, sold on Sales from then on and
+    // taking its stock by the recipe. The Menu tab's to do.
+    [Fact]
+    public async Task Recipes_off_the_menu_go_on_it_and_sell_taking_their_stock()
+    {
+        await using var api = await TestApi.StartAsync();
+        var manager = await api.ManagerAsync();
+        var today = await TodayAsync(manager);
+        var flour = (await Json(await manager.PostAsJsonAsync("/api/inventory/raw-materials", new
+        {
+            name = "Flour", unit = "Gram", purchaseUnit = "kg", purchaseUnitSize = 1000, costPerPurchaseUnit = 30,
+        }, Cancel))).GetProperty("id").GetGuid();
+        var category = Guid.NewGuid();
+        await Json(await manager.PutAsJsonAsync($"/api/inventory/recipe-categories/{category}", new { name = "Pasta" }, Cancel));
+        var alfredo = (await Json(await manager.PostAsJsonAsync("/api/inventory/recipes", new
+        {
+            name = "Alfredo pasta", portions = 1, recipeCategoryId = category, plannedPrice = 165,
+            ingredients = new[] { new { rawMaterialId = flour, quantity = 150 } },
+        }, Cancel))).GetProperty("id").GetGuid();
+
+        // Not a storekeeper's: the menu is not their section.
+        var storekeeper = await api.UserAsync(manager, "Samir", UserRole.Storekeeper);
+        var body = new { recipes = new[] { new { recipeId = alfredo, category = "Pasta", price = 165, nameAr = "باستا ألفريدو" } } };
+        Assert.Equal(HttpStatusCode.Forbidden, (await storekeeper.PostAsJsonAsync("/api/menu/from-recipes", body, Cancel)).StatusCode);
+
+        var result = await Json(await manager.PostAsJsonAsync("/api/menu/from-recipes", body, Cancel));
+        var linked = result.GetProperty("linked").EnumerateArray().Single();
+        var number = linked.GetProperty("menuItemId").GetInt32();
+        Assert.Equal((true, "Pasta", 165m), (linked.GetProperty("created").GetBoolean(), linked.GetProperty("category").GetString(), linked.GetProperty("price").GetDecimal()));
+        Assert.Equal(["Pasta"], result.GetProperty("categoriesAdded").EnumerateArray().Select(c => c.GetString()));
+
+        // On the menu, linked, costed against its price: 4.50 of flour on 165.
+        var item = (await Json(await manager.GetAsync("/api/menu", Cancel))).GetProperty("items").EnumerateArray().Single();
+        Assert.Equal((number, "Alfredo pasta", "باستا ألفريدو"), (item.GetProperty("id").GetInt32(), item.GetProperty("name").GetString(), item.GetProperty("nameAr").GetString()));
+        var card = await Json(await manager.GetAsync($"/api/costing/recipe-card?targetKind=MenuItem&catalogItemId={number}", Cancel));
+        Assert.Equal((165m, 4.5m, false), (card.GetProperty("menuPrice").GetDecimal(), card.GetProperty("costPerPortion").GetDecimal(), card.GetProperty("isStandalone").GetBoolean()));
+
+        // Sold: two take 300 g of flour, and the sale is on the day's report.
+        await Json(await manager.PostAsJsonAsync("/api/sales", new
+        {
+            id = Guid.NewGuid(), reference = "R-1", date = Iso(today), time = "13:00:00", channel = "DineIn", paymentMethod = "Cash",
+            lines = new[] { new { menuItemId = number, quantity = 2 } },
+        }, Cancel));
+        Assert.Equal(-300m, await OnHandAsync(manager, flour));
+        var report = await Json(await manager.GetAsync($"/api/sales?from={Iso(today)}&to={Iso(today)}", Cancel));
+        Assert.Equal(330m, report.GetProperty("totals").GetProperty("total").GetDecimal());
+
+        // Again: on the menu already.
+        var again = await Json(await manager.PostAsJsonAsync("/api/menu/from-recipes", body, Cancel));
+        Assert.Equal($"Alfredo pasta is on the menu already, as {number}.", again.GetProperty("skipped").EnumerateArray().Single().GetProperty("reason").GetString());
+    }
+
     private static MultipartFormDataContent File(byte[] content, string name)
     {
         var file = new ByteArrayContent(content);
