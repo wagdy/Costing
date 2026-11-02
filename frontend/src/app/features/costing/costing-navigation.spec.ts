@@ -93,11 +93,12 @@ describe('the costing navigation', () => {
     fixture.detectChanges();
 
     // Its address, icon, and name in English and Arabic.
-    const link = (a: Element) => {
-      const icon = a.querySelector('mat-icon')!.textContent!.trim();
-      const ar = a.querySelector('.inline-ar')!.textContent!.trim();
-      return [a.getAttribute('href'), icon, a.textContent!.replace(icon, '').replace(ar, '').trim(), ar];
-    };
+    const link = (a: Element) => [
+      a.getAttribute('href'),
+      a.querySelector('mat-icon')!.textContent!.trim(),
+      a.querySelector('.en')!.textContent!.trim(),
+      a.querySelector('.ar')!.textContent!.trim(),
+    ];
     expect([...(fixture.nativeElement as HTMLElement).querySelectorAll('nav a')].map(link)).toEqual([
       ['/spending', 'pie_chart', 'Spending analysis', 'تحليل الإنفاق'],
       ['/theoretical', 'calculate', 'Theoretical cost', 'التكلفة النظرية'],

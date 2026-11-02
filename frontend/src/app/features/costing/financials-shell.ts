@@ -1,7 +1,6 @@
 import { Component, computed, inject } from '@angular/core';
-import { MatButtonModule } from '@angular/material/button';
-import { MatIconModule } from '@angular/material/icon';
-import { RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
+import { RouterOutlet } from '@angular/router';
+import { SubNav, SubNavTab } from '../shared/sub-nav';
 import { AuthService } from '../../core/auth/auth.service';
 import { Permissions } from '../../core/auth/permissions';
 
@@ -10,36 +9,17 @@ import { Permissions } from '../../core/auth/permissions';
 // to them, the staff the safe pays and their advances, and the tax and service settings.
 @Component({
   selector: 'app-financials-shell',
-  imports: [MatButtonModule, MatIconModule, RouterLink, RouterLinkActive, RouterOutlet],
+  imports: [RouterOutlet, SubNav],
   template: `
-    <nav class="sub-nav no-print" aria-label="Financials">
-      @for (tab of tabs(); track tab.path) {
-        <a mat-button [routerLink]="tab.path" routerLinkActive="active" ariaCurrentWhenActive="page">
-          <mat-icon>{{ tab.icon }}</mat-icon> {{ tab.en }}<span class="inline-ar">{{ tab.ar }}</span>
-        </a>
-      }
-    </nav>
+    <app-sub-nav label="Financials" [tabs]="tabs()" />
     <router-outlet />
   `,
   styleUrl: './costing.scss',
-  styles: `
-    .sub-nav {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 4px 8px;
-      margin-bottom: 16px;
-
-      a.active {
-        background: var(--mat-sys-secondary-container);
-        color: var(--mat-sys-on-secondary-container);
-      }
-    }
-  `,
 })
 export class FinancialsShell {
   private readonly auth = inject(AuthService);
 
-  private readonly allTabs = [
+  private readonly allTabs: SubNavTab[] = [
     { path: 'safe', icon: 'account_balance_wallet', en: 'Safe', ar: 'الخزنة' },
     { path: 'funding', icon: 'savings', en: 'Funding sources', ar: 'مصادر التمويل' },
     { path: 'reconciliation', icon: 'rule', en: 'Reconciliation', ar: 'مطابقة الإيرادات' },

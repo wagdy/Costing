@@ -19,6 +19,19 @@ import { saveBlob } from '../../core/ui/save-blob';
 import { ExpenseItemDialog, ExpenseItemDialogData } from './expense-item-dialog';
 import { todayIso } from './financials';
 import { SheetImportData, SheetImportDialog } from './sheet-import-dialog';
+import { FilterOption, FilterSelect } from '../shared/filter-select';
+import { SearchField } from '../shared/search-field';
+import { SortOption, SortState, smartMatch, sortItems } from '../shared/smart-search';
+import { SortControl } from '../shared/sort-control';
+
+type ExpenseSort = 'name' | 'category' | 'spent' | 'last';
+
+const expenseSorts: SortOption<ExpenseSort>[] = [
+  { key: 'name', en: 'Name', ar: 'الاسم' },
+  { key: 'category', en: 'Category', ar: 'القسم' },
+  { key: 'spent', en: 'Total spent', ar: 'إجمالي المصروف', descending: true },
+  { key: 'last', en: 'Last bought', ar: 'آخر شراء', descending: true },
+];
 
 // The expense items (المصروفات العمومية): what is bought but never stock (cleaning supplies,
 // repairs, bills), each under a category that says where it counts in the profit and loss. They
@@ -28,6 +41,9 @@ import { SheetImportData, SheetImportDialog } from './sheet-import-dialog';
 @Component({
   selector: 'app-expense-items-page',
   imports: [
+    FilterSelect,
+    SearchField,
+    SortControl,
     DatePipe,
     FormsModule,
     MatButtonModule,
@@ -51,12 +67,14 @@ import { SheetImportData, SheetImportDialog } from './sheet-import-dialog';
         category's line takes them off the month's profit on the KPIs and the break-even worksheet.
         <span class="inline-ar">بنود تُشترى ولا تدخل المخزون: تُسجل بتكلفتها فقط.</span>
       </p>
+      <div class="toolbar smart">
+        <app-search-field [(value)]="search" placeholder="Name, Arabic name or category · الاسم أو القسم" />
+        <div class="pills">
+          <app-filter-select label="Category · القسم" icon="category" [options]="categoryFilters()" [(value)]="category" />
+          <app-sort-control [options]="sorts" [(sort)]="sort" />
+        </div>
+      </div>
       <div class="toolbar">
-        <mat-form-field subscriptSizing="dynamic" class="search">
-          <mat-icon matPrefix>search</mat-icon>
-          <mat-label>Search · بحث</mat-label>
-          <input matInput [ngModel]="search()" (ngModelChange)="search.set($event)" />
-        </mat-form-field>
         <mat-checkbox [ngModel]="showArchived()" (ngModelChange)="showArchived.set($event)">
           Show archived <span class="inline-ar">المؤرشفة</span>
         </mat-checkbox>
@@ -227,11 +245,38 @@ export class ExpenseItemsPage {
   // The item whose delete is being asked about.
   protected readonly confirming = signal<string | null>(null);
 
+  protected readonly category = signal('');
+  protected readonly sorts = expenseSorts;
+  protected readonly sort = signal<SortState<ExpenseSort>>({ key: 'name', direction: 1 });
+
+  private readonly listed = computed(() => this.items().filter((s) => this.showArchived() || !s.isArchived));
+
+  protected readonly categoryFilters = computed<FilterOption[]>(() => {
+    const byId = new Map<string, FilterOption>();
+    for (const item of this.listed()) {
+      const entry = byId.get(item.categoryId) ?? { value: item.categoryId, label: item.categoryAr ? `${item.category} · ${item.categoryAr}` : item.category, count: 0 };
+      entry.count = (entry.count ?? 0) + 1;
+      byId.set(item.categoryId, entry);
+    }
+    return [{ value: '', label: 'All · الكل', count: this.listed().length }, ...[...byId.values()].sort((a, b) => a.label.localeCompare(b.label))];
+  });
+
   protected readonly shown = computed(() => {
-    const text = this.search().trim().toLowerCase();
-    return this.items().filter(
-      (s) => (this.showArchived() || !s.isArchived) && (!text || [s.name, s.nameAr, s.category, s.unit].some((v) => v?.toLowerCase().includes(text))),
+    const found = this.listed().filter(
+      (s) => (!this.category() || s.categoryId === this.category()) && smartMatch(this.search(), s.name, s.nameAr, s.category, s.categoryAr, s.unit),
     );
+    return sortItems(found, this.sort(), (s, key) => {
+      switch (key) {
+        case 'category':
+          return s.category;
+        case 'spent':
+          return s.postedTotal;
+        case 'last':
+          return s.lastPostedAtUtc;
+        default:
+          return s.name;
+      }
+    }, (s) => s.name);
   });
 
   constructor() {

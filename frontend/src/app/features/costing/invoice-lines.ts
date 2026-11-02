@@ -26,6 +26,10 @@ import { ExpenseItemDialog, ExpenseItemDialogData } from './expense-item-dialog'
 import { FormChecks, FormProblem } from './form-checks';
 import { QuickMaterialData, QuickMaterialDialog, QuickMaterialResult } from './quick-material-dialog';
 import { SupplierDialog, SupplierDialogData } from './supplier-dialog';
+import { GridKeys } from '../shared/grid-keys';
+import { PickRow } from '../shared/pick-row';
+import { searchable, smartMatch } from '../shared/smart-search';
+import { materialCostText } from './material-picker';
 
 // An invoice's lines and supplier as they are entered, shared by the invoice screen and each
 // invoice of a daily batch: what a line names and in what unit, what the lines come to, the
@@ -78,6 +82,12 @@ export class PurchaseCatalog {
   private readonly api = inject(CostingApi);
   private readonly dialog = inject(MatDialog);
   private readonly notify = inject(NotifyService);
+  private readonly company = inject(Company);
+
+  // An amount in the company's currency.
+  money(amount: number): string {
+    return this.company.money(amount);
+  }
 
   readonly materials = signal<MaterialCost[]>([]);
   // The archived ones are not offered.
@@ -237,13 +247,28 @@ export class InvoiceLines {
   readonly display = (value: string | MaterialCost | ExpenseItem | AddNew | null | undefined): string =>
     !value ? '' : typeof value === 'string' ? value : 'addNew' in value ? value.addNew : isMaterial(value) ? this.label(value) : value.name;
 
-  // The materials and expenses matching what is typed; all of them before anything is.
+  // The materials and expenses matching what is typed, the closest first (its code, then a name
+  // that starts with it); all of them before anything is.
   matches(line: InvoiceLine): { materials: MaterialCost[]; expenses: ExpenseItem[] } {
-    const text = typeof line.entry === 'string' ? line.entry.trim().toLowerCase() : '';
+    const text = typeof line.entry === 'string' ? line.entry : '';
+    const typed = searchable(text);
+    const rank = (name: string, code: string | null) =>
+      !typed ? 2 : searchable(code) === typed ? 0 : searchable(name).startsWith(typed) ? 1 : 2;
     return {
-      materials: this.catalog.materials().filter((m) => !text || this.label(m).toLowerCase().includes(text)),
-      expenses: this.catalog.expenses().filter((e) => !text || [e.name, e.nameAr, e.category].some((v) => v?.toLowerCase().includes(text))),
+      materials: this.catalog
+        .materials()
+        .filter((m) => smartMatch(text, m.name, m.code, m.category))
+        .sort((a, b) => rank(a.name, a.code) - rank(b.name, b.code) || a.name.localeCompare(b.name)),
+      expenses: this.catalog
+        .expenses()
+        .filter((e) => smartMatch(text, e.name, e.nameAr, e.category))
+        .sort((a, b) => rank(a.name, null) - rank(b.name, null) || a.name.localeCompare(b.name)),
     };
+  }
+
+  // What a material costs now, per the unit it is bought in.
+  costText(material: MaterialCost): string | null {
+    return materialCostText(material, (n) => this.catalog.money(n));
   }
 
   // The typed name, when nothing is called exactly that: it can be added, as either.
@@ -406,10 +431,15 @@ export class InvoiceSupplier {
     this.version.update((v) => v + 1);
   }
 
-  // The suppliers matching what is typed; all of them before anything is.
+  // The suppliers matching what is typed (by name, contact or phone), names starting with it first;
+  // all of them before anything is.
   matches(): Supplier[] {
-    const text = typeof this.entry === 'string' ? this.entry.trim().toLowerCase() : '';
-    return this.catalog.suppliers().filter((s) => !text || s.name.toLowerCase().includes(text));
+    const text = typeof this.entry === 'string' ? this.entry : '';
+    const typed = searchable(text);
+    return this.catalog
+      .suppliers()
+      .filter((s) => smartMatch(text, s.name, s.contactPerson, s.phone))
+      .sort((a, b) => Number(!searchable(a.name).startsWith(typed)) - Number(!searchable(b.name).startsWith(typed)) || a.name.localeCompare(b.name));
   }
 
   // The typed name, when no supplier is called that (capitals and extra spaces aside): it can be added.
@@ -462,11 +492,11 @@ const defaultMatcher = new ErrorStateMatcher();
 // added or taken off; and the total, split into stock and expenses when it has both.
 @Component({
   selector: 'app-invoice-lines',
-  imports: [FormsModule, MatAutocompleteModule, MatButtonModule, MatFormFieldModule, MatIconModule, MatInputModule, MatSelectModule, MoneyPipe],
+  imports: [FormsModule, GridKeys, MatAutocompleteModule, MatButtonModule, MatFormFieldModule, MatIconModule, MatInputModule, MatSelectModule, MoneyPipe, PickRow],
   template: `
     @let e = editor();
     <div class="table-wrap">
-      <table class="grid">
+      <table class="grid" appGridKeys (appGridKeysAppend)="e.add()">
         <thead>
           <tr>
             <th>Item<span class="ar">الصنف</span></th>
@@ -485,19 +515,24 @@ const defaultMatcher = new ErrorStateMatcher();
                   <input matInput [matAutocomplete]="auto" [(ngModel)]="line.entry" (ngModelChange)="e.entered(line, $event)"
                     placeholder="Type to find…" [attr.aria-label]="label() + 'Item, line ' + (i + 1)"
                     [errorStateMatcher]="marked(label() + 'Item, line ' + (i + 1))" />
-                  <mat-autocomplete #auto="matAutocomplete" [displayWith]="e.display">
+                  <mat-autocomplete #auto="matAutocomplete" [displayWith]="e.display" panelClass="pick-panel" [panelWidth]="460" [autoActiveFirstOption]="true">
                     @if (e.matches(line); as found) {
                       @if (found.materials.length) {
                         <mat-optgroup label="Stock items · خامات">
                           @for (m of found.materials; track m.id) {
-                            <mat-option [value]="m">{{ e.label(m) }}</mat-option>
+                            <mat-option [value]="m">
+                              <app-pick-row [name]="m.name" [code]="m.code" [kind]="m.kind === 'Prep' ? 'prep' : 'material'" [unit]="m.purchaseUnit"
+                                [detail]="m.category" [cost]="e.costText(m)" />
+                            </mat-option>
                           }
                         </mat-optgroup>
                       }
                       @if (found.expenses.length) {
                         <mat-optgroup label="Expenses · مصروفات">
                           @for (x of found.expenses; track x.id) {
-                            <mat-option [value]="x">{{ x.name }} <span class="muted">· {{ x.category }}</span></mat-option>
+                            <mat-option [value]="x">
+                              <app-pick-row [name]="x.name" kind="expense" [unit]="x.unit" [detail]="x.nameAr ? x.category + ' · ' + x.nameAr : x.category" />
+                            </mat-option>
                           }
                         </mat-optgroup>
                       }

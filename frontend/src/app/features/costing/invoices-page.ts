@@ -11,13 +11,28 @@ import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatTooltipModule } from '@angular/material/tooltip';
 import { RouterLink } from '@angular/router';
 import { firstValueFrom } from 'rxjs';
-import { ApprovalRequest, CostingApi, PurchaseInvoiceSummary, paymentStatusLabels } from '../../core/costing/costing.api';
+import { ApprovalRequest, CostingApi, PurchaseInvoiceSummary, paymentMethodLabels, paymentStatusLabels } from '../../core/costing/costing.api';
 import { errorMessage } from '../../core/http/error-message';
 import { MoneyPipe } from '../../core/ui/money.pipe';
 import { Approvals, pendingLabel } from './approvals';
 import { Treasury } from './financials';
 import { viewInvoicePaper } from './invoice-paper';
 import { showInvoice } from './invoice-view-dialog';
+import { FilterOption, FilterSelect } from '../shared/filter-select';
+import { SearchField } from '../shared/search-field';
+import { SortOption, SortState, smartMatch, sortItems } from '../shared/smart-search';
+import { SortControl } from '../shared/sort-control';
+
+type InvoiceSort = 'date' | 'total' | 'supplier';
+
+const invoiceSorts: SortOption<InvoiceSort>[] = [
+  { key: 'date', en: 'Date', ar: 'التاريخ', descending: true },
+  { key: 'total', en: 'Invoice total', ar: 'إجمالي الفاتورة', descending: true },
+  { key: 'supplier', en: 'Supplier', ar: 'المورد' },
+];
+
+// What an invoice bought: stock, expenses, or both.
+type InvoiceContents = 'stock' | 'expenses' | 'both';
 
 // Every posted supplier invoice, newest first: what came in, from whom, for how much, who
 // entered it, and whether the paper is on file. Show (or the row) opens the invoice as it was
@@ -26,6 +41,7 @@ import { showInvoice } from './invoice-view-dialog';
   selector: 'app-invoices-page',
   imports: [
     DatePipe,
+    FilterSelect,
     FormsModule,
     MatButtonModule,
     MatCheckboxModule,
@@ -36,6 +52,8 @@ import { showInvoice } from './invoice-view-dialog';
     MatTooltipModule,
     MoneyPipe,
     RouterLink,
+    SearchField,
+    SortControl,
   ],
   template: `
     @if (loading()) {
@@ -43,12 +61,16 @@ import { showInvoice } from './invoice-view-dialog';
     } @else if (error()) {
       <p class="error">{{ error() }}</p>
     } @else {
+      <div class="toolbar smart">
+        <app-search-field [(value)]="search" placeholder="Supplier or invoice number · المورد أو رقم الفاتورة" />
+        <div class="pills">
+          <app-filter-select label="Supplier · المورد" icon="local_shipping" [options]="supplierFilters()" [(value)]="supplier" />
+          <app-filter-select label="Bought · المشتريات" icon="category" [options]="contentsFilters()" [(value)]="contents" />
+          <app-filter-select label="Paid · الدفع" icon="payments" [options]="paymentFilters()" [(value)]="payment" />
+          <app-sort-control [options]="sorts" [(sort)]="sort" />
+        </div>
+      </div>
       <div class="toolbar">
-        <mat-form-field subscriptSizing="dynamic" class="search">
-          <mat-icon matPrefix>search</mat-icon>
-          <mat-label>Search · بحث</mat-label>
-          <input matInput [ngModel]="search()" (ngModelChange)="search.set($event)" />
-        </mat-form-field>
         <mat-checkbox [ngModel]="showVoided()" (ngModelChange)="showVoided.set($event)">
           Show voided <span class="inline-ar">الملغاة</span>
         </mat-checkbox>
@@ -183,14 +205,66 @@ export class InvoicesPage {
   protected readonly loading = signal(true);
   protected readonly error = signal<string | null>(null);
   protected readonly search = signal('');
+  protected readonly supplier = signal('');
+  protected readonly contents = signal('');
+  protected readonly payment = signal('');
+  protected readonly sorts = invoiceSorts;
+  protected readonly sort = signal<SortState<InvoiceSort>>({ key: 'date', direction: -1 });
+
+  // Those the filters count from: posted, and voided too when asked for.
+  private readonly listed = computed(() => this.invoices().filter((i) => this.showVoided() || i.status !== 'Voided'));
+
+  protected readonly supplierFilters = computed<FilterOption[]>(() => {
+    const names = new Map<string, number>();
+    for (const i of this.listed()) {
+      const name = i.supplierName ?? '';
+      names.set(name, (names.get(name) ?? 0) + 1);
+    }
+    return [
+      { value: '', label: 'All · الكل', count: this.listed().length },
+      ...[...names.entries()]
+        .filter(([name]) => name)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([name, count]) => ({ value: name, label: name, count })),
+      ...(names.has('') ? [{ value: '-', label: 'No supplier · بدون مورد', count: names.get('')! }] : []),
+    ];
+  });
+
+  protected readonly contentsFilters = computed<FilterOption[]>(() => [
+    { value: '', label: 'All · الكل', count: this.listed().length },
+    { value: 'stock', label: 'Stock only · خامات', count: this.listed().filter((i) => this.contentsOf(i) === 'stock').length },
+    { value: 'expenses', label: 'Expenses only · مصروفات', count: this.listed().filter((i) => this.contentsOf(i) === 'expenses').length },
+    { value: 'both', label: 'Both · الاثنان', count: this.listed().filter((i) => this.contentsOf(i) === 'both').length },
+  ]);
+
+  protected readonly paymentFilters = computed<FilterOption[]>(() => [
+    { value: '', label: 'All · الكل', count: this.listed().length },
+    ...(['Safe', 'DayRevenue', 'Credit', 'BeforeTreasury'] as const).map((m) => ({
+      value: m, label: `${paymentMethodLabels[m].en} · ${paymentMethodLabels[m].ar}`, count: this.listed().filter((i) => i.paymentMethod === m).length,
+    })),
+    { value: 'unpaid', label: 'Unpaid · غير مدفوعة', count: this.listed().filter((i) => i.paymentStatus === 'Unpaid').length },
+  ]);
 
   protected readonly shown = computed(() => {
-    const text = this.search().trim().toLowerCase();
-    return this.invoices().filter(
+    const supplier = this.supplier();
+    const payment = this.payment();
+    const found = this.listed().filter(
       (i) =>
-        (this.showVoided() || i.status !== 'Voided') &&
-        (!text || (i.supplierName ?? '').toLowerCase().includes(text) || (i.supplierInvoiceNumber ?? '').toLowerCase().includes(text)),
+        smartMatch(this.search(), i.supplierName, i.supplierInvoiceNumber, i.createdBy) &&
+        (!supplier || (supplier === '-' ? !i.supplierName : i.supplierName === supplier)) &&
+        (!this.contents() || this.contentsOf(i) === this.contents()) &&
+        (!payment || (payment === 'unpaid' ? i.paymentStatus === 'Unpaid' : i.paymentMethod === payment)),
     );
+    return sortItems(found, this.sort(), (i, key) => {
+      switch (key) {
+        case 'total':
+          return i.total;
+        case 'supplier':
+          return i.supplierName;
+        default:
+          return this.date(i);
+      }
+    }, (i) => i.supplierName ?? '');
   });
 
   // What was bought: voided invoices are not.
@@ -198,6 +272,10 @@ export class InvoicesPage {
 
   constructor() {
     void this.load();
+  }
+
+  protected contentsOf(invoice: PurchaseInvoiceSummary): InvoiceContents {
+    return invoice.inventoryTotal > 0 && invoice.expenseTotal > 0 ? 'both' : invoice.expenseTotal > 0 ? 'expenses' : 'stock';
   }
 
   // The date on the supplier's paper; when none was written, the day it was posted.

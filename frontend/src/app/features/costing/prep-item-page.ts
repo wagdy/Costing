@@ -18,6 +18,8 @@ import { Approvals } from './approvals';
 import { ApprovalChanges } from './approval-changes';
 import { showProductionOrder } from './production-order-dialog';
 import { PurchaseCategoryField } from './purchase-category-field';
+import { GridKeys } from '../shared/grid-keys';
+import { MaterialPicker } from './material-picker';
 
 interface Line {
   rawMaterialId: string | null;
@@ -40,6 +42,8 @@ const displayUnits: Record<UnitOfMeasure, [string, number]> = { Gram: ['kg', 100
   selector: 'app-prep-item-page',
   imports: [
     ApprovalChanges,
+    GridKeys,
+    MaterialPicker,
     DatePipe,
     DecimalPipe,
     FormsModule,
@@ -161,7 +165,7 @@ const displayUnits: Record<UnitOfMeasure, [string, number]> = { Gram: ['kg', 100
 
       <h3>Recipe for one batch <span class="inline-ar">مكونات الدفعة</span></h3>
       <div class="table-wrap">
-        <table class="grid">
+        <table class="grid" appGridKeys (appGridKeysAppend)="add()">
           <thead>
             <tr>
               <th>Ingredient<span class="ar">المكون</span></th>
@@ -179,13 +183,8 @@ const displayUnits: Record<UnitOfMeasure, [string, number]> = { Gram: ['kg', 100
               @let m = material(line);
               <tr>
                 <td>
-                  <mat-form-field subscriptSizing="dynamic" class="ingredient">
-                    <mat-select [(ngModel)]="line.rawMaterialId" (ngModelChange)="picked(line)" [aria-label]="'Ingredient, line ' + (i + 1)" placeholder="Choose…">
-                      @for (o of ingredientChoices(); track o.id) {
-                        <mat-option [value]="o.id">{{ o.code ? o.code + ' · ' : '' }}{{ o.name }}{{ o.kind === 'Prep' ? ' · prep' : '' }}</mat-option>
-                      }
-                    </mat-select>
-                  </mat-form-field>
+                  <app-material-picker class="ingredient" [materials]="ingredientChoices()" [value]="line.rawMaterialId"
+                    (valueChange)="line.rawMaterialId = $event; picked(line)" [label]="'Ingredient, line ' + (i + 1)" />
                 </td>
                 <td class="num">
                   <mat-form-field subscriptSizing="dynamic" class="small">

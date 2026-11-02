@@ -21,6 +21,21 @@ import { todayIso } from './financials';
 import { PrepImportDialog } from './prep-import-dialog';
 import { recipeSheetRules } from './recipe-sheet-rules';
 import { SheetImportData, SheetImportDialog } from './sheet-import-dialog';
+import { FilterOption, FilterSelect } from '../shared/filter-select';
+import { SearchField } from '../shared/search-field';
+import { SortOption, SortState, smartMatch, sortItems } from '../shared/smart-search';
+import { SortControl } from '../shared/sort-control';
+
+type PrepSort = 'name' | 'category' | 'batchCost' | 'unitCost' | 'stock' | 'made';
+
+const prepSorts: SortOption<PrepSort>[] = [
+  { key: 'name', en: 'Name', ar: 'الاسم' },
+  { key: 'category', en: 'Category', ar: 'القسم' },
+  { key: 'batchCost', en: 'Cost per batch', ar: 'تكلفة الدفعة', descending: true },
+  { key: 'unitCost', en: 'Cost per unit', ar: 'تكلفة الوحدة', descending: true },
+  { key: 'stock', en: 'Stock on hand', ar: 'الرصيد', descending: true },
+  { key: 'made', en: 'Last made', ar: 'آخر تشغيلة', descending: true },
+];
 
 // The prep items: made in the kitchen from their own recipes, kept in stock, used by dishes.
 // Each with what it costs by its recipe at today's prices, what the batches on the shelf cost,
@@ -33,6 +48,9 @@ import { SheetImportData, SheetImportDialog } from './sheet-import-dialog';
 @Component({
   selector: 'app-prep-items-page',
   imports: [
+    FilterSelect,
+    SearchField,
+    SortControl,
     DatePipe,
     DecimalPipe,
     FormsModule,
@@ -57,22 +75,15 @@ import { SheetImportData, SheetImportDialog } from './sheet-import-dialog';
     } @else if (error()) {
       <p class="error">{{ error() }}</p>
     } @else {
+      <div class="toolbar smart">
+        <app-search-field [(value)]="search" />
+        <div class="pills">
+          <app-filter-select label="Category · القسم" icon="category" [options]="categoryFilters()" [(value)]="category" />
+          <app-sort-control [options]="sorts" [(sort)]="sort" />
+        </div>
+      </div>
       <div class="toolbar">
-        <mat-form-field subscriptSizing="dynamic">
-          <mat-icon matPrefix>search</mat-icon>
-          <mat-label>Search · بحث</mat-label>
-          <input matInput [ngModel]="search()" (ngModelChange)="search.set($event)" />
-        </mat-form-field>
-        <mat-form-field subscriptSizing="dynamic">
-          <mat-label>Filter by category · تصفية بالقسم</mat-label>
-          <mat-select [ngModel]="category()" (ngModelChange)="category.set($event)" aria-label="Filter by category">
-            <mat-option [value]="null">All categories · الكل</mat-option>
-            @for (c of categories(); track c.id) {
-              <mat-option [value]="c.id">{{ c.name }}{{ c.nameAr ? ' · ' + c.nameAr : '' }}</mat-option>
-            }
-            <mat-option [value]="uncategorized">Uncategorized · بدون قسم</mat-option>
-          </mat-select>
-        </mat-form-field>
+        <span class="muted shown-count">Showing {{ shown().length }} of {{ items().length }}<span class="inline-ar">المعروض</span></span>
         <span class="spacer"></span>
         <a mat-button routerLink="../production"><mat-icon>precision_manufacturing</mat-icon> Make a batch</a>
         <button mat-stroked-button (click)="exportExcel()" [disabled]="busy()">
@@ -188,22 +199,47 @@ export class PrepItemsPage {
   protected readonly search = signal('');
   protected readonly busy = signal(false);
 
-  // The kitchen's recipe categories; the one shown (null: all), or none for the unsorted ones.
+  // The kitchen's recipe categories; the one shown ('': all), or none for the unsorted ones.
   protected readonly categories = signal<RecipeCategory[]>([]);
-  protected readonly category = signal<string | null>(null);
+  protected readonly category = signal('');
   protected readonly uncategorized = 'none';
+  protected readonly sorts = prepSorts;
+  protected readonly sort = signal<SortState<PrepSort>>({ key: 'name', direction: 1 });
+
+  protected readonly categoryFilters = computed<FilterOption[]>(() => [
+    { value: '', label: 'All · الكل', count: this.items().length },
+    ...this.categories().map((c) => ({
+      value: c.id, label: c.nameAr ? `${c.name} · ${c.nameAr}` : c.name, count: this.items().filter((p) => p.recipeCategoryId === c.id).length,
+    })),
+    { value: this.uncategorized, label: 'Uncategorized · بدون قسم', count: this.items().filter((p) => !p.recipeCategoryId).length },
+  ]);
 
   // From the query: a category to show, from the recipe categories' counts.
   readonly categoryParam = input<string | undefined>(undefined, { alias: 'category' });
 
   protected readonly shown = computed(() => {
-    const text = this.search().trim().toLowerCase();
     const category = this.category();
-    return this.items().filter(
+    const found = this.items().filter(
       (p) =>
-        (!text || p.name.toLowerCase().includes(text) || (p.code ?? '').toLowerCase().includes(text)) &&
-        (category === null || (category === this.uncategorized ? !p.recipeCategoryId : p.recipeCategoryId === category)),
+        smartMatch(this.search(), p.name, p.code, this.categoryName(p)) &&
+        (!category || (category === this.uncategorized ? !p.recipeCategoryId : p.recipeCategoryId === category)),
     );
+    return sortItems(found, this.sort(), (p, key) => {
+      switch (key) {
+        case 'category':
+          return this.categoryName(p);
+        case 'batchCost':
+          return p.standardBatchCost;
+        case 'unitCost':
+          return p.averageCostPerDisplayUnit ?? p.standardCostPerDisplayUnit;
+        case 'stock':
+          return p.quantityOnHand;
+        case 'made':
+          return p.lastProducedAtUtc;
+        default:
+          return p.name;
+      }
+    }, (p) => p.name);
   });
 
   private readonly categoryNames = computed(() => new Map(this.categories().map((c) => [c.id, c.name] as const)));
@@ -214,7 +250,7 @@ export class PrepItemsPage {
   constructor() {
     effect(() => {
       const category = this.categoryParam();
-      untracked(() => this.category.set(category ?? null));
+      untracked(() => this.category.set(category ?? ''));
     });
     void this.load();
     void this.approvals.refresh();

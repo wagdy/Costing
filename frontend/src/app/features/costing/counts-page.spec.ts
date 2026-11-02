@@ -27,7 +27,7 @@ describe('the stock counts', () => {
     fixture.detectChanges();
     const el = fixture.nativeElement as HTMLElement;
     const navigate = vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
-    const buttons = () => [...el.querySelectorAll<HTMLButtonElement>('.toolbar button')];
+    const buttons = () => [...el.querySelectorAll<HTMLButtonElement>('.toolbar:not(.smart) button')];
     return { el, navigate, buttons };
   }
 

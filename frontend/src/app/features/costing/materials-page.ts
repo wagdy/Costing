@@ -10,7 +10,7 @@ import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatSelectModule } from '@angular/material/select';
 import { MatTooltipModule } from '@angular/material/tooltip';
 import { firstValueFrom } from 'rxjs';
-import { CostingApi, ApprovalRequest, MaterialCost, unitLabels } from '../../core/costing/costing.api';
+import { CostingApi, ApprovalRequest, MaterialCost, UnitOfMeasure, unitLabels } from '../../core/costing/costing.api';
 import { errorMessage } from '../../core/http/error-message';
 import { MoneyPipe } from '../../core/ui/money.pipe';
 import { NotifyService } from '../../core/ui/notify.service';
@@ -20,6 +20,23 @@ import { MaterialDialog, MaterialDialogResult } from './material-dialog';
 import { MaterialHistoryDialog } from './material-history-dialog';
 import { SheetImportData, SheetImportDialog } from './sheet-import-dialog';
 import { todayIso } from './financials';
+import { FilterOption, FilterSelect } from '../shared/filter-select';
+import { SearchField } from '../shared/search-field';
+import { SortOption, SortState, smartMatch, sortItems } from '../shared/smart-search';
+import { SortControl } from '../shared/sort-control';
+
+type MaterialSort = 'name' | 'category' | 'cost' | 'stock' | 'value' | 'reorder';
+
+const materialSorts: SortOption<MaterialSort>[] = [
+  { key: 'name', en: 'Name', ar: 'الاسم' },
+  { key: 'category', en: 'Category', ar: 'القسم' },
+  { key: 'cost', en: 'Cost per unit', ar: 'تكلفة الوحدة', descending: true },
+  { key: 'stock', en: 'Stock on hand', ar: 'الرصيد', descending: true },
+  { key: 'value', en: 'Stock value', ar: 'قيمة المخزون', descending: true },
+  { key: 'reorder', en: 'Reorder status', ar: 'حالة إعادة الطلب' },
+];
+
+const unitGroups: Record<UnitOfMeasure, string> = { Gram: 'Weight · وزن', Millilitre: 'Volume · حجم', Piece: 'Pieces · قطع' };
 
 // Raw materials and what they cost: AP$ per purchase unit (the weighted average of what was paid),
 // the default yield, and EP$ after it. Stock on hand and its value too. To and from Excel: the list
@@ -31,6 +48,7 @@ import { todayIso } from './financials';
   imports: [
     DatePipe,
     DecimalPipe,
+    FilterSelect,
     FormsModule,
     MatButtonModule,
     MatFormFieldModule,
@@ -40,22 +58,20 @@ import { todayIso } from './financials';
     MatSelectModule,
     MatTooltipModule,
     MoneyPipe,
+    SearchField,
+    SortControl,
   ],
   template: `
+    <div class="toolbar smart">
+      <app-search-field [(value)]="search" />
+      <div class="pills">
+        <app-filter-select label="Category · القسم" icon="category" [options]="categoryFilters()" [(value)]="category" />
+        <app-filter-select label="Unit · الوحدة" icon="straighten" [options]="unitFilters()" [(value)]="unitFilter" />
+        <app-sort-control [options]="sorts" [(sort)]="sort" />
+      </div>
+    </div>
     <div class="toolbar">
-      <mat-form-field subscriptSizing="dynamic">
-        <mat-label>Find · بحث</mat-label>
-        <input matInput [ngModel]="search()" (ngModelChange)="search.set($event)" />
-      </mat-form-field>
-      <mat-form-field subscriptSizing="dynamic">
-        <mat-label>Filter by category · تصفية بالقسم</mat-label>
-        <mat-select [ngModel]="category()" (ngModelChange)="category.set($event)" aria-label="Filter by category">
-          <mat-option [value]="null">All categories · الكل</mat-option>
-          @for (c of categories(); track c.id) {
-            <mat-option [value]="c.id">{{ c.name }} ({{ c.count }})</mat-option>
-          }
-        </mat-select>
-      </mat-form-field>
+      <span class="muted shown-count">Showing {{ shown().length }} of {{ materials().length }}<span class="inline-ar">المعروض</span></span>
       <span class="spacer"></span>
       <span class="muted">Stock value · قيمة المخزون: <strong>{{ stockValue() | money }}</strong></span>
       <button mat-stroked-button (click)="exportExcel()" [disabled]="busy()">
@@ -187,8 +203,11 @@ export class MaterialsPage {
   protected readonly busy = signal(false);
 
   // The stock categories the materials are in, by name, with how many each holds; the one shown
-  // (null: all).
-  protected readonly category = signal<string | null>(null);
+  // ('': all). The units they are counted in, the same way.
+  protected readonly category = signal('');
+  protected readonly unitFilter = signal('');
+  protected readonly sorts = materialSorts;
+  protected readonly sort = signal<SortState<MaterialSort>>({ key: 'name', direction: 1 });
   protected readonly categories = computed(() => {
     const byId = new Map<string, { id: string; name: string; count: number }>();
     for (const m of this.materials()) {
@@ -199,14 +218,44 @@ export class MaterialsPage {
     return [...byId.values()].sort((a, b) => a.name.localeCompare(b.name));
   });
 
+  protected readonly categoryFilters = computed<FilterOption[]>(() => [
+    { value: '', label: 'All · الكل', count: this.materials().length },
+    ...this.categories().map((c) => ({ value: c.id, label: c.name, count: c.count })),
+  ]);
+
+  protected readonly unitFilters = computed<FilterOption[]>(() => [
+    { value: '', label: 'All · الكل', count: this.materials().length },
+    ...(Object.keys(unitGroups) as UnitOfMeasure[])
+      .map((u) => ({ value: u, label: unitGroups[u], count: this.materials().filter((m) => m.unit === u).length }))
+      .filter((o) => o.count > 0),
+  ]);
+
   protected readonly shown = computed(() => {
-    const needle = this.search().trim().toLowerCase();
     const category = this.category();
-    return this.materials().filter(
+    const unit = this.unitFilter();
+    const found = this.materials().filter(
       (m) =>
-        (category === null || m.categoryId === category) &&
-        (!needle || [m.name, m.code, m.category].some((v) => v?.toLowerCase().includes(needle))),
+        (!category || m.categoryId === category) &&
+        (!unit || m.unit === unit) &&
+        smartMatch(this.search(), m.name, m.code, m.category),
     );
+    return sortItems(found, this.sort(), (m, key) => {
+      switch (key) {
+        case 'category':
+          return m.category ?? 'General';
+        case 'cost':
+          return m.costPerPurchaseUnit;
+        case 'stock':
+          return m.quantityOnHand;
+        case 'value':
+          return m.stockValue;
+        // Those to order first: at or under their reorder level.
+        case 'reorder':
+          return m.quantityOnHand <= m.reorderLevel ? 0 : 1;
+        default:
+          return m.name;
+      }
+    }, (m) => m.name);
   });
 
   protected readonly stockValue = computed(() => this.materials().reduce((sum, m) => sum + (m.stockValue ?? 0), 0));

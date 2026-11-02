@@ -94,7 +94,7 @@ describe('the menu', () => {
     page['category'].set('Drinks');
     expect(rows().map((r) => r[0])).toEqual(['20']);
     expect(page['categoryFilters']().map((f: { label: string; count: number }) => `${f.label} ${f.count}`)).toEqual([
-      'All categories 2', 'Pizza 1', 'Drinks 1', 'Grill 0',
+      'All · الكل 2', 'Pizza 1', 'Drinks 1', 'Grill 0',
     ]);
   });
 

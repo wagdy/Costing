@@ -11,13 +11,21 @@ import { filter, map } from 'rxjs';
 // styles' own media query says).
 const Compact = '(max-width: 959.98px)';
 
-// A section of a module: its address (relative to the module's), its names, its icon, and what
-// waits there (count, said by countLabel to a screen reader).
+// A group of a module's sections, shown above its first: its key, and its names.
+export interface SideGroup {
+  key: string;
+  en: string;
+  ar: string;
+}
+
+// A section of a module: its address (relative to the module's), its names, its icon, the group it
+// is listed under, and what waits there (count, said by countLabel to a screen reader).
 export interface SideSection {
   path: string;
   en: string;
   ar: string;
   icon: string;
+  group?: SideGroup;
   count?: number;
   countLabel?: string;
 }
@@ -75,10 +83,15 @@ export interface SideSection {
           <button mat-icon-button class="close" (click)="closeMenu(true)" aria-label="Close the sections"><mat-icon>close</mat-icon></button>
         </header>
         <nav [attr.aria-label]="titleEn() + ' sections'">
-          @for (section of sections(); track section.path) {
+          @for (section of sections(); track section.path; let i = $index) {
+            @if (section.group && section.group.key !== sections()[i - 1]?.group?.key) {
+              <p class="group" [class.first]="i === 0">
+                <span>{{ section.group.en }}</span><span class="group-ar" lang="ar">{{ section.group.ar }}</span>
+              </p>
+            }
             <a class="side-link" [routerLink]="section.path" routerLinkActive="active" ariaCurrentWhenActive="page">
               <mat-icon>{{ section.icon }}</mat-icon>
-              <span class="label"><span class="en">{{ section.en }}</span><span class="sub">{{ section.ar }}</span></span>
+              <span class="label"><span class="en">{{ section.en }}</span><span class="sub" lang="ar">{{ section.ar }}</span></span>
               @if (section.count) {
                 <span class="count" [attr.aria-label]="section.countLabel ?? null">{{ section.count }}</span>
               }
@@ -95,7 +108,7 @@ export interface SideSection {
     // phone's bar stay in view under it.
     .side-layout {
       display: grid;
-      grid-template-columns: 256px minmax(0, 1fr);
+      grid-template-columns: 272px minmax(0, 1fr);
       gap: 20px;
       align-items: start;
     }
@@ -113,9 +126,9 @@ export interface SideSection {
       max-height: calc(100dvh - var(--app-sticky-top, 0px) - 32px);
       overflow-y: auto;
       overscroll-behavior: contain;
-      padding: 12px;
+      padding: 10px;
       box-sizing: border-box;
-      border-radius: 20px;
+      border-radius: 18px;
       background: var(--mat-sys-surface-container-lowest);
       border: 1px solid color-mix(in srgb, var(--mat-sys-outline-variant) 70%, transparent);
       box-shadow:
@@ -126,8 +139,8 @@ export interface SideSection {
       display: flex;
       align-items: flex-start;
       gap: 8px;
-      padding: 6px 10px 14px;
-      margin-bottom: 8px;
+      padding: 4px 8px 10px;
+      margin-bottom: 2px;
       border-bottom: 1px solid color-mix(in srgb, var(--mat-sys-outline-variant) 70%, transparent);
 
       h1 {
@@ -141,20 +154,55 @@ export interface SideSection {
     }
     nav {
       display: grid;
-      gap: 4px;
+      gap: 1px;
     }
 
-    // A section: its icon, its name over its Arabic, and what waits there at the end. The one
-    // open is tinted, with a bar of the brand's colour on its start side.
+    // A group's name above its first section, a hairline over it from the second group on.
+    .group {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 8px;
+      margin: 8px 0 2px;
+      padding: 8px 10px 2px;
+      border-top: 1px solid var(--app-slate-200, #e2e8f0);
+      color: var(--app-slate-400, #94a3b8);
+      font: var(--mat-sys-label-small);
+      font-size: 10.5px;
+      font-weight: 650;
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+      white-space: nowrap;
+
+      > span {
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      &.first {
+        margin-top: 0;
+        border-top: 0;
+        padding-top: 4px;
+      }
+      .group-ar {
+        unicode-bidi: isolate;
+        letter-spacing: 0;
+        font-weight: 500;
+        text-transform: none;
+      }
+    }
+
+    // A section on one line: its icon, its name, its Arabic quietly at the end, and what waits
+    // there. The one open is tinted indigo, with a bar on its start side; the rest are slate.
     .side-link {
       position: relative;
       display: flex;
       align-items: center;
-      gap: 12px;
-      min-height: 48px;
-      padding: 8px 12px;
-      border-radius: 12px;
-      color: var(--mat-sys-on-surface-variant);
+      gap: 10px;
+      min-height: 36px;
+      padding: 4px 10px;
+      border-radius: 10px;
+      color: var(--app-slate-600, #475569);
       text-decoration: none;
       transition:
         background-color 150ms ease,
@@ -162,24 +210,34 @@ export interface SideSection {
 
       mat-icon {
         flex: none;
-        transition: transform 150ms ease;
+        width: 20px;
+        height: 20px;
+        font-size: 20px;
+        color: var(--app-slate-500, #64748b);
+        transition:
+          transform 150ms ease,
+          color 150ms ease;
       }
       &:hover {
-        background: var(--mat-sys-surface-container);
-        color: var(--mat-sys-on-surface);
+        background: var(--app-slate-100, #f1f5f9);
+        color: var(--app-slate-900, #0f172a);
 
         mat-icon {
           transform: scale(1.06);
+          color: var(--app-slate-700, #334155);
         }
       }
       &:focus-visible {
-        outline: 2px solid var(--mat-sys-primary);
+        outline: 2px solid var(--app-indigo-500, #6366f1);
         outline-offset: 1px;
       }
       &.active {
-        background: color-mix(in srgb, var(--mat-sys-primary) 10%, transparent);
-        color: var(--mat-sys-primary);
+        background: var(--app-indigo-50, #eef2ff);
+        color: var(--app-indigo-700, #4338ca);
 
+        mat-icon {
+          color: var(--app-indigo-600, #4f46e5);
+        }
         .en {
           font-weight: 650;
         }
@@ -187,30 +245,44 @@ export interface SideSection {
           content: '';
           position: absolute;
           inset-inline-start: 0;
-          inset-block: 10px;
-          width: 4px;
-          border-start-end-radius: 4px;
-          border-end-end-radius: 4px;
-          background: var(--mat-sys-primary);
+          inset-block: 8px;
+          width: 3px;
+          border-start-end-radius: 3px;
+          border-end-end-radius: 3px;
+          background: var(--app-indigo-600, #4f46e5);
         }
       }
     }
     .label {
-      display: grid;
+      display: flex;
+      flex: 1;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 8px;
       min-width: 0;
       line-height: 1.25;
 
+      // The English whole; the Arabic gives way to it, cut short when the two do not fit.
       .en {
+        flex: none;
+        white-space: nowrap;
         font: var(--mat-sys-label-large);
-        font-size: 14.5px;
+        font-size: 14px;
       }
     }
-    // The Arabic under the English, on the same side as the page's text: isolated, not turned
-    // right-to-left, which would push it to the far side.
+    // The Arabic at the end of the line, isolated so it never reorders the words around it.
     .sub {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
       unicode-bidi: isolate;
       font: var(--mat-sys-body-small);
-      opacity: 0.75;
+      font-size: 12px;
+      opacity: 0.7;
+    }
+    .side-head .sub {
+      white-space: normal;
     }
     .count {
       margin-inline-start: auto;

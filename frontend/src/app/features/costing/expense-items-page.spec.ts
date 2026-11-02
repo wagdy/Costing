@@ -63,7 +63,7 @@ describe('the expense items', () => {
 
   it('exports the list to Excel, and imports a sheet in the dialog, reading the list again when it changed it', async () => {
     const { el, page } = await render();
-    expect([...el.querySelectorAll('.toolbar button')].map(text)).toEqual([
+    expect([...el.querySelectorAll('.toolbar:not(.smart) button')].map(text)).toEqual([
       'download Export Excel تصدير إلى إكسل',
       'upload_file Import Excel استيراد من إكسل',
       'add Add expense item',

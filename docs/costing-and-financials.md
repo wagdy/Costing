@@ -29,6 +29,24 @@ works it.
 
 Users, Company Settings and each user's own account are in the top bar.
 
+## Finding, sorting and entering
+
+Every list (raw materials, recipes, prep items, the menu, invoices, expense items, stock counts and
+waste) has one toolbar: an instant search by name, Arabic name or code (Arabic letter forms and
+Arabic-Indic digits are read alike, and every word typed must match somewhere), filter pills for what
+that list holds (category, unit, link to the menu, cost status, supplier, how paid, type, status,
+reason), and a sort pill with its arrow to turn the order around. Rows with nothing to sort by (no
+price yet) stay last either way.
+
+Items, ingredients, prep items, menu items and suppliers are chosen by typing: the first letters or
+the code find them, and each choice shows its code, what it is (raw material, prep item, expense,
+supplier, menu item), its unit and what it costs now. Where one can be added there (a material, an
+expense, a supplier on an invoice), "Add new" is offered when nothing is called what was typed.
+
+In the line grids (an invoice's, a recipe's or prep item's ingredients, waste, a day's sales), Enter
+moves from the item to its quantity to its price; Enter on a line's last field goes to the next line,
+or adds one, so a whole invoice can be entered without the mouse.
+
 ## Roles and permissions
 
 Four roles. A role gives permissions (what a user may do anywhere) and the sections it works

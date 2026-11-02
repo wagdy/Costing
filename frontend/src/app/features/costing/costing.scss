@@ -37,6 +37,42 @@
   }
 }
 
+// A list's smart toolbar: its search, its filters and how it is sorted, side by side as pills of one
+// height. On a phone the search takes the whole first line and the pills one row under it, scrolled
+// sideways rather than stacked.
+.toolbar.smart {
+  gap: 8px;
+  margin-bottom: 8px;
+
+  .pills {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+  }
+}
+@media (max-width: 599.98px) {
+  .toolbar.smart .pills {
+    flex-wrap: nowrap;
+    width: 100%;
+    overflow-x: auto;
+    padding-bottom: 2px;
+    scrollbar-width: none;
+
+    &::-webkit-scrollbar {
+      display: none;
+    }
+    > * {
+      flex: none;
+    }
+  }
+}
+
+// How many of the list are shown, beside the list's own buttons.
+.shown-count {
+  font: var(--mat-sys-body-small);
+}
+
 // An explanation: a soft box, its Arabic first (right to left, as Arabic reads) and its English
 // under it.
 .note {

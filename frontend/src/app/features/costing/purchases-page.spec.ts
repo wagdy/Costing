@@ -585,7 +585,8 @@ describe('entering a supplier invoice', () => {
       page['add']();
       const line = page['lines']()[1];
       expect(page['matches']({ ...line, entry: 'elec' })).toEqual({ materials: [], expenses: [power] });
-      expect(page['matches']({ ...line, entry: 'utilities' }).expenses).toEqual([power, spray]);
+      // By name: the cleaning spray before the electricity.
+      expect(page['matches']({ ...line, entry: 'utilities' }).expenses).toEqual([spray, power]);
 
       page['entered'](line, power);
       expect(line).toMatchObject({ itemType: 'Expense', expenseItemId: 'power', rawMaterialId: null, quantity: 1, unitSize: 1, unitLabel: '' });

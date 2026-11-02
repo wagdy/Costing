@@ -18,6 +18,7 @@ import { MoneyPipe } from '../../core/ui/money.pipe';
 import { NotifyService } from '../../core/ui/notify.service';
 import { Approvals, pendingLabel } from './approvals';
 import { showProductionOrder } from './production-order-dialog';
+import { ItemPicker, PickItem } from '../shared/item-picker';
 
 const baseLabels: Record<UnitOfMeasure, string> = { Gram: 'g', Millilitre: 'ml', Piece: 'pc' };
 
@@ -32,6 +33,7 @@ const baseLabels: Record<UnitOfMeasure, string> = { Gram: 'g', Millilitre: 'ml',
 @Component({
   selector: 'app-production-page',
   imports: [
+    ItemPicker,
     DatePipe,
     DecimalPipe,
     FormsModule,
@@ -76,14 +78,11 @@ const baseLabels: Record<UnitOfMeasure, string> = { Gram: 'g', Millilitre: 'ml',
           <p class="note">No prep items with a recipe yet. <a routerLink="../prep/new">Add one</a>, such as pizza dough, first.</p>
         } @else {
           <div class="form">
-            <mat-form-field class="wide">
-              <mat-label>Prep item · الصنف</mat-label>
-              <mat-select [(ngModel)]="prepItemId" (ngModelChange)="changed()" aria-label="Prep item" [disabled]="!!editing()">
-                @for (p of items(); track p.id) {
-                  <mat-option [value]="p.id">{{ p.code ? p.code + ' · ' : '' }}{{ p.name }}</mat-option>
-                }
-              </mat-select>
-            </mat-form-field>
+            <div class="wide picked">
+              <span class="pick-label">Prep item · الصنف</span>
+              <app-item-picker [items]="prepChoices()" [value]="prepItemId" (valueChange)="prepItemId = $event; changed()" label="Prep item"
+                [disabled]="!!editing()" />
+            </div>
             <mat-form-field>
               <mat-label>Planned · الكمية المخططة</mat-label>
               <input matInput type="number" min="0" step="any" [(ngModel)]="planned" (ngModelChange)="plannedChanged()" aria-label="Planned" />
@@ -276,6 +275,15 @@ const baseLabels: Record<UnitOfMeasure, string> = { Gram: 'g', Millilitre: 'ml',
   `,
   styleUrl: './costing.scss',
   styles: `
+    .picked {
+      display: grid;
+      gap: 4px;
+      margin-bottom: 8px;
+    }
+    .pick-label {
+      color: var(--mat-sys-on-surface-variant);
+      font: var(--mat-sys-label-medium);
+    }
     .entry h2 {
       margin: 0 0 12px;
       font: var(--mat-sys-title-large);
@@ -346,6 +354,16 @@ export class ProductionPage {
 
   // The prep items that can be made: those with a recipe.
   protected readonly items = signal<PrepItem[]>([]);
+  // The prep items as the picker offers them: each with the unit it is kept in and what it costs now.
+  protected readonly prepChoices = computed<PickItem[]>(() =>
+    this.items().map((p) => {
+      const cost = p.averageCostPerDisplayUnit ?? p.standardCostPerDisplayUnit;
+      return {
+        id: p.id, name: p.name, code: p.code, kind: 'prep', unit: p.displayUnit, detail: p.category,
+        cost: cost === null ? null : `${this.company.money(cost)} / ${p.displayUnit}`,
+      };
+    }),
+  );
   protected readonly orders = signal<ProductionOrder[]>([]);
   protected readonly preview = signal<ProductionPreview | null>(null);
   protected readonly loading = signal(true);

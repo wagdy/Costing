@@ -311,7 +311,7 @@ describe('the recipes', () => {
     // Those shown: in one category, the one there.
     page['category'].set('sauces');
     expect(toolbarButton()).toEqual(['restaurant_menu Add 1 to menu إضافة للمنيو']);
-    page['category'].set(null);
+    page['category'].set('');
     open.mockReturnValue({ afterClosed: () => of(false) });
     await page['addToMenu'](page['toMenu']());
     expect(open).toHaveBeenLastCalledWith(AddToMenuDialog, expect.objectContaining({ data: { recipes: [garlicDip, trial] }, width: '1000px' }));
@@ -342,7 +342,7 @@ describe('the recipes', () => {
       expect(page['shown']()).toEqual([garlicDip]);
       page['category'].set(page['uncategorized']);
       expect(page['shown']().map((c: RecipeCostCard) => c.recipe)).toEqual(['Smash trial', 'Tray bake']);
-      page['category'].set(null);
+      page['category'].set('');
       expect(page['shown']()).toHaveLength(4);
     });
 

@@ -55,7 +55,7 @@ describe('raw materials to and from Excel', () => {
   it('offers the export and the import beside a new material', async () => {
     const { el } = await render();
 
-    expect([...el.querySelectorAll('.toolbar button')].map(text)).toEqual([
+    expect([...el.querySelectorAll('.toolbar:not(.smart) button')].map(text)).toEqual([
       'download Export Excelتصدير إلى إكسل',
       'upload_file Import Excelاستيراد من إكسل',
       'add New material',

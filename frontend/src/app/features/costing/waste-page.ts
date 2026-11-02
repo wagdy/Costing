@@ -18,6 +18,19 @@ import { MoneyPipe } from '../../core/ui/money.pipe';
 import { NotifyService } from '../../core/ui/notify.service';
 import { Approvals } from './approvals';
 import { BusinessDay } from './financials';
+import { FilterOption, FilterSelect } from '../shared/filter-select';
+import { SearchField } from '../shared/search-field';
+import { SortOption, SortState, smartMatch, sortItems } from '../shared/smart-search';
+import { SortControl } from '../shared/sort-control';
+import { GridKeys } from '../shared/grid-keys';
+import { MaterialPicker } from './material-picker';
+
+type WasteSort = 'date' | 'worth';
+
+const wasteSorts: SortOption<WasteSort>[] = [
+  { key: 'date', en: 'Date', ar: 'التاريخ', descending: true },
+  { key: 'worth', en: 'Worth', ar: 'القيمة', descending: true },
+];
 
 interface Line {
   rawMaterialId: string | null;
@@ -34,6 +47,11 @@ interface Line {
 @Component({
   selector: 'app-waste-page',
   imports: [
+    FilterSelect,
+    GridKeys,
+    MaterialPicker,
+    SearchField,
+    SortControl,
     DatePipe,
     DecimalPipe,
     EmployeePicker,
@@ -58,7 +76,7 @@ interface Line {
       <p class="error">{{ error() }}</p>
     } @else {
       <div class="table-wrap">
-        <table class="grid">
+        <table class="grid" appGridKeys (appGridKeysAppend)="add()">
           <thead>
             <tr>
               <th>Material<span class="ar">الخامة</span></th>
@@ -72,13 +90,8 @@ interface Line {
             @for (line of lines(); track $index; let i = $index) {
               <tr>
                 <td>
-                  <mat-form-field subscriptSizing="dynamic" class="material">
-                    <mat-select [ngModel]="line.rawMaterialId" (ngModelChange)="change(i, { rawMaterialId: $event })" placeholder="Choose…" [aria-label]="'Material, line ' + (i + 1)">
-                      @for (m of materials(); track m.id) {
-                        <mat-option [value]="m.id">{{ m.code ? m.code + ' · ' : '' }}{{ m.name }}</mat-option>
-                      }
-                    </mat-select>
-                  </mat-form-field>
+                  <app-material-picker class="material" [materials]="materials()" [value]="line.rawMaterialId"
+                    (valueChange)="change(i, { rawMaterialId: $event })" [label]="'Material, line ' + (i + 1)" />
                 </td>
                 <td class="num">
                   <mat-form-field subscriptSizing="dynamic" class="small">
@@ -123,6 +136,13 @@ interface Line {
       </div>
 
       <h2 class="recent">Last 30 days <span class="inline-ar">آخر ٣٠ يومًا</span></h2>
+      <div class="toolbar smart">
+        <app-search-field [(value)]="historySearch" placeholder="Material or who recorded it · الخامة أو المسجل" />
+        <div class="pills">
+          <app-filter-select label="Why · السبب" icon="help" [options]="reasonFilters()" [(value)]="historyReason" />
+          <app-sort-control [options]="wasteSorts" [(sort)]="historySort" />
+        </div>
+      </div>
       <div class="table-wrap">
         <table class="grid">
           <thead>
@@ -137,7 +157,7 @@ interface Line {
             </tr>
           </thead>
           <tbody>
-            @for (entry of recent(); track entry.spoilageId) {
+            @for (entry of shownRecent(); track entry.spoilageId) {
               @for (l of entry.lines; track l.rawMaterialId; let first = $first) {
                 <tr [class.pending-deletion]="!!pendingOf(entry)">
                   <td>
@@ -343,7 +363,44 @@ export class WastePage {
   private spoilageId = crypto.randomUUID();
 
   protected readonly total = computed(() => this.lines().reduce((sum, l) => sum + (this.worth(l) ?? 0), 0));
-  protected readonly recentTotal = computed(() => this.recent().reduce((sum, e) => sum + (e.value ?? 0), 0));
+  protected readonly recentTotal = computed(() =>
+    this.shownRecent().reduce((sum, e) => sum + e.lines.reduce((lines, l) => lines + (l.value ?? 0), 0), 0),
+  );
+
+  // The history as searched: each entry with only its lines that match, by material or who recorded
+  // it, and the reason chosen; by date or by what its lines were worth.
+  protected readonly historySearch = signal('');
+  protected readonly historyReason = signal('');
+  protected readonly wasteSorts = wasteSorts;
+  protected readonly historySort = signal<SortState<WasteSort>>({ key: 'date', direction: -1 });
+
+  protected readonly reasonFilters = computed<FilterOption[]>(() => {
+    const lines = this.recent().flatMap((e) => e.lines);
+    const known = new Set(this.reasons.map((r) => r.en));
+    return [
+      { value: '', label: 'All · الكل', count: lines.length },
+      ...this.reasons.filter((r) => r.en !== 'Other').map((r) => ({ value: r.en, label: `${r.en} · ${r.ar}`, count: lines.filter((l) => l.reason === r.en).length })),
+      { value: 'Other', label: 'Other · أخرى', count: lines.filter((l) => !known.has(l.reason ?? '') || l.reason === 'Other').length },
+    ];
+  });
+
+  protected readonly shownRecent = computed(() => {
+    const reason = this.historyReason();
+    const known = new Set(this.reasons.map((r) => r.en).filter((r) => r !== 'Other'));
+    const entries = this.recent()
+      .map((e) => ({
+        ...e,
+        lines: e.lines.filter(
+          (l) =>
+            smartMatch(this.historySearch(), l.material, l.reason, e.recordedBy) &&
+            (!reason || (reason === 'Other' ? !known.has(l.reason ?? '') : l.reason === reason)),
+        ),
+      }))
+      .filter((e) => e.lines.length > 0);
+    return sortItems(entries, this.historySort(), (e, key) =>
+      key === 'worth' ? e.lines.reduce((sum, l) => sum + (l.value ?? 0), 0) : e.recordedAtUtc,
+    );
+  });
   private readonly menuSales = inject(MenuSalesApi);
   protected readonly breakage = signal<BreakageEntry[]>([]);
   protected readonly staff = signal<Employee[]>([]);

@@ -72,10 +72,11 @@ describe('the prep items', () => {
   it('lists each with its batch, its cost by recipe and in stock, and what is on the shelf', async () => {
     const { el } = await render();
 
+    // By name, as the list starts.
     expect([...el.querySelectorAll('tbody tr')].map((r) => [...r.querySelectorAll('td')].slice(0, 6).map(text))).toEqual([
-      ['PREP-1 · Pizza dough', '10 kg', 'L.E 18.20 / kg', 'L.E 18.96 / kg', '9.6 kg', 'L.E 182.00'],
-      ['House sauce No cost yet: Basil', '5 L', '—', '—', '-0.5 L', '—'],
       ['Glaze No recipe yet', '10 kg', '—', '—', '0 kg', '—'],
+      ['House sauce No cost yet: Basil', '5 L', '—', '—', '-0.5 L', '—'],
+      ['PREP-1 · Pizza dough', '10 kg', 'L.E 18.20 / kg', 'L.E 18.96 / kg', '9.6 kg', 'L.E 182.00'],
     ]);
   });
 
@@ -87,8 +88,8 @@ describe('the prep items', () => {
     expect(text(rows[0])).toContain('New prep item Garlic oil');
     expect(text(rows[0])).toContain('Waiting for approval');
     expect(rows[0].classList).not.toContain('clickable');
-    expect(text(rows[1])).toContain('Change requested');
-    expect(rows[1].classList).toContain('pending-deletion');
+    expect(text(rows[3])).toContain('Change requested');
+    expect(rows[3].classList).toContain('pending-deletion');
   });
 
   it('finds one by name or code, and opens it', async () => {

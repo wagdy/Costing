@@ -9,6 +9,17 @@ import { firstValueFrom } from 'rxjs';
 import { CostingApi, ApprovalRequest, StockCountKind, StockCountSummary, countKindLabels } from '../../core/costing/costing.api';
 import { errorMessage } from '../../core/http/error-message';
 import { Approvals, pendingLabel } from './approvals';
+import { FilterOption, FilterSelect } from '../shared/filter-select';
+import { SearchField } from '../shared/search-field';
+import { SortOption, SortState, smartMatch, sortItems } from '../shared/smart-search';
+import { SortControl } from '../shared/sort-control';
+
+type CountSort = 'date' | 'materials';
+
+const countSorts: SortOption<CountSort>[] = [
+  { key: 'date', en: 'Date', ar: 'التاريخ', descending: true },
+  { key: 'materials', en: 'Materials counted', ar: 'عدد الخامات', descending: true },
+];
 
 // Physical counts of the stores: the one being filled in, if any, and the posted ones. The
 // variance report measures between two posted counts, so the stores are counted at the same
@@ -17,7 +28,7 @@ import { Approvals, pendingLabel } from './approvals';
 // (جرد دوري), what it finds against the records a shortage or a surplus.
 @Component({
   selector: 'app-counts-page',
-  imports: [DatePipe, MatButtonModule, MatIconModule, MatProgressBarModule, MatTooltipModule, RouterLink],
+  imports: [DatePipe, FilterSelect, MatButtonModule, MatIconModule, MatProgressBarModule, MatTooltipModule, RouterLink, SearchField, SortControl],
   template: `
     <div class="kinds">
       <p class="note">
@@ -58,6 +69,16 @@ import { Approvals, pendingLabel } from './approvals';
           <a mat-button routerLink="/costing/reports/variance"><mat-icon>compare_arrows</mat-icon> Variance since the last count</a>
         }
       </div>
+      @if (done().length > 1) {
+        <div class="toolbar smart">
+          <app-search-field [(value)]="search" placeholder="Who started or posted it · بواسطة" />
+          <div class="pills">
+            <app-filter-select label="Type · النوع" icon="inventory" [options]="kindFilters()" [(value)]="kind" />
+            <app-filter-select label="Status · الحالة" icon="flag" [options]="statusFilters()" [(value)]="status" />
+            <app-sort-control [options]="sorts" [(sort)]="sort" />
+          </div>
+        </div>
+      }
       <div class="table-wrap">
         <table class="grid">
           <thead>
@@ -70,7 +91,7 @@ import { Approvals, pendingLabel } from './approvals';
             </tr>
           </thead>
           <tbody>
-            @for (count of done(); track count.id) {
+            @for (count of shownDone(); track count.id) {
               <tr class="clickable" [class.voided]="count.status === 'Voided'" [class.pending-deletion]="!!pendingOf(count)" (click)="open(count)">
                 <td>
                   {{ count.postedAtUtc | date: 'EEE d MMM y, HH:mm' }}
@@ -175,6 +196,35 @@ export class CountsPage {
   protected readonly hasPeriodic = computed(() => this.posted().some((c) => c.kind === 'Periodic'));
   // Posted, and voided since: kept, marked so.
   protected readonly done = computed(() => this.counts().filter((c) => c.status !== 'Draft'));
+
+  protected readonly search = signal('');
+  protected readonly kind = signal('');
+  protected readonly status = signal('');
+  protected readonly sorts = countSorts;
+  protected readonly sort = signal<SortState<CountSort>>({ key: 'date', direction: -1 });
+
+  protected readonly kindFilters = computed<FilterOption[]>(() => [
+    { value: '', label: 'All · الكل', count: this.done().length },
+    ...(['Periodic', 'Opening'] as const).map((k) => ({
+      value: k, label: `${countKindLabels[k].en} · ${countKindLabels[k].ar}`, count: this.done().filter((c) => c.kind === k).length,
+    })),
+  ]);
+
+  protected readonly statusFilters = computed<FilterOption[]>(() => [
+    { value: '', label: 'All · الكل', count: this.done().length },
+    { value: 'Posted', label: 'Posted · مُرحّل', count: this.done().filter((c) => c.status === 'Posted').length },
+    { value: 'Voided', label: 'Voided · ملغى', count: this.done().filter((c) => c.status === 'Voided').length },
+  ]);
+
+  protected readonly shownDone = computed(() =>
+    sortItems(
+      this.done().filter(
+        (c) => (!this.kind() || c.kind === this.kind()) && (!this.status() || c.status === this.status()) && smartMatch(this.search(), c.startedBy, c.postedBy),
+      ),
+      this.sort(),
+      (c, key) => (key === 'materials' ? c.materials : c.postedAtUtc),
+    ),
+  );
 
   constructor() {
     void this.load();

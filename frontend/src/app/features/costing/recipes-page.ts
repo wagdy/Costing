@@ -24,13 +24,26 @@ import { Approvals, pendingLabel } from './approvals';
 import { todayIso } from './financials';
 import { recipeSheetRules } from './recipe-sheet-rules';
 import { SheetImportData, SheetImportDialog } from './sheet-import-dialog';
+import { FilterOption, FilterSelect } from '../shared/filter-select';
+import { SearchField } from '../shared/search-field';
+import { SortOption, SortState, smartMatch } from '../shared/smart-search';
+import { SortControl } from '../shared/sort-control';
 
 // What the table shows: the recipes (all, on the menu, off it), the menu items still without
 // one, or the deleted ones.
 export type RecipesView = 'active' | 'linked' | 'standalone' | 'unrecipied' | 'deleted';
 
-// The columns the table sorts by.
-export type RecipeSort = 'recipe' | 'category' | 'cost' | 'foodCost';
+// The columns the table sorts by, and what else the sort menu offers.
+export type RecipeSort = 'recipe' | 'category' | 'cost' | 'foodCost' | 'price' | 'margin';
+
+const recipeSorts: SortOption<RecipeSort>[] = [
+  { key: 'recipe', en: 'Name', ar: 'الاسم' },
+  { key: 'category', en: 'Category', ar: 'القسم' },
+  { key: 'cost', en: 'Cost per portion', ar: 'تكلفة الحصة', descending: true },
+  { key: 'price', en: 'Selling price', ar: 'سعر البيع', descending: true },
+  { key: 'foodCost', en: 'Food cost %', ar: 'نسبة التكلفة', descending: true },
+  { key: 'margin', en: 'Profit margin', ar: 'هامش الربح', descending: true },
+];
 
 // The recipes: each with what it is linked to on the menu (or that it is off the menu), what a
 // portion costs against its price, and View, Edit and Delete. Deleting marks it deleted: it stays
@@ -44,6 +57,7 @@ export type RecipeSort = 'recipe' | 'category' | 'cost' | 'foodCost';
   imports: [
     DatePipe,
     DecimalPipe,
+    FilterSelect,
     FormsModule,
     MatButtonModule,
     MatFormFieldModule,
@@ -54,47 +68,24 @@ export type RecipeSort = 'recipe' | 'category' | 'cost' | 'foodCost';
     MatTooltipModule,
     MoneyPipe,
     RouterLink,
+    SearchField,
+    SortControl,
   ],
   template: `
+    <div class="toolbar smart">
+      <app-search-field [(value)]="search" placeholder="Name, Arabic name, category or menu item · الاسم أو القسم" />
+      <div class="pills">
+        <app-filter-select label="Show · عرض" icon="link" [options]="viewFilters()" [value]="view()" (valueChange)="view.set($any($event))" />
+        @if (view() !== 'unrecipied') {
+          <app-filter-select label="Category · القسم" icon="category" [options]="categoryFilters()" [(value)]="category" />
+        }
+        @if (view() !== 'unrecipied' && view() !== 'deleted') {
+          <app-filter-select label="Cost · التكلفة" icon="monitoring" [options]="statusFilters" [value]="status()" (valueChange)="status.set($any($event))" />
+          <app-sort-control [options]="sorts" [(sort)]="sort" />
+        }
+      </div>
+    </div>
     <div class="toolbar">
-      <mat-form-field subscriptSizing="dynamic">
-        <mat-icon matPrefix>search</mat-icon>
-        <mat-label>Find · بحث</mat-label>
-        <input matInput [ngModel]="search()" (ngModelChange)="search.set($event)" />
-      </mat-form-field>
-      <mat-form-field subscriptSizing="dynamic">
-        <mat-label>Show · عرض</mat-label>
-        <mat-select [ngModel]="view()" (ngModelChange)="view.set($event)" aria-label="Show">
-          <mat-option value="active">All recipes · كل الوصفات</mat-option>
-          <mat-option value="linked">Linked to the menu · مرتبطة بالمنيو</mat-option>
-          <mat-option value="standalone">Standalone / off-menu · مستقلة</mat-option>
-          <mat-option value="unrecipied">Menu items without a recipe · أصناف بلا وصفة</mat-option>
-          <mat-option value="deleted">Deleted · المحذوفة</mat-option>
-        </mat-select>
-      </mat-form-field>
-      @if (view() !== 'unrecipied') {
-        <mat-form-field subscriptSizing="dynamic">
-          <mat-label>Category · القسم</mat-label>
-          <mat-select [ngModel]="category()" (ngModelChange)="category.set($event)" aria-label="Category">
-            <mat-option [value]="null">All categories · كل الأقسام</mat-option>
-            @for (c of categories(); track c.id) {
-              <mat-option [value]="c.id">{{ c.name }}{{ c.nameAr ? ' · ' + c.nameAr : '' }}</mat-option>
-            }
-            <mat-option [value]="uncategorized">Uncategorized · بدون قسم</mat-option>
-          </mat-select>
-        </mat-form-field>
-      }
-      @if (view() !== 'unrecipied' && view() !== 'deleted') {
-        <mat-form-field subscriptSizing="dynamic">
-          <mat-label>Cost · التكلفة</mat-label>
-          <mat-select [ngModel]="status()" (ngModelChange)="status.set($event)" aria-label="Cost status">
-            <mat-option [value]="null">Any</mat-option>
-            @for (s of statuses; track s) {
-              <mat-option [value]="s">{{ statusLabels[s].en }} · {{ statusLabels[s].ar }}</mat-option>
-            }
-          </mat-select>
-        </mat-form-field>
-      }
       <span class="spacer"></span>
       @if (canAddToMenu() && toMenu().length) {
         <button mat-stroked-button class="to-menu" (click)="addToMenu(toMenu())" [disabled]="busy()"
@@ -348,42 +339,68 @@ export class RecipesPage {
   protected readonly error = signal<string | null>(null);
   protected readonly search = signal('');
   protected readonly view = signal<RecipesView>('active');
-  protected readonly status = signal<CostStatus | null>(null);
-  // The kitchen's own categories; the one shown (null: all), or none for the unsorted ones.
+  protected readonly status = signal<CostStatus | ''>('');
+  // The kitchen's own categories; the one shown ('': all), or none for the unsorted ones.
   protected readonly categories = signal<RecipeCategory[]>([]);
-  protected readonly category = signal<string | null>(null);
+  protected readonly category = signal('');
   protected readonly uncategorized = 'none';
-  protected readonly sort = signal<{ by: RecipeSort; direction: 1 | -1 }>({ by: 'recipe', direction: 1 });
+  protected readonly sorts = recipeSorts;
+  protected readonly sort = signal<SortState<RecipeSort>>({ key: 'recipe', direction: 1 });
+
+  protected readonly viewFilters = computed<FilterOption[]>(() => {
+    const counts = this.counts();
+    return [
+      { value: 'active', label: 'All recipes · كل الوصفات', count: counts.recipes },
+      { value: 'linked', label: 'Linked to the menu · مرتبطة بالمنيو', count: counts.linked },
+      { value: 'standalone', label: 'Standalone / off-menu · مستقلة', count: counts.standalone },
+      { value: 'unrecipied', label: 'Menu items without a recipe · أصناف بلا وصفة', count: counts.unrecipied },
+      { value: 'deleted', label: 'Deleted · المحذوفة', count: this.recipes().filter((c) => c.isDeleted).length },
+    ];
+  });
+
+  protected readonly categoryFilters = computed<FilterOption[]>(() => {
+    const live = this.recipes().filter((c) => !c.isDeleted);
+    return [
+      { value: '', label: 'All · الكل', count: live.length },
+      ...this.categories().map((c) => ({
+        value: c.id, label: c.nameAr ? `${c.name} · ${c.nameAr}` : c.name, count: live.filter((r) => r.recipeCategoryId === c.id).length,
+      })),
+      { value: this.uncategorized, label: 'Uncategorized · بدون قسم', count: live.filter((r) => r.recipeCategoryId === null).length },
+    ];
+  });
+
+  protected readonly statusFilters: FilterOption[] = [
+    { value: '', label: 'Any · الكل' },
+    ...(Object.keys(statusLabels).filter((s) => s !== 'NoRecipe') as CostStatus[]).map((s) => ({
+      value: s, label: `${statusLabels[s].en} · ${statusLabels[s].ar}`,
+    })),
+  ];
 
   // From the query: a category to show, from the categories' counts.
   readonly categoryParam = input<string | undefined>(undefined, { alias: 'category' });
 
   protected readonly shown = computed(() => {
-    const needle = this.search().trim().toLowerCase();
     const view = this.view();
     const status = this.status();
     const category = this.category();
-    const { by, direction } = this.sort();
+    const { key, direction } = this.sort();
     return this.recipes()
       .filter(
         (c) =>
           (view === 'deleted' ? c.isDeleted : !c.isDeleted) &&
           (view !== 'linked' || !c.isStandalone) &&
           (view !== 'standalone' || c.isStandalone) &&
-          (view === 'deleted' || status === null || c.status === status) &&
-          (category === null || (category === this.uncategorized ? c.recipeCategoryId === null : c.recipeCategoryId === category)) &&
-          (!needle || [c.recipe, c.recipeAr, c.recipeCategory, c.recipeCategoryAr, c.linkedTo].some((v) => v?.toLowerCase().includes(needle))),
+          (view === 'deleted' || !status || c.status === status) &&
+          (!category || (category === this.uncategorized ? c.recipeCategoryId === null : c.recipeCategoryId === category)) &&
+          smartMatch(this.search(), c.recipe, c.recipeAr, c.recipeCategory, c.recipeCategoryAr, c.linkedTo, c.itemCode),
       )
-      .sort((a, b) => direction * RecipesPage.compare(a, b, by) || a.recipe.localeCompare(b.recipe));
+      .sort((a, b) => direction * RecipesPage.compare(a, b, key) || a.recipe.localeCompare(b.recipe));
   });
 
   // Menu items, sizes and add-ons with no recipe to sell by. A size that borrows its dish's has one.
-  protected readonly unrecipied = computed(() => {
-    const needle = this.search().trim().toLowerCase();
-    return this.menu().filter(
-      (c) => !c.hasRecipe && (!needle || [c.itemCode, c.linkedTo, c.recipe, c.category].some((v) => v?.toLowerCase().includes(needle))),
-    );
-  });
+  protected readonly unrecipied = computed(() =>
+    this.menu().filter((c) => !c.hasRecipe && smartMatch(this.search(), c.itemCode, c.linkedTo, c.recipe, c.recipeAr, c.category)),
+  );
 
   // Whoever works the menu puts a recipe on it.
   protected readonly canAddToMenu = computed(() => this.access.has('Menu') && this.auth.can(Permissions.InventoryManage));
@@ -404,24 +421,24 @@ export class RecipesPage {
   constructor() {
     effect(() => {
       const category = this.categoryParam();
-      untracked(() => this.category.set(category ?? null));
+      untracked(() => this.category.set(category ?? ''));
     });
     void this.load();
   }
 
   // By the column clicked; again, the other way.
-  protected sortBy(by: RecipeSort): void {
-    this.sort.update((s) => ({ by, direction: s.by === by ? (-s.direction as 1 | -1) : 1 }));
+  protected sortBy(key: RecipeSort): void {
+    this.sort.update((s) => ({ key, direction: s.key === key ? (-s.direction as 1 | -1) : 1 }));
   }
 
-  protected arrow(by: RecipeSort): string {
+  protected arrow(key: RecipeSort): string {
     const sort = this.sort();
-    return sort.by !== by ? '' : sort.direction === 1 ? '↑' : '↓';
+    return sort.key !== key ? '' : sort.direction === 1 ? '↑' : '↓';
   }
 
-  protected ariaSort(by: RecipeSort): 'ascending' | 'descending' | 'none' {
+  protected ariaSort(key: RecipeSort): 'ascending' | 'descending' | 'none' {
     const sort = this.sort();
-    return sort.by !== by ? 'none' : sort.direction === 1 ? 'ascending' : 'descending';
+    return sort.key !== key ? 'none' : sort.direction === 1 ? 'ascending' : 'descending';
   }
 
   // Uncategorized last, and a recipe with no food cost % after those with one, whichever way.
@@ -433,6 +450,10 @@ export class RecipesPage {
         return a.costPerPortion - b.costPerPortion;
       case 'foodCost':
         return (a.foodCostPercentActual ?? Number.MAX_VALUE) - (b.foodCostPercentActual ?? Number.MAX_VALUE);
+      case 'price':
+        return (a.menuPrice ?? -Number.MAX_VALUE) - (b.menuPrice ?? -Number.MAX_VALUE);
+      case 'margin':
+        return (a.marginPerPortion ?? -Number.MAX_VALUE) - (b.marginPerPortion ?? -Number.MAX_VALUE);
       default:
         return a.recipe.localeCompare(b.recipe);
     }

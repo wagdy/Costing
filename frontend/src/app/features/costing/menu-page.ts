@@ -18,6 +18,19 @@ import { MoneyPipe } from '../../core/ui/money.pipe';
 import { NotifyService } from '../../core/ui/notify.service';
 import { saveBlob } from '../../core/ui/save-blob';
 import { FilterOption, FilterSelect } from '../shared/filter-select';
+import { SearchField } from '../shared/search-field';
+import { SortOption, SortState, smartMatch, sortItems } from '../shared/smart-search';
+import { SortControl } from '../shared/sort-control';
+
+type MenuSort = 'menu' | 'code' | 'name' | 'category' | 'price';
+
+const menuSorts: SortOption<MenuSort>[] = [
+  { key: 'menu', en: 'Menu order', ar: 'ترتيب المنيو' },
+  { key: 'code', en: 'Code', ar: 'الكود' },
+  { key: 'name', en: 'Name', ar: 'الاسم' },
+  { key: 'category', en: 'Category', ar: 'القسم' },
+  { key: 'price', en: 'Selling price', ar: 'سعر البيع', descending: true },
+];
 
 export interface MenuItemDialogData {
   item?: MenuItem;
@@ -203,15 +216,29 @@ export class MenuItemDialog {
 // named as the template's. A deleted item leaves the menu; its recipe and its sales stay.
 @Component({
   selector: 'app-menu-page',
-  imports: [FilterSelect, FormsModule, MatButtonModule, MatFormFieldModule, MatIconModule, MatInputModule, MatProgressBarModule, MatTooltipModule, MoneyPipe],
+  imports: [
+    FilterSelect,
+    FormsModule,
+    MatButtonModule,
+    MatFormFieldModule,
+    MatIconModule,
+    MatInputModule,
+    MatProgressBarModule,
+    MatTooltipModule,
+    MoneyPipe,
+    SearchField,
+    SortControl,
+  ],
   template: `
+    <div class="toolbar smart no-print">
+      <app-search-field [(value)]="query" label="Search the menu" placeholder="Name, Arabic name or code · الاسم أو الكود" />
+      <div class="pills">
+        <app-filter-select label="Category · القسم" icon="category" [options]="categoryFilters()" [(value)]="category" />
+        <app-sort-control [options]="sorts" [(sort)]="sort" />
+      </div>
+    </div>
     <div class="toolbar no-print">
-      <mat-form-field subscriptSizing="dynamic" class="search">
-        <mat-icon matPrefix>search</mat-icon>
-        <mat-label>Search · بحث</mat-label>
-        <input matInput [ngModel]="query()" (ngModelChange)="query.set($event)" aria-label="Search the menu" />
-      </mat-form-field>
-      <app-filter-select label="Category · القسم" icon="category" [options]="categoryFilters()" [(value)]="category" />
+      <span class="muted shown-count">Showing {{ shown().length }} of {{ (menu()?.items ?? []).length }}<span class="inline-ar">المعروض</span></span>
       <span class="spacer"></span>
       @if (canChange) {
         <button mat-stroked-button (click)="template()"><mat-icon>download</mat-icon> Template <span class="inline-ar">النموذج</span></button>
@@ -427,19 +454,35 @@ export class MenuPage {
   protected readonly imported = signal<MenuImportResult | null>(null);
   protected readonly query = signal('');
   protected readonly category = signal('');
+  protected readonly sorts = menuSorts;
+  protected readonly sort = signal<SortState<MenuSort>>({ key: 'menu', direction: 1 });
 
   protected readonly categoryFilters = computed<FilterOption[]>(() => [
-    { value: '', label: 'All categories', count: this.menu()?.items.filter((i) => !i.isDeleted).length },
+    { value: '', label: 'All · الكل', count: this.menu()?.items.filter((i) => !i.isDeleted).length },
     ...(this.menu()?.categories ?? []).map((c) => ({ value: c.name, label: c.name, count: c.items })),
   ]);
 
   protected readonly shown = computed(() => {
-    const q = this.query().trim().toLowerCase();
-    return (this.menu()?.items ?? []).filter(
-      (i) =>
-        (!this.category() || i.category === this.category()) &&
-        (!q || i.name.toLowerCase().includes(q) || (i.nameAr ?? '').includes(q) || String(i.id).includes(q)),
+    const all = this.menu()?.items ?? [];
+    const found = all.filter(
+      (i) => (!this.category() || i.category === this.category()) && smartMatch(this.query(), i.name, i.nameAr, i.id, i.category),
     );
+    return sortItems(found, this.sort(), (i, key) => {
+      switch (key) {
+        case 'name':
+          return i.name;
+        case 'category':
+          return i.category;
+        // Sold by size: by its lowest.
+        case 'price':
+          return i.sizes.length ? Math.min(...i.sizes.map((z) => z.price)) : i.price;
+        case 'code':
+          return i.id;
+        // As the menu lists them: by its categories' order.
+        default:
+          return all.indexOf(i);
+      }
+    }, (i) => i.name);
   });
 
   constructor() {

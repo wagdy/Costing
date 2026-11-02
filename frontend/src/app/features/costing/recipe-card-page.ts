@@ -30,6 +30,8 @@ import { MoneyPipe } from '../../core/ui/money.pipe';
 import { NotifyService } from '../../core/ui/notify.service';
 import { Approvals } from './approvals';
 import { RecipeCategoryDialog, RecipeCategoryDialogData } from './recipe-category-dialog';
+import { GridKeys } from '../shared/grid-keys';
+import { MaterialPicker } from './material-picker';
 
 interface Line {
   rawMaterialId: string | null;
@@ -82,10 +84,12 @@ const linkKey = (kind: RecipeTargetKind | null, catalogItemId: number | null, va
     DatePipe,
     DecimalPipe,
     FormsModule,
+    GridKeys,
     MatButtonModule,
     MatFormFieldModule,
     MatIconModule,
     MatInputModule,
+    MaterialPicker,
     MatProgressBarModule,
     MatSelectModule,
     MoneyPipe,
@@ -246,7 +250,7 @@ const linkKey = (kind: RecipeTargetKind | null, catalogItemId: number | null, va
         </div>
 
         <div class="table-wrap">
-          <table class="grid">
+          <table class="grid" appGridKeys (appGridKeysAppend)="add()">
             <thead>
               <tr>
                 <th>Ingredients<span class="ar">المكونات</span></th>
@@ -267,13 +271,8 @@ const linkKey = (kind: RecipeTargetKind | null, catalogItemId: number | null, va
                 <tr>
                   <td>
                     @if (editing()) {
-                      <mat-form-field subscriptSizing="dynamic" class="ingredient">
-                        <mat-select [ngModel]="line.rawMaterialId" (ngModelChange)="choose(i, $event)" placeholder="Choose…" [aria-label]="'Ingredient, line ' + (i + 1)">
-                          @for (m of materials(); track m.id) {
-                            <mat-option [value]="m.id">{{ m.code ? m.code + ' · ' : '' }}{{ m.name }}{{ m.kind === 'Prep' ? ' · prep' : '' }}</mat-option>
-                          }
-                        </mat-select>
-                      </mat-form-field>
+                      <app-material-picker class="ingredient" [materials]="materials()" [value]="line.rawMaterialId" (valueChange)="choose(i, $event!)"
+                        [label]="'Ingredient, line ' + (i + 1)" />
                     } @else {
                       {{ x.material?.name }}
                     }

@@ -65,13 +65,20 @@ describe('a day’s sales entered', () => {
       await fixture.whenStable();
       fixture.detectChanges();
     };
+    // The quantities, as typed; the items, as chosen from the picker's list.
     const cells = () => [...el.querySelectorAll<HTMLInputElement>('input.cell')];
+    const pick = async (row: number, key: string) => {
+      page['rows']()[row].key = key;
+      page['touch']();
+      await fixture.whenStable();
+      fixture.detectChanges();
+    };
     const add = async () => {
       page['add']();
       await fixture.whenStable();
       fixture.detectChanges();
     };
-    return { fixture, el, page, type, cells, add };
+    return { fixture, el, page, type, cells, add, pick };
   }
 
   beforeEach(() => {
@@ -80,32 +87,36 @@ describe('a day’s sales entered', () => {
   });
 
   it('asks only for the date and each item with how many sold, no bill or money fields', async () => {
-    const { el } = await render();
+    const { el, page } = await render();
 
     expect(text(el.querySelector('h2')!)).toBe('Daily sales summary ملخص المبيعات اليومية');
     expect([...el.querySelectorAll('input')].map((i) => i.getAttribute('aria-label'))).toEqual(['Date', 'Item 1', 'Quantity sold 1']);
     expect(text(el.querySelector('mat-dialog-content')!)).not.toMatch(/Receipt|Paid by|Discount|Delivery fee|Points|Refunded|Time/);
-    expect([...el.querySelectorAll('datalist option')].map((o) => o.getAttribute('value'))).toHaveLength(3);
+    // The picker offers each item and size by its code, with its category and the menu's price.
+    expect((page['pickItems'] as { id: string; detail: string; cost: string }[]).map((i) => [i.id, i.detail, i.cost])).toEqual([
+      ['6101-1', 'Pizza', 'L.E 140.00'],
+      ['6101-2', 'Pizza', 'L.E 180.00'],
+      ['6201', 'Pizza', 'L.E 165.00'],
+    ]);
   });
 
   it('saves the day once every item is found and its quantity whole, an item twice sent twice for the server to add up', async () => {
-    const { el, page, type, cells, add } = await render();
+    const { el, page, type, cells, add, pick } = await render();
 
     expect(page['problem']()).toBe('Add at least one item sold. · أضف صنفًا مباعًا واحدًا على الأقل.');
-    await type(cells()[0], 'Pizza');
-    await type(cells()[1], '2');
-    expect(page['problem']()).toBe('Pizza is not on the menu: choose the item from the list. · اختر الصنف من القائمة.');
-    expect(cells()[0].classList).toContain('missing');
+    await type(cells()[0], '2');
+    expect(page['problem']()).toBe('Choose the item for each quantity from the list. · اختر الصنف لكل كمية من القائمة.');
 
-    await type(cells()[0], '6101-2 · Margherita (Large)');
+    await pick(0, '6101-2');
     await add();
-    await type(cells()[2], 'Alfredo pasta');
-    await type(cells()[3], '1.5');
+    await pick(1, '6201');
+    await type(cells()[1], '1.5');
     expect(page['problem']()).toBe('Each quantity sold is a whole number, 1 or more. · الكمية رقم صحيح 1 أو أكثر.');
-    await type(cells()[3], '3');
+    expect(cells()[1].classList).toContain('missing');
+    await type(cells()[1], '3');
     await add();
-    await type(cells()[4], '6201');
-    await type(cells()[5], '1');
+    await pick(2, '6201');
+    await type(cells()[2], '1');
     expect(page['problem']()).toBeNull();
     expect(text(el.querySelector('.totals')!)).toBe('2 items · 6 sold · L.E 1,020.00 at menu prices');
 
@@ -125,19 +136,20 @@ describe('a day’s sales entered', () => {
   });
 
   it('says why the server refused it, keeping what was typed', async () => {
-    const { fixture, el, page, type, cells } = await render();
+    const { fixture, el, page, type, cells, pick } = await render();
     recordDailySales.mockReturnValue(
       throwError(() => new HttpErrorResponse({ status: 422, error: { detail: 'The sales of 13 Oct 2026 are entered already (2 items, 6 sold).' } })),
     );
 
-    await type(cells()[0], '6201');
-    await type(cells()[1], '4');
+    await pick(0, '6201');
+    await type(cells()[0], '4');
     await page['save']();
     fixture.detectChanges();
 
     expect(text(el.querySelector('.error')!)).toBe('The sales of 13 Oct 2026 are entered already (2 items, 6 sold).');
     expect(close).not.toHaveBeenCalled();
-    expect(cells()[0].value).toBe('6201');
+    expect(page['rows']()[0].key).toBe('6201');
+    expect(cells()[0].value).toBe('4');
   });
 });
 

@@ -43,7 +43,8 @@ const farms = summary({
   total: 100,
   attachmentFileName: 'farm.jpg',
 });
-const oils = summary({ id: 'oils', supplierId: 'delta', supplierName: 'Delta Oils', supplierInvoiceNumber: 'D-77', total: 1900, createdBy: 'Sara' });
+// Its paper dated the day before the farm's: the newest by date, the farm's, comes first.
+const oils = summary({ id: 'oils', supplierId: 'delta', supplierName: 'Delta Oils', supplierInvoiceNumber: 'D-77', invoiceDate: '2026-10-04', total: 1900, createdBy: 'Sara' });
 
 function stock(category: string) {
   return { itemType: 'Inventory' as const, expenseItemId: null, categoryId: category.toLowerCase(), category, categoryAr: null };
@@ -137,8 +138,10 @@ describe('the invoices history', () => {
     await Promise.resolve();
     TestBed.tick();
     expect(rows()).toHaveLength(3);
-    expect(text(rows()[2])).toContain('Voidedملغاة by Omar');
-    expect(rows()[2].querySelector('button[aria-label^="Delete"]')).toBeNull();
+    // In its place by date, its own the newest.
+    const voided = rows().find((r) => text(r).includes('D-1'))!;
+    expect(text(voided)).toContain('Voidedملغاة by Omar');
+    expect(voided.querySelector('button[aria-label^="Delete"]')).toBeNull();
     expect(page['shownTotal']()).toBe(2000);
   });
 
@@ -150,7 +153,7 @@ describe('the invoices history', () => {
     expect(rows.map((r) => [...r.querySelectorAll('td')].slice(0, 6).map(text))).toEqual([
       ['5 Oct 2026', 'Nile Farms', 'F-1001', 'L.E 100.00', 'From the safe', 'Omar'],
       // No date on the paper: the day it was posted.
-      ['7 Oct 2026', 'Delta Oils', 'D-77', 'L.E 1,900.00', 'From the safe', 'Sara'],
+      ['4 Oct 2026', 'Delta Oils', 'D-77', 'L.E 1,900.00', 'From the safe', 'Sara'],
     ]);
     expect(rows.map((r) => !!r.querySelector('button[aria-label^="View"]'))).toEqual([true, false]);
     expect(rows.map((r) => text(r.querySelector('button.show')!))).toEqual(['visibility Show · عرض', 'visibility Show · عرض']);

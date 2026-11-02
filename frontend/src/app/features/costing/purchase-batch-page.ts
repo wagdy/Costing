@@ -16,6 +16,7 @@ import {
   SupplierBalance,
   paymentMethodLabels,
   paymentStatusLabels,
+  Supplier,
 } from '../../core/costing/costing.api';
 import { AuthService } from '../../core/auth/auth.service';
 import { Permissions } from '../../core/auth/permissions';
@@ -31,6 +32,7 @@ import { BusinessDay } from './financials';
 import { FormChecks, FormProblem } from './form-checks';
 import { InvoiceLine, InvoiceLines, InvoiceLinesTable, InvoiceSupplier, PurchaseCatalog } from './invoice-lines';
 import { SupplierPaymentEntry, SupplierPaymentFields, newSupplierPayment, paymentProblems } from './supplier-payment-fields';
+import { PickRow } from '../shared/pick-row';
 
 // One invoice of the batch: its id, made here; its supplier, number and lines, entered as on the
 // invoice screen.
@@ -67,7 +69,7 @@ const storageKey = 'otantik-till.purchase-batch';
 @Component({
   selector: 'app-purchase-batch-page',
   providers: [PurchaseCatalog],
-  imports: [
+  imports: [PickRow, 
     FormsModule,
     InvoiceLinesTable,
     MatAutocompleteModule,
@@ -237,9 +239,9 @@ const storageKey = 'otantik-till.purchase-batch';
                 placeholder="Choose or type a name" [attr.aria-label]="'Invoice ' + (i + 1) + ', supplier'"
                 [errorStateMatcher]="checks.field('Invoice ' + (i + 1) + ', supplier')" />
               <mat-icon matSuffix>arrow_drop_down</mat-icon>
-              <mat-autocomplete #suppliersList="matAutocomplete" [displayWith]="block.supplier.label">
+              <mat-autocomplete #suppliersList="matAutocomplete" [displayWith]="block.supplier.label" panelClass="pick-panel" [panelWidth]="380" [autoActiveFirstOption]="true">
                 @for (s of block.supplier.matches(); track s.id) {
-                  <mat-option [value]="s">{{ s.name }}</mat-option>
+                  <mat-option [value]="s"><app-pick-row [name]="s.name" kind="supplier" [detail]="supplierDetail(s)" [cost]="s.invoices ? s.invoices + (s.invoices === 1 ? ' invoice' : ' invoices') : null" /></mat-option>
                 }
                 @if (block.supplier.typedNew(); as name) {
                   <mat-option [value]="{ addNew: name }" class="add-new"><mat-icon>add</mat-icon> Add new supplier: "{{ name }}"</mat-option>
@@ -391,6 +393,11 @@ const storageKey = 'otantik-till.purchase-batch';
   `,
 })
 export class PurchaseBatchPage {
+  // A supplier as the picker shows it: whom to call there, and how.
+  protected supplierDetail(supplier: Supplier): string | null {
+    return [supplier.contactPerson, supplier.phone].filter(Boolean).join(' · ') || null;
+  }
+
   private readonly api = inject(CostingApi);
   private readonly notify = inject(NotifyService);
   private readonly businessDay = inject(BusinessDay);

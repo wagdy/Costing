@@ -38,6 +38,7 @@ import { AddNew, InvoiceLine, InvoiceLines, InvoiceLinesTable, InvoiceSupplier, 
 import { paperIcon, viewInvoicePaper } from './invoice-paper';
 import { InvoiceView } from './invoice-view';
 import { SupplierPaymentEntry, SupplierPaymentFields, newSupplierPayment, paymentProblems } from './supplier-payment-fields';
+import { PickRow } from '../shared/pick-row';
 
 // A supplier's invoice, in two steps. Entered as it is written (who from, their number and date,
 // each line in the unit billed, and a photo of the paper), then saved as a draft and reviewed;
@@ -55,7 +56,7 @@ import { SupplierPaymentEntry, SupplierPaymentFields, newSupplierPayment, paymen
 @Component({
   selector: 'app-purchases-page',
   providers: [PurchaseCatalog],
-  imports: [
+  imports: [PickRow, 
     DatePipe,
     FormsModule,
     InvoiceLinesTable,
@@ -178,9 +179,9 @@ import { SupplierPaymentEntry, SupplierPaymentFields, newSupplierPayment, paymen
           <input matInput [(ngModel)]="supplierEntry" (ngModelChange)="supplierEntered($event)" [matAutocomplete]="suppliersList"
             placeholder="Choose or type a name" aria-label="Supplier" [errorStateMatcher]="checks.field('Supplier')" />
           <mat-icon matSuffix>arrow_drop_down</mat-icon>
-          <mat-autocomplete #suppliersList="matAutocomplete" [displayWith]="supplierLabel">
+          <mat-autocomplete #suppliersList="matAutocomplete" [displayWith]="supplierLabel" panelClass="pick-panel" [panelWidth]="380" [autoActiveFirstOption]="true">
             @for (s of supplierMatches(); track s.id) {
-              <mat-option [value]="s">{{ s.name }}</mat-option>
+              <mat-option [value]="s"><app-pick-row [name]="s.name" kind="supplier" [detail]="supplierDetail(s)" [cost]="s.invoices ? s.invoices + (s.invoices === 1 ? ' invoice' : ' invoices') : null" /></mat-option>
             }
             @if (typedNewSupplier(); as name) {
               <mat-option [value]="{ addNew: name }" class="add-new">
@@ -409,6 +410,11 @@ import { SupplierPaymentEntry, SupplierPaymentFields, newSupplierPayment, paymen
   `,
 })
 export class PurchasesPage {
+  // A supplier as the picker shows it: whom to call there, and how.
+  protected supplierDetail(supplier: Supplier): string | null {
+    return [supplier.contactPerson, supplier.phone].filter(Boolean).join(' · ') || null;
+  }
+
   protected readonly company = inject(Company);
   private readonly api = inject(CostingApi);
   private readonly dialog = inject(MatDialog);

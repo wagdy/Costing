@@ -74,7 +74,7 @@ describe('prep items from a sheet of batch recipes', () => {
   it('offers the smart sheet’s export and import, and the batch recipes sheet, beside adding one', async () => {
     const { el } = await render();
 
-    expect([...el.querySelectorAll('.toolbar button, .toolbar a')].map(text)).toEqual([
+    expect([...el.querySelectorAll('.toolbar:not(.smart) button, .toolbar:not(.smart) a')].map(text)).toEqual([
       'precision_manufacturing Make a batch',
       'download Export Excel تصدير إلى إكسل',
       'upload_file Import Excel استيراد من إكسل',

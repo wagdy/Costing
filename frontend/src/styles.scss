@@ -1,13 +1,14 @@
 @use '@angular/material' as mat;
 
-// Material 3, in the delivery system's colours (indigo, with a pink accent), so the till and the
-// delivery app look like one product. The system font stack rather than a web font: the till must
-// look right with no internet, and the icon font is bundled with the build for the same reason.
+// Material 3 in Slate & Indigo: a deep indigo for what is chosen and acted on, slate greys for
+// everything at rest, so the eye goes to what matters and nothing glares. The system font stack
+// rather than a web font: the app must look right with no internet, and the icon font is bundled
+// with the build for the same reason.
 html {
   color-scheme: light;
   @include mat.theme((
     color: (
-      primary: mat.$blue-palette,
+      primary: mat.$violet-palette,
       tertiary: mat.$rose-palette,
     ),
     typography: (
@@ -16,6 +17,38 @@ html {
     ),
     density: 0,
   ));
+
+  // The palette itself, over the theme's: indigo for the active and the primary, slate for text,
+  // icons and lines at rest.
+  --app-indigo-50: #eef2ff;
+  --app-indigo-100: #e0e7ff;
+  --app-indigo-200: #c7d2fe;
+  --app-indigo-500: #6366f1;
+  --app-indigo-600: #4f46e5;
+  --app-indigo-700: #4338ca;
+  --app-indigo-900: #312e81;
+  --app-slate-50: #f8fafc;
+  --app-slate-100: #f1f5f9;
+  --app-slate-200: #e2e8f0;
+  --app-slate-300: #cbd5e1;
+  --app-slate-400: #94a3b8;
+  --app-slate-500: #64748b;
+  --app-slate-600: #475569;
+  --app-slate-700: #334155;
+  --app-slate-900: #0f172a;
+
+  --mat-sys-primary: var(--app-indigo-600);
+  --mat-sys-on-primary: #ffffff;
+  --mat-sys-primary-container: var(--app-indigo-100);
+  --mat-sys-on-primary-container: var(--app-indigo-900);
+  --mat-sys-inverse-primary: var(--app-indigo-200);
+  --mat-sys-surface-tint: var(--app-indigo-600);
+  --mat-sys-secondary-container: var(--app-indigo-50);
+  --mat-sys-on-secondary-container: var(--app-indigo-700);
+  --mat-sys-on-surface: var(--app-slate-900);
+  --mat-sys-on-surface-variant: var(--app-slate-600);
+  --mat-sys-outline: var(--app-slate-400);
+  --mat-sys-outline-variant: var(--app-slate-300);
 }
 
 html,
@@ -39,8 +72,8 @@ body {
   // Tags (a status, a state): a soft background and its text in a deeper shade of the same colour.
   --tag-ok-bg: #e6f4ea;
   --tag-ok-fg: #1e6b34;
-  --tag-info-bg: #e8f0fe;
-  --tag-info-fg: #1a4fbf;
+  --tag-info-bg: #eef2ff;
+  --tag-info-fg: #4338ca;
   --tag-warn-bg: #fff3d6;
   --tag-warn-fg: #8a5300;
   --tag-bad-bg: #fde7e7;
@@ -49,8 +82,8 @@ body {
   --tag-accent-fg: #6b2fbf;
   --tag-teal-bg: #e0f4f3;
   --tag-teal-fg: #0b6b66;
-  --tag-neutral-bg: #eef1f5;
-  --tag-neutral-fg: #4a5568;
+  --tag-neutral-bg: #f1f5f9;
+  --tag-neutral-fg: #475569;
 
   // Surfaces of tables and cards: their borders, hairlines and shadows.
   --app-line: color-mix(in srgb, var(--mat-sys-outline-variant) 60%, transparent);
@@ -297,5 +330,30 @@ table.grid {
 @media (max-width: 600px) {
   .periods .mat-button-toggle-label-content {
     padding: 0 6px;
+  }
+}
+
+// The pickers' dropdowns (PickRow): each choice as tall as its two lines, across the whole width;
+// "Add new" in indigo, "more" quiet.
+.pick-panel {
+  .mat-mdc-option {
+    min-height: 52px;
+    padding-block: 2px;
+  }
+  .mat-mdc-option .mdc-list-item__primary-text {
+    width: 100%;
+  }
+  .mat-mdc-option.add-new {
+    color: var(--app-indigo-600);
+    font-weight: 600;
+
+    mat-icon {
+      color: var(--app-indigo-600);
+    }
+  }
+  .mat-mdc-option.more {
+    min-height: 36px;
+    color: var(--app-slate-500);
+    font: var(--mat-sys-body-small);
   }
 }

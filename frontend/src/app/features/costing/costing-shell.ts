@@ -2,7 +2,7 @@ import { Component, computed, inject } from '@angular/core';
 import { RouterOutlet } from '@angular/router';
 import { AuthService } from '../../core/auth/auth.service';
 import { Permissions } from '../../core/auth/permissions';
-import { CostingAccess, costingTabs } from '../../core/costing/costing-tabs';
+import { CostingAccess, costingGroups, costingTabs } from '../../core/costing/costing-tabs';
 import { SideLayout, SideSection } from '../shared/side-layout';
 import { Approvals } from './approvals';
 
@@ -34,11 +34,13 @@ export class CostingShell {
       ...costingTabs.filter((t) => this.access.has(t.tab)),
       ...(this.auth.can(Permissions.InventoryManage)
         ? [{
-            path: 'approvals', en: 'Approvals', ar: 'طلبات معلقة', icon: 'pending_actions',
+            path: 'approvals', en: 'Approvals', ar: 'طلبات معلقة', icon: 'pending_actions', group: costingGroups.finance,
             ...(waiting ? { count: waiting, countLabel: `${waiting} waiting` } : {}),
           }]
         : []),
-      ...(this.auth.can(Permissions.UsersManage) ? [{ path: 'permissions', en: 'Permissions', ar: 'الصلاحيات', icon: 'admin_panel_settings' }] : []),
+      ...(this.auth.can(Permissions.UsersManage)
+        ? [{ path: 'permissions', en: 'Permissions', ar: 'الصلاحيات', icon: 'admin_panel_settings', group: costingGroups.finance }]
+        : []),
     ];
   });
 

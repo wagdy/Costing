@@ -8,6 +8,9 @@ import { MatInputModule } from '@angular/material/input';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { firstValueFrom } from 'rxjs';
 import { DailySalesImportResult, Menu, MenuSalesApi, SalesReceipt } from '../../core/costing/menu-sales.api';
+import { Company } from '../../core/settings/company';
+import { GridKeys } from '../shared/grid-keys';
+import { ItemPicker, PickItem } from '../shared/item-picker';
 import { errorMessage } from '../../core/http/error-message';
 import { MoneyPipe } from '../../core/ui/money.pipe';
 import { NotifyService } from '../../core/ui/notify.service';
@@ -66,7 +69,8 @@ export interface DailySalesDialogData {
 }
 
 interface Row {
-  text: string;
+  // The option chosen, by its code ("6101-2").
+  key: string | null;
   quantity: number | null;
 }
 
@@ -75,7 +79,7 @@ interface Row {
 // day's money is its takings, on Financials. Closes with the summary recorded, its stock taken.
 @Component({
   selector: 'app-daily-sales-dialog',
-  imports: [FormsModule, MatButtonModule, MatDialogModule, MatFormFieldModule, MatIconModule, MatInputModule, MoneyPipe],
+  imports: [FormsModule, GridKeys, ItemPicker, MatButtonModule, MatDialogModule, MatFormFieldModule, MatIconModule, MatInputModule, MoneyPipe],
   template: `
     <h2 mat-dialog-title>Daily sales summary <span class="inline-ar">ملخص المبيعات اليومية</span></h2>
     <mat-dialog-content>
@@ -88,13 +92,8 @@ interface Row {
         <mat-label>Date · التاريخ</mat-label>
         <input matInput type="date" [(ngModel)]="date" (ngModelChange)="touch()" [max]="data.today" required aria-label="Date" />
       </mat-form-field>
-      <datalist id="sale-items">
-        @for (o of options; track o.code) {
-          <option [value]="o.label"></option>
-        }
-      </datalist>
       <div class="table-wrap">
-        <table class="grid rows">
+        <table class="grid rows" appGridKeys (appGridKeysAppend)="add()">
           <thead>
             <tr>
               <th>Item<span class="ar">الصنف</span></th>
@@ -106,13 +105,13 @@ interface Row {
           <tbody>
             @for (row of rows(); track $index; let i = $index) {
               <tr>
-                <td>
-                  <input class="cell" [(ngModel)]="row.text" (ngModelChange)="touch()" list="sale-items" [attr.aria-label]="'Item ' + (i + 1)"
-                    placeholder="Code or name · الكود أو الاسم" [class.missing]="row.text.trim() && !optionOf(row)" />
+                <td class="item">
+                  <app-item-picker [items]="pickItems" [value]="row.key" (valueChange)="row.key = $event; touch()" [label]="'Item ' + (i + 1)"
+                    placeholder="Code or name · الكود أو الاسم" />
                 </td>
                 <td class="num">
                   <input class="cell qty" type="number" min="1" step="1" [(ngModel)]="row.quantity" (ngModelChange)="touch()"
-                    [attr.aria-label]="'Quantity sold ' + (i + 1)" [class.missing]="row.text.trim() && !validQuantity(row)" />
+                    [attr.aria-label]="'Quantity sold ' + (i + 1)" [class.missing]="row.key && !validQuantity(row)" />
                 </td>
                 <td class="num">{{ optionOf(row) && validQuantity(row) ? (optionOf(row)!.price * row.quantity! | money) : '—' }}</td>
                 <td class="num">
@@ -147,6 +146,9 @@ interface Row {
     .day {
       width: 220px;
     }
+    .item {
+      min-width: 260px;
+    }
     .cell {
       width: 100%;
       min-width: 200px;
@@ -178,11 +180,17 @@ export class DailySalesDialog {
   private readonly ref = inject<MatDialogRef<DailySalesDialog, SalesReceipt>>(MatDialogRef);
   private readonly api = inject(MenuSalesApi);
 
+  private readonly company = inject(Company);
   protected readonly options = saleOptions(this.data.menu);
+  // As the picker offers them: by code, with the category and the menu's price.
+  protected readonly pickItems: PickItem[] = this.options.map((o) => ({
+    id: o.code, name: o.names[0], code: o.code, kind: 'menu', detail: this.data.menu.items.find((i) => i.id === o.menuItemId)?.category ?? null,
+    cost: this.company.money(o.price), keywords: o.names,
+  }));
   // A retry after a lost answer reaches the same summary.
   private readonly id = crypto.randomUUID();
   protected date = this.data.today;
-  protected readonly rows = signal<Row[]>([{ text: '', quantity: null }]);
+  protected readonly rows = signal<Row[]>([{ key: null, quantity: null }]);
   protected readonly saving = signal(false);
   protected readonly error = signal<string | null>(null);
   // Bumped as a row is typed into.
@@ -191,7 +199,7 @@ export class DailySalesDialog {
   // The rows filled in, each found on the menu with how many.
   private readonly filled = computed(() => {
     this.version();
-    return this.rows().filter((r) => r.text.trim() || r.quantity !== null);
+    return this.rows().filter((r) => r.key || r.quantity !== null);
   });
 
   protected readonly totals = computed(() => {
@@ -215,11 +223,8 @@ export class DailySalesDialog {
     if (rows.length === 0) {
       return 'Add at least one item sold. · أضف صنفًا مباعًا واحدًا على الأقل.';
     }
-    const unknown = rows.find((r) => !this.optionOf(r));
-    if (unknown) {
-      return unknown.text.trim()
-        ? `${unknown.text.trim()} is not on the menu: choose the item from the list. · اختر الصنف من القائمة.`
-        : 'Choose the item for each quantity. · اختر الصنف لكل كمية.';
+    if (rows.some((r) => !this.optionOf(r))) {
+      return 'Choose the item for each quantity from the list. · اختر الصنف لكل كمية من القائمة.';
     }
     if (rows.some((r) => !this.validQuantity(r))) {
       return 'Each quantity sold is a whole number, 1 or more. · الكمية رقم صحيح 1 أو أكثر.';
@@ -232,7 +237,7 @@ export class DailySalesDialog {
   }
 
   protected optionOf(row: Row): SaleOption | null {
-    return findOption(this.options, row.text);
+    return row.key ? (this.options.find((o) => o.code === row.key) ?? null) : null;
   }
 
   protected validQuantity(row: Row): boolean {
@@ -240,7 +245,7 @@ export class DailySalesDialog {
   }
 
   protected add(): void {
-    this.rows.update((rows) => [...rows, { text: '', quantity: null }]);
+    this.rows.update((rows) => [...rows, { key: null, quantity: null }]);
   }
 
   protected remove(index: number): void {

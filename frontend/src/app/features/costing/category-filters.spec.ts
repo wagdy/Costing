@@ -69,12 +69,13 @@ describe('raw materials by category', () => {
       { id: 'dairy', name: 'Dairy', count: 2 },
       { id: 'meat', name: 'Meat', count: 1 },
     ]);
-    expect(page['category']()).toBeNull();
+    expect(page['category']()).toBe('');
     expect(page['shown']().length).toBe(3);
 
     page['category'].set('dairy');
     fixture.detectChanges();
-    expect([...el.querySelectorAll('tbody tr')].map((r) => text(r.querySelectorAll('td')[1]))).toEqual(['Milk', 'Cheddar']);
+    // By name, as the list starts.
+    expect([...el.querySelectorAll('tbody tr')].map((r) => text(r.querySelectorAll('td')[1]))).toEqual(['Cheddar', 'Milk']);
 
     // With the search as well.
     page['search'].set('ched');
@@ -115,9 +116,10 @@ describe('prep items by recipe category', () => {
   it('shows each with its recipe category, and one category at a time, the unsorted too', async () => {
     const { fixture, el, page } = await render();
 
-    expect(names(page)).toEqual(['Béchamel', 'Pizza dough', 'Garlic sauce', 'Dolma mix']);
+    // By name, as the list starts.
+    expect(names(page)).toEqual(['Béchamel', 'Dolma mix', 'Garlic sauce', 'Pizza dough']);
     expect([...el.querySelectorAll('tbody tr')].map((r) => r.querySelector('td .muted.small')?.textContent?.trim() ?? null)).toEqual(
-      ['Sauces', 'Doughs', 'Sauces', null],
+      ['Sauces', null, 'Sauces', 'Doughs'],
     );
 
     page['category'].set('sauces');
