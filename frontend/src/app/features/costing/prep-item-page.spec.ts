@@ -38,6 +38,10 @@ const yeast = material({ id: 'yeast', name: 'Yeast', costPerPurchaseUnit: 500, c
 const oil = material({ id: 'oil', name: 'Olive oil', unit: 'Millilitre', purchaseUnit: 'L', costPerPurchaseUnit: 60, costPerUnit: 0.06 });
 const salt = material({ id: 'salt', name: 'Salt' });
 const doughMaterial = material({ id: 'dough', name: 'Pizza dough', kind: 'Prep', costPerPurchaseUnit: 18.96, costPerUnit: 0.01896 });
+// A sauce never made: no average, 22 a kg by its own recipe, short of the cream in it.
+const sauceMaterial = material({
+  id: 'sauce', name: 'White sauce', kind: 'Prep', recipeCostPerUnit: 0.022, costedByRecipe: true, recipeCostMissing: ['White sauce: Cream'],
+});
 
 const batch: ProductionOrder = {
   id: 'batch-1',
@@ -121,7 +125,7 @@ describe('a prep item', () => {
   }
 
   beforeEach(() => {
-    materials.mockReset().mockReturnValue(of([flour, yeast, oil, salt, doughMaterial]));
+    materials.mockReset().mockReturnValue(of([flour, yeast, oil, salt, doughMaterial, sauceMaterial]));
     prepItem.mockReset().mockReturnValue(of(dough));
     savePrepItem.mockReset().mockImplementation((id: string | null) => of({ ...dough, id: id ?? 'new-dough' }));
     approvalRequests.mockReset().mockReturnValue(of({ pending: [], decided: [] }));
@@ -178,10 +182,23 @@ describe('a prep item', () => {
     expect(text(fixture.nativeElement.querySelector('p.warn'))).toContain('No cost yet for Salt');
   });
 
+  it('costs a prep item in it that was never made by that one’s own recipe, and names what has no price inside it', async () => {
+    const { fixture, page } = await render('dough');
+
+    page['lines'].set([{ rawMaterialId: 'sauce', quantity: 1_000, yieldPercent: 100 }]);
+    page['touch']();
+    fixture.detectChanges();
+
+    // 1 kg of white sauce at 22 a kg by its recipe.
+    expect(page['lineCost'](page['lines']()[0])).toBeCloseTo(22, 10);
+    expect(text(fixture.nativeElement)).toContain('L.E 22.00 / kg By its recipe · حسب وصفته');
+    expect(page['missing']()).toEqual(['White sauce: Cream']);
+  });
+
   it('is not offered as its own ingredient', async () => {
     const { page } = await render('dough');
 
-    expect(page['ingredientChoices']().map((m: MaterialCost) => m.id)).toEqual(['flour', 'yeast', 'oil', 'salt']);
+    expect(page['ingredientChoices']().map((m: MaterialCost) => m.id)).toEqual(['flour', 'yeast', 'oil', 'salt', 'sauce']);
   });
 
   it('is added with its batch, reorder level in grams and recipe category, and opened once saved', async () => {

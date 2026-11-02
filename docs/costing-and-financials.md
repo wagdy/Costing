@@ -91,6 +91,28 @@ template's four columns (its Initial Cost is per kg, litre or piece) still impor
 - Up to 2,000 rows a file and 5 MB; the Raw materials tab exports and imports the materials, the
   Expense items tab the expense items (`inventory.manage` both).
 
+## What a recipe is costed from
+
+Each ingredient at its moving average cost: what was paid for a bought material, what the batches
+cost for a prep item. **A prep item never made yet** (no average, or one of nothing) is costed by
+its own batch recipe today instead, its theoretical cost ("by its recipe"), each of its
+ingredients priced the same way, so a sauce inside a sauce is costed too (`RecipeCosts`). Once a
+batch is made, what the batches cost takes over.
+
+- Used on every recipe card, the recipes list, the menu's costs, a prep item's own standard cost,
+  the import's costing, and the recipe and prep item editors as they are typed (the materials
+  list carries `recipeCostPerUnit` and `costedByRecipe`). A line costed so is marked **By its
+  recipe · حسب وصفته**, and the card says which prep items are not made yet.
+- What has no price inside a prep item costed by its recipe is still named, through it ("Alfredo
+  base: Cream"), and the recipe is still marked as missing prices; with nothing inside it priced,
+  the prep item itself has no price.
+- The month's theoretical cost does the same for a sale that took a prep item off the shelf
+  before its first batch (at no cost then): the dish is costed now, by the prep item's cost now,
+  and counted among those costed now. The KPIs' food cost by recipe reads it, so follows.
+- Stock itself is never valued this way: a sale or a production order takes what is on the shelf
+  at what was paid, and the variance, the stock value and the KPIs' losses stay so. A batch
+  cannot be made from a prep item with no price of its own yet, as before.
+
 ## Recipes and prep items in Excel
 
 Recipes and Prep items each have **Export Excel** and **Import Excel**, through the same import

@@ -20,8 +20,8 @@ namespace Costing.Application.Production;
 // one does not exist, for recipes or production, until it is approved; a changed one stays as it
 // was until then, and cannot be changed again meanwhile.
 
-// One ingredient of a batch, costed at its average now. BatchCost is what it adds to one batch;
-// Share is that against the batch.
+// One ingredient of a batch, costed at its average now, or a prep item never made yet by its own
+// recipe (CostedByRecipe). BatchCost is what it adds to one batch; Share is that against the batch.
 public sealed record PrepIngredientCostDto(
     Guid RawMaterialId,
     string? Code,
@@ -35,11 +35,13 @@ public sealed record PrepIngredientCostDto(
     decimal AsPurchasedQuantity,
     decimal? CostPerPurchaseUnit,
     decimal? BatchCost,
-    decimal? SharePercent);
+    decimal? SharePercent,
+    bool CostedByRecipe = false);
 
 // A prep item's profile. The standard cost is what a batch costs by its recipe at today's
-// averages; the average cost is what the batches on the shelf actually cost, moved by each
-// production order as a delivery moves a bought material's.
+// averages (a prep item in it never made yet by its own recipe, RecipeCosts); the average cost is
+// what the batches on the shelf actually cost, moved by each production order as a delivery moves
+// a bought material's. MissingPrices names what has no price under it.
 public sealed record PrepItemDto(
     Guid Id,
     string? Code,
@@ -91,15 +93,17 @@ internal static class PrepItemCosting
         PrepRecipe? recipe,
         IReadOnlyDictionary<Guid, RawMaterial> materials,
         IReadOnlyList<ProductionOrder> orders,
-        IReadOnlyDictionary<Guid, PurchaseCategory> categories)
+        IReadOnlyDictionary<Guid, PurchaseCategory> categories,
+        RecipeCosts costs)
     {
         var lines = (recipe?.Ingredients ?? [])
             .Select(i => (Ingredient: i, Material: materials.GetValueOrDefault(i.RawMaterialId)))
             .Where(x => x.Material is not null)
-            .Select(x => (x.Ingredient, Material: x.Material!, Cost: x.Ingredient.AsPurchasedQuantity * x.Material!.AverageCost))
+            .Select(x => (x.Ingredient, Material: x.Material!, Price: costs.Of(x.Material!.Id)))
+            .Select(x => (x.Ingredient, x.Material, x.Price, Cost: x.Ingredient.AsPurchasedQuantity * x.Price.PerUnit))
             .ToList();
         var batchCost = lines.Sum(l => l.Cost ?? 0);
-        var missing = lines.Where(l => l.Cost is null).Select(l => l.Material.Name).ToList();
+        var missing = lines.SelectMany(l => l.Price.Missing).Distinct().ToList();
         var batch = recipe?.BatchQuantity ?? 0;
         var last = orders.Where(o => o.PrepItemId == item.Id && !o.IsVoided).MaxBy(o => o.ProducedAtUtc);
 
@@ -109,14 +113,15 @@ internal static class PrepItemCosting
                 .Select(l => new PrepIngredientCostDto(
                     l.Material.Id, l.Material.Code, l.Material.Name, l.Material.IsPrepItem, l.Material.Unit, l.Material.PurchaseUnit,
                     l.Material.PurchaseUnitSize, l.Ingredient.Quantity, l.Ingredient.YieldPercent, Math.Round(l.Ingredient.AsPurchasedQuantity, 3),
-                    l.Material.CostPerPurchaseUnit is { } c ? Money(c) : null,
+                    l.Price.PerUnit is { } c ? Money(c * l.Material.PurchaseUnitSize) : null,
                     l.Cost is { } cost ? Money(cost) : null,
-                    l.Cost is { } part && batchCost > 0 ? Math.Round(part * 100 / batchCost, 1) : null))
+                    l.Cost is { } part && batchCost > 0 ? Math.Round(part * 100 / batchCost, 1) : null,
+                    l.Price.ByRecipe))
                 .OrderByDescending(l => l.BatchCost ?? 0)
                 .ThenBy(l => l.Name)
                 .ToList(),
-            lines.Count > 0 ? Money(batchCost) : null,
-            lines.Count > 0 && batch > 0 ? Money(batchCost / batch * item.PurchaseUnitSize) : null,
+            lines.Any(l => l.Cost is not null) ? Money(batchCost) : null,
+            lines.Any(l => l.Cost is not null) && batch > 0 ? Money(batchCost / batch * item.PurchaseUnitSize) : null,
             missing,
             item.QuantityOnHand,
             item.CostPerPurchaseUnit is { } average ? Money(average) : null,
@@ -163,6 +168,7 @@ internal sealed class GetPrepItemsQueryHandler(
         var all = (await materials.GetAllAsync(cancellationToken)).ToDictionary(m => m.Id);
         var byCategory = (await categories.GetAllAsync(cancellationToken)).ToDictionary(c => c.Id);
         var byItem = (await recipes.GetAllAsync(cancellationToken)).ToDictionary(r => r.PrepItemId);
+        var costs = new RecipeCosts(all, byItem.Values);
         // The last batch of each, for its last cost; the full history is on its own page.
         var lastOrders = (await orders.GetRecentAsync(null, 500, cancellationToken))
             .Where(o => !o.IsVoided)
@@ -172,7 +178,7 @@ internal sealed class GetPrepItemsQueryHandler(
         return all.Values
             .Where(m => m.IsPrepItem && !m.IsArchived)
             .OrderBy(m => m.Name, StringComparer.CurrentCultureIgnoreCase)
-            .Select(m => PrepItemCosting.Dto(m, byItem.GetValueOrDefault(m.Id), all, lastOrders, byCategory) with { Recent = [] })
+            .Select(m => PrepItemCosting.Dto(m, byItem.GetValueOrDefault(m.Id), all, lastOrders, byCategory, costs) with { Recent = [] })
             .ToList();
     }
 }
@@ -194,7 +200,8 @@ internal sealed class GetPrepItemQueryHandler(
             await recipes.GetByIdAsync(item.Id, cancellationToken),
             all,
             await orders.GetRecentAsync(item.Id, 20, cancellationToken),
-            (await categories.GetAllAsync(cancellationToken)).ToDictionary(c => c.Id));
+            (await categories.GetAllAsync(cancellationToken)).ToDictionary(c => c.Id),
+            new RecipeCosts(all, await recipes.GetAllAsync(cancellationToken)));
     }
 }
 
@@ -419,6 +426,7 @@ public sealed record SavePrepItemCommand(
 internal sealed class SavePrepItemCommandHandler(
     PrepItemWriter writer,
     IRawMaterialRepository materials,
+    IPrepRecipeRepository recipes,
     IProductionOrderRepository orders,
     IApprovalRequestRepository approvals,
     IUnitOfWork unitOfWork) : IRequestHandler<SavePrepItemCommand, PrepItemDto>
@@ -432,9 +440,10 @@ internal sealed class SavePrepItemCommandHandler(
 
         var all = (await materials.GetAllAsync(cancellationToken)).ToDictionary(m => m.Id);
         all[item.Id] = item;
+        var saved = (await recipes.GetAllAsync(cancellationToken)).Where(r => r.PrepItemId != recipe.PrepItemId).Append(recipe);
         return PrepItemCosting.Dto(
             item, recipe, all, await orders.GetRecentAsync(item.Id, 20, cancellationToken),
-            new Dictionary<Guid, PurchaseCategory> { [category.Id] = category });
+            new Dictionary<Guid, PurchaseCategory> { [category.Id] = category }, new RecipeCosts(all, saved));
     }
 }
 

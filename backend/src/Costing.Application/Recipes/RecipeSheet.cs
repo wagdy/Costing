@@ -5,6 +5,7 @@ using Costing.Application.Common;
 using Costing.Application.RawMaterials;
 using Costing.Domain.Approvals;
 using Costing.Domain.Menu;
+using Costing.Domain.Production;
 using Costing.Domain.RawMaterials;
 using Costing.Domain.Recipes;
 
@@ -170,6 +171,7 @@ internal sealed class ImportRecipesHandler(
     IRecipeRepository recipes,
     IRecipeCategoryRepository categories,
     IRawMaterialRepository materials,
+    IPrepRecipeRepository prepRecipes,
     IMenuRepository menu,
     IApprovalRequestRepository approvals,
     IUnitOfWork unitOfWork)
@@ -206,7 +208,7 @@ internal sealed class ImportRecipesHandler(
 
         var created = new List<ImportedSheetItem>();
         var updated = new List<UpdatedSheetItem>();
-        var costed = new List<CostedSheetItem>();
+        var toCost = new List<(int Row, string Name, Recipe Recipe, List<string> Notes)>();
         var skipped = new List<SkippedSheetRow>();
         var added = new List<string>();
         var unchanged = 0;
@@ -369,11 +371,13 @@ internal sealed class ImportRecipesHandler(
                 updated.Add(new UpdatedSheetItem(group.Row, recipe.Id, group.Name, changes));
             }
 
-            costed.Add(Cost(group.Row, group.Name, recipe, byMaterial, notes));
+            toCost.Add((group.Row, group.Name, recipe, notes));
         }
 
         if (created.Count > 0 || updated.Count > 0)
             await unitOfWork.SaveChangesAsync(cancellationToken);
+        var costs = new RecipeCosts(all.ToDictionary(m => m.Id), await prepRecipes.GetAllAsync(cancellationToken));
+        var costed = toCost.Select(c => Cost(c.Row, c.Name, c.Recipe, costs, c.Notes)).ToList();
         return new RecipeImportResult(created, updated, unchanged, skipped.OrderBy(s => s.Row).ToList(), added, costed);
     }
 
@@ -401,11 +405,12 @@ internal sealed class ImportRecipesHandler(
         return groups.Values.ToList();
     }
 
-    // What it costs now: each ingredient as purchased (its yield lost) at its average cost.
-    private static CostedSheetItem Cost(int row, string name, Recipe recipe, IReadOnlyDictionary<Guid, RawMaterial> materials, List<string> notes)
+    // What it costs now: each ingredient as purchased (its yield lost) at its average cost, a prep
+    // item never made yet by its own recipe.
+    private static CostedSheetItem Cost(int row, string name, Recipe recipe, RecipeCosts costs, List<string> notes)
     {
-        var missing = recipe.Ingredients.Where(i => materials[i.RawMaterialId].AverageCost is null).Select(i => materials[i.RawMaterialId].Name).ToList();
-        var cost = recipe.Ingredients.Sum(i => i.AsPurchasedQuantity * (materials[i.RawMaterialId].AverageCost ?? 0));
+        var missing = recipe.Ingredients.SelectMany(i => costs.Of(i.RawMaterialId).Missing).Distinct().ToList();
+        var cost = recipe.Ingredients.Sum(i => i.AsPurchasedQuantity * (costs.Of(i.RawMaterialId).PerUnit ?? 0));
         return new CostedSheetItem(row, name, recipe.Ingredients.Count, SheetNumbers.Money(cost), SheetNumbers.Money(cost / recipe.Portions), "portion", missing, notes);
     }
 }

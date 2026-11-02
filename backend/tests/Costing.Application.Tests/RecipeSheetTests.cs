@@ -127,8 +127,9 @@ public class RecipeSheetTests
         Assert.Equal((69.67m, 69.67m, "portion", 2), (costs["1 · Burger"].Cost, costs["1 · Burger"].CostPer, costs["1 · Burger"].Per, costs["1 · Burger"].Ingredients));
         Assert.Equal((12.75m, 4.25m), (costs["staff meal"].Cost, costs["staff meal"].CostPer));
         Assert.Equal((11.5m, 11.5m), (costs["Lunch special"].Cost, costs["Lunch special"].CostPer));
-        // Made with pizza dough, which has no price until a batch is made.
-        Assert.Equal(["Pizza dough"], costs["10-101 · Shawarma (Kilo tray)"].MissingPrices);
+        // Made with pizza dough, never made yet: costed by its recipe, 600 g of flour a 1 kg batch.
+        Assert.Equal((18m, 4.5m), (costs["10-101 · Shawarma (Kilo tray)"].Cost, costs["10-101 · Shawarma (Kilo tray)"].CostPer));
+        Assert.Empty(costs["10-101 · Shawarma (Kilo tray)"].MissingPrices);
     }
 
     [Fact]

@@ -35,6 +35,12 @@ const beef = material({ id: 'beef', name: 'Beef mince', costPerPurchaseUnit: 416
 const bun = material({ id: 'bun', name: 'Burger bun', unit: 'Piece', purchaseUnit: 'piece', purchaseUnitSize: 1, costPerPurchaseUnit: 6, costPerUnit: 6 });
 const tomato = material({ id: 'tomato', name: 'Tomato', costPerPurchaseUnit: 35, costPerUnit: 0.035, defaultYieldPercent: 85 });
 const saffron = material({ id: 'saffron', name: 'Saffron', purchaseUnit: 'g', purchaseUnitSize: 1 });
+// Prep items never made: the white sauce 22 a kg by its recipe; the Alfredo base 20 a kg by its
+// recipe, short of the cream in it, which has no price.
+const whiteSauce = material({ id: 'white-sauce', name: 'White sauce', kind: 'Prep', recipeCostPerUnit: 0.022, costedByRecipe: true, recipeCostMissing: [] });
+const alfredo = material({
+  id: 'alfredo', name: 'Alfredo base', kind: 'Prep', recipeCostPerUnit: 0.02, costedByRecipe: true, recipeCostMissing: ['Alfredo base: Cream'],
+});
 
 function card(overrides: Partial<RecipeCostCard>): RecipeCostCard {
   return {
@@ -125,7 +131,7 @@ describe('a recipe', () => {
             restoreRecipe,
             requestDeletion,
             approvalRequests,
-            materials: () => of([beef, bun, tomato, saffron]),
+            materials: () => of([beef, bun, tomato, saffron, whiteSauce, alfredo]),
             menu: () => of([cheeseburgerMenu, garlicBreadMenu]),
             recipeCategories,
           },
@@ -218,6 +224,26 @@ describe('a recipe', () => {
 
       expect(page['status']()).toBe('MissingPrices');
       expect(text(fixture.nativeElement)).toContain('No price yet for Saffron');
+    });
+
+    it('costs a prep item never made by its own recipe today, says so, and names what has no price inside one', async () => {
+      const { fixture, page } = await render('new');
+
+      // 250 g of white sauce at 22 a kg by its recipe: priced, nothing missing.
+      write(page, [['white-sauce', 250]]);
+      fixture.detectChanges();
+      expect(page['costed']().map((l: { cost: number; byRecipe: boolean }) => [l.cost, l.byRecipe])).toEqual([[5.5, true]]);
+      expect(page['status']()).not.toBe('MissingPrices');
+      expect(text(fixture.nativeElement)).toContain('L.E 22.00 By its recipe · حسب وصفته');
+      expect(text(fixture.nativeElement)).toContain('White sauce is not made yet, so costed by its own recipe today');
+      expect(text(fixture.nativeElement)).not.toContain('No price yet');
+
+      // 110 g of the Alfredo base: costed as far as it goes, the cream inside it named.
+      write(page, [['alfredo', 110]]);
+      fixture.detectChanges();
+      expect(page['costed']()[0].cost).toBe(2.2);
+      expect(page['status']()).toBe('MissingPrices');
+      expect(text(fixture.nativeElement)).toContain('No price yet for Alfredo base: Cream');
     });
 
     it('will not save an ingredient on two lines', async () => {

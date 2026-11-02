@@ -10,7 +10,7 @@ import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatSelectModule } from '@angular/material/select';
 import { Router, RouterLink } from '@angular/router';
 import { firstValueFrom } from 'rxjs';
-import { CostingApi, MaterialCost, PrepItem, ProductionOrder, RecipeCategory, SavePrepItem, UnitOfMeasure, isRequested } from '../../core/costing/costing.api';
+import { CostingApi, MaterialCost, PrepItem, ProductionOrder, RecipeCategory, SavePrepItem, UnitOfMeasure, isRequested, recipeCostOf } from '../../core/costing/costing.api';
 import { errorMessage } from '../../core/http/error-message';
 import { MoneyPipe } from '../../core/ui/money.pipe';
 import { NotifyService } from '../../core/ui/notify.service';
@@ -202,7 +202,10 @@ const displayUnits: Record<UnitOfMeasure, [string, number]> = { Gram: ['kg', 100
                 <td class="num">{{ asPurchased(line) === null ? '' : (asPurchased(line) | number: '1.0-3') + ' ' + base(m!.unit) }}</td>
                 <td class="num muted">
                   @if (m) {
-                    {{ m.costPerPurchaseUnit === null ? 'No cost yet' : (m.costPerPurchaseUnit | money) + ' / ' + m.purchaseUnit }}
+                    {{ aps(m) === null ? 'No cost yet' : (aps(m) | money) + ' / ' + m.purchaseUnit }}
+                    @if (aps(m) !== null && m.costedByRecipe) {
+                      <div class="by-recipe" title="Not made yet: costed by its own recipe today, until a batch is made">By its recipe · حسب وصفته</div>
+                    }
                   }
                 </td>
                 <td class="num">{{ lineCost(line) === null ? '' : (lineCost(line) | money) }}</td>
@@ -283,6 +286,11 @@ const displayUnits: Record<UnitOfMeasure, [string, number]> = { Gram: ['kg', 100
   `,
   styleUrl: './costing.scss',
   styles: `
+    .by-recipe {
+      font-size: 0.78em;
+      color: var(--mat-sys-tertiary);
+      white-space: nowrap;
+    }
     .title {
       margin: 0 0 12px;
       font: var(--mat-sys-title-large);
@@ -420,8 +428,8 @@ export class PrepItemPage {
     this.version();
     return this.lines()
       .map((l) => this.material(l))
-      .filter((m): m is MaterialCost => !!m && m.costPerUnit === null)
-      .map((m) => m.name);
+      // No price of its own, or one inside a prep item costed by its recipe.
+      .flatMap((m) => (!m ? [] : recipeCostOf(m) === null ? [m.name] : (m.recipeCostMissing ?? [])));
   });
 
   // A name, a batch, and each line an ingredient with a quantity, none twice.
@@ -463,7 +471,14 @@ export class PrepItemPage {
   protected lineCost(line: Line): number | null {
     const material = this.material(line);
     const quantity = this.asPurchased(line);
-    return material && quantity !== null && material.costPerUnit !== null ? quantity * material.costPerUnit : null;
+    const perUnit = material ? recipeCostOf(material) : null;
+    return quantity !== null && perUnit !== null ? quantity * perUnit : null;
+  }
+
+  // What a purchase unit of it costs: its average, or a prep item never made yet by its own recipe.
+  protected aps(material: MaterialCost): number | null {
+    const perUnit = recipeCostOf(material);
+    return perUnit === null ? null : perUnit * material.purchaseUnitSize;
   }
 
   protected share(line: Line): number | null {

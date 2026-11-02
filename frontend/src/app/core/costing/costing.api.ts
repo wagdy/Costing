@@ -34,6 +34,17 @@ export interface MaterialCost {
   kind: MaterialKind;
   // In a general expenses category: filed there before the kinds were kept apart.
   misplaced?: boolean;
+  // What a recipe is costed from, per unit, unrounded: costPerUnit, or for a prep item never made
+  // yet its cost by its own recipe today (costedByRecipe), with what has no price inside it.
+  recipeCostPerUnit?: number | null;
+  costedByRecipe?: boolean;
+  recipeCostMissing?: string[];
+}
+
+// What a recipe line is costed from, per unit: the material's average, or for a prep item never
+// made yet its own recipe's cost today.
+export function recipeCostOf(material: MaterialCost): number | null {
+  return material.recipeCostPerUnit === undefined ? material.costPerUnit : material.recipeCostPerUnit;
 }
 
 // One invoice line that bought a material, as its paper has it: quantity in the unit billed (5 kg),
@@ -81,6 +92,8 @@ export interface RecipeCostLine {
   yieldPercent: number;
   epsPerUnit: number | null;
   recipeCost: number | null;
+  // A prep item never made yet, costed by its own recipe today.
+  costedByRecipe?: boolean;
 }
 
 // The Recipe Costing Template for one dish, size or add-on.
@@ -781,6 +794,8 @@ export interface PrepIngredientCost {
   costPerPurchaseUnit: number | null;
   batchCost: number | null;
   sharePercent: number | null;
+  // A prep item never made yet, costed by its own recipe today.
+  costedByRecipe?: boolean;
 }
 
 // A prep item: made from a recipe for one batch, kept in stock. Quantities in its unit (grams,

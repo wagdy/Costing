@@ -458,9 +458,11 @@ public class CostingApiTests
             var imported = await Json(await manager.PostAsync("/api/inventory/recipes/sheet/import", Sheet(book, "recipes.xlsx"), Cancel));
             Assert.Equal((1, 1), (imported.GetProperty("created").GetArrayLength(), imported.GetProperty("updated").GetArrayLength()));
             var costs = imported.GetProperty("costed").EnumerateArray().ToDictionary(c => c.GetProperty("name").GetString()!);
-            // 200 g of mozzarella at 300 a kg; the large size 75 of it and dough not priced yet.
+            // 200 g of mozzarella at 300 a kg; the large size 75 of it, and 300 g of dough never
+            // made yet, costed by its recipe: 600 g of flour at 30 a kg for each kg, 5.40.
             Assert.Equal((60m, "portion"), (costs["6101 · Margherita"].GetProperty("costPer").GetDecimal(), costs["6101 · Margherita"].GetProperty("per").GetString()));
-            Assert.Equal(["Pizza dough"], costs[$"6101-{large} · Margherita (Large)"].GetProperty("missingPrices").EnumerateArray().Select(m => m.GetString()));
+            Assert.Equal((80.4m, 0), (costs[$"6101-{large} · Margherita (Large)"].GetProperty("costPer").GetDecimal(),
+                costs[$"6101-{large} · Margherita (Large)"].GetProperty("missingPrices").GetArrayLength()));
         }
         var card = await Json(await manager.GetAsync("/api/costing/recipe-card?targetKind=MenuItem&catalogItemId=6101", Cancel));
         Assert.Equal(200m, card.GetProperty("lines").EnumerateArray().Single(l => l.GetProperty("rawMaterialId").GetGuid() == mozzarella).GetProperty("quantity").GetDecimal());

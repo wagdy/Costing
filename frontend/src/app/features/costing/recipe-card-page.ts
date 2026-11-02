@@ -22,6 +22,7 @@ import {
   SaveRecipe,
   statusLabels,
   unitLabels,
+  recipeCostOf,
 } from '../../core/costing/costing.api';
 import { errorMessage } from '../../core/http/error-message';
 import { Company } from '../../core/settings/company';
@@ -43,6 +44,8 @@ interface Costed {
   aps: number | null;
   eps: number | null;
   cost: number | null;
+  // A prep item never made yet, costed by its own recipe today.
+  byRecipe: boolean;
 }
 
 // A menu item a recipe can be linked to, as the link list offers it.
@@ -288,6 +291,9 @@ const linkKey = (kind: RecipeTargetKind | null, catalogItemId: number | null, va
                   <td class="num">
                     @if (x.aps !== null) {
                       {{ x.aps | money }}
+                      @if (x.byRecipe) {
+                        <div class="by-recipe" title="Not made yet: costed by its own recipe today, until a batch is made">By its recipe · حسب وصفته</div>
+                      }
                     } @else if (x.material) {
                       <span class="error">No price</span>
                     }
@@ -341,6 +347,13 @@ const linkKey = (kind: RecipeTargetKind | null, catalogItemId: number | null, va
         @if (missing().length) {
           <p class="error">No price yet for {{ missing().join(', ') }}: the cost shown is short of the truth until they have one.</p>
         }
+        @if (byRecipe().length) {
+          <p class="note by-recipe-note">
+            {{ byRecipe().join(', ') }} {{ byRecipe().length === 1 ? 'is' : 'are' }} not made yet, so costed by {{ byRecipe().length === 1 ? 'its' : 'their' }} own
+            recipe today; once a batch is made, at what the batches cost.
+            <span class="inline-ar">أصناف مُصنَّعة لم تُصنع بعد: تُحسب تكلفتها من وصفتها اليوم حتى تُصنع أول تشغيلة.</span>
+          </p>
+        }
 
         @if (editing()) {
           <div class="toolbar actions no-print">
@@ -359,6 +372,11 @@ const linkKey = (kind: RecipeTargetKind | null, catalogItemId: number | null, va
   `,
   styleUrl: './costing.scss',
   styles: `
+    .by-recipe {
+      font-size: 0.78em;
+      color: var(--mat-sys-tertiary);
+      white-space: nowrap;
+    }
     .sheet {
       display: grid;
       gap: 16px;
@@ -588,12 +606,14 @@ export class RecipeCardPage {
   protected readonly costed = computed<Costed[]>(() =>
     this.lines().map((line) => {
       const material = this.materials().find((m) => m.id === line.rawMaterialId);
-      // From the exact average, not the rounded price shown: a 10 kg batch would be cents out.
-      const aps = material?.costPerUnit == null ? null : material.costPerUnit * material.purchaseUnitSize;
+      // From the exact average, not the rounded price shown: a 10 kg batch would be cents out. A
+      // prep item never made yet has none: by its own recipe's cost today instead.
+      const perUnit = material ? recipeCostOf(material) : null;
+      const aps = perUnit == null || !material ? null : perUnit * material.purchaseUnitSize;
       const yieldPercent = line.yieldPercent ?? 0;
       const eps = aps === null || yieldPercent <= 0 ? null : (aps * 100) / yieldPercent;
       const cost = eps === null || !material ? null : round((eps * (line.quantity ?? 0)) / material.purchaseUnitSize);
-      return { material, aps, eps, cost };
+      return { material, aps, eps, cost, byRecipe: aps !== null && !!material?.costedByRecipe };
     }),
   );
 
@@ -627,11 +647,13 @@ export class RecipeCardPage {
 
   protected readonly idealPrice = computed(() => round((this.exactCostPerPortion() * 100) / this.target()));
 
-  protected readonly missing = computed(() =>
-    this.costed()
-      .filter((l) => l.material && l.aps === null)
-      .map((l) => l.material!.name),
-  );
+  // What has no price: an ingredient's own, or one inside a prep item costed by its recipe.
+  protected readonly missing = computed(() => [
+    ...new Set(this.costed().flatMap((l) => (!l.material ? [] : l.aps === null ? [l.material.name] : (l.material.recipeCostMissing ?? [])))),
+  ]);
+
+  // The prep items not made yet, costed by their own recipes.
+  protected readonly byRecipe = computed(() => [...new Set(this.costed().filter((l) => l.byRecipe).map((l) => l.material!.name))]);
 
   protected readonly status = computed<CostStatus>(() => {
     const foodCost = this.foodCost();

@@ -106,8 +106,10 @@ public class PrepRecipeSheetTests
         // Costed per batch and per kg or litre: the dough 21 of flour and 4.44 of oil, for 1.2 kg.
         Assert.Equal((25.44m, 21.2m, "Kg"), (costs["Pizza dough"].Cost, costs["Pizza dough"].CostPer, costs["Pizza dough"].Per));
         Assert.Equal((84m, 84m, "Liter"), (costs["Garlic oil"].Cost, costs["Garlic oil"].CostPer, costs["Garlic oil"].Per));
-        // Prep items have no price until a batch is made.
-        Assert.Equal(["Pizza dough", "Garlic oil"], costs["Garlic bread base"].MissingPrices);
+        // Made with two prep items never made yet: each costed by its recipe, the dough at 25.44
+        // for 1.2 kg and the garlic oil at 84 a litre, the base's own batch 1.1 kg.
+        Assert.Equal((29.6m, 26.91m), (costs["Garlic bread base"].Cost, costs["Garlic bread base"].CostPer));
+        Assert.Empty(costs["Garlic bread base"].MissingPrices);
     }
 
     [Fact]

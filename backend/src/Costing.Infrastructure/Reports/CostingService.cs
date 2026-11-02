@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Costing.Application.Common;
 using Costing.Domain.Common;
+using Costing.Domain.Production;
 using Costing.Domain.Sales;
 using Costing.Domain.Categories;
 using Costing.Domain.RawMaterials;
@@ -49,7 +50,13 @@ public sealed record MaterialCostDto(
     // The purchase category Category names.
     Guid CategoryId,
     // In a general expenses category: filed there before the kinds were kept apart.
-    bool Misplaced = false);
+    bool Misplaced = false,
+    // What a recipe is costed from, per unit, unrounded: CostPerUnit, or for a prep item never
+    // made yet its cost by its own recipe today (CostedByRecipe). See RecipeCosts.
+    decimal? RecipeCostPerUnit = null,
+    bool CostedByRecipe = false,
+    // Costed by its recipe: what has no price inside it ("Cream", "Alfredo base: Cream").
+    IReadOnlyList<string>? RecipeCostMissing = null);
 
 // One line of the Recipe Costing Template. Quantity is the Edible Portion (EP) for the whole
 // recipe in the material's Unit; APS/Unit and EPS/Unit are per PurchaseUnit, as prices are written.
@@ -64,7 +71,9 @@ public sealed record RecipeCostLine(
     decimal? ApsPerUnit,
     decimal YieldPercent,
     decimal? EpsPerUnit,
-    decimal? RecipeCost);
+    decimal? RecipeCost,
+    // A prep item never made yet, costed by its own recipe today.
+    bool CostedByRecipe = false);
 
 // The Recipe Costing Template, for one recipe, or for a menu item, size or add-on by the recipe
 // it sells by. Recipe is the name it goes by: its own, or its menu item's. MenuPrice is the price
@@ -192,7 +201,9 @@ public sealed class CostingService(CostingDbContext db, IBusinessCalendar clock,
     public async Task<IReadOnlyList<MaterialCostDto>> GetMaterialsAsync(CancellationToken cancellationToken)
     {
         // Deleted ones are kept for the records that name them, off the list.
-        var materials = await db.RawMaterials.AsNoTracking().Where(m => m.ArchivedAtUtc == null).OrderBy(m => m.Name).ToListAsync(cancellationToken);
+        var all = await db.RawMaterials.AsNoTracking().OrderBy(m => m.Name).ToListAsync(cancellationToken);
+        var materials = all.Where(m => !m.IsArchived).ToList();
+        var costs = new RecipeCosts(all.ToDictionary(m => m.Id), await db.PrepRecipes.AsNoTracking().Include(r => r.Ingredients).ToListAsync(cancellationToken));
         var categories = await db.PurchaseCategories.AsNoTracking().ToDictionaryAsync(c => c.Id, cancellationToken);
         // The last price that stands: a voided delivery or batch, and its reversal, are not one.
         var lastPurchases = await db.StockMovements.AsNoTracking()
@@ -210,7 +221,8 @@ public sealed class CostingService(CostingDbContext db, IBusinessCalendar clock,
                 Money(m.CostPerPurchaseUnit), m.DefaultYieldPercent, m.QuantityOnHand, m.ReorderLevel,
                 Money(m.AverageCost * Math.Max(m.QuantityOnHand, 0)),
                 Money(last?.UnitCost * m.PurchaseUnitSize), last?.OccurredAtUtc, m.AverageCost, m.Kind, m.CategoryId,
-                categories.GetValueOrDefault(m.CategoryId)?.Kind == CategoryKind.Expenses);
+                categories.GetValueOrDefault(m.CategoryId)?.Kind == CategoryKind.Expenses, costs.Of(m.Id).PerUnit, costs.Of(m.Id).ByRecipe,
+                costs.Of(m.Id).ByRecipe ? costs.Of(m.Id).Missing : []);
         }).ToList();
     }
 
@@ -486,10 +498,12 @@ public sealed class CostingService(CostingDbContext db, IBusinessCalendar clock,
         foreach (var prep in data.Materials.Values.Where(m => m.IsPrepItem && !m.IsArchived))
         {
             decimal? perUnit = prep.AverageCost * prep.PurchaseUnitSize;
-            if (prepRecipes.GetValueOrDefault(prep.Id) is { Ingredients.Count: > 0 } recipe
-                && recipe.Ingredients.All(i => data.Materials.GetValueOrDefault(i.RawMaterialId)?.AverageCost is not null))
-                perUnit = recipe.Ingredients.Sum(i => i.AsPurchasedQuantity * data.Materials[i.RawMaterialId].AverageCost!.Value)
-                    / recipe.BatchQuantity * prep.PurchaseUnitSize;
+            if (prepRecipes.GetValueOrDefault(prep.Id) is { Ingredients.Count: > 0 } recipe)
+            {
+                var (batchCost, _, missing) = data.Costs.Batch(recipe);
+                if (missing.Count == 0)
+                    perUnit = batchCost / recipe.BatchQuantity * prep.PurchaseUnitSize;
+            }
             items[(ManualSalesItemKind.PrepItem, prep.Id)] = new ManualItem(
                 new ManualSalesItemDto(
                     ManualSalesItemKind.PrepItem, prep.Id, prep.Code, prep.Name, null, "Prep items", prep.PurchaseUnit,
@@ -514,7 +528,9 @@ public sealed class CostingService(CostingDbContext db, IBusinessCalendar clock,
         IReadOnlyDictionary<Guid, RecipeCategory> Categories,
         IReadOnlyDictionary<Guid, RawMaterial> Materials,
         decimal FoodCostTarget,
-        SharedPerMeal Shared);
+        SharedPerMeal Shared,
+        // What each material is costed at in a recipe: a prep item never made, by its own recipe.
+        RecipeCosts Costs);
 
     private async Task<MenuData> LoadMenuAsync(CancellationToken cancellationToken)
     {
@@ -538,6 +554,7 @@ public sealed class CostingService(CostingDbContext db, IBusinessCalendar clock,
         var allRecipes = await db.Recipes.AsNoTracking().Include(r => r.Ingredients).ToListAsync(cancellationToken);
         var recipes = allRecipes.Where(r => !r.IsDeleted && r.Target is not null).ToDictionary(r => r.Target!.Value);
         var materials = await db.RawMaterials.AsNoTracking().ToDictionaryAsync(m => m.Id, cancellationToken);
+        var costs = new RecipeCosts(materials, await db.PrepRecipes.AsNoTracking().Include(r => r.Ingredients).ToListAsync(cancellationToken));
 
         // Shared costs on a recipe card are last month's, the last whole month there is.
         var thisMonth = clock.BusinessDateOf(DateTime.UtcNow);
@@ -547,7 +564,7 @@ public sealed class CostingService(CostingDbContext db, IBusinessCalendar clock,
 
         var categories = await db.RecipeCategories.AsNoTracking().ToDictionaryAsync(c => c.Id, cancellationToken);
 
-        return new MenuData(targets, recipes, allRecipes, categories, materials, (await SettingsAsync(cancellationToken)).FoodCostTargetPercent, shared);
+        return new MenuData(targets, recipes, allRecipes, categories, materials, (await SettingsAsync(cancellationToken)).FoodCostTargetPercent, shared, costs);
     }
 
     // A menu row, by the recipe it sells by: a size with none of its own, by the dish's.
@@ -573,10 +590,11 @@ public sealed class CostingService(CostingDbContext db, IBusinessCalendar clock,
             .Select(i =>
             {
                 var m = data.Materials[i.RawMaterialId];
-                var aps = m.CostPerPurchaseUnit;
+                var price = data.Costs.Of(m.Id);
+                var aps = price.PerUnit * m.PurchaseUnitSize;
                 var eps = aps * 100 / i.YieldPercent;
                 return new RecipeCostLine(m.Id, m.Code, m.Name, i.Quantity, m.Unit, m.PurchaseUnit, m.PurchaseUnitSize,
-                    Money(aps), i.YieldPercent, Money(eps), Money(eps * i.Quantity / m.PurchaseUnitSize));
+                    Money(aps), i.YieldPercent, Money(eps), Money(eps * i.Quantity / m.PurchaseUnitSize), price.ByRecipe);
             })
             .OrderBy(l => l.Ingredient)
             .ToList() ?? [];
@@ -595,7 +613,8 @@ public sealed class CostingService(CostingDbContext db, IBusinessCalendar clock,
         var perPortion = ingredientsPerPortion + sharedPerPortion;
         var price = target is null ? recipe?.PlannedPrice : target.PricedByAddOns ? null : target.Price;
         var foodCost = price > 0 ? Percent(perPortion / price.Value) : (decimal?)null;
-        var missing = lines.Where(l => l.ApsPerUnit is null).Select(l => l.Ingredient).ToList();
+        // What has no price under it: an ingredient's own, or one inside a prep item costed by its recipe.
+        var missing = (recipe?.Ingredients ?? []).SelectMany(i => data.Costs.Of(i.RawMaterialId).Missing).Distinct().ToList();
         var status = recipe is null ? CostStatus.NoRecipe
             : missing.Count > 0 ? CostStatus.MissingPrices
             : foodCost is null ? CostStatus.NoPrice
@@ -640,16 +659,20 @@ public sealed class CostingService(CostingDbContext db, IBusinessCalendar clock,
         var ids = lines.Select(l => l.PublicId).ToHashSet();
         var movements = (await db.StockMovements.AsNoTracking()
                 .Where(m => m.Reason == StockMovementReason.Sale && m.OccurredAtUtc >= from.AddDays(-1) && m.OccurredAtUtc < to.AddDays(1))
-                .Select(m => new { m.SourceId, m.Quantity, m.UnitCost })
+                .Select(m => new { m.SourceId, m.RawMaterialId, m.Quantity, m.UnitCost })
                 .ToListAsync(cancellationToken))
             .Where(m => ids.Contains(m.SourceId))
             .ToLookup(m => m.SourceId);
 
         // A line sold before its dish had a recipe posted no movements. Once the dish has one, the
         // line is costed as the same sale would be today: the recipes a sale draws on
-        // (StockRequirements), at each material's average cost now.
+        // (StockRequirements), at each material's average cost now, a prep item never made yet by
+        // its own recipe (RecipeCosts). So is a prep item taken off the shelf before its first
+        // batch, at no cost then: the dish is costed by its recipe now.
         var recipes = await db.Recipes.AsNoTracking().Include(r => r.Ingredients).ToListAsync(cancellationToken);
-        var averageCosts = await db.RawMaterials.AsNoTracking().ToDictionaryAsync(m => m.Id, m => m.AverageCost, cancellationToken);
+        var materials = await db.RawMaterials.AsNoTracking().ToDictionaryAsync(m => m.Id, cancellationToken);
+        var costs = new RecipeCosts(materials, await db.PrepRecipes.AsNoTracking().Include(r => r.Ingredients).ToListAsync(cancellationToken));
+        bool IsPrep(Guid id) => materials.GetValueOrDefault(id)?.IsPrepItem == true;
 
         var menu = await db.MenuItems.AsNoTracking().IgnoreQueryFilters()
             .Select(m => new { m.Id, m.NameAr, m.Category })
@@ -664,13 +687,19 @@ public sealed class CostingService(CostingDbContext db, IBusinessCalendar clock,
                 : l.VariantId is { } v ? $"{item.NameAr} ({variantNamesAr.GetValueOrDefault(v) ?? l.VariantName})" : item.NameAr;
             var name = l.VariantName is null ? l.MenuItemName : $"{l.MenuItemName} ({l.VariantName})";
             if (posted.Count > 0)
+            {
+                decimal? UnitCost(Guid material, decimal? atSale) => atSale ?? (IsPrep(material) ? costs.Of(material).PerUnit : null);
+                var costedNow = posted.Any(m => m.UnitCost is null && IsPrep(m.RawMaterialId));
                 return new SoldLine(l.MenuItemId, l.VariantId, name, nameAr, item?.Category ?? string.Empty, l.Quantity, l.LineTotal,
-                    posted.Sum(m => -m.Quantity * (m.UnitCost ?? 0)) * l.PostedShare, true, posted.Any(m => m.UnitCost is null), false);
+                    posted.Sum(m => -m.Quantity * (UnitCost(m.RawMaterialId, m.UnitCost) ?? 0)) * l.PostedShare, true,
+                    posted.Any(m => UnitCost(m.RawMaterialId, m.UnitCost) is null || (m.UnitCost is null && costs.Of(m.RawMaterialId).Missing.Count > 0)),
+                    costedNow);
+            }
 
             var needs = StockRequirements.For(new SoldItem(l.MenuItemId, l.VariantId, l.AddOnIds, l.Quantity), recipes);
             return new SoldLine(l.MenuItemId, l.VariantId, name, nameAr, item?.Category ?? string.Empty, l.Quantity, l.LineTotal,
-                needs.Sum(n => n.Value * (averageCosts.GetValueOrDefault(n.Key) ?? 0)), needs.Count > 0,
-                needs.Keys.Any(id => averageCosts.GetValueOrDefault(id) is null), needs.Count > 0);
+                needs.Sum(n => n.Value * (costs.Of(n.Key).PerUnit ?? 0)), needs.Count > 0,
+                needs.Keys.Any(id => costs.Of(id).Missing.Count > 0), needs.Count > 0);
         }).ToList();
     }
 

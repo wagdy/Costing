@@ -758,6 +758,82 @@ public class CostingTests
         Assert.Equal(["Dough crumb", "Pizza dough"], (await node.Send(new GetPrepItemsQuery())).Select(p => p.Name));
     }
 
+    // A prep item never made yet: a dish made with it is costed by the prep item's own recipe
+    // today, on its card, on the materials list a recipe card's editor costs from, and in the
+    // month's theoretical cost for one sold before the first batch. Once a batch is made, at what
+    // the batches cost. What has no price inside it is named through it.
+    [Fact]
+    public async Task A_prep_item_never_made_is_costed_by_its_recipe_until_its_first_batch()
+    {
+        await using var node = await TestSystem.StartAsync();
+        Assert.True(await MenuSynced(node));
+        var ct = TestContext.Current.CancellationToken;
+        var flour = (await node.Send(new CreateRawMaterialCommand("Flour", UnitOfMeasure.Gram))).Id;
+        var butter = (await node.Send(new CreateRawMaterialCommand("Butter", UnitOfMeasure.Gram))).Id;
+        var cream = (await node.Send(new CreateRawMaterialCommand("Cream", UnitOfMeasure.Millilitre))).Id;
+        // 20 a kg of flour, 200 a kg of butter; the cream not priced yet.
+        await node.Send(new ReceivePurchaseCommand(Guid.NewGuid(), [new(flour, 20_000, 400), new(butter, 5_000, 1_000)]));
+
+        // White sauce: a 2 kg batch, 4 of flour and 40 of butter, so 22 a kg by its recipe. Never made.
+        var sauce = await node.Send(new SavePrepItemCommand(null, "White sauce", UnitOfMeasure.Gram, 2_000, [new(flour, 200), new(butter, 200)],
+            DisplayUnit: "kg", DisplayUnitSize: 1000));
+        Assert.Equal((22m, (decimal?)null), (sauce.StandardCostPerDisplayUnit, sauce.AverageCostPerDisplayUnit));
+        // An Alfredo base made with it and the cream: costed by both recipes, the cream named.
+        var alfredo = await node.Send(new SavePrepItemCommand(null, "Alfredo base", UnitOfMeasure.Gram, 1_100, [new(sauce.Id, 1_000), new(cream, 100)],
+            DisplayUnit: "kg", DisplayUnitSize: 1000));
+        Assert.Equal((22m, 20m), (alfredo.StandardBatchCost!.Value, alfredo.StandardCostPerDisplayUnit!.Value));
+        Assert.Equal(["Cream"], alfredo.MissingPrices);
+        Assert.True(alfredo.Ingredients.Single(i => i.Name == "White sauce").CostedByRecipe);
+
+        // A burger with 250 g of white sauce: 5.50, nothing missing; the cheese add-on with the Alfredo base.
+        await node.Send(new SetRecipeCommand(RecipeTargetKind.MenuItem, TestMenu.Burger, null, [new(sauce.Id, 250)]));
+        await node.Send(new SetRecipeCommand(RecipeTargetKind.AddOn, TestMenu.Cheese, null, [new(alfredo.Id, 110)]));
+        using (var scope = node.Scope())
+        {
+            var costing = node.Service<CostingService>(scope);
+            var cards = await costing.GetMenuCostsAsync(ct);
+            var burger = cards.Single(c => c.TargetKind == RecipeTargetKind.MenuItem && c.CatalogItemId == TestMenu.Burger && c.VariantId is null);
+            var line = burger.Lines.Single();
+            Assert.Equal(((decimal?)22m, (decimal?)5.5m, true), (line.ApsPerUnit, line.RecipeCost, line.CostedByRecipe));
+            Assert.Equal((5.5m, 0), (burger.CostPerPortion, burger.MissingPrices.Count));
+            Assert.NotEqual(CostStatus.MissingPrices, burger.Status);
+            var cheese = cards.Single(c => c.TargetKind == RecipeTargetKind.AddOn && c.CatalogItemId == TestMenu.Cheese);
+            Assert.Equal(["Alfredo base: Cream"], cheese.MissingPrices);
+            Assert.Equal((CostStatus.MissingPrices, 2.2m), (cheese.Status, cheese.IngredientCostPerPortion));
+
+            // The materials list a card's editor costs from: no average yet, the recipe's instead.
+            var listed = (await costing.GetMaterialsAsync(ct)).Single(m => m.Id == sauce.Id);
+            Assert.Equal(((decimal?)null, (decimal?)0.022m, true), (listed.CostPerUnit, listed.RecipeCostPerUnit, listed.CostedByRecipe));
+        }
+
+        // Two burgers sold before the first batch: the sauce leaves the shelf at no cost, and the
+        // month's theoretical cost takes it at its recipe's now.
+        var order = await node.Send(new OpenOrderCommand(OrderType.DineIn, TableNumber: "W1"));
+        await node.Send(new AddOrderItemCommand(order.PublicId, TestMenu.Burger, 2));
+        await node.Send(new SendToKitchenCommand(order.PublicId));
+        await node.Send(new CheckoutCommand(order.PublicId, PaymentMethod.Cash));
+        Assert.True(await TestSystem.WaitFor(() => node.Db(db => db.StockMovements.AnyAsync(m => m.Reason == StockMovementReason.Sale && m.RawMaterialId == sauce.Id))));
+        Assert.Null((await node.Db(db => db.StockMovements.SingleAsync(m => m.Reason == StockMovementReason.Sale && m.RawMaterialId == sauce.Id))).UnitCost);
+        using (var scope = node.Scope())
+        {
+            var today = node.Service<IBusinessCalendar>(scope).BusinessDateOf(DateTime.UtcNow);
+            var row = Assert.Single((await node.Service<CostingService>(scope).GetTheoreticalCostAsync(today.Year, today.Month, ct)).Rows, r => r.MenuItemId == TestMenu.Burger);
+            Assert.Equal((11m, 5.5m, 2), (row.TheoreticalCost, row.RecipeCostPerUnit, row.QuantityCostedNow));
+            Assert.NotEqual(CostStatus.MissingPrices, row.Status);
+        }
+
+        // The first batch: 2 kg planned, 1.6 kg came out, so 27.50 a kg. What the batches cost now rules.
+        await node.Send(new MakeProductionOrderCommand(Guid.NewGuid(), sauce.Id, 2_000, 1_600, null, "Omar"));
+        using (var scope = node.Scope())
+        {
+            var costing = node.Service<CostingService>(scope);
+            var burger = (await costing.GetMenuCostsAsync(ct)).Single(c => c.TargetKind == RecipeTargetKind.MenuItem && c.CatalogItemId == TestMenu.Burger && c.VariantId is null);
+            Assert.Equal(((decimal?)27.5m, false, 6.88m), (burger.Lines.Single().ApsPerUnit, burger.Lines.Single().CostedByRecipe, burger.CostPerPortion));
+            var listed = (await costing.GetMaterialsAsync(ct)).Single(m => m.Id == sauce.Id);
+            Assert.Equal((false, listed.CostPerUnit), (listed.CostedByRecipe, listed.RecipeCostPerUnit));
+        }
+    }
+
     // A till that took deliveries before invoices were kept: on the update, each is filed as the
     // posted invoice it was, in the material's own unit and at what it was booked at.
 

@@ -160,7 +160,7 @@ internal sealed class ImportPrepRecipesHandler(
 
         var created = new List<ImportedSheetItem>();
         var updated = new List<UpdatedSheetItem>();
-        var costed = new List<CostedSheetItem>();
+        var toCost = new List<(Plan Plan, decimal Batch, Dictionary<Guid, RawMaterial> Used, List<PrepIngredientEntry> Entries, bool Requested)>();
         var unchanged = 0;
         var requested = 0;
         var made = new HashSet<Guid>();
@@ -288,9 +288,12 @@ internal sealed class ImportPrepRecipesHandler(
                 continue;
             }
 
-            costed.Add(Cost(plan, batch, quantities, used, entries, !request.CanApprove));
+            toCost.Add((plan, batch, used, entries, !request.CanApprove));
         }
 
+        // Costed once all are saved: one made with another new one on the sheet, by that one's recipe.
+        var costs = new RecipeCosts((await materials.GetAllAsync(cancellationToken)).ToDictionary(m => m.Id), await recipes.GetAllAsync(cancellationToken));
+        var costed = toCost.Select(c => Cost(c.Plan, c.Batch, c.Used, c.Entries, c.Requested, costs)).ToList();
         return new RecipeImportResult(created, updated, unchanged, skipped.OrderBy(s => s.Row).ToList(), added, costed, requested);
     }
 
@@ -437,14 +440,18 @@ internal sealed class ImportPrepRecipesHandler(
     }
 
     // What one batch costs now, and one kg, litre or piece of it: each ingredient as purchased at
-    // its average cost.
+    // its average cost, a prep item never made yet by its own recipe.
     private static CostedSheetItem Cost(
-        Plan plan, decimal batch, Dictionary<Guid, decimal> quantities, Dictionary<Guid, RawMaterial> used, List<PrepIngredientEntry> entries, bool requested)
+        Plan plan, decimal batch, Dictionary<Guid, RawMaterial> used, List<PrepIngredientEntry> entries, bool requested, RecipeCosts costs)
     {
-        var missing = quantities.Keys.Where(id => used[id].AverageCost is null).Select(id => used[id].Name).ToList();
-        var cost = entries.Sum(e => e.Quantity * 100 / (e.YieldPercent ?? used[e.RawMaterialId].DefaultYieldPercent) * (used[e.RawMaterialId].AverageCost ?? 0));
+        // One not saved (a new prep item asked of a manager) has no price yet, by its name.
+        var missing = entries
+            .SelectMany(e => costs.Of(e.RawMaterialId) is { PerUnit: null, Missing.Count: 0 } ? [used[e.RawMaterialId].Name] : costs.Of(e.RawMaterialId).Missing)
+            .Distinct()
+            .ToList();
+        var cost = entries.Sum(e => e.Quantity * 100 / (e.YieldPercent ?? used[e.RawMaterialId].DefaultYieldPercent) * (costs.Of(e.RawMaterialId).PerUnit ?? 0));
         return new CostedSheetItem(
-            plan.Row, plan.Name, quantities.Count, SheetNumbers.Money(cost), SheetNumbers.Money(cost / batch * SheetUnits.Factor(plan.Unit)),
+            plan.Row, plan.Name, entries.Count, SheetNumbers.Money(cost), SheetNumbers.Money(cost / batch * SheetUnits.Factor(plan.Unit)),
             SheetUnits.Name(plan.Unit), missing, plan.Notes, requested);
     }
 }
