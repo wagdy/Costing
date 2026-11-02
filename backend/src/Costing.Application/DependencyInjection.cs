@@ -10,6 +10,7 @@ public static class DependencyInjection
         services.AddMediatR(config => config.RegisterServicesFromAssembly(typeof(DependencyInjection).Assembly));
         services.AddScoped<Sales.SaleStockPoster>();
         services.AddScoped<Sales.SaleWriter>();
+        services.AddScoped<Sales.DailySalesWriter>();
         services.AddScoped<Approvals.DeletionTargets>();
         services.AddScoped<Production.PrepItemWriter>();
         services.AddScoped<Production.ProductionWriter>();

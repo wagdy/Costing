@@ -118,7 +118,10 @@ import { Treasury, entryTax } from './financials';
                 <td>
                   <span class="kind" [class]="e.kind">{{ kinds[e.kind].en }}</span> {{ e.description }}
                   @if (entryTax(e); as t) {
-                    <div class="muted small">Tax in it at {{ t.percent }}%: {{ t.tax | money }} · {{ t.net | money }} before tax</div>
+                    <div class="muted small">
+                      Cash {{ t.cash | money }}{{ t.card ? ' · card ' : '' }}{{ t.card ? (t.card | money) : '' }} · tax {{ t.tax | money
+                      }}{{ t.percent !== null ? ' at ' + t.percent + '%' : '' }} · net sales {{ t.net | money }}
+                    </div>
                   }
                   @if (e.notes && !e.reversalOf) {
                     <div class="muted small">{{ e.notes }}</div>

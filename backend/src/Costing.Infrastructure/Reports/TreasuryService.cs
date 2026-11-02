@@ -39,8 +39,11 @@ public sealed record SafeEntryRow(
     bool IncludesTax = false,
     decimal? TaxPercent = null,
     decimal Tax = 0,
-    // A day's takings: their gross, as entered; In is what of it reached the safe.
-    decimal? Gross = null);
+    // A day's takings: their cash, as entered; In is what of it reached the safe. Their card
+    // takings, settled to the bank, and the day's voids and refunds, said.
+    decimal? Gross = null,
+    decimal Card = 0,
+    decimal Voids = 0);
 
 // How a month's opening balance came about: carried over from the month before (رصيد مرحل), the
 // treasury's own opening entry, made this month, or none yet.
@@ -88,10 +91,16 @@ public sealed record FundingReport(
 // (gross), what was paid straight out of them, what of them went into the safe, and what is left:
 // the till's cash not entered as takings (below zero, more was entered than the till took). Only
 // from the treasury's opening on.
-public sealed record DayRevenue(DateOnly Date, decimal CashSales, decimal Entered, decimal PaidOut, decimal Transferred, decimal Left);
+// One business day's takings as its Z report gave them: the cash and the card, the tax collected
+// in them, and so the net sales (Cash + Card − Tax); the voids, said; what was paid straight out of
+// the cash, and what of it is in the safe. Entered: the takings are; HasSales: the day's sales are.
+public sealed record DayRevenue(
+    DateOnly Date, decimal Cash, decimal Card, decimal Tax, decimal NetSales, decimal Voids, decimal PaidOut, decimal Transferred, bool Entered,
+    bool HasSales);
 
 public sealed record DayRevenueReport(
-    DateOnly From, DateOnly To, decimal CashSales, decimal Entered, decimal PaidOut, decimal Transferred, decimal Left, IReadOnlyList<DayRevenue> Days);
+    DateOnly From, DateOnly To, decimal Cash, decimal Card, decimal Tax, decimal NetSales, decimal Voids, decimal PaidOut, decimal Transferred,
+    IReadOnlyList<DayRevenue> Days);
 
 // Each day's takings as they were spent (يومية الإيراد): the gross entered for them (Gross), the
 // invoices paid straight out of them (Deductions), and what is left of them in the safe
@@ -169,28 +178,20 @@ public sealed record SaveFinancialSettingsRequest(decimal ServicePercent, decima
 
 // One business day of the reconciliation (مطابقة الإيرادات), or the period's total (no Date).
 //
-// The cash: the day's takings as entered, gross, of which some was paid straight out (PaidOut)
-// and the rest went into the safe; the tax in them; and so the cash before tax (A, NetCash).
+// The takings (A): the day's cash and card as its Z report gave them, less the tax collected in
+// them: its net sales. The sales (B): every item of the day's sales summary at its menu price,
+// before tax (a bill entered as printed: what it charged before tax, less what was handed back).
 //
-// The sales: every item sold, at its price (B, ItemSales); less promo discounts and the points
-// bills were paid with, plus delivery fees, less money handed back, all before tax; less what was
-// paid by card or online. What is left is the cash the sales should have brought in (ExpectedCash).
-//
-// Difference: A less the expected cash. Below zero, cash is missing for items sold; above it,
-// cash came in for items that were not rung up.
+// Difference: A less B. Below zero, the takings fall short of what was sold at the menu's prices
+// (discounts, staff meals, cash missing); above it, money came in for items not entered.
 public sealed record ReconciliationDay(
     DateOnly? Date,
-    decimal TakingsEntered,
-    decimal PaidOut,
+    decimal Cash,
+    decimal Card,
     decimal Tax,
-    decimal NetCash,
+    decimal NetSales,
+    decimal Voids,
     decimal ItemSales,
-    decimal Discounts,
-    decimal Points,
-    decimal DeliveryFees,
-    decimal Refunds,
-    decimal CardAndOnline,
-    decimal ExpectedCash,
     decimal Difference);
 
 public sealed record ReconciliationReport(DateOnly From, DateOnly To, decimal? TaxPercent, ReconciliationDay Total, IReadOnlyList<ReconciliationDay> Days);
@@ -284,30 +285,37 @@ public sealed class TreasuryService(CostingDbContext db, IBusinessCalendar clock
         Period(from, to);
         from = await FromOpeningAsync(from, cancellationToken);
         if (from > to)
-            return new DayRevenueReport(from, to, 0, 0, 0, 0, 0, []);
-        var sales = await CashSalesAsync(from, to, cancellationToken);
+            return new DayRevenueReport(from, to, 0, 0, 0, 0, 0, 0, 0, []);
+        var sold = (await db.SalesReceipts.AsNoTracking()
+                .Where(r => r.VoidedAtUtc == null && r.BusinessDate >= from && r.BusinessDate <= to)
+                .Select(r => r.BusinessDate)
+                .Distinct()
+                .ToListAsync(cancellationToken))
+            .ToHashSet();
         var moved = await db.SafeTransactions.AsNoTracking()
             .Where(t => t.RevenueDate != null && t.RevenueDate >= from && t.RevenueDate <= to)
-            .Select(t => new { t.Kind, t.Fund, t.Amount, t.GrossAmount, RevenueDate = t.RevenueDate!.Value })
             .ToListAsync(cancellationToken);
 
         // Voids net out with what they undo, as they share its day.
-        var days = sales.Keys.Concat(moved.Select(m => m.RevenueDate)).Distinct().OrderByDescending(d => d)
+        var days = sold.Concat(moved.Select(m => m.RevenueDate!.Value)).Distinct().OrderByDescending(d => d)
             .Select(day =>
             {
-                var cash = sales.GetValueOrDefault(day);
                 var ofDay = moved.Where(m => m.RevenueDate == day).ToList();
-                var entered = ofDay.Where(m => m.Kind == SafeTransactionKind.RevenueTransfer).Sum(m => m.GrossAmount ?? m.Amount);
+                var takings = ofDay.Where(m => m.Kind == SafeTransactionKind.RevenueTransfer).ToList();
+                var (cash, card, tax) = (takings.Sum(m => m.GrossAmount ?? m.Amount), takings.Sum(m => m.CardAmount), takings.Sum(m => m.TaxAmount));
                 var paid = -ofDay.Where(m => SafeTransaction.PaidOutKinds.Contains(m.Kind)).Sum(m => m.Amount);
-                // What of the day's takings is in the safe: the takings less what the drawer had
-                // paid by then, less what was paid out of the safe for them since.
+                // What of the day's cash is in the safe: the cash less what the drawer had paid by
+                // then, less what was paid out of the safe for it since.
                 var transferred = ofDay.Where(m => m.Fund == CashFund.Safe).Sum(m => m.Amount);
-                return new DayRevenue(day, Money(cash), Money(entered), Money(paid), Money(transferred), Money(cash - entered));
+                return new DayRevenue(
+                    day, Money(cash), Money(card), Money(tax), Money(cash + card - tax), Money(takings.Sum(m => m.VoidsAmount)), Money(paid),
+                    Money(transferred), takings.Any(m => !m.IsReversal && !m.IsVoided), sold.Contains(day));
             })
+            .Where(d => d.Entered || d.HasSales || d.PaidOut != 0)
             .ToList();
         return new DayRevenueReport(
-            from, to, Money(days.Sum(d => d.CashSales)), Money(days.Sum(d => d.Entered)), Money(days.Sum(d => d.PaidOut)),
-            Money(days.Sum(d => d.Transferred)), Money(days.Sum(d => d.Left)), days);
+            from, to, Money(days.Sum(d => d.Cash)), Money(days.Sum(d => d.Card)), Money(days.Sum(d => d.Tax)), Money(days.Sum(d => d.NetSales)),
+            Money(days.Sum(d => d.Voids)), Money(days.Sum(d => d.PaidOut)), Money(days.Sum(d => d.Transferred)), days);
     }
 
     // A day's takings before they are entered: the Takings in screen shows what will be taken off.
@@ -320,7 +328,7 @@ public sealed class TreasuryService(CostingDbContext db, IBusinessCalendar clock
         var drawer = entries.Where(t => t.Fund == CashFund.DayRevenue).ToList();
         var standing = drawer.Where(t => !t.IsReversal && !t.IsVoided).ToList();
         return new TakingsPreview(
-            day, entered is null ? null : Money(entered.GrossAmount ?? entered.Amount), Money(-drawer.Sum(t => t.Amount)),
+            day, entered is null ? null : Money(entered.TakingsTotal), Money(-drawer.Sum(t => t.Amount)),
             standing.Count(t => t.Kind == SafeTransactionKind.InvoicePayment), standing.Count(t => t.Kind == SafeTransactionKind.SupplierPayment),
             standing.Count(t => t.Kind is SafeTransactionKind.EmployeeAdvance or SafeTransactionKind.SalaryPayment));
     }
@@ -401,19 +409,6 @@ public sealed class TreasuryService(CostingDbContext db, IBusinessCalendar clock
             from, to, Money(days.Sum(d => d.Gross)), Money(days.Sum(d => d.Deductions)), Money(days.Sum(d => d.NetToSafe)), days);
     }
 
-    // What each business day took in cash: its sales paid in cash, as charged (VAT in, points off),
-    // less what was handed back.
-    public async Task<IReadOnlyDictionary<DateOnly, decimal>> CashSalesAsync(DateOnly from, DateOnly to, CancellationToken cancellationToken)
-    {
-        var (fromUtc, _) = clock.Bounds(from);
-        var (_, toUtc) = clock.Bounds(to);
-        var cash = await db.SalesReceipts.AsNoTracking()
-            .Where(r => r.VoidedAtUtc == null && r.PaymentMethod == PaymentMethod.Cash && r.SoldAtUtc >= fromUtc && r.SoldAtUtc < toUtc)
-            .Select(r => new { r.SoldAtUtc, r.TotalAmount, r.RefundedAmount })
-            .ToListAsync(cancellationToken);
-        return cash.GroupBy(r => clock.BusinessDateOf(r.SoldAtUtc)).ToDictionary(g => g.Key, g => g.Sum(r => r.TotalAmount - r.RefundedAmount));
-    }
-
     // The first day of a period the treasury has kept: its opening day, when that is later.
     private async Task<DateOnly> FromOpeningAsync(DateOnly from, CancellationToken cancellationToken)
     {
@@ -439,7 +434,7 @@ public sealed class TreasuryService(CostingDbContext db, IBusinessCalendar clock
 
         var cash = await db.SafeTransactions.AsNoTracking()
             .Where(t => t.RevenueDate != null && t.RevenueDate >= from && t.RevenueDate <= to
-                && (t.Kind == SafeTransactionKind.RevenueTransfer || SafeTransaction.PaidOutKinds.Contains(t.Kind)))
+                && t.Kind == SafeTransactionKind.RevenueTransfer)
             .ToListAsync(cancellationToken);
         var (fromUtc, _) = clock.Bounds(from);
         var (_, toUtc) = clock.Bounds(to);
@@ -448,47 +443,32 @@ public sealed class TreasuryService(CostingDbContext db, IBusinessCalendar clock
         // A day whose only entries were voided, with nothing sold, has nothing to reconcile.
         var days = cash.Select(t => t.RevenueDate!.Value).Concat(sales.Select(g => g.Key)).Distinct().OrderByDescending(d => d)
             .Select(day => Reconcile(day, cash.Where(t => t.RevenueDate == day).ToList(), sales[day].ToList()))
-            .Where(d => d.TakingsEntered != 0 || d.PaidOut != 0 || sales[d.Date!.Value].Any())
+            .Where(d => d.Cash != 0 || d.Card != 0 || sales[d.Date!.Value].Any())
             .ToList();
         var total = new ReconciliationDay(
-            null, Money(days.Sum(d => d.TakingsEntered)), Money(days.Sum(d => d.PaidOut)), Money(days.Sum(d => d.Tax)),
-            Money(days.Sum(d => d.NetCash)), Money(days.Sum(d => d.ItemSales)), Money(days.Sum(d => d.Discounts)), Money(days.Sum(d => d.Points)),
-            Money(days.Sum(d => d.DeliveryFees)), Money(days.Sum(d => d.Refunds)), Money(days.Sum(d => d.CardAndOnline)),
-            Money(days.Sum(d => d.ExpectedCash)), Money(days.Sum(d => d.Difference)));
+            null, Money(days.Sum(d => d.Cash)), Money(days.Sum(d => d.Card)), Money(days.Sum(d => d.Tax)), Money(days.Sum(d => d.NetSales)),
+            Money(days.Sum(d => d.Voids)), Money(days.Sum(d => d.ItemSales)), Money(days.Sum(d => d.Difference)));
         return new ReconciliationReport(from, to, taxPercent, total, days);
     }
 
-    private static ReconciliationDay Reconcile(DateOnly? day, IReadOnlyList<SafeTransaction> cash, IReadOnlyList<SaleOrder> sales)
+    private static ReconciliationDay Reconcile(DateOnly? day, IReadOnlyList<SafeTransaction> takings, IReadOnlyList<SaleOrder> sales)
     {
-        // The cash, voided entries netting out with their reversals: the takings as entered, gross,
-        // what was paid straight out of them, and the tax in the gross.
-        var takings = cash.Where(t => t.Kind == SafeTransactionKind.RevenueTransfer).ToList();
-        var entered = takings.Sum(t => t.GrossAmount ?? t.Amount);
-        var paidOut = -cash.Where(t => SafeTransaction.PaidOutKinds.Contains(t.Kind)).Sum(t => t.Amount);
-        var tax = takings.Sum(t => t.TaxAmount);
-        var netCash = entered - tax;
+        // The takings, a voided entry netting out with its reversal: cash and card, less the tax
+        // collected in them.
+        var (cash, card, tax) = (takings.Sum(t => t.GrossAmount ?? t.Amount), takings.Sum(t => t.CardAmount), takings.Sum(t => t.TaxAmount));
 
-        // The sales, before tax. A bill's money before tax is its items, less its promo discount and
-        // points, plus its delivery fee; a refund is taken back in the same proportion.
-        decimal items = 0, discounts = 0, points = 0, fees = 0, refunds = 0, cardAndOnline = 0, expected = 0;
-        foreach (var sale in sales)
+        // The sales before tax: a day's summary at the menu's prices; a bill entered as printed,
+        // what it charged before tax less what was handed back, in the same proportion.
+        var items = sales.Sum(sale =>
         {
             var beforeTax = sale.Charged - sale.Tax;
             var refund = sale.Charged > 0 ? Math.Round(sale.Refunded * beforeTax / sale.Charged, 2, MidpointRounding.AwayFromZero) : 0;
-            items += sale.BilledSubtotal;
-            discounts += sale.DiscountAmount;
-            points += sale.Points;
-            fees += beforeTax - sale.BilledSubtotal + sale.DiscountAmount + sale.Points;
-            refunds += refund;
-            if (sale.PaymentMethod == PaymentMethod.Cash)
-                expected += beforeTax - refund;
-            else
-                cardAndOnline += beforeTax - refund;
-        }
+            return beforeTax - refund;
+        });
 
+        var net = cash + card - tax;
         return new ReconciliationDay(
-            day, Money(entered), Money(paidOut), Money(tax), Money(netCash), Money(items), Money(discounts), Money(points), Money(fees),
-            Money(refunds), Money(cardAndOnline), Money(expected), Money(netCash - expected));
+            day, Money(cash), Money(card), Money(tax), Money(net), Money(takings.Sum(t => t.VoidsAmount)), Money(items), Money(net - items));
     }
 
     // ---- Tax and service ----
@@ -697,7 +677,8 @@ public sealed class TreasuryService(CostingDbContext db, IBusinessCalendar clock
             SafeTransactionKind.OpeningBalance => $"Opening balance · {SourceName(t.Source)}",
             SafeTransactionKind.Funding => $"Funding · {SourceName(t.Source)}",
             SafeTransactionKind.RevenueTransfer => $"Takings of {t.RevenueDate!.Value.ToString("d MMM", Invariant)}" +
-                (t.PaidOut != 0 ? $" · {Pounds(Math.Abs(t.GrossAmount!.Value))} gross, less {Pounds(Math.Abs(t.PaidOut))} paid out of them" : ""),
+                (t.PaidOut != 0 ? $" · {Pounds(Math.Abs(t.GrossAmount!.Value))} cash, less {Pounds(Math.Abs(t.PaidOut))} paid out of it" : "") +
+                (t.CardAmount != 0 ? $" · {Pounds(Math.Abs(t.CardAmount))} card, to the bank" : ""),
             SafeTransactionKind.ExpenseVoucher => t.ExpenseItemId is { } e ? names.Expenses.GetValueOrDefault(e) ?? "A removed expense" : "An expense",
             SafeTransactionKind.SupplierPayment => $"Payment to {Supplier()}" +
                 (t.RevenueDate is { } paidFrom ? $" · from the takings of {paidFrom.ToString("d MMM", Invariant)}" : ""),
@@ -711,7 +692,8 @@ public sealed class TreasuryService(CostingDbContext db, IBusinessCalendar clock
         return new SafeEntryRow(
             t.Id, t.Kind, t.Fund, t.BusinessDate, t.IsReversal ? $"Voided: {what}" : what, t.Amount > 0 ? t.Amount : 0, t.Amount < 0 ? -t.Amount : 0,
             balance is { } b ? Money(b) : null, t.Source, t.RevenueDate, t.SupplierId, t.PurchaseInvoiceId, t.ExpenseItemId, t.Notes, t.RecordedBy,
-            t.RecordedAtUtc, t.ApprovedBy, t.ReversalOf, t.VoidedAtUtc, t.VoidedBy, t.IncludesTax, t.TaxPercent, t.TaxAmount, t.GrossAmount);
+            t.RecordedAtUtc, t.ApprovedBy, t.ReversalOf, t.VoidedAtUtc, t.VoidedBy, t.IncludesTax, t.TaxPercent, t.TaxAmount, t.GrossAmount,
+            t.CardAmount, t.VoidsAmount);
     }
 
     private static string Pounds(decimal value) => Costing.Application.Common.CompanyMoney.Text(value);

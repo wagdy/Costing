@@ -160,4 +160,25 @@ describe('the KPIs', () => {
       ['Insurance · Other fixed costs', 'L.E 600.00'],
     ]);
   });
+
+  it('takes revenue from the takings as net sales, the tax collected shown apart and never in it', async () => {
+    kpis.mockReturnValue(
+      of({
+        ...report,
+        statement: { ...report.statement, cashTakings: 400, cardTakings: 78.8, grossTakings: 478.8, taxCollected: 58.8, voids: 25, takingsDays: 1 },
+      }),
+    );
+    const { fixture } = await render();
+    const el = fixture.nativeElement as HTMLElement;
+    const cells = (label: string) =>
+      [...[...el.querySelectorAll('.statement tr')].find((r) => r.querySelector('td')!.textContent!.includes(label))!.querySelectorAll('td')].map(
+        (td) => td.textContent!.replace(/\s+/g, ' ').trim(),
+      );
+
+    expect(cells('Gross takings').slice(0, 2)).toEqual(['Gross takings · إجمالي الإيراد cash L.E 400.00 + card L.E 78.80', 'L.E 478.80']);
+    expect(cells('Less tax collected').slice(0, 2)).toEqual(['Less tax collected · الضريبة المحصلة owed, not revenue', '(L.E 58.80)']);
+    expect(cells('Revenue (net sales)')).toEqual(['Revenue (net sales) · صافي المبيعات', 'L.E 420.00', '100%']);
+    expect(el.querySelector('.report-head')!.textContent!.replace(/\s+/g, ' ')).toContain('1 day of takings entered');
+    expect(el.querySelector('.note.small')!.textContent).toContain('Voids and refunds on the days: L.E 25.00');
+  });
 });

@@ -60,6 +60,10 @@ internal sealed class SalesReceiptRepository(CostingDbContext db) : ISalesReceip
             .OrderByDescending(r => r.SoldAtUtc).ThenByDescending(r => r.EnteredAtUtc)
             .ToListAsync(cancellationToken);
 
+    public Task<SalesReceipt?> GetDailySummaryAsync(DateOnly date, CancellationToken cancellationToken = default) =>
+        db.SalesReceipts.FirstOrDefaultAsync(
+            r => r.BusinessDate == date && r.Source == SalesSource.DailySummary && r.VoidedAtUtc == null, cancellationToken);
+
     public async Task<IReadOnlySet<string>> GetReferencesAsync(IReadOnlyCollection<string> references, CancellationToken cancellationToken = default)
     {
         if (references.Count == 0)

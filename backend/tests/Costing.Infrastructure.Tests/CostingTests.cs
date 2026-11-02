@@ -289,6 +289,16 @@ public class CostingTests
         var kpis = node.Service<KpiService>(scope);
         var today = node.Service<IBusinessCalendar>(scope).BusinessDateOf(DateTime.UtcNow);
 
+        // With no takings entered, there is no revenue to measure against.
+        Assert.Equal("Enter the month's takings on Financials. · أدخل إيراد الشهر في الماليات.",
+            (await kpis.GetAsync(today.Year, today.Month, ct)).Kpis.Single(k => k.Key == "FoodCost").Missing);
+
+        // The day's Z report: 478.80 taken, 400 cash and 78.80 by card, 58.80 of it tax collected.
+        await node.Send(new RecordSafeVoucherCommand(
+            Guid.NewGuid(), new SafeVoucher(Guid.NewGuid(), SafeTransactionKind.RevenueTransfer, 400, today, RevenueDate: today,
+                CardAmount: 78.80m, TaxAmount: 58.80m, VoidsAmount: 25),
+            null, "staff-omar", "Omar", CanApprove: true));
+
         // Before the month's wages are in, what needs them says so rather than showing 0.
         var report = await kpis.GetAsync(today.Year, today.Month, ct);
         var labour = Assert.Single(report.Kpis, k => k.Key == "LabourCost");
@@ -298,18 +308,23 @@ public class CostingTests
         await kpis.SaveExpensesAsync(today.Year, today.Month, new MonthlyExpensesDto(120, 10, 20, 50, 5, 5), "Omar", ct);
         report = await kpis.GetAsync(today.Year, today.Month, ct);
 
-        // Food 3 × 120, drinks 2 × 30. Recipes: 3 burgers × 25, 2 lemonades × 6. Losses: the voided
-        // burger (25) and two stale buns (10).
+        // Revenue: the takings less the tax in them, 420, split as the sales are at the menu's prices
+        // (food 3 × 120, drinks 2 × 30). The tax is owed, not revenue. Recipes: 3 burgers × 25, 2
+        // lemonades × 6. Losses: the voided burger (25) and two stale buns (10).
         var s = report.Statement;
         Assert.Equal((360m, 60m, 420m, 2, 75m, 12m, 25m, 10m, 0m, 122m, 298m, 98m),
             (s.FoodSales, s.BeverageSales, s.Revenue, s.PaidOrders, s.FoodRecipeCost, s.BeverageRecipeCost,
                 s.KitchenWaste, s.Spoilage, s.CountDifferences, s.CostOfSales, s.GrossProfit, s.NetProfit));
+        Assert.Equal((400m, 78.80m, 478.80m, 58.80m, 25m, 1, 420m),
+            (s.CashTakings, s.CardTakings, s.GrossTakings, s.TaxCollected, s.Voids, s.TakingsDays, s.SalesAtMenuPrices));
+        Assert.Equal(s.GrossTakings - s.TaxCollected, s.Revenue);
 
         var byKey = report.Kpis.ToDictionary(k => k.Key);
         Assert.Equal((30.6m, KpiStatus.Healthy), (byKey["FoodCost"].Value, byKey["FoodCost"].Status));
         Assert.Equal((20m, KpiStatus.Healthy), (byKey["BeverageCost"].Value, byKey["BeverageCost"].Status));
         Assert.Equal((28.6m, KpiStatus.Healthy), (byKey["LabourCost"].Value, byKey["LabourCost"].Status));
-        Assert.Equal((210m, KpiStatus.NoRange), (byKey["AverageCheck"].Value, byKey["AverageCheck"].Status));
+        // Sales are entered as each day's totals: there are no bills to average.
+        Assert.Null(byKey["AverageCheck"].Value);
         Assert.Equal(42m, byKey["SalesPerLabourHour"].Value);
         Assert.Equal((71m, KpiStatus.Above), (byKey["GrossProfitMargin"].Value, byKey["GrossProfitMargin"].Status));
         Assert.Equal((23.3m, KpiStatus.Above), (byKey["NetProfitMargin"].Value, byKey["NetProfitMargin"].Status));
@@ -1258,8 +1273,8 @@ public class CostingTests
         var order = await node.Send(new OpenOrderCommand(OrderType.DineIn, TableNumber: "T1"));
         await node.Send(new AddOrderItemCommand(order.PublicId, TestMenu.Burger, 4));
         await node.Send(new CheckoutCommand(order.PublicId, PaymentMethod.Cash));
-        var cash = (await Takings()).CashSales;
-        Assert.True(cash > 0);
+        Assert.True((await Takings()).HasSales);
+        const decimal cash = 500m;
 
         // Tomatoes paid straight from the day's takings: the safe does not move.
         var tomatoes = (await node.Send(new CreateRawMaterialCommand("Tomatoes", UnitOfMeasure.Gram))).Id;
@@ -1269,10 +1284,9 @@ public class CostingTests
         Assert.Equal(InvoicePaymentStatus.Paid, (await node.Send(new PostPurchaseInvoiceCommand(market, "Omar"))).PaymentStatus);
         Assert.Equal((100m, 15_000m), ((await Takings()).PaidOut, await Safe()));
 
-        // The day's takings entered gross, 10 short of what the till took: the 100 paid out of them
-        // stays out, the rest goes into the safe.
+        // The day's cash takings entered: the 100 paid out of them stays out, the rest goes into the safe.
         await Voucher(New(SafeTransactionKind.RevenueTransfer, cash - 10, takings: today));
-        Assert.Equal((cash - 10, cash - 110, 10m), ((await Takings()).Entered, (await Takings()).Transferred, (await Takings()).Left));
+        Assert.Equal((cash - 10, cash - 110, true), ((await Takings()).Cash, (await Takings()).Transferred, (await Takings()).Entered));
         Assert.Equal(15_000m + cash - 110, await Safe());
 
         // Nile Farms: owed 500 from before, then 2,500 on credit, which needs the supplier.
@@ -1451,17 +1465,17 @@ public class CostingTests
         Assert.Equal(("Takings entered", 10_500m, "Omar"), day.Entered.Select(l => (l.Description, l.Amount, l.RecordedBy)).Single());
         Assert.Empty(report.Days[2].Entered);
 
-        // The safe's line, the reconciliation and the day's cash: the gross as entered.
+        // The safe's line, the reconciliation and the day's takings: the cash as entered.
         var line = (await treasury.GetSafeAsync(today.Year, today.Month, ct)).Entries
             .Last(e => e.Kind == SafeTransactionKind.RevenueTransfer && e.RevenueDate == today);
         Assert.Equal(
-            ($"Takings of {today.ToString("d MMM", System.Globalization.CultureInfo.InvariantCulture)} · L.E 10,500.00 gross, less L.E 450.00 paid out of them",
+            ($"Takings of {today.ToString("d MMM", System.Globalization.CultureInfo.InvariantCulture)} · L.E 10,500.00 cash, less L.E 450.00 paid out of it",
                 10_050m, (decimal?)10_500m),
             (line.Description, line.In, line.Gross));
         var reconciled = (await treasury.GetReconciliationAsync(today, today, ct)).Days.Single();
-        Assert.Equal((10_500m, 445m, 10_500m), (reconciled.TakingsEntered, reconciled.PaidOut, reconciled.NetCash));
+        Assert.Equal((10_500m, 0m, 10_500m), (reconciled.Cash, reconciled.Card, reconciled.NetSales));
         var cash = (await treasury.GetDayRevenueAsync(today, today, ct)).Days.Single();
-        Assert.Equal((10_500m, 445m, 10_055m, -10_500m), (cash.Entered, cash.PaidOut, cash.Transferred, cash.Left));
+        Assert.Equal((10_500m, 445m, 10_055m, true), (cash.Cash, cash.PaidOut, cash.Transferred, cash.Entered));
     }
 
     // A day's purchases entered together (يومية المشتريات المجمعة): an invoice for each supplier, each
@@ -2059,11 +2073,11 @@ public class CostingTests
         Assert.Equal((600m, 14_300m), (await Owed(nile), await Safe()));
     }
 
-    // The reconciliation (مطابقة الإيرادات): the day's cash before tax against what its sales, at
-    // their prices before tax, should have brought in as cash.
+    // The reconciliation (مطابقة الإيرادات): each day's net sales, its takings less the tax collected in
+    // them, against its sales summary at the menu's prices.
 
     [Fact]
-    public async Task Each_days_cash_before_tax_is_reconciled_with_the_cash_its_sales_should_bring_in()
+    public async Task Each_days_net_takings_are_reconciled_with_its_sales_at_the_menus_prices()
     {
         await using var node = await TestSystem.StartAsync();
         Assert.True(await MenuSynced(node));
@@ -2071,58 +2085,31 @@ public class CostingTests
         using var scope = node.Scope();
         var treasury = node.Service<TreasuryService>(scope);
         var today = treasury.Today;
-        async Task<Order> Sell(string table, PaymentMethod method, params (int Item, int Quantity)[] items)
-        {
-            var order = await node.Send(new OpenOrderCommand(OrderType.DineIn, TableNumber: table));
-            foreach (var (item, quantity) in items)
-                order = await node.Send(new AddOrderItemCommand(order.PublicId, item, quantity));
-            return await node.Send(new CheckoutCommand(order.PublicId, method));
-        }
-        async Task<SafeTransactionDto> Takings(decimal amount) => (await node.Send(new RecordSafeVoucherCommand(
-            Guid.NewGuid(), new SafeVoucher(Guid.NewGuid(), SafeTransactionKind.RevenueTransfer, amount, today, RevenueDate: today, IncludesTax: true),
-            null, "staff-omar", "Omar", CanApprove: true))).Transaction!;
+        Task<SafeVoucherResultDto> ZReport(decimal cash, decimal card, decimal tax, decimal voids = 0) => node.Send(new RecordSafeVoucherCommand(
+            Guid.NewGuid(), new SafeVoucher(Guid.NewGuid(), SafeTransactionKind.RevenueTransfer, cash, today, RevenueDate: today,
+                CardAmount: card, TaxAmount: tax, VoidsAmount: voids),
+            null, "staff-omar", "Omar", CanApprove: true));
 
-        // Two burgers and two lemonades paid in cash, one lemonade handed back after; a burger by card.
-        var cash = await Sell("R1", PaymentMethod.Cash, (TestMenu.Burger, 2), (TestMenu.Lemonade, 2));
-        cash = await node.Send(new VoidOrderItemCommand(
-            cash.PublicId, cash.OrderItems.Single(i => i.MenuItemId == TestMenu.Lemonade).PublicId, 1, "Spilt"));
-        var card = await Sell("R2", PaymentMethod.Visa, (TestMenu.Burger, 1));
-        Assert.True(cash.RefundedAmount > 0);
+        // The day sold three burgers and two lemonades: 3 × 120 + 2 × 30 at the menu's prices.
+        await node.Send(new Costing.Application.Sales.RecordDailySalesCommand(
+            Guid.NewGuid(), today, [new(TestMenu.Burger, null, 3), new(TestMenu.Lemonade, null, 2)], "Omar"));
 
-        // 100 of the cash paid out for tomatoes; the day's takings entered gross, 10 short, with the
-        // tax in them. A mistaken entry, voided, nets out.
-        var tomatoes = (await node.Send(new CreateRawMaterialCommand("Tomatoes", UnitOfMeasure.Gram))).Id;
-        var market = Guid.NewGuid();
-        await node.Send(new SavePurchaseInvoiceCommand(market, null, null, today, [new(tomatoes, 5, "kg", 1000, 100)], "Omar",
-            PurchasePaymentMethod.DayRevenue, today));
-        await node.Send(new PostPurchaseInvoiceCommand(market, "Omar"));
-        var wrong = await Takings(999);
+        // Its Z report: 456 taken, 300 cash and 156 by card, 56 of it tax; 30 voided. A mistaken
+        // entry, voided, nets out.
+        var wrong = (await ZReport(999, 0, 0)).Transaction!;
         await node.Send(new RequestDeletionCommand(Guid.NewGuid(), ApprovalModule.Treasury, wrong.Id, "Mistyped", "staff-omar", "Omar", CanApprove: true));
-        var gross = cash.TotalAmount - cash.RefundedAmount - 10;
-        var entry = await Takings(gross);
-        Assert.Equal(gross - 100, entry.Amount);
+        await ZReport(300, 156, 56, 30);
 
         var report = await treasury.GetReconciliationAsync(today, today, ct);
         var day = Assert.Single(report.Days);
         Assert.Equal(day with { Date = null }, report.Total);
-        var rate = entry.TaxPercent!.Value;
-        Assert.Equal(rate, report.TaxPercent);
+        // Net sales 400 against 420 sold at the menu's prices: 20 short, a discount or cash missing.
+        Assert.Equal((300m, 156m, 56m, 400m, 30m, 420m, -20m), (day.Cash, day.Card, day.Tax, day.NetSales, day.Voids, day.ItemSales, day.Difference));
 
-        // A: the day's takings as entered, what was paid out of them too, less the tax in them.
-        var tax = SafeTransaction.TaxIn(gross, rate);
-        Assert.Equal((gross, 100m, tax, gross - tax), (day.TakingsEntered, day.PaidOut, day.Tax, day.NetCash));
-
-        // B: every item sold at its price, the lemonade handed back and the card's burger too.
-        Assert.Equal(2 * 120 + 2 * 30 + 120m, day.ItemSales);
-        // Then before tax: the card's bill, and the refund at its bill's own proportion of tax.
-        var refund = Math.Round(cash.RefundedAmount * (cash.TotalAmount - cash.TaxAmount) / cash.TotalAmount, 2, MidpointRounding.AwayFromZero);
-        Assert.Equal((card.TotalAmount - card.TaxAmount, refund), (day.CardAndOnline, day.Refunds));
-        Assert.Equal(cash.TotalAmount - cash.TaxAmount - refund, day.ExpectedCash);
-        Assert.Equal(day.ItemSales - day.Discounts - day.Points + day.DeliveryFees - day.Refunds - day.CardAndOnline, day.ExpectedCash);
-
-        // Short by the 10 not counted, before its tax.
-        Assert.Equal(day.NetCash - day.ExpectedCash, day.Difference);
-        Assert.InRange(day.Difference, -10m, -8m);
+        // The day's takings as the funding page lists them.
+        var takings = (await treasury.GetDayRevenueAsync(today, today, ct)).Days.Single();
+        Assert.Equal((300m, 156m, 56m, 400m, 30m, 300m, true, true),
+            (takings.Cash, takings.Card, takings.Tax, takings.NetSales, takings.Voids, takings.Transferred, takings.Entered, takings.HasSales));
 
         // A day whose only takings were voided, with nothing sold, has nothing to reconcile.
         var yesterday = await node.Send(new RecordSafeVoucherCommand(
@@ -2158,6 +2145,10 @@ public class CostingTests
         using var scope = node.Scope();
         var today = node.Service<IBusinessCalendar>(scope).BusinessDateOf(DateTime.UtcNow);
         await node.Service<KpiService>(scope).SaveExpensesAsync(today.Year, today.Month, new MonthlyExpensesDto(1_000, 160, 200, 500, 50, 100), "Omar", ct);
+        // The day's takings: 480 of net sales, 547.20 with the tax.
+        await node.Send(new RecordSafeVoucherCommand(
+            Guid.NewGuid(), new SafeVoucher(Guid.NewGuid(), SafeTransactionKind.RevenueTransfer, 547.20m, today, RevenueDate: today, TaxAmount: 67.20m),
+            null, "staff-omar", "Omar", CanApprove: true));
         var breakEven = node.Service<BreakEvenService>(scope);
 
         var sheet = await breakEven.GetAsync(today.Year, today.Month, today.Year, today.Month, ct);

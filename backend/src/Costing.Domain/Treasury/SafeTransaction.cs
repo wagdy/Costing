@@ -22,8 +22,9 @@ public enum SafeTransactionKind
     // Money put into the safe from outside the sales: the owners', a loan.
     Funding = 2,
 
-    // A day's cash takings entered (توريد إيراد): the POS's gross for the day, into the safe less
-    // what was paid straight out of them.
+    // A day's takings entered (توريد إيراد) from its Z report: the cash, into the safe less what
+    // was paid straight out of it; the card takings, which never reach the safe; the tax collected
+    // in them, owed rather than earned; and the voids and refunds, said.
     RevenueTransfer = 3,
 
     // A cash expense: a bill, wages, petty cash. On the profit and loss under its expense item.
@@ -73,6 +74,8 @@ public sealed class SafeTransaction : AggregateRoot
 
     private SafeTransaction() { }
 
+    public const int MaxNotesLength = 500;
+
     private SafeTransaction(
         Guid id,
         SafeTransactionKind kind,
@@ -83,8 +86,8 @@ public sealed class SafeTransaction : AggregateRoot
         string recordedBy,
         string? approvedBy)
     {
-        if (notes?.Trim().Length > 300)
-            throw new DomainException("Keep the notes under 300 characters.");
+        if (notes?.Trim().Length > MaxNotesLength)
+            throw new DomainException($"Keep the notes under {MaxNotesLength} characters. · الملاحظات {MaxNotesLength} حرف على الأكثر.");
         Id = id;
         Kind = kind;
         Fund = fund;
@@ -119,19 +122,30 @@ public sealed class SafeTransaction : AggregateRoot
 
     public string? Notes { get; private set; }
 
-    // A day's takings: the POS's gross for the day, as entered (إجمالي الإيراد). Amount is what
-    // reached the safe: the gross less what had been paid straight out of the day's takings by
-    // then (PaidOut). Signed as Amount is; null for every other entry.
+    // A day's takings: the cash of the day, as entered (إيراد الكاش). Amount is what reached the
+    // safe: the cash less what had been paid straight out of the day's takings by then (PaidOut).
+    // Signed as Amount is; null for every other entry.
     public decimal? GrossAmount { get; private set; }
     public decimal PaidOut => GrossAmount is { } gross ? gross - Amount : 0;
 
-    // A day's takings entered as including tax (هل إجمالي الإيراد يشمل الضريبة؟): the rate taken off
-    // and the tax in the gross, signed as it is. NetAmount is the takings before tax, as the
-    // menu's prices are.
+    // A day's takings by card (إيراد الفيزا): settled to the bank, never in the safe.
+    public decimal CardAmount { get; private set; }
+
+    // The tax collected in a day's takings (إجمالي الضريبة المحصلة), signed as they are: owed to the
+    // tax authority, not the restaurant's. As entered from the Z report; or, for takings entered
+    // as including tax at the till's rate (TaxPercent), worked out from it.
     public bool IncludesTax { get; private set; }
     public decimal? TaxPercent { get; private set; }
     public decimal TaxAmount { get; private set; }
-    public decimal NetAmount => (GrossAmount ?? Amount) - TaxAmount;
+
+    // Voided and refunded on the day (قيمة الفويد والمرتجعات): said, not taken off again, as the
+    // cash and card takings are what was collected after them. Why is in the notes.
+    public decimal VoidsAmount { get; private set; }
+
+    // The day's takings, cash and card (إجمالي الإيراد), and its net sales, before tax: the
+    // restaurant's revenue (Gross = Net + Tax).
+    public decimal TakingsTotal => (GrossAmount ?? Amount) + CardAmount;
+    public decimal NetAmount => TakingsTotal - TaxAmount;
 
     public string RecordedBy { get; private set; } = string.Empty;
     public DateTime RecordedAtUtc { get; private set; }
@@ -166,36 +180,51 @@ public sealed class SafeTransaction : AggregateRoot
         Guid id, decimal amount, DateOnly date, FundingSource source, string? notes, string recordedBy, string? approvedBy = null) =>
         new(id, SafeTransactionKind.Funding, CashFund.Safe, Positive(amount), date, notes, recordedBy, approvedBy) { Source = Defined(source) };
 
-    // A day's cash takings entered: gross, the POS's total for the day, which may differ from what
-    // the till says, so a shortfall shows on that day. Into the safe goes the gross less paidOut,
-    // what was paid straight out of the day's takings before they were entered; when that is more
-    // than the gross, the rest comes out of the safe. With taxPercent, the gross includes tax at
-    // that rate, and the tax in it is kept apart.
+    // A day's takings entered from its Z report: cash, the day's cash, which may differ from what
+    // the till says, so a shortfall shows on that day; card, settled to the bank. Into the safe
+    // goes the cash less paidOut, what was paid straight out of the day's takings before they were
+    // entered; when that is more than the cash, the rest comes out of the safe. tax: the tax
+    // collected in the cash and card, kept apart as owed; or with taxPercent instead, the cash
+    // includes tax at that rate, worked out from it. voids: voided and refunded on the day, said.
     public static SafeTransaction RevenueTransfer(
-        Guid id, decimal gross, DateOnly date, DateOnly revenueDate, string? notes, string recordedBy, string? approvedBy = null,
-        decimal? taxPercent = null, decimal paidOut = 0)
+        Guid id, decimal cash, DateOnly date, DateOnly revenueDate, string? notes, string recordedBy, string? approvedBy = null,
+        decimal? taxPercent = null, decimal paidOut = 0, decimal card = 0, decimal? tax = null, decimal voids = 0)
     {
         if (revenueDate > date)
             throw new DomainException("A day's takings are moved into the safe on that day or after it.");
         if (paidOut < 0)
             throw new DomainException("What was paid out of a day's takings is zero or more.");
-        var entered = Positive(gross);
+        if (cash < 0 || card < 0 || tax < 0 || voids < 0)
+            throw new DomainException("The cash, card, tax and voids are zero or more. · المبالغ صفر أو أكثر.");
+        var (cashIn, cardIn) = (Round(cash), Round(card));
+        if (cashIn + cardIn <= 0)
+            throw new DomainException("Enter the day's cash or card takings. · أدخل إيراد الكاش أو الفيزا.");
+        if (tax > cashIn + cardIn)
+            throw new DomainException("The tax collected cannot be more than the day's takings. · الضريبة لا تزيد عن إجمالي الإيراد.");
         var entry = new SafeTransaction(
-            id, SafeTransactionKind.RevenueTransfer, CashFund.Safe, entered - Math.Round(paidOut, 2, MidpointRounding.AwayFromZero), date, notes,
-            recordedBy, approvedBy)
+            id, SafeTransactionKind.RevenueTransfer, CashFund.Safe, cashIn - Round(paidOut), date, notes, recordedBy, approvedBy)
         {
             RevenueDate = revenueDate,
-            GrossAmount = entered,
+            GrossAmount = cashIn,
+            CardAmount = cardIn,
+            VoidsAmount = Round(voids),
         };
-        if (taxPercent is { } rate)
+        if (tax is { } collected)
+        {
+            entry.TaxAmount = Round(collected);
+            entry.IncludesTax = entry.TaxAmount > 0;
+        }
+        else if (taxPercent is { } rate)
         {
             entry.IncludesTax = true;
             entry.TaxPercent = rate;
-            entry.TaxAmount = TaxIn(entered, rate);
+            entry.TaxAmount = TaxIn(cashIn + cardIn, rate);
         }
 
         return entry;
     }
+
+    private static decimal Round(decimal amount) => Math.Round(amount, 2, MidpointRounding.AwayFromZero);
 
     // The tax in a sum that includes it: the sum less the sum before tax, which is the sum over
     // (1 + rate), to the piastre. So the two always add back up to the sum.
@@ -319,6 +348,8 @@ public sealed class SafeTransaction : AggregateRoot
         return new SafeTransaction(reversalId, Kind, fund, -Amount, today, "Voided", voidedBy, null)
         {
             GrossAmount = -GrossAmount,
+            CardAmount = -CardAmount,
+            VoidsAmount = -VoidsAmount,
             IncludesTax = IncludesTax,
             TaxPercent = TaxPercent,
             TaxAmount = -TaxAmount,

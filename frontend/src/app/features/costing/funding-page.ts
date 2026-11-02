@@ -71,7 +71,10 @@ import { Treasury, entryTax, monthBounds } from './financials';
                 <td>
                   <span class="kind">{{ kinds[e.kind].en }}</span> {{ e.description }}
                   @if (entryTax(e); as t) {
-                    <div class="muted small">Tax in it at {{ t.percent }}%: {{ t.tax | money }} · {{ t.net | money }} before tax</div>
+                    <div class="muted small">
+                      Cash {{ t.cash | money }}{{ t.card ? ' · card ' : '' }}{{ t.card ? (t.card | money) : '' }} · tax {{ t.tax | money
+                      }}{{ t.percent !== null ? ' at ' + t.percent + '%' : '' }} · net sales {{ t.net | money }}
+                    </div>
                   }
                   @if (e.notes && !e.reversalOf) {
                     <div class="muted small">{{ e.notes }}</div>
@@ -91,12 +94,12 @@ import { Treasury, entryTax, monthBounds } from './financials';
       </div>
     }
 
-    <h3>Each day's cash <span class="inline-ar">إيرادات الأيام النقدية</span></h3>
+    <h3>Each day's takings <span class="inline-ar">إيرادات الأيام</span></h3>
     <p class="note">
-      Cash sales at the till and cash on delivery, by business day, from the treasury's opening balance on (the cash of the days before is in
-      it). The takings entered are the day's gross; what was paid out of them stays out of the safe. Left is the till's cash not entered as
-      takings; below zero, more was entered than the till took.
-      <span class="inline-ar">المتبقي: نقدية لم تسجل كإيراد بعد.</span>
+      Each business day's Z report, from the treasury's opening balance on: its cash and card, the tax collected in them (owed, not revenue),
+      and so its net sales. Only the cash goes into the safe, less what was paid straight out of it. A day with sales and no takings yet is
+      a click from entering them.
+      <span class="note-ar" lang="ar" dir="rtl">تقرير Z لكل يوم: الكاش والفيزا والضريبة المحصلة وصافي المبيعات. الكاش فقط يدخل الخزنة بعد خصم المنصرف منه.</span>
     </p>
     @if (revenue(); as r) {
       <div class="table-wrap">
@@ -104,11 +107,13 @@ import { Treasury, entryTax, monthBounds } from './financials';
           <thead>
             <tr>
               <th>Day<span class="ar">اليوم</span></th>
-              <th class="num">Cash taken<span class="ar">المبيعات النقدية</span></th>
-              <th class="num">Takings entered<span class="ar">الإيراد المسجل</span></th>
+              <th class="num">Cash<span class="ar">الكاش</span></th>
+              <th class="num">Card<span class="ar">الفيزا</span></th>
+              <th class="num">Tax<span class="ar">الضريبة</span></th>
+              <th class="num">Net sales<span class="ar">صافي المبيعات</span></th>
+              <th class="num">Voids<span class="ar">الفويد</span></th>
               <th class="num">Paid out of it<span class="ar">مدفوع منه</span></th>
               <th class="num">Into the safe<span class="ar">مورد للخزنة</span></th>
-              <th class="num">Left<span class="ar">المتبقي</span></th>
               <th class="num"><span class="visually-hidden">Actions</span></th>
             </tr>
           </thead>
@@ -116,30 +121,38 @@ import { Treasury, entryTax, monthBounds } from './financials';
             @for (d of r.days; track d.date) {
               <tr>
                 <td class="nowrap">{{ d.date | date: 'EEE d MMM' }}</td>
-                <td class="num">{{ d.cashSales | money }}</td>
-                <td class="num">{{ d.entered ? (d.entered | money) : '—' }}</td>
+                @if (d.entered) {
+                  <td class="num">{{ d.cash | money }}</td>
+                  <td class="num">{{ d.card ? (d.card | money) : '—' }}</td>
+                  <td class="num">{{ d.tax ? (d.tax | money) : '—' }}</td>
+                  <td class="num strong">{{ d.netSales | money }}</td>
+                  <td class="num">{{ d.voids ? (d.voids | money) : '—' }}</td>
+                } @else {
+                  <td colspan="5" class="muted">No takings entered · لم يُسجل الإيراد</td>
+                }
                 <td class="num">{{ d.paidOut ? (d.paidOut | money) : '—' }}</td>
                 <td class="num">{{ d.transferred ? (d.transferred | money) : '—' }}</td>
-                <td class="num strong" [class.negative]="d.left < 0">{{ d.left | money }}</td>
                 <td class="num">
-                  @if (!d.entered && d.cashSales > 0) {
+                  @if (!d.entered) {
                     <button mat-stroked-button (click)="moveIn(d)"><mat-icon>move_to_inbox</mat-icon> Enter takings</button>
                   }
                 </td>
               </tr>
             } @empty {
-              <tr><td colspan="7" class="muted">No cash taken this month.</td></tr>
+              <tr><td colspan="9" class="muted">No takings or sales this month.</td></tr>
             }
           </tbody>
           @if (r.days.length) {
             <tfoot>
               <tr>
                 <td>The month</td>
-                <td class="num">{{ r.cashSales | money }}</td>
-                <td class="num">{{ r.entered | money }}</td>
+                <td class="num">{{ r.cash | money }}</td>
+                <td class="num">{{ r.card | money }}</td>
+                <td class="num">{{ r.tax | money }}</td>
+                <td class="num strong">{{ r.netSales | money }}</td>
+                <td class="num">{{ r.voids | money }}</td>
                 <td class="num">{{ r.paidOut | money }}</td>
                 <td class="num">{{ r.transferred | money }}</td>
-                <td class="num strong" [class.negative]="r.left < 0">{{ r.left | money }}</td>
                 <td></td>
               </tr>
             </tfoot>
@@ -209,10 +222,9 @@ export class FundingPage {
     }
   }
 
-  // A day's takings entered: its gross, what the till took, unless the POS says otherwise. The
-  // till's bills charge tax, so its cash has the tax in it.
+  // A day's takings entered from its Z report, its day chosen already.
   protected async moveIn(day: DayRevenue): Promise<void> {
-    if (await this.treasury.enter('RevenueTransfer', { revenueDate: day.date, amount: day.cashSales, includesTax: true })) {
+    if (await this.treasury.enter('RevenueTransfer', { revenueDate: day.date })) {
       await this.load();
     }
   }

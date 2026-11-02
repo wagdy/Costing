@@ -3,6 +3,7 @@ using Costing.Application.Expenses;
 using Costing.Application.Production;
 using Costing.Application.RawMaterials;
 using Costing.Application.Recipes;
+using Costing.Application.Sales;
 using Costing.Infrastructure.Excel;
 
 namespace Costing.Infrastructure.Tests;
@@ -41,26 +42,19 @@ public class WorkbookTests
     }
 
     [Fact]
-    public void A_sales_sheet_headed_in_arabic_with_its_columns_moved_is_read_as_written()
+    public void The_days_sales_sheet_offers_the_menus_items_and_is_read_by_its_arabic_headings_in_any_order()
     {
-        using var workbook = new XLWorkbook();
-        var sheet = workbook.Worksheets.Add("Export");
-        string[] headings = ["الكمية", "الصنف", "رقم الفاتورة", "التاريخ", "طريقة الدفع", "ملغي"];
-        for (var i = 0; i < headings.Length; i++)
-            sheet.Cell(1, i + 1).Value = headings[i];
-        sheet.Cell(2, 1).Value = 3;
-        sheet.Cell(2, 2).Value = "Burger";
-        sheet.Cell(2, 3).Value = "R-9";
-        sheet.Cell(2, 4).Value = new DateTime(2026, 10, 12);
-        sheet.Cell(2, 5).Value = "فيزا";
-        sheet.Cell(2, 6).Value = "بعد المطبخ";
-        var stream = new MemoryStream();
-        workbook.SaveAs(stream);
-        stream.Position = 0;
+        // The template: two columns, the item chosen from a list of the menu's items and sizes.
+        using (var template = new XLWorkbook(DailySalesWorkbook.Build(new DailySalesSheet(["1 · Burger", "10-101 · Shawarma (Kilo tray)"]))))
+        {
+            var data = template.Worksheet(DailySalesWorkbook.DataSheetName);
+            Assert.Equal([DailySalesWorkbook.ItemHeader, DailySalesWorkbook.QuantityHeader], data.Row(1).CellsUsed().Select(c => c.GetString()));
+            Assert.Contains(data.DataValidations, v => v.Ranges.Any(r => r.FirstCell().Address.ColumnNumber == 1));
+        }
 
-        var row = Assert.Single(SalesWorkbook.Read(stream));
-        Assert.Equal(((decimal?)3, "Burger", "R-9", (DateOnly?)new DateOnly(2026, 10, 12), "فيزا", "بعد المطبخ"),
-            (row.Quantity, row.Item, row.Reference, row.Date, row.Payment, row.Voided));
+        // A sheet of its own, headed in Arabic, the quantity first: read as written.
+        var row = Assert.Single(DailySalesWorkbook.Read(Sheet(["الكمية المباعة", "الصنف"], [12, "10-101 · Shawarma (Kilo tray)"])));
+        Assert.Equal((2, "10-101 · Shawarma (Kilo tray)", (decimal?)12), (row.Row, row.Item, row.Quantity));
     }
 
     // A sheet of the headings given, in that order, and its rows.

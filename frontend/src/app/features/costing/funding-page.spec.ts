@@ -6,16 +6,16 @@ import { FundingPage } from './funding-page';
 import { Treasury } from './financials';
 
 function day(overrides: Partial<DayRevenue>): DayRevenue {
-  return { date: '2026-10-13', cashSales: 0, entered: 0, paidOut: 0, transferred: 0, left: 0, ...overrides };
+  return { date: '2026-10-13', cash: 0, card: 0, tax: 0, netSales: 0, voids: 0, paidOut: 0, transferred: 0, entered: false, hasSales: false, ...overrides };
 }
 
-// The 13th: the till took 10,500; 10,495 entered, 1,454.07 paid out of it, the rest in the safe.
-// The 14th: the till took 3,200, nothing entered yet.
+// The 13th's Z report: 10,495 cash and 2,000 by card, 1,535 of it tax, 120 voided; 1,454.07 paid
+// out of the cash, the rest in the safe. The 14th: its sales entered, its takings not yet.
 const revenue: DayRevenueReport = {
-  from: '2026-10-01', to: '2026-10-31', cashSales: 13_700, entered: 10_495, paidOut: 1_454.07, transferred: 9_040.93, left: 3_205,
+  from: '2026-10-01', to: '2026-10-31', cash: 10_495, card: 2_000, tax: 1_535, netSales: 10_960, voids: 120, paidOut: 1_454.07, transferred: 9_040.93,
   days: [
-    day({ date: '2026-10-14', cashSales: 3_200, left: 3_200 }),
-    day({ cashSales: 10_500, entered: 10_495, paidOut: 1_454.07, transferred: 9_040.93, left: 5 }),
+    day({ date: '2026-10-14', hasSales: true }),
+    day({ cash: 10_495, card: 2_000, tax: 1_535, netSales: 10_960, voids: 120, paidOut: 1_454.07, transferred: 9_040.93, entered: true, hasSales: true }),
   ],
 };
 const funding: FundingReport = { from: '2026-10-01', to: '2026-10-31', carriedOver: 0, ownerFinancing: 0, other: 0, revenue: 9_040.93, total: 9_040.93, entries: [] };
@@ -41,17 +41,20 @@ describe('each day’s cash, on the funding sources', () => {
 
   beforeEach(() => enter.mockReset().mockResolvedValue(false));
 
-  it('shows the takings entered, gross, what was paid out of them and what reached the safe; and enters a day’s takings at what the till took', async () => {
+  it('shows each day’s Z report, its net sales and what reached the safe; and enters the takings of a day with none', async () => {
     const { el } = await render();
 
     const table = [...el.querySelectorAll('table')].at(-1)!;
     const rows = [...table.querySelectorAll('tbody tr')].map((r) => [...r.querySelectorAll('td')].map(text));
     expect(rows).toEqual([
-      ['Wed 14 Oct', 'L.E 3,200.00', '—', '—', '—', 'L.E 3,200.00', 'move_to_inbox Enter takings'],
-      ['Tue 13 Oct', 'L.E 10,500.00', 'L.E 10,495.00', 'L.E 1,454.07', 'L.E 9,040.93', 'L.E 5.00', ''],
+      ['Wed 14 Oct', 'No takings entered · لم يُسجل الإيراد', '—', '—', 'move_to_inbox Enter takings'],
+      ['Tue 13 Oct', 'L.E 10,495.00', 'L.E 2,000.00', 'L.E 1,535.00', 'L.E 10,960.00', 'L.E 120.00', 'L.E 1,454.07', 'L.E 9,040.93', ''],
+    ]);
+    expect([...table.querySelectorAll('tfoot td')].map(text).slice(0, 5)).toEqual([
+      'The month', 'L.E 10,495.00', 'L.E 2,000.00', 'L.E 1,535.00', 'L.E 10,960.00',
     ]);
 
     (table.querySelector('tbody button') as HTMLButtonElement).click();
-    expect(enter).toHaveBeenCalledWith('RevenueTransfer', { revenueDate: '2026-10-14', amount: 3_200, includesTax: true });
+    expect(enter).toHaveBeenCalledWith('RevenueTransfer', { revenueDate: '2026-10-14' });
   });
 });

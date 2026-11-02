@@ -297,6 +297,16 @@ export interface MonthStatement {
   // Wages paid as expenses (vouchers, invoices under a Wages category), added to the wages entered.
   loggedWages: number;
   totalExpenses: number;
+  // The month's takings, as each day's Z report gave them: cash and card, their total, the tax
+  // collected in it (owed, not revenue: revenue is the total less it), the voids, and how many
+  // days' takings are in. salesAtMenuPrices: the month's sales summaries at the menu's prices.
+  cashTakings?: number;
+  cardTakings?: number;
+  grossTakings?: number;
+  taxCollected?: number;
+  voids?: number;
+  takingsDays?: number;
+  salesAtMenuPrices?: number;
 }
 
 export interface LoggedExpense {
@@ -1939,13 +1949,16 @@ export interface SafeEntry {
   reversalOf: string | null;
   voidedAtUtc: string | null;
   voidedBy: string | null;
-  // A day's takings entered with the tax in them: the rate, and the tax in their gross (signed as in
-  // and out are).
+  // A day's takings: the tax collected in them (signed as in and out are), and the till's rate when
+  // it was worked out at it.
   includesTax: boolean;
   taxPercent: number | null;
   tax: number;
-  // A day's takings: their gross, as entered; in is what of it reached the safe.
+  // A day's takings: their cash, as entered (in is what of it reached the safe); their card
+  // takings, to the bank; and the day's voids and refunds.
   gross: number | null;
+  card?: number;
+  voids?: number;
 }
 
 // How a month's opening balance came about: carried over from the month before, the treasury's
@@ -1983,25 +1996,32 @@ export interface FundingReport {
   entries: SafeEntry[];
 }
 
-// One business day's cash: what the till took, the takings entered for it (gross), what was paid
-// straight out of them, what of them reached the safe, and the till's cash not entered as takings.
+// One business day's takings as its Z report gave them: cash and card, the tax collected in them,
+// the net sales (cash + card − tax), the voids; what was paid straight out of the cash, and what of
+// it is in the safe. entered: the takings are; hasSales: the day's sales are.
 export interface DayRevenue {
   date: string;
-  cashSales: number;
-  entered: number;
+  cash: number;
+  card: number;
+  tax: number;
+  netSales: number;
+  voids: number;
   paidOut: number;
   transferred: number;
-  left: number;
+  entered: boolean;
+  hasSales: boolean;
 }
 
 export interface DayRevenueReport {
   from: string;
   to: string;
-  cashSales: number;
-  entered: number;
+  cash: number;
+  card: number;
+  tax: number;
+  netSales: number;
+  voids: number;
   paidOut: number;
   transferred: number;
-  left: number;
   days: DayRevenue[];
 }
 
@@ -2135,11 +2155,16 @@ export interface SafeVoucherInput {
   expenseItemId: string | null;
   notes: string | null;
   reason: string | null;
-  // A day's takings, gross, with the tax in them: the server takes it off at the till's rate.
+  // A day's takings with the tax in them: the server takes it off at the till's rate.
   includesTax: boolean;
   // An advance's or a salary's employee; a salary's payroll month (its first day).
   employeeId?: string | null;
   payrollMonth?: string | null;
+  // A day's takings from its Z report: amount is the cash; these, the card takings, the tax
+  // collected in both, and the day's voids and refunds (why, in the notes).
+  cardAmount?: number | null;
+  taxAmount?: number | null;
+  voidsAmount?: number | null;
 }
 
 export interface SafeTransaction {
@@ -2154,6 +2179,10 @@ export interface SafeTransaction {
   taxPercent: number | null;
   taxAmount: number;
   grossAmount: number | null;
+  cardAmount?: number;
+  voidsAmount?: number;
+  // A day's takings: cash + card − tax.
+  netAmount?: number;
 }
 
 // Tax and service (إعدادات الضريبة والخدمة): the till's tax rate, as the delivery system set it
@@ -2165,24 +2194,18 @@ export interface FinancialSettings {
   updatedAtUtc: string | null;
 }
 
-// One business day of the reconciliation (مطابقة الإيرادات), or the period's total (date null). The
-// cash before tax (A, netCash) against the cash the sales should have brought in (expectedCash):
-// every item at its price (B, itemSales), less discounts and points, plus delivery fees, less
-// refunds, less what was paid by card or online, all before tax. Difference: A less that; below
-// zero cash is missing, above it cash came in for items not rung up.
+// One business day of the reconciliation (مطابقة الإيرادات), or the period's total (date null). Its
+// net sales (A): the takings, cash and card, less the tax collected in them; against its sales at
+// the menu's prices, before tax (B). Difference: A less B; below zero the takings fall short of
+// what was sold (discounts, staff meals, cash missing), above it money came in for items not entered.
 export interface ReconciliationDay {
   date: string | null;
-  takingsEntered: number;
-  paidOut: number;
+  cash: number;
+  card: number;
   tax: number;
-  netCash: number;
+  netSales: number;
+  voids: number;
   itemSales: number;
-  discounts: number;
-  points: number;
-  deliveryFees: number;
-  refunds: number;
-  cardAndOnline: number;
-  expectedCash: number;
   difference: number;
 }
 

@@ -49,44 +49,63 @@ public class MenuSalesFlowTests
     }
 
     [Fact]
-    public async Task A_sales_sheet_is_a_receipt_for_each_number_a_days_totals_for_the_rest_and_never_imported_twice()
+    public async Task A_days_sales_summary_takes_each_items_stock_by_its_recipe_once_a_day_entered_or_imported()
     {
         var chicken = _costing.Inventory.Stock("Chicken", UnitOfMeasure.Gram, 5_000);
+        var beef = _costing.Inventory.Stock("Beef", UnitOfMeasure.Gram, 5_000);
         await _costing.Send(new SetRecipeCommand(RecipeTargetKind.MenuItem, TestCosting.Shawarma, TestCosting.KiloTray, [new(chicken.Id, 1000)]));
-        var day = TestCalendar.Today;
-        SaleImportRow Row(int row, string? reference, string item, string? size, decimal quantity, string? payment = null, decimal? total = null,
-            decimal? tax = null) =>
-            new(row, reference, day, new TimeOnly(13, 0), null, payment, item, size, null, quantity, total, null, null, tax, null, null);
+        await _costing.Send(new SetRecipeCommand(RecipeTargetKind.MenuItem, TestCosting.Burger, null, [new(beef.Id, 150)]));
+        var (yesterday, today) = (TestCalendar.Today.AddDays(-1), TestCalendar.Today);
 
-        IReadOnlyList<SaleImportRow> sheet =
+        // Entered by hand: an item twice is one line; no bills, no money taken, priced at the menu's prices.
+        var entered = await _costing.Send(new RecordDailySalesCommand(Guid.NewGuid(), yesterday,
+            [new(TestCosting.Burger, null, 3), new(TestCosting.Shawarma, TestCosting.KiloTray, 1), new(TestCosting.Burger, null, 2)], "Sara"));
+        Assert.Equal((SalesSource.DailySummary, yesterday, (string?)null), (entered.Source, entered.BusinessDate, entered.Reference));
+        Assert.Equal([("Burger", (string?)null, 5, 600m), ("Shawarma", "Kilo tray", 1, 400m)],
+            entered.Lines.Select(l => (l.MenuItemName, l.VariantName, l.Quantity, l.LineTotal)));
+        Assert.Equal((4_000m, 4_250m), (chicken.QuantityOnHand, beef.QuantityOnHand));
+
+        // That day again: refused, naming it; nothing taken.
+        var twice = await Assert.ThrowsAsync<DomainException>(() =>
+            _costing.Send(new RecordDailySalesCommand(Guid.NewGuid(), yesterday, [new(TestCosting.Burger, null, 1)], "Sara")));
+        Assert.StartsWith($"The sales of {yesterday.ToString("d MMM yyyy", System.Globalization.CultureInfo.InvariantCulture)} are entered already (2 items, 6 sold)",
+            twice.Message);
+        Assert.Contains("مبيعات هذا اليوم مسجلة بالفعل", twice.Message);
+        Assert.Equal(4_250m, beef.QuantityOnHand);
+        Assert.StartsWith("That day has not come yet",
+            (await Assert.ThrowsAsync<DomainException>(() => _costing.Send(new RecordDailySalesCommand(
+                Guid.NewGuid(), today.AddDays(2), [new(TestCosting.Burger, null, 1)], "Sara")))).Message);
+
+        // Imported: an item by the list's label, its code or its name; what cannot be read said why.
+        var imported = await _costing.Send(new ImportDailySalesCommand(today,
         [
-            Row(2, "R-1", "Shawarma", "Kilo tray", 1, tax: 56),
-            Row(3, "R-1", "1", null, 2),
-            Row(4, null, "Burger", null, 5, "Visa", 600),
-            Row(5, null, "Burger", null, 1, "Visa", 120),
-            Row(6, "R-2", "Pizza", null, 1),
-            Row(7, "R-3", "Shawarma", null, 1),
-        ];
-        var result = await _costing.Send(new ImportSalesCommand(sheet, "Sara"));
-
-        Assert.Equal((2, 4, 0), (result.Receipts, result.Lines, result.AlreadyRecorded));
+            new(2, "1 · Burger", 4),
+            new(3, "10-101 · Shawarma (Kilo tray)", 1),
+            new(4, "burger", 1),
+            new(5, "Shawarma", 2),
+            new(6, "Pizza", 3),
+            new(7, "10-102", 1.5m),
+            new(8, null, 2),
+        ], "Sara"));
+        Assert.Equal((2, 6, 1_000m), (imported.Items, imported.Quantity, imported.Value));
         Assert.Equal(
-            [(6, "There is no Pizza on the menu: add it on Menu, or check its number."), (7, "Shawarma is sold by size: name its size.")],
-            result.Skipped.Select(s => (s.Row, s.Reason)));
-        var r1 = _costing.Sales.All.Single(r => r.Reference == "R-1");
-        Assert.Equal((640m, 56m, 696m, SalesSource.Imported), (r1.BilledSubtotal, r1.TaxAmount, r1.TotalAmount, r1.Source));
-        var totals = _costing.Sales.All.Single(r => r.Reference is null);
-        Assert.Equal((PaymentMethod.Visa, 720m, 6), (totals.PaymentMethod, totals.TotalAmount, totals.Lines.Sum(l => l.Quantity)));
-        Assert.Equal(4_000m, chicken.QuantityOnHand);
+            [
+                (5, "Shawarma is sold by size: choose its size from the list."),
+                (6, "There is no Pizza on the menu: choose the item from the list, or add it on Menu first."),
+                (7, "The quantity sold is a whole number, 1 or more."),
+                (8, "No item: choose it from the list."),
+            ],
+            imported.Skipped.Select(s => (s.Row, s.Reason)));
+        Assert.All(imported.Skipped, s => Assert.False(string.IsNullOrWhiteSpace(s.ReasonAr)));
+        Assert.Equal((3_000m, 3_500m), (chicken.QuantityOnHand, beef.QuantityOnHand));
 
-        // The same sheet again: the numbered receipt is recorded already.
-        var again = await _costing.Send(new ImportSalesCommand(sheet.Take(2).ToList(), "Sara"));
-        Assert.Equal((0, 1), (again.Receipts, again.AlreadyRecorded));
-        Assert.Equal(4_000m, chicken.QuantityOnHand);
+        // A sheet with nothing that can be read records nothing.
+        var nothing = await _costing.Send(new ImportDailySalesCommand(today.AddDays(-2), [new(2, "Pizza", 1)], "Sara"));
+        Assert.Null(nothing.SaleId);
+        Assert.Single(nothing.Skipped);
 
-        var report = await _costing.Send(new GetSalesQuery(day, day));
-        Assert.Equal((2, 9, 1_416m), (report.Totals.Receipts, report.Totals.Items, report.Totals.Total));
-        Assert.Equal((696m, 720m), (report.Totals.ByPayment[PaymentMethod.Cash], report.Totals.ByPayment[PaymentMethod.Visa]));
+        var report = await _costing.Send(new GetSalesQuery(yesterday, today));
+        Assert.Equal((2, 12), (report.Totals.Receipts, report.Totals.Items));
     }
 
     [Fact]

@@ -68,6 +68,7 @@ export interface SkippedRow {
   row: number;
   name: string | null;
   reason: string;
+  reasonAr?: string | null;
 }
 
 export interface MenuImportResult {
@@ -92,33 +93,14 @@ export interface RecipesToMenuResult {
   categoriesAdded: string[];
 }
 
-// Sales (المبيعات): bills entered or imported, each taking its stock by recipe.
+// Sales (المبيعات): each day's sales summary, an item and how many sold, each taking its stock by
+// its recipe. A bill entered as printed (from before, or by a script) reads the same way.
 export type SalesChannel = 'DineIn' | 'Takeaway' | 'Delivery' | 'Online';
 export type PaymentMethod = 'Cash' | 'Visa' | 'Instapay';
-export type SalesSource = 'Entered' | 'Imported';
+export type SalesSource = 'Entered' | 'Imported' | 'DailySummary';
 // A line taken off the bill, and when: before the kitchen (no stock), after it (waste), or after
 // payment (refunded, its stock back).
 export type LineVoid = 'None' | 'BeforeKitchen' | 'AfterKitchen' | 'AfterPayment';
-
-export const channelLabels: Record<SalesChannel, { en: string; ar: string }> = {
-  DineIn: { en: 'Dine in', ar: 'صالة' },
-  Takeaway: { en: 'Takeaway', ar: 'تيك أواي' },
-  Delivery: { en: 'Delivery', ar: 'توصيل' },
-  Online: { en: 'Online', ar: 'أونلاين' },
-};
-
-export const paymentLabels: Record<PaymentMethod, { en: string; ar: string }> = {
-  Cash: { en: 'Cash', ar: 'نقدي' },
-  Visa: { en: 'Visa', ar: 'فيزا' },
-  Instapay: { en: 'Instapay', ar: 'إنستاباي' },
-};
-
-export const voidLabels: Record<LineVoid, { en: string; ar: string }> = {
-  None: { en: 'On the bill', ar: 'في الفاتورة' },
-  BeforeKitchen: { en: 'Voided before the kitchen', ar: 'ملغي قبل المطبخ' },
-  AfterKitchen: { en: 'Voided after the kitchen (waste)', ar: 'ملغي بعد المطبخ (هالك)' },
-  AfterPayment: { en: 'Refunded', ar: 'مرتجع' },
-};
 
 export interface SalesLine {
   publicId: string;
@@ -176,37 +158,21 @@ export interface SalesReport {
   totals: SalesTotals;
 }
 
-export interface SaleLineInput {
+// A line of a day's sales summary: an item, a size of one sold by size, and how many sold.
+export interface DailySaleLine {
   menuItemId: number;
   variantId: number | null;
   quantity: number;
-  // Left out: the menu's price and its add-ons', times how many.
-  lineTotal?: number | null;
-  addOnIds?: number[];
-  voided?: LineVoid;
 }
 
-export interface SaleInput {
-  id: string;
-  reference: string | null;
+// The day's sheet imported: the summary recorded (none when no row could be read), what it holds
+// at the menu's prices, and each row left out and why.
+export interface DailySalesImportResult {
   date: string;
-  // "13:40:00"; none, the day's middle.
-  time: string | null;
-  channel: SalesChannel;
-  paymentMethod: PaymentMethod;
-  lines: SaleLineInput[];
-  discountAmount: number;
-  deliveryFee: number;
-  taxAmount: number;
-  pointsAmount: number;
-  refundedAmount: number;
-  notes: string | null;
-}
-
-export interface SalesImportResult {
-  receipts: number;
-  lines: number;
-  alreadyRecorded: number;
+  saleId: string | null;
+  items: number;
+  quantity: number;
+  value: number;
   skipped: SkippedRow[];
 }
 
@@ -319,23 +285,19 @@ export class MenuSalesApi {
     return this.http.get<SalesReport>('/api/sales', { params: { from, to } });
   }
 
-  recordSale(sale: SaleInput): Observable<SalesReceipt> {
-    return this.http.post<SalesReceipt>('/api/sales', sale);
+  // One a day: a day entered already is refused, naming it.
+  recordDailySales(id: string, date: string, lines: DailySaleLine[]): Observable<SalesReceipt> {
+    return this.http.post<SalesReceipt>('/api/sales/daily', { id, date, lines });
   }
 
-  // A line's quantity handed back, or the whole sale with no line named.
-  refund(saleId: string, linePublicId: string | null, quantity: number | null): Observable<SalesReceipt> {
-    return this.http.post<SalesReceipt>(`/api/sales/${saleId}/refund`, { linePublicId, quantity });
+  dailySalesTemplate(): Observable<Blob> {
+    return this.http.get('/api/sales/daily/template', { responseType: 'blob' });
   }
 
-  salesTemplate(): Observable<Blob> {
-    return this.http.get('/api/sales/template', { responseType: 'blob' });
-  }
-
-  importSales(file: File): Observable<SalesImportResult> {
+  importDailySales(date: string, file: File): Observable<DailySalesImportResult> {
     const form = new FormData();
-    form.append('file', file, file.name);
-    return this.http.post<SalesImportResult>('/api/sales/import', form);
+    form.append('file', file);
+    return this.http.post<DailySalesImportResult>('/api/sales/daily/import', form, { params: { date } });
   }
 
   staff(): Observable<Employee[]> {

@@ -201,11 +201,14 @@ internal sealed class SafeTransactionConfiguration : IEntityTypeConfiguration<Sa
         builder.Property(t => t.TaxPercent).HasPrecision(5, 2);
         builder.Property(t => t.TaxAmount).HasPrecision(18, 2);
         builder.Property(t => t.GrossAmount).HasPrecision(18, 2);
-        builder.Property(t => t.Notes).HasMaxLength(300);
+        builder.Property(t => t.CardAmount).HasPrecision(18, 2);
+        builder.Property(t => t.VoidsAmount).HasPrecision(18, 2);
+        builder.Property(t => t.Notes).HasMaxLength(SafeTransaction.MaxNotesLength);
         builder.Property(t => t.RecordedBy).HasMaxLength(200);
         builder.Property(t => t.ApprovedBy).HasMaxLength(200);
         builder.Property(t => t.VoidedBy).HasMaxLength(200);
         builder.Ignore(t => t.NetAmount);
+        builder.Ignore(t => t.TakingsTotal);
         builder.Ignore(t => t.PaidOut);
         builder.Ignore(t => t.IsReversal);
         builder.Ignore(t => t.IsVoided);

@@ -19,19 +19,20 @@ namespace Costing.Application.Treasury;
 // payment voucher pays it. An advance is owed by the employee until the payroll of its own month
 // deducts it.
 //
-// A day's takings are entered gross, as the POS totals them, once. What was paid straight out of
-// them by then came out of the drawer, so the safe gets the rest; what is paid out of them, or put
-// back by a void, once they are in, moves the safe. Either way the safe ends with the gross less
-// what the day's takings paid.
+// A day's takings are entered once, from the day's Z report: its cash, its card takings, the tax
+// collected in them and its voids. What was paid straight out of them by then came out of the
+// drawer, so the safe gets the rest of the cash; what is paid out of them, or put back by a void,
+// once they are in, moves the safe. Either way the safe ends with the cash less what the day's
+// takings paid. The card takings go to the bank, never the safe; the tax is owed, not revenue.
 //
 // Every safe entry is a manager's: anyone else's is a request (ApprovalRequests.cs), and no cash
 // moves until it is approved. A supplier's opening debt moves no cash, and is entered at once.
 
 // A safe entry as entered: held by a request until a manager approves it. TransactionId is made
-// by the till. A day's takings' Amount is their gross. IncludesTax: a day's takings with the tax
-// in them; TaxPercent is the till's
-// rate, set by the server when it is entered (never the screen's), and kept with a request so the
-// approval takes the tax off at the rate that was asked.
+// by the till. A day's takings' Amount is their cash; CardAmount their card takings, TaxAmount
+// the tax collected in both, VoidsAmount the day's voids and refunds. IncludesTax instead of
+// TaxAmount: the cash includes tax at the till's rate (TaxPercent, set by the server when it is
+// entered, never the screen's, and kept with a request so the approval takes the same tax off).
 public sealed record SafeVoucher(
     Guid TransactionId,
     SafeTransactionKind Kind,
@@ -47,7 +48,10 @@ public sealed record SafeVoucher(
     decimal? TaxPercent = null,
     // An advance's or a salary's employee; a salary's month (its first day).
     Guid? EmployeeId = null,
-    DateOnly? PayrollMonth = null);
+    DateOnly? PayrollMonth = null,
+    decimal? CardAmount = null,
+    decimal? TaxAmount = null,
+    decimal? VoidsAmount = null);
 
 // The tax rate the bills are charged, as set on Tax & service.
 public interface ITaxRate
@@ -78,12 +82,15 @@ public sealed record SafeTransactionDto(
     decimal TaxAmount,
     decimal? GrossAmount,
     Guid? EmployeeId,
-    DateOnly? PayrollMonth)
+    DateOnly? PayrollMonth,
+    decimal CardAmount = 0,
+    decimal VoidsAmount = 0,
+    decimal NetAmount = 0)
 {
     public static SafeTransactionDto From(SafeTransaction t) => new(
         t.Id, t.Kind, t.Fund, t.Amount, t.BusinessDate, t.RevenueDate, t.Source, t.SupplierId, t.PurchaseInvoiceId, t.ExpenseItemId, t.Notes,
         t.RecordedBy, t.RecordedAtUtc, t.ApprovedBy, t.ReversalOf, t.VoidedAtUtc, t.VoidedBy, t.IncludesTax, t.TaxPercent, t.TaxAmount,
-        t.GrossAmount, t.EmployeeId, t.PayrollMonth);
+        t.GrossAmount, t.EmployeeId, t.PayrollMonth, t.CardAmount, t.VoidsAmount, t.Kind == SafeTransactionKind.RevenueTransfer ? t.NetAmount : 0);
 }
 
 // Checks, describes and enters safe entries: for a manager's own and for an approval alike. What
@@ -122,6 +129,9 @@ internal sealed class TreasuryWriter(
     // rate the screen sent is replaced: the rate is the till's, not the caller's.
     public async Task<SafeVoucher> WithTaxRateAsync(SafeVoucher voucher, CancellationToken cancellationToken)
     {
+        // The tax collected as the Z report gives it: nothing to work out.
+        if (voucher.TaxAmount is not null)
+            return voucher with { IncludesTax = false, TaxPercent = null };
         if (!voucher.IncludesTax)
             return voucher with { TaxPercent = null };
         if (voucher.Kind != SafeTransactionKind.RevenueTransfer)
@@ -141,8 +151,10 @@ internal sealed class TreasuryWriter(
             throw new DomainException("Those takings are of a day that has not come yet.");
         if (voucher.RevenueDate > voucher.Date)
             throw new DomainException("A day's takings are used on that day or after it.");
-        if (voucher.Notes?.Trim().Length > 300)
-            throw new DomainException("Keep the notes under 300 characters.");
+        if (voucher.Notes?.Trim().Length > SafeTransaction.MaxNotesLength)
+            throw new DomainException($"Keep the notes under {SafeTransaction.MaxNotesLength} characters. · الملاحظات {SafeTransaction.MaxNotesLength} حرف على الأكثر.");
+        if (voucher.Kind != SafeTransactionKind.RevenueTransfer && (voucher.CardAmount is not null || voucher.TaxAmount is not null || voucher.VoidsAmount is not null))
+            throw new DomainException("Only a day's takings have card takings, tax and voids.");
         switch (voucher.Kind)
         {
             case SafeTransactionKind.OpeningBalance:
@@ -158,11 +170,20 @@ internal sealed class TreasuryWriter(
             case SafeTransactionKind.RevenueTransfer:
                 if (voucher.RevenueDate is not { } day)
                     throw new DomainException("Choose the day whose takings go into the safe.");
-                // One gross a day, as the POS has one total.
+                // One Z report a day.
                 if (await safe.GetTakingsAsync(day, cancellationToken) is { } entered)
                     throw new DomainException(
-                        $"The takings of {Day(day)} are entered already: {Money(entered.GrossAmount ?? entered.Amount)}. To change them, void that entry and enter them again.");
-                break;
+                        $"The takings of {Day(day)} are entered already: {Money(entered.TakingsTotal)}. To change them, void that entry and enter them again. · " +
+                        "إيراد هذا اليوم مسجل بالفعل: ألغه من الخزنة ثم أدخله من جديد.");
+                var (cash, card, tax, voids) = (voucher.Amount, voucher.CardAmount ?? 0, voucher.TaxAmount ?? 0, voucher.VoidsAmount ?? 0);
+                if (cash < 0 || card < 0 || tax < 0 || voids < 0)
+                    throw new DomainException("The cash, card, tax and voids are zero or more. · المبالغ صفر أو أكثر.");
+                if (cash + card <= 0)
+                    throw new DomainException("Enter the day's cash or card takings. · أدخل إيراد الكاش أو الفيزا.");
+                if (tax > cash + card)
+                    throw new DomainException("The tax collected cannot be more than the day's takings. · الضريبة لا تزيد عن إجمالي الإيراد.");
+                // Checked: zero cash with card takings is a day's takings all the same.
+                return;
             case SafeTransactionKind.ExpenseVoucher:
                 await ExpenseItemAsync(voucher.ExpenseItemId, cancellationToken);
                 break;
@@ -222,7 +243,8 @@ internal sealed class TreasuryWriter(
             case SafeTransactionKind.RevenueTransfer:
                 entry = SafeTransaction.RevenueTransfer(
                     id, voucher.Amount, voucher.Date, voucher.RevenueDate!.Value, voucher.Notes, recordedBy, approvedBy,
-                    voucher.IncludesTax ? voucher.TaxPercent : null, await safe.PaidOutOfTakingsAsync(voucher.RevenueDate.Value, cancellationToken));
+                    voucher.IncludesTax ? voucher.TaxPercent : null, await safe.PaidOutOfTakingsAsync(voucher.RevenueDate.Value, cancellationToken),
+                    voucher.CardAmount ?? 0, voucher.TaxAmount, voucher.VoidsAmount ?? 0);
                 break;
             case SafeTransactionKind.ExpenseVoucher:
                 entry = SafeTransaction.ExpenseVoucher(id, voucher.Amount, voucher.Date, voucher.ExpenseItemId!.Value, voucher.Notes, recordedBy, approvedBy);
@@ -340,16 +362,18 @@ internal sealed class TreasuryWriter(
             case SafeTransactionKind.RevenueTransfer:
             {
                 var paidOut = await safe.PaidOutOfTakingsAsync(voucher.RevenueDate!.Value, cancellationToken);
-                summary = $"Takings of {Day(voucher.RevenueDate.Value)} · {amount} gross, {Money(voucher.Amount - paidOut)} into the safe";
+                var card = voucher.CardAmount ?? 0;
+                var tax = voucher.TaxAmount
+                    ?? (voucher.IncludesTax && voucher.TaxPercent is { } rate ? SafeTransaction.TaxIn(voucher.Amount + card, rate) : 0);
+                summary = $"Takings of {Day(voucher.RevenueDate.Value)} · {amount} cash" + (card != 0 ? $", {Money(card)} card" : "") +
+                    $" · net sales {Money(voucher.Amount + card - tax)}, {Money(voucher.Amount - paidOut)} into the safe";
+                changes.Add(new ApprovalChange("Card · الفيزا", null, Money(card)));
+                changes.Add(new ApprovalChange("Tax collected · الضريبة المحصلة", null, Money(tax)));
+                changes.Add(new ApprovalChange("Net sales · صافي المبيعات", null, Money(voucher.Amount + card - tax)));
+                if (voucher.VoidsAmount is > 0 and var voids)
+                    changes.Add(new ApprovalChange("Voids and refunds · الفويد والمرتجعات", null, Money(voids)));
                 changes.Add(new ApprovalChange("Paid out of them", null, Money(paidOut)));
                 changes.Add(new ApprovalChange("Into the safe", null, Money(voucher.Amount - paidOut)));
-                if (voucher.IncludesTax && voucher.TaxPercent is { } rate)
-                {
-                    var tax = SafeTransaction.TaxIn(voucher.Amount, rate);
-                    changes.Add(new ApprovalChange($"Tax in it ({rate.ToString("0.##", Invariant)}%)", null, Money(tax)));
-                    changes.Add(new ApprovalChange("Takings before tax", null, Money(voucher.Amount - tax)));
-                }
-
                 break;
             }
             case SafeTransactionKind.ExpenseVoucher:
@@ -405,7 +429,7 @@ internal sealed class TreasuryWriter(
                 throw new DomainException("Say what the safe entry is.");
         }
 
-        changes.Insert(1, new ApprovalChange(voucher.Kind == SafeTransactionKind.RevenueTransfer ? "Gross takings" : "Amount", null, amount));
+        changes.Insert(1, new ApprovalChange(voucher.Kind == SafeTransactionKind.RevenueTransfer ? "Cash · الكاش" : "Amount", null, amount));
         // What the safe holds after it: a payment out of a day's takings moves it once they are in it.
         var fromDrawer = voucher.RevenueDate is not null && SafeTransaction.PaidOutKinds.Contains(voucher.Kind)
             && !await TakingsInSafeAsync(voucher.RevenueDate, cancellationToken);
@@ -434,7 +458,7 @@ internal sealed class TreasuryWriter(
         {
             SafeTransactionKind.OpeningBalance => $"Opening balance · {SourceName(entry.Source)}",
             SafeTransactionKind.Funding => $"Funding · {SourceName(entry.Source)}",
-            SafeTransactionKind.RevenueTransfer => $"Takings of {Day(entry.RevenueDate!.Value)} · {Money(entry.GrossAmount ?? entry.Amount)} gross, into the safe",
+            SafeTransactionKind.RevenueTransfer => $"Takings of {Day(entry.RevenueDate!.Value)} · {Money(entry.GrossAmount ?? entry.Amount)} cash" + (entry.CardAmount != 0 ? $", {Money(entry.CardAmount)} card" : ""),
             SafeTransactionKind.ExpenseVoucher => $"Expense voucher · {(entry.ExpenseItemId is { } e ? (await expenses.GetByIdAsync(e, cancellationToken))?.Name : null) ?? "an expense"}",
             SafeTransactionKind.SupplierPayment => $"Supplier payment · {(entry.SupplierId is { } s ? (await suppliers.GetByIdAsync(s, cancellationToken))?.Name : null) ?? "a supplier"}" +
                 (entry.RevenueDate is { } paidFrom ? $" from the takings of {Day(paidFrom)}" : ""),

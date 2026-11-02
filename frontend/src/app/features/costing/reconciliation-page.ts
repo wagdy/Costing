@@ -9,11 +9,10 @@ import { errorMessage } from '../../core/http/error-message';
 import { MoneyPipe } from '../../core/ui/money.pipe';
 import { monthBounds } from './financials';
 
-// The reconciliation (مطابقة الإيرادات): each business day's cash before tax against the cash its
-// sales should have brought in. A is the takings entered for the day, gross, less the tax in
-// them. B is every item sold at its price, from costing's sales; less
-// what did not come in as cash and plus delivery fees, all before tax, it is the cash expected.
-// The difference shows a day short (items sold, cash missing) or over (cash for items not rung up).
+// The reconciliation (مطابقة الإيرادات): each business day's net sales against what it sold at the
+// menu's prices. A is the day's takings, cash and card, less the tax collected in them. B is every
+// item of the day's sales summary at its menu price, before tax. The difference shows a day short
+// (discounts, staff meals, cash missing) or over (money taken for items not entered).
 @Component({
   selector: 'app-reconciliation-page',
   imports: [DatePipe, MatButtonModule, MatIconModule, MatProgressBarModule, MoneyPipe, NgTemplateOutlet],
@@ -31,16 +30,12 @@ import { monthBounds } from './financials';
     } @else if (report(); as r) {
       <div class="tiles">
         <div class="tile key">
-          <span class="label">Cash before tax (A) · صافي النقدية</span>
-          <strong>{{ r.total.netCash | money }}</strong>
+          <span class="label">Net sales (A) · صافي المبيعات</span>
+          <strong>{{ r.total.netSales | money }}</strong>
         </div>
         <div class="tile">
-          <span class="label">Items sold (B) · مبيعات الأصناف</span>
+          <span class="label">Sold at menu prices (B) · المبيعات بأسعار المنيو</span>
           <strong>{{ r.total.itemSales | money }}</strong>
-        </div>
-        <div class="tile">
-          <span class="label">Cash expected · النقدية المتوقعة</span>
-          <strong>{{ r.total.expectedCash | money }}</strong>
         </div>
         <div class="tile difference" [class.short]="r.total.difference < 0" [class.over]="r.total.difference > 0">
           <span class="label">Difference · الفرق</span>
@@ -49,35 +44,35 @@ import { monthBounds } from './financials';
         <div class="tile">
           <span class="label">Tax collected · الضريبة المحصلة</span>
           <strong>{{ r.total.tax | money }}</strong>
+          <small class="muted">owed, not revenue</small>
+        </div>
+        <div class="tile">
+          <span class="label">Voids &amp; refunds · الفويد والمرتجعات</span>
+          <strong>{{ r.total.voids | money }}</strong>
         </div>
       </div>
       <p class="note">
-        A: each day's takings as entered, gross (what was paid straight out of them is part of them), less the tax in them{{ rateNote(r) }}. B: every
-        item sold at its menu price, before tax, at the till and online. Less discounts, points, refunds and what was paid by
-        card or online, plus delivery fees, it is the cash the day should have brought in. Below zero, cash is missing for items sold;
-        above it, cash came in for items not rung up.
-        <span class="inline-ar">الفرق بالسالب عجز في النقدية، وبالموجب نقدية لأصناف لم تسجل.</span>
+        A: each day's takings as its Z report gave them, cash and card, less the tax collected in them. B: every item of the day's sales summary
+        at its menu price, before tax. Below zero, the takings fall short of what was sold (discounts, staff meals, cash missing); above it,
+        money came in for items not entered.
+        <span class="note-ar" lang="ar" dir="rtl">الفرق بالسالب: الإيراد أقل من المبيعات بأسعار المنيو (خصومات أو وجبات عاملين أو عجز). بالموجب: إيراد لأصناف لم تُسجل.</span>
       </p>
 
       <ng-template #cells let-d>
-        <td class="num">{{ d.takingsEntered | money }}</td>
-        <td class="num">{{ d.paidOut ? (d.paidOut | money) : '—' }}</td>
+        <td class="num">{{ d.cash | money }}</td>
+        <td class="num">{{ d.card ? (d.card | money) : '—' }}</td>
         <td class="num">{{ d.tax ? (d.tax | money) : '—' }}</td>
-        <td class="num strong">{{ d.netCash | money }}</td>
+        <td class="num strong">{{ d.netSales | money }}</td>
         <td class="num strong">{{ d.itemSales | money }}</td>
-        <td class="num">{{ d.discounts + d.points ? (d.discounts + d.points | money) : '—' }}</td>
-        <td class="num">{{ d.deliveryFees ? (d.deliveryFees | money) : '—' }}</td>
-        <td class="num">{{ d.refunds ? (d.refunds | money) : '—' }}</td>
-        <td class="num">{{ d.cardAndOnline ? (d.cardAndOnline | money) : '—' }}</td>
-        <td class="num strong">{{ d.expectedCash | money }}</td>
         <td class="num strong" [class.negative]="d.difference < 0" [class.over]="d.difference > 0">
           {{ d.difference | money }}
           @if (d.difference < 0) {
             <div class="small">short · عجز</div>
           } @else if (d.difference > 0) {
-            <div class="small">not rung up · زيادة</div>
+            <div class="small">not entered · زيادة</div>
           }
         </td>
+        <td class="num">{{ d.voids ? (d.voids | money) : '—' }}</td>
       </ng-template>
 
       <div class="table-wrap">
@@ -85,17 +80,13 @@ import { monthBounds } from './financials';
           <thead>
             <tr>
               <th>Day<span class="ar">اليوم</span></th>
-              <th class="num">Takings entered<span class="ar">الإيراد المسجل</span></th>
-              <th class="num">Paid out of it<span class="ar">مدفوع منه</span></th>
-              <th class="num">Tax in it<span class="ar">الضريبة</span></th>
-              <th class="num">Cash before tax (A)<span class="ar">صافي النقدية</span></th>
-              <th class="num">Items sold (B)<span class="ar">مبيعات الأصناف</span></th>
-              <th class="num">Less discounts, points<span class="ar">الخصومات والنقاط</span></th>
-              <th class="num">Plus delivery fees<span class="ar">رسوم التوصيل</span></th>
-              <th class="num">Less refunds<span class="ar">المرتجعات</span></th>
-              <th class="num">Less card, online<span class="ar">بطاقة وأونلاين</span></th>
-              <th class="num">Cash expected<span class="ar">النقدية المتوقعة</span></th>
+              <th class="num">Cash<span class="ar">الكاش</span></th>
+              <th class="num">Card<span class="ar">الفيزا</span></th>
+              <th class="num">Tax<span class="ar">الضريبة</span></th>
+              <th class="num">Net sales (A)<span class="ar">صافي المبيعات</span></th>
+              <th class="num">At menu prices (B)<span class="ar">بأسعار المنيو</span></th>
               <th class="num">Difference<span class="ar">الفرق</span></th>
+              <th class="num">Voids<span class="ar">الفويد</span></th>
             </tr>
           </thead>
           <tbody>
@@ -105,7 +96,7 @@ import { monthBounds } from './financials';
                 <ng-container *ngTemplateOutlet="cells; context: { $implicit: d }" />
               </tr>
             } @empty {
-              <tr><td colspan="12" class="muted">Nothing sold or entered this month.</td></tr>
+              <tr><td colspan="8" class="muted">Nothing sold or entered this month.</td></tr>
             }
           </tbody>
           @if (r.days.length) {
@@ -161,11 +152,6 @@ export class ReconciliationPage {
 
   constructor() {
     void this.load();
-  }
-
-  // " (at the till's 14%)", once the till has a rate.
-  protected rateNote(r: ReconciliationReport): string {
-    return r.taxPercent === null ? '' : ` (at the till's ${r.taxPercent}%)`;
   }
 
   protected move(by: number): void {

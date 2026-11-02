@@ -58,11 +58,10 @@ public class RecipesToMenuTests
         Assert.Equal(RecipeTarget.ForMenuItem(TestCosting.Burger), (await RecipeOf(burger)).Target);
         Assert.False((await RecipeOf(toast)).IsLinked);
 
-        // Sold on Sales: entered, and imported by its name; each takes 150 g of flour.
+        // Sold on Sales: entered, and imported in the day's sales by its name; each takes 150 g of flour.
         await _pos.Send(new RecordSaleCommand(new SaleInput(Guid.NewGuid(), "R-1", TestCalendar.Today, new TimeOnly(13, 0), SalesChannel.DineIn,
             PaymentMethod.Cash, [new SaleLineInput(1001, null, 2)]), "Sara"));
-        await _pos.Send(new ImportSalesCommand(
-            [new SaleImportRow(2, "R-2", TestCalendar.Today, new TimeOnly(14, 0), null, null, "Alfredo pasta", null, null, 1, null, null, null, null, null, null)], "Sara"));
+        await _pos.Send(new ImportDailySalesCommand(TestCalendar.Today, [new DailySaleRow(2, "Alfredo pasta", 1)], "Sara"));
         Assert.Equal(-450m, (await _pos.Inventory.GetByIdAsync(flour))!.QuantityOnHand);
         Assert.Equal(495m, (await _pos.Send(new GetSalesQuery(TestCalendar.Today, TestCalendar.Today))).Totals.Total);
     }

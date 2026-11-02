@@ -165,20 +165,31 @@ public sealed class SalesController(ISender sender, IBusinessCalendar calendar) 
     public Task<SalesReceiptDto> Refund(Guid saleId, RefundRequest request, CancellationToken cancellationToken) =>
         sender.Send(new RefundSaleCommand(saleId, request.LinePublicId, request.Quantity, UserClaims.NameOf(User)), cancellationToken);
 
-    [HttpGet("template")]
-    public IActionResult Template() => File(SalesWorkbook.Build(), SheetFiles.ContentType, SalesWorkbook.FileName);
+    // The day's sales summary: each item sold and how many, for its stock. One a day.
+    [HttpPost("daily")]
+    [Authorize(Policy = Permissions.InventoryManage)]
+    public Task<SalesReceiptDto> RecordDaily(DailySalesRequest request, CancellationToken cancellationToken) =>
+        sender.Send(new RecordDailySalesCommand(request.Id, request.Date, request.Lines ?? [], UserClaims.NameOf(User)), cancellationToken);
 
-    [HttpPost("import")]
+    // Two columns, the item (from the menu's list) and how many sold, for the day chosen on import.
+    [HttpGet("daily/template")]
+    public async Task<IActionResult> DailyTemplate(CancellationToken cancellationToken) =>
+        File(DailySalesWorkbook.Build(await sender.Send(new GetDailySalesSheetQuery(), cancellationToken)), SheetFiles.ContentType,
+            DailySalesWorkbook.FileName);
+
+    [HttpPost("daily/import")]
     [Authorize(Policy = Permissions.InventoryManage)]
     [RequestSizeLimit(MaxImportBytes + 64 * 1024)]
-    public async Task<SalesImportResult> Import(IFormFile file, CancellationToken cancellationToken)
+    public async Task<DailySalesImportResult> ImportDaily([FromQuery] DateOnly date, IFormFile file, CancellationToken cancellationToken)
     {
         if (file.Length > MaxImportBytes)
-            throw new DomainException("The file is larger than 10 MB: split the sheet by month.");
+            throw new DomainException("The file is larger than 10 MB. · الملف أكبر من 10 ميجابايت.");
         await using var stream = file.OpenReadStream();
-        return await sender.Send(new ImportSalesCommand(SalesWorkbook.Read(stream), UserClaims.NameOf(User)), cancellationToken);
+        return await sender.Send(new ImportDailySalesCommand(date, DailySalesWorkbook.Read(stream), UserClaims.NameOf(User)), cancellationToken);
     }
 }
+
+public sealed record DailySalesRequest(Guid Id, DateOnly Date, IReadOnlyList<DailySaleLine>? Lines);
 
 public sealed record RefundRequest(Guid? LinePublicId, int? Quantity);
 

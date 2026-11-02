@@ -213,34 +213,45 @@ public class CostingApiTests
         var items = (await Json(await manager.GetAsync("/api/menu", Cancel))).GetProperty("items").EnumerateArray().ToDictionary(i => i.GetProperty("id").GetInt32());
         Assert.Equal(["Half kilo", "Kilo"], items[6301].GetProperty("sizes").EnumerateArray().Select(s => s.GetProperty("name").GetString()));
 
-        // The sales' template: a receipt of two lines, a day's totals, and a row naming nothing on the menu.
-        using (var sales = new XLWorkbook(await (await manager.GetAsync("/api/sales/template", Cancel)).Content.ReadAsStreamAsync(Cancel)))
+        // The day's sales template: the item from the menu's list, and how many sold.
+        var dailyTemplate = await manager.GetAsync("/api/sales/daily/template", Cancel);
+        Assert.Equal("daily-sales-template.xlsx",
+            dailyTemplate.Content.Headers.ContentDisposition!.FileNameStar ?? dailyTemplate.Content.Headers.ContentDisposition.FileName);
+        using (var sales = new XLWorkbook(await dailyTemplate.Content.ReadAsStreamAsync(Cancel)))
         {
-            var sheet = sales.Worksheet("Sales");
+            var sheet = sales.Worksheet("Daily Sales");
             object[][] rows =
             [
-                ["R-77", Iso(today), "20:15", "Delivery", "Visa", 6201, "", "", 2, 190, 0, 20, 29.4, 0, 0, ""],
-                ["R-77", Iso(today), "20:15", "Delivery", "Visa", "Mixed grill", "Kilo", "", 1, "", "", "", "", "", "", ""],
-                ["", Iso(today), "", "", "", 6201, "", "", 10, 950, "", "", "", "", "", ""],
-                ["R-78", Iso(today), "21:00", "", "", "Shawarma", "", "", 1, "", "", "", "", "", "", ""],
+                ["6201 · Cheese crepe", 12],
+                ["6301-" + items[6301].GetProperty("sizes").EnumerateArray().Single(z => z.GetProperty("name").GetString() == "Kilo").GetProperty("id").GetInt32()
+                    + " · Mixed grill (Kilo)", 2],
+                ["Cheese crepe", 3],
+                ["Shawarma", 1],
             ];
             for (var r = 0; r < rows.Length; r++)
                 for (var c = 0; c < rows[r].Length; c++)
                     sheet.Cell(r + 2, c + 1).Value = XLCellValue.FromObject(rows[r][c]);
-            var imported = await Json(await manager.PostAsync("/api/sales/import", Sheet(sales, "sales.xlsx"), Cancel));
-            Assert.Equal((2, 3), (imported.GetProperty("receipts").GetInt32(), imported.GetProperty("lines").GetInt32()));
+
+            // Not a storekeeper's: Sales is not their section.
+            var storekeeper = await api.UserAsync(manager, "Samir", UserRole.Storekeeper);
+            Assert.Equal(HttpStatusCode.Forbidden, (await storekeeper.PostAsync($"/api/sales/daily/import?date={Iso(today)}", Sheet(sales, "day.xlsx"), Cancel)).StatusCode);
+
+            var imported = await Json(await manager.PostAsync($"/api/sales/daily/import?date={Iso(today)}", Sheet(sales, "day.xlsx"), Cancel));
+            Assert.Equal((2, 17, 15 * 95 + 2 * 500m), (imported.GetProperty("items").GetInt32(), imported.GetProperty("quantity").GetInt32(),
+                imported.GetProperty("value").GetDecimal()));
             var skipped = imported.GetProperty("skipped").EnumerateArray().Single();
-            Assert.Equal((5, "There is no Shawarma on the menu: add it on Menu, or check its number."),
+            Assert.Equal((5, "There is no Shawarma on the menu: choose the item from the list, or add it on Menu first."),
                 (skipped.GetProperty("row").GetInt32(), skipped.GetProperty("reason").GetString()));
 
-            // Imported again: the numbered receipt is there already.
-            Assert.Equal(1, (await Json(await manager.PostAsync("/api/sales/import", Sheet(sales, "sales.xlsx"), Cancel))).GetProperty("alreadyRecorded").GetInt32());
+            // The same day again: refused, said why.
+            var again = await manager.PostAsync($"/api/sales/daily/import?date={Iso(today)}", Sheet(sales, "day.xlsx"), Cancel);
+            Assert.Equal(HttpStatusCode.UnprocessableEntity, again.StatusCode);
+            Assert.Contains("are entered already", await again.Content.ReadAsStringAsync(Cancel));
         }
 
         var report = await Json(await manager.GetAsync($"/api/sales?from={Iso(today)}&to={Iso(today)}", Cancel));
-        var r77 = report.GetProperty("receipts").EnumerateArray().Single(r => r.GetProperty("reference").GetString() == "R-77");
-        Assert.Equal((690m, 739.4m, "Delivery", "Visa"), (r77.GetProperty("subtotal").GetDecimal(), r77.GetProperty("totalAmount").GetDecimal(),
-            r77.GetProperty("channel").GetString(), r77.GetProperty("paymentMethod").GetString()));
+        var day = report.GetProperty("receipts").EnumerateArray().Single();
+        Assert.Equal(("DailySummary", 2), (day.GetProperty("source").GetString(), day.GetProperty("lines").GetArrayLength()));
     }
 
     [Fact]
@@ -311,10 +322,18 @@ public class CostingApiTests
         var manager = await api.ManagerAsync();
         var (_, large, _) = await PizzaAsync(manager);
         var today = await TodayAsync(manager);
-        await Json(await manager.PostAsJsonAsync("/api/sales", new
+        // The day's sales summary, and its Z report: 820.80 taken, 600 cash and 220.80 by card, 100.80 of it tax.
+        await Json(await manager.PostAsJsonAsync("/api/sales/daily", new
         {
-            id = Guid.NewGuid(), date = Iso(today), channel = "DineIn", paymentMethod = "Cash", lines = new[] { new { menuItemId = 6101, variantId = large, quantity = 4 } },
+            id = Guid.NewGuid(), date = Iso(today), lines = new[] { new { menuItemId = 6101, variantId = large, quantity = 4 } },
         }, Cancel));
+        var takings = await Json(await manager.PostAsJsonAsync("/api/financials/vouchers", new
+        {
+            requestId = Guid.NewGuid(), transactionId = Guid.NewGuid(), kind = "RevenueTransfer", amount = 600, date = Iso(today), revenueDate = Iso(today),
+            cardAmount = 220.80, taxAmount = 100.80, voidsAmount = 15, notes = "A pizza dropped",
+        }, Cancel));
+        Assert.Equal((600m, 220.80m, 100.80m, 15m, 720m), (takings.GetProperty("amount").GetDecimal(), takings.GetProperty("cardAmount").GetDecimal(),
+            takings.GetProperty("taxAmount").GetDecimal(), takings.GetProperty("voidsAmount").GetDecimal(), takings.GetProperty("netAmount").GetDecimal()));
         // The tax rate is the financials' own, set beside the service charge.
         var settings = await Json(await manager.PutAsJsonAsync("/api/financials/settings", new { servicePercent = 12, taxPercent = 14 }, Cancel));
         Assert.Equal((12m, 14m), (settings.GetProperty("servicePercent").GetDecimal(), settings.GetProperty("taxPercent").GetDecimal()));
@@ -329,7 +348,14 @@ public class CostingApiTests
             Assert.True((await manager.GetAsync(path, Cancel)).IsSuccessStatusCode, path);
 
         var kpis = await Json(await manager.GetAsync($"/api/costing/kpis?year={today.Year}&month={today.Month}", Cancel));
-        Assert.Equal(720m, kpis.GetProperty("statement").GetProperty("foodSales").GetDecimal());
+        var statement = kpis.GetProperty("statement");
+        // Revenue is the net sales: the tax collected is kept apart, owed.
+        Assert.Equal((720m, 720m, 820.80m, 100.80m), (statement.GetProperty("foodSales").GetDecimal(), statement.GetProperty("revenue").GetDecimal(),
+            statement.GetProperty("grossTakings").GetDecimal(), statement.GetProperty("taxCollected").GetDecimal()));
+        var reconciled = (await Json(await manager.GetAsync($"/api/financials/reconciliation?from={Iso(today)}&to={Iso(today)}", Cancel)))
+            .GetProperty("total");
+        Assert.Equal((720m, 720m, 0m), (reconciled.GetProperty("netSales").GetDecimal(), reconciled.GetProperty("itemSales").GetDecimal(),
+            reconciled.GetProperty("difference").GetDecimal()));
         var card = await Json(await manager.GetAsync($"/api/costing/recipe-card?targetKind=MenuItem&catalogItemId=6101&variantId={large}", Cancel));
         Assert.Equal((45m, 180m), (card.GetProperty("costPerPortion").GetDecimal(), card.GetProperty("menuPrice").GetDecimal()));
     }

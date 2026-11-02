@@ -16,12 +16,12 @@ works it.
 | Recipes (الوصفات) | `/costing/recipes` | Recipe cards, prep items (مصنعات) and recipe categories |
 | Production (الإنتاج) | `/costing/production` | Prep items made in batches |
 | Menu (قائمة الطعام) | `/costing/menu` | Categories, items, sizes, add-ons; an Excel import |
-| Sales (المبيعات) | `/costing/sales` | Bills entered or imported, refunds and voids |
+| Sales (المبيعات) | `/costing/sales` | Each day's sales summary, entered or imported from its sheet, for stock and food cost |
 | Purchases (المشتريات) | `/costing/purchases` | Invoices, the day's batch, suppliers, categories |
 | Expense items (المصروفات العمومية) | `/costing/expense-items` | General expenses, never stock |
 | Stock counts (الجرد) | `/costing/counts` | Counts drafted, then posted |
 | Waste (الهالك) | `/costing/waste` | Spoilage, and breakage |
-| Financials (الماليات) | `/costing/financials` | The safe, funding, takings, vouchers, suppliers owed and paid, advances, staff, tax and service |
+| Financials (الماليات) | `/costing/financials` | The safe, funding, each day's takings (cash, card, tax, voids), vouchers, suppliers owed and paid, advances, staff, tax and service |
 | Reports (التقارير) | `/costing/reports` | Spending, theoretical cost, variance, KPIs, break-even |
 | Cost settings (إعدادات التكاليف) | `/costing/settings` | Cost targets, beverage categories, shared costs, monthly expenses |
 | Approvals (طلبات معلقة) | `/costing/approvals` | What waits for a manager |
@@ -187,14 +187,27 @@ approval is not added and said why, in English and Arabic, and the rest are.
 
 ## Sales
 
-A sale (`SalesReceipt`) is a bill: its day and time, its reference, how it was sold (dine in,
-takeaway, delivery, online) and paid (cash, Visa, Instapay), its lines, and the discount, delivery
-fee, tax, points and refund on it. Entered on Sales (a bill, or a day's totals as one) or imported
-from a sheet (`GET /api/sales/template`, `POST /api/sales/import`); a sale with a reference
-already recorded is not recorded again, and the import says how many were.
+Sales are entered for stock and food cost only: what each day sold, item by item, as its Z report
+gives it. No bills, times, payments or tax here: the day's money is its takings (see Financials).
 
-**Each line takes its stock by its recipe as it is recorded**, at the materials' average cost
-then:
+**A day's sales summary (ملخص المبيعات اليومية)** is the date and each item sold with how many: an
+item, or each size of one sold by size, found by its code or name as it is typed (`POST
+/api/sales/daily`). It is valued at the menu's prices, before tax, for the theoretical cost, the
+variance and the reconciliation. An item on two rows is one line of both.
+
+**The day's sheet** has two columns, the item (chosen from a dropdown of every menu item and size by
+its code, "6101-2 · Margherita (Large)"; its code or name typed alone is found too) and the
+quantity sold. The day is chosen when it is imported (`GET /api/sales/daily/template`, `POST
+/api/sales/daily/import?date=`). A row that cannot be read is left out and said why, in English and
+Arabic; the rest are recorded.
+
+**One summary a day.** A second for a day already entered, by hand or by sheet, is refused, naming
+it. To change a day, void it (`ApprovalModule.Sale`, a manager's or on their approval), which puts
+back all the stock it took, and enter it again.
+
+**Each item takes its stock by its recipe as it is recorded** (`Sale`), at the materials' average
+cost then. A bill entered as printed (`POST /api/sales`, for scripts and older data) is still read
+the same way by every report, its voids and refunds as before:
 
 | A line | Its stock | On the reports |
 | --- | --- | --- |
@@ -203,17 +216,8 @@ then:
 | Voided after the kitchen | Taken as waste (`Waste`) | The kitchen's waste |
 | Refunded after payment | Taken (`Sale`), then put back (`VoidReturn`) | Not sold |
 
-**A refund** (`POST /api/sales/{saleId}/refund`, a line and how many) splits what is handed back
-off its line: its share of what was charged goes into the sale's refund, the same share as the
-till's own refunds (the line's total over the bill's subtotal, of the total charged), and the
-last refunded on a bill takes whatever is left of it. The cost reports count only what stayed
-sold.
-
-**A void** (`ApprovalModule.Sale`) puts back everything the sale took (each `Sale`, `Waste` and
-`VoidReturn` movement reversed) and takes it out of the reports.
-
 The theoretical cost, the variance and the KPIs read the sales from here; a month whose sales are
-not entered bill by bill can be typed in item by item on Theoretical cost.
+not entered day by day can be typed in item by item on Theoretical cost.
 
 ## Staff
 
@@ -260,12 +264,36 @@ Spoilage takes materials or prep items from stock at their cost. Breakage (كس�
 broken (a plate, a glass): its description, how many and what each cost, and who broke it if
 known; its cost counts on the day, and voiding it (on approval) takes it off.
 
-## Financials and the tax
+## Financials: takings, tax and the safe
 
-The safe, its funding and the day's takings are as the till kept them: the takings entered gross,
-what was paid out of them taken off, the rest into the safe. The tax rate is set on Financials →
-Tax & service (`FinancialSettings.TaxPercent`, a manager's): a day's takings entered with the tax
-in them have it taken off at this rate, and a sale entered has it put on its bill.
+**A day's takings (توريد إيراد اليومية)** are entered once a day from its Z report, on Financials →
+Safe → Takings in (or a day on Funding with sales and no takings yet):
+
+| Field | Stored as | What it does |
+| --- | --- | --- |
+| Date (تاريخ اليومية) | `RevenueDate` | The business day the takings are of |
+| Cash (إيراد الكاش) | `GrossAmount` | Into the safe, less what was paid straight out of it |
+| Visa / Card (إيراد الفيزا) | `CardAmount` | To the bank: never in the safe |
+| Total tax collected (إجمالي الضريبة المحصلة) | `TaxAmount` | Owed to the tax authority: never revenue |
+| Voids & refunds (قيمة الفويد والمرتجعات) | `VoidsAmount` | Said, not taken off again (cash and card are after them) |
+| Void reasons / notes (أسباب الفويد وملاحظات اليومية) | `Notes`, up to 500 characters | Why |
+
+Cash or card must be more than nothing, and the tax no more than both. A day entered already is
+refused: void that entry (it puts the cash back on the day it is voided) and enter it again.
+
+**Tax is separate from revenue.** Gross takings = cash + card = net sales + tax. The P&L (Reports →
+KPIs, and the break-even) takes revenue as the month's **net sales**: its takings less the tax
+collected in them, shared between food and drinks as the month's sales are at the menu's prices.
+The tax collected is shown above it, owed, and never reaches gross or net profit. The voids are said
+beside it.
+
+**The safe** moves by cash only: each day's cash less what the day's takings paid (invoices,
+suppliers, advances, salaries paid out of the drawer). Card takings and tax are on the takings, the
+day-by-day list on Funding (cash, card, tax, net sales, voids, paid out, into the safe) and the
+reconciliation, which sets each day's net sales against its sales at the menu's prices.
+
+The tax rate on Financials → Tax & service (`FinancialSettings.TaxPercent`, a manager's) is kept for
+the bills entered as printed; a day's takings carry the tax as the Z report gives it.
 
 ## Company settings and the business day
 

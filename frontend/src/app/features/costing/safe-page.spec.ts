@@ -79,7 +79,7 @@ describe('the safe', () => {
     );
   });
 
-  it('shows the tax in a day’s takings entered with it, and what they were before it', async () => {
+  it('shows a day’s takings worked out at the till’s rate: the tax in them, and the net sales', async () => {
     safe.mockReturnValue(of({
       ...month,
       entries: [entry({ id: 't', kind: 'RevenueTransfer', description: 'Takings of 12 Oct', in: 1_140, balance: 13_140, includesTax: true, taxPercent: 14, tax: 140 })],
@@ -87,23 +87,24 @@ describe('the safe', () => {
     const { el } = await render();
 
     expect(text(el.querySelectorAll('tbody tr')[1].querySelectorAll('td')[1])).toBe(
-      'Takings in Takings of 12 Oct Tax in it at 14%: L.E 140.00 · L.E 1,000.00 before tax',
+      'Takings in Takings of 12 Oct Cash L.E 1,140.00 · tax L.E 140.00 at 14% · net sales L.E 1,000.00',
     );
   });
 
-  it('shows a day’s takings entered gross: what reached the safe, and the tax in the gross', async () => {
+  it('shows a day’s Z report: its cash, what of it reached the safe, its card, the tax collected and the net sales', async () => {
     safe.mockReturnValue(of({
       ...month,
       entries: [entry({
-        id: 't', kind: 'RevenueTransfer', description: 'Takings of 13 Oct · L.E 10,495.00 gross, less L.E 1,454.07 paid out of them', in: 9_040.93,
-        balance: 21_040.93, gross: 10_495, includesTax: true, taxPercent: 14, tax: 1_288.86,
+        id: 't', kind: 'RevenueTransfer', description: 'Takings of 13 Oct · L.E 10,495.00 cash, less L.E 1,454.07 paid out of it · L.E 2,000.00 card, to the bank',
+        in: 9_040.93, balance: 21_040.93, gross: 10_495, card: 2_000, includesTax: true, taxPercent: null, tax: 1_535,
       })],
     }));
     const { el } = await render();
 
     const cells = el.querySelectorAll('tbody tr')[1].querySelectorAll('td');
     expect(text(cells[1])).toBe(
-      'Takings in Takings of 13 Oct · L.E 10,495.00 gross, less L.E 1,454.07 paid out of them Tax in it at 14%: L.E 1,288.86 · L.E 9,206.14 before tax',
+      'Takings in Takings of 13 Oct · L.E 10,495.00 cash, less L.E 1,454.07 paid out of it · L.E 2,000.00 card, to the bank ' +
+        'Cash L.E 10,495.00 · card L.E 2,000.00 · tax L.E 1,535.00 · net sales L.E 10,960.00',
     );
     expect(text(cells[2])).toBe('L.E 9,040.93');
   });

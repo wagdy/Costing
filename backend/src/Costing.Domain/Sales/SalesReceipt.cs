@@ -45,6 +45,11 @@ public enum SalesSource
 
     // Imported from a sheet: a point of sale's export.
     Imported = 2,
+
+    // A day's sales summary (ملخص المبيعات اليومية): what each item sold that day, entered or
+    // imported from the day's sheet, for its stock and its theoretical cost. No bills, no money
+    // taken: the day's money is its takings, on Financials. One a day.
+    DailySummary = 3,
 }
 
 // One sale (فاتورة بيع): a bill paid, what was on it and how it added up, as a point of sale
@@ -283,4 +288,7 @@ public interface ISalesReceiptRepository : IRepository<SalesReceipt>
 
     // The point of sale's numbers already recorded, of those asked.
     Task<IReadOnlySet<string>> GetReferencesAsync(IReadOnlyCollection<string> references, CancellationToken cancellationToken = default);
+
+    // A business day's sales summary, if one is entered and not voided, with its lines.
+    Task<SalesReceipt?> GetDailySummaryAsync(DateOnly date, CancellationToken cancellationToken = default);
 }

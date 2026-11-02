@@ -30,8 +30,10 @@ public enum KpiStatus
 // below for a margin.
 public sealed record Kpi(string Key, decimal? Value, decimal? HealthyFrom, decimal? HealthyTo, bool HighIsBad, KpiStatus Status, string? Missing);
 
-// The month as an income statement, the KPIs' ground. Revenue is before VAT, after promo
-// discounts; points are a payment, not a discount, as the delivery system counts them.
+// The month as an income statement, the KPIs' ground. Revenue is the month's net sales: its takings
+// as each day's Z report gave them, cash and card, less the tax collected in them, which is owed to
+// the tax authority and never the restaurant's (Gross takings = Net sales + Tax). Split between
+// food and drinks as the month's sales summaries are, at the menu's prices.
 public sealed record MonthStatement(
     decimal FoodSales,
     decimal BeverageSales,
@@ -68,7 +70,17 @@ public sealed record MonthStatement(
     decimal TotalExpenses = 0,
     // Consumable assets broken in the month (Costing → Waste's breakage), at their cost. Said, not
     // counted again: what they cost was counted when they were bought, as an expense.
-    decimal Breakage = 0);
+    decimal Breakage = 0,
+    // The month's takings: cash and card, their total, the tax collected in it (a liability, not
+    // revenue), the voids and refunds said, and how many days' takings are entered.
+    decimal CashTakings = 0,
+    decimal CardTakings = 0,
+    decimal GrossTakings = 0,
+    decimal TaxCollected = 0,
+    decimal Voids = 0,
+    int TakingsDays = 0,
+    // What the month's sales summaries come to at the menu's prices, before tax.
+    decimal SalesAtMenuPrices = 0);
 
 public sealed record MonthlyExpensesDto(
     decimal? WagesAndBenefits,
@@ -125,9 +137,9 @@ public sealed class KpiService(CostingDbContext db, IBusinessCalendar clock, Cos
         var (from, _) = clock.Bounds(theoretical.From);
         var (_, to) = clock.Bounds(theoretical.To);
 
-        // Revenue: the paid orders' lines still on the bill, at the till and online, less each
-        // order's promo discount shared over its lines by value, before VAT. Refunded lines are
-        // not revenue.
+        // What was sold, at the menu's prices (a bill entered as printed: what it charged), less each
+        // bill's promo discount shared over its lines by value, before VAT: how the revenue is
+        // split between food and drinks.
         var orders = await ledger.GetAsync(from, to, cancellationToken);
         var categoryOf = await db.MenuItems.AsNoTracking().IgnoreQueryFilters()
             .ToDictionaryAsync(m => m.Id, m => m.Category, cancellationToken);
@@ -151,7 +163,21 @@ public sealed class KpiService(CostingDbContext db, IBusinessCalendar clock, Cos
             }
             deliveryFees += order.DeliveryFee;
         }
-        var revenueTotal = food + drinks + deliveryFees;
+        var soldAtMenuPrices = food + drinks + deliveryFees;
+
+        // Revenue: the month's takings, as each day's Z report gave them, less the tax in them.
+        // A voided day nets out with its reversal.
+        var takings = await db.SafeTransactions.AsNoTracking()
+            .Where(t => t.Kind == SafeTransactionKind.RevenueTransfer && t.RevenueDate >= theoretical.From && t.RevenueDate <= theoretical.To)
+            .ToListAsync(cancellationToken);
+        var (cashTakings, cardTakings) = (takings.Sum(t => t.GrossAmount ?? t.Amount), takings.Sum(t => t.CardAmount));
+        var taxCollected = takings.Sum(t => t.TaxAmount);
+        var revenueTotal = cashTakings + cardTakings - taxCollected;
+        var takingsDays = takings.Where(t => !t.IsReversal && !t.IsVoided).Select(t => t.RevenueDate).Distinct().Count();
+        (food, drinks) = food + drinks > 0
+            ? (revenueTotal * food / (food + drinks), revenueTotal - revenueTotal * food / (food + drinks))
+            : (revenueTotal, 0m);
+        var noTakings = revenueTotal == 0 ? "Enter the month's takings on Financials. · أدخل إيراد الشهر في الماليات." : null;
 
         var foodRecipe = theoretical.Rows.Where(r => !IsBeverage(r.Category)).Sum(r => r.TheoreticalCost);
         var drinksRecipe = theoretical.Rows.Where(r => IsBeverage(r.Category)).Sum(r => r.TheoreticalCost);
@@ -202,16 +228,16 @@ public sealed class KpiService(CostingDbContext db, IBusinessCalendar clock, Cos
         {
             // Losses are counted against food: the stock they come from is mostly the kitchen's.
             Ranged("FoodCost", Share(foodRecipe + lossTotal, food), FoodCostRange, highIsBad: true,
-                food > 0 ? null : "No food was sold this month."),
+                noTakings ?? (food > 0 ? null : "No food was sold this month.")),
             Ranged("BeverageCost", Share(drinksRecipe, drinks), BeverageCostRange, highIsBad: true,
-                beverages.Count == 0 ? "Mark the drinks categories in Settings." : drinks > 0 ? null : "No drinks were sold this month."),
+                beverages.Count == 0 ? "Mark the drinks categories in Settings." : noTakings ?? (drinks > 0 ? null : "No drinks were sold this month.")),
             Ranged("LabourCost", wages is { } wage ? Share(wage, revenueTotal) : null, LabourCostRange, highIsBad: true,
-                wages is null ? "Enter the month's wages and benefits." : null),
-            Unranged("AverageCheck", paidOrders > 0 ? Money(revenueTotal / paidOrders) : null, paidOrders > 0 ? null : "No paid orders this month."),
+                wages is null ? "Enter the month's wages and benefits." : noTakings),
+            // Sales are entered as each day's totals: there are no bills to average.
+            Unranged("AverageCheck", null, "Sales are entered as daily totals, not bills. · المبيعات تُسجل إجماليًا يوميًا."),
             Unranged("SalesPerLabourHour", expenses?.LabourHours is > 0 and var hours ? Money(revenueTotal / hours) : null,
                 expenses?.LabourHours is > 0 ? null : "Enter the month's labour hours."),
-            Ranged("GrossProfitMargin", Share(grossProfit, revenueTotal), GrossMarginRange, highIsBad: false,
-                revenueTotal > 0 ? null : "Nothing was sold this month."),
+            Ranged("GrossProfitMargin", Share(grossProfit, revenueTotal), GrossMarginRange, highIsBad: false, noTakings),
             Ranged("NetProfitMargin", netProfit is { } net ? Share(net, revenueTotal) : null, NetMarginRange, highIsBad: false,
                 wages is null ? "Enter the month's wages and overheads." : null),
         };
@@ -234,11 +260,13 @@ public sealed class KpiService(CostingDbContext db, IBusinessCalendar clock, Cos
         return new KpiReport(
             year, month, theoretical.From, theoretical.To, settings.BeverageCategories,
             new MonthStatement(
-                Money(food), Money(drinks), Money(deliveryFees), Money(revenueTotal), paidOrders,
+                Money(food), Money(drinks), 0, Money(revenueTotal), paidOrders,
                 Money(foodRecipe), Money(drinksRecipe), kitchenWaste, spoilage, countDifferences,
                 Money(costOfSales), Money(grossProfit),
                 expenses?.WagesAndBenefits, expenses?.OtherControllableCosts, expenses?.OccupationCost, expenses?.Interest, expenses?.Depreciation,
-                Money(netProfit), loggedControllable, loggedOccupation, loggedOtherFixed, logged, loggedWages, Money(totalExpenses), breakage),
+                Money(netProfit), loggedControllable, loggedOccupation, loggedOtherFixed, logged, loggedWages, Money(totalExpenses), breakage,
+                Money(cashTakings), Money(cardTakings), Money(cashTakings + cardTakings), Money(taxCollected), Money(takings.Sum(t => t.VoidsAmount)),
+                takingsDays, Money(soldAtMenuPrices)),
             ToDto(expenses), kpis, items,
             withoutRecipe.Count, withoutRecipe.Sum(r => r.NetSales));
     }

@@ -53,7 +53,8 @@ const expenseFields: { key: keyof MonthlyExpenses; en: string; ar: string; hours
         <h2>Financial KPIs <span class="inline-ar">مؤشرات الأداء المالية</span></h2>
         <div class="muted">
           From<span class="inline-ar">من</span>: <strong>{{ r.from }}</strong> &nbsp; To<span class="inline-ar">إلى</span>:
-          <strong>{{ r.to }}</strong> &nbsp;·&nbsp; {{ r.statement.paidOrders }} paid orders
+          <strong>{{ r.to }}</strong> &nbsp;·&nbsp; {{ r.statement.takingsDays ?? 0 }} {{ r.statement.takingsDays === 1 ? 'day' : 'days' }} of takings
+          entered<span class="inline-ar">أيام الإيراد المسجلة</span>
         </div>
       </header>
 
@@ -124,12 +125,22 @@ const expenseFields: { key: keyof MonthlyExpenses; en: string; ar: string; hours
           <div class="table-wrap">
             <table class="grid statement">
               <tbody>
+                <tr class="takings">
+                  <td>Gross takings · إجمالي الإيراد <span class="muted small">cash {{ r.statement.cashTakings ?? 0 | money }} + card {{ r.statement.cardTakings ?? 0 | money }}</span></td>
+                  <td class="num">{{ r.statement.grossTakings ?? 0 | money }}</td>
+                  <td></td>
+                </tr>
+                <tr class="takings tax">
+                  <td>Less tax collected · الضريبة المحصلة <span class="muted small">owed, not revenue</span></td>
+                  <td class="num">({{ r.statement.taxCollected ?? 0 | money }})</td>
+                  <td></td>
+                </tr>
                 <tr><td>Food sales · مبيعات الطعام</td><td class="num">{{ r.statement.foodSales | money }}</td><td class="num muted"></td></tr>
                 <tr><td>Beverage sales · مبيعات المشروبات</td><td class="num">{{ r.statement.beverageSales | money }}</td><td></td></tr>
                 @if (r.statement.deliveryFees) {
                   <tr><td>Delivery fees · رسوم التوصيل</td><td class="num">{{ r.statement.deliveryFees | money }}</td><td></td></tr>
                 }
-                <tr class="total"><td>Revenue · الإيرادات</td><td class="num">{{ r.statement.revenue | money }}</td><td class="num">100%</td></tr>
+                <tr class="total"><td>Revenue (net sales) · صافي المبيعات</td><td class="num">{{ r.statement.revenue | money }}</td><td class="num">100%</td></tr>
                 <tr><td>Food cost · تكلفة الطعام</td><td class="num">{{ r.statement.foodRecipeCost | money }}</td><td class="num muted">{{ pct(r.statement.foodRecipeCost, r) }}</td></tr>
                 <tr><td>Beverage cost · تكلفة المشروبات</td><td class="num">{{ r.statement.beverageRecipeCost | money }}</td><td class="num muted">{{ pct(r.statement.beverageRecipeCost, r) }}</td></tr>
                 <tr><td>Kitchen waste · هالك المطبخ</td><td class="num">{{ r.statement.kitchenWaste | money }}</td><td class="num muted">{{ pct(r.statement.kitchenWaste, r) }}</td></tr>
@@ -186,9 +197,14 @@ const expenseFields: { key: keyof MonthlyExpenses; en: string; ar: string; hours
             </table>
           </div>
           <p class="note small">
-            Revenue is before VAT, after promo discounts. Food and beverage cost: what the sales took by their recipes, with
-            shared costs such as frying oil on the meals. Losses are counted against food. Expenses on the month's posted purchase
-            invoices are taken off on their category's line, with what is entered by hand.
+            Revenue is the month's net sales: its takings, cash and card, less the tax collected in them, which is owed to the tax authority and
+            never profit (gross takings = net sales + tax). Food and beverage sales share it as the month's sales are, at the menu's prices.
+            Food and beverage cost: what the sales took by their recipes, with shared costs such as frying oil on the meals. Losses are counted
+            against food. Expenses on the month's posted purchase invoices are taken off on their category's line, with what is entered by hand.
+            @if (r.statement.voids) {
+              Voids and refunds on the days: {{ r.statement.voids | money }}, already out of the takings.
+            }
+            <span class="note-ar" lang="ar" dir="rtl">الإيراد = صافي المبيعات (الكاش + الفيزا − الضريبة). الضريبة المحصلة التزام على المطعم وليست ربحًا.</span>
           </p>
           @if (r.statement.loggedExpenses?.length) {
             <div class="logged">
@@ -354,6 +370,12 @@ const expenseFields: { key: keyof MonthlyExpenses; en: string; ar: string; hours
       .columns {
         grid-template-columns: 1fr;
       }
+    }
+    .statement tr.takings td {
+      color: var(--mat-sys-on-surface-variant);
+    }
+    .statement .small {
+      font-size: 0.85em;
     }
     .statement tr.total td {
       font-weight: 600;

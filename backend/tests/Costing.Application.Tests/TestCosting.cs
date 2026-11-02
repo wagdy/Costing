@@ -235,6 +235,8 @@ public sealed class SalesStore : ListStore<SalesReceipt>, ISalesReceiptRepositor
     public Task<IReadOnlySet<string>> GetReferencesAsync(IReadOnlyCollection<string> references, CancellationToken cancellationToken = default) =>
         Task.FromResult<IReadOnlySet<string>>(All.Where(r => r.Reference != null && references.Contains(r.Reference, StringComparer.OrdinalIgnoreCase))
             .Select(r => r.Reference!).ToHashSet(StringComparer.OrdinalIgnoreCase));
+    public Task<SalesReceipt?> GetDailySummaryAsync(DateOnly date, CancellationToken cancellationToken = default) =>
+        Task.FromResult(All.FirstOrDefault(r => r.BusinessDate == date && r.Source == SalesSource.DailySummary && !r.IsVoided));
 }
 
 public sealed class StaffStore : ListStore<StaffMember>, IStaffMemberRepository
