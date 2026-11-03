@@ -90,6 +90,7 @@ public static class DependencyInjection
         services.AddScoped<BreakEvenService>();
         services.AddScoped<PurchaseSpendingService>();
         services.AddScoped<TreasuryService>();
+        services.AddScoped<IntelligenceService>();
 
         // The system's users.
         services.AddScoped<UserDirectory>();

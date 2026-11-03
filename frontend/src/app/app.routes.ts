@@ -82,6 +82,20 @@ const costingChildren: Routes = [
     loadComponent: () => import('./features/costing/sales-page').then((m) => m.SalesPage),
   },
   {
+    // Material & demand intelligence: prices and their recipe impact, the order planner,
+    // theoretical against actual consumption, ABC and days on hand.
+    path: 'intelligence',
+    canActivate: [costingTabGuard('Intelligence')],
+    loadComponent: () => import('./features/costing/intelligence-shell').then((m) => m.IntelligenceShell),
+    children: [
+      { path: '', pathMatch: 'full', redirectTo: 'prices' },
+      { path: 'prices', loadComponent: () => import('./features/costing/price-variance-page').then((m) => m.PriceVariancePage) },
+      { path: 'orders', loadComponent: () => import('./features/costing/order-planner-page').then((m) => m.OrderPlannerPage) },
+      { path: 'consumption', loadComponent: () => import('./features/costing/consumption-page').then((m) => m.ConsumptionPage) },
+      { path: 'abc', loadComponent: () => import('./features/costing/abc-page').then((m) => m.AbcPage) },
+    ],
+  },
+  {
     path: 'purchases',
     canActivate: [costingTabGuard('Purchases')],
     loadComponent: () => import('./features/costing/purchases-shell').then((m) => m.PurchasesShell),

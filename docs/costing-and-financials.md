@@ -16,6 +16,7 @@ works it.
 | Recipes (الوصفات) | `/costing/recipes` | Recipe cards, prep items (مصنعات) and recipe categories |
 | Production (الإنتاج) | `/costing/production` | Prep items made in batches |
 | Menu (قائمة الطعام) | `/costing/menu` | Categories, items, sizes, add-ons; an Excel import |
+| Material & demand intelligence (تحليلات الخامات والطلبيات) | `/costing/intelligence` | Purchase price variance and what it does to the recipes, the order planner, theoretical against actual usage, ABC and days on hand; each to Excel |
 | Sales (المبيعات) | `/costing/sales` | Each day's sales summary, entered or imported from its sheet, for stock and food cost |
 | Purchases (المشتريات) | `/costing/purchases` | Invoices, the day's batch, suppliers, categories |
 | Expense items (المصروفات العمومية) | `/costing/expense-items` | General expenses, never stock |
@@ -56,8 +57,8 @@ until a manager ticks a user's own:
 | Role | Permissions | Sections, until a manager ticks theirs |
 | --- | --- | --- |
 | Manager (مدير) | All: `inventory.view`, `inventory.manage`, `costing.view`, `approval.decide`, `users.manage`, `settings.manage` | Every section, always |
-| Accountant (محاسب) | `inventory.view`, `inventory.manage`, `costing.view` | Raw materials, Expense items, Purchases, Financials, Sales, Reports |
-| Cost Controller (مراقب تكاليف) | `inventory.view`, `inventory.manage`, `costing.view` | Raw materials, Recipes, Production, Menu, Sales, Stock counts, Waste, Reports, Cost settings |
+| Accountant (محاسب) | `inventory.view`, `inventory.manage`, `costing.view` | Raw materials, Material & demand intelligence, Expense items, Purchases, Financials, Sales, Reports |
+| Cost Controller (مراقب تكاليف) | `inventory.view`, `inventory.manage`, `costing.view` | Raw materials, Recipes, Production, Menu, Material & demand intelligence, Sales, Stock counts, Waste, Reports, Cost settings |
 | Storekeeper (أمين المخزن) | `inventory.view`, `inventory.manage` | Raw materials, Purchases, Stock counts, Waste, Production |
 
 - **The sections a manager ticks replace the role's.** `UserTabAccess` (`costing.UserTabAccess`)
@@ -203,6 +204,70 @@ records):
 
 Each recipe is checked on its own: one deleted, on the menu already, or waiting for a manager's
 approval is not added and said why, in English and Arabic, and the rest are.
+
+## Material & demand intelligence (تحليلات الخامات والطلبيات)
+
+Under Catalog & Production, four tabs that read the stores as a cost accountant does
+(`/api/costing/intelligence`, the Material & demand intelligence section and `inventory.view`).
+Every quantity is in the material's purchase unit (kg, L, a carton) and every price per it. Each
+tab has its summary cards on top, the list's search, filters and sort, and its Excel sheet with the
+same columns (`…/sheet`).
+
+**Purchase price variance & recipe impact (تغير أسعار الشراء وأثرها على الوصفات)**, over a period
+(`GET prices?from&to`): each material bought in it, on posted invoices by the invoice's date.
+
+- **Baseline**: the moving average the material came in with, replayed from its ledger before the
+  period (each priced delivery or batch averaged in with what was on the shelf, each sale, count or
+  waste at the average then). With no history, the period's first net price.
+- **Latest**: the last net unit cost paid in the period (after the line's discount and its share of
+  the invoice's), and who sold it.
+- **Variance** = latest − baseline, and its % of the baseline. **Impact** = variance × the quantity
+  bought in the period. Sorted by the impact, the largest either way first.
+- **Affected recipes**: every dish and prep item the material goes into, directly or inside a prep
+  item, the quantity of it in a portion (or a purchase unit of the prep item), what that portion
+  costs more or less now, and against the dish's price the food cost points it moves.
+
+**Smart order planner (مخطط الطلبيات الذكي)** (`POST orders`): `{ lookbackDays (1–90),
+coverageDays (1–60), growthPercent (−90 to +500), dishes: [{ menuItemId, variantId, expectedDaily
+}] }`.
+
+- **A dish's expected sales a day**: what it sold a day in the days looked back (to yesterday), × (1
+  + growth %), or as the manager sets it for that dish (or size). The days ahead need that × the
+  coverage days, through the dish's recipe (its add-ons too, in the share they sold with).
+- **Prep items netted first**, each before what it is made with: what is on hand of one (above its
+  reorder level) is used before it is made again, and only what has to be made is broken into its
+  ingredients by the prep item's batch and yield.
+- **Recommended** = max(0, need for the coverage + reorder level − on hand). **Suggested**: that
+  rounded up to whole purchase units. **Estimated cost** = suggested × the latest net price paid (or
+  the material's cost with none). Avg daily usage: what the days looked back took a day, down to
+  bought materials.
+- The **approved** quantity starts at the suggested one and can be changed; the approved order goes
+  to Excel (`POST orders/sheet`), grouped under each category or the supplier who sold it last, with
+  each group's subtotal and the total.
+
+**Theoretical vs actual consumption (الاستهلاك النظري مقابل الفعلي)** (`GET consumption?from&to`),
+each bought material over the period, from the book's stock either side:
+
+- **Actual** = opening + purchases − logged waste − closing. A prep item's waste counts as its
+  ingredients'.
+- **Theoretical** = Σ each dish sold × its recipe's gross quantity, down through the prep items; plus
+  **held in prep**, the change in the prep items' stock in what they are made of (made and not sold
+  yet; below zero when sales used what was made before).
+- **Unexplained** = actual − theoretical; **variance cost** = unexplained × the average cost now. Its
+  % of the theoretical is judged against the variance tolerance in Cost settings: over it,
+  unfavourable (a high loss, the row in red); under minus it, favourable. A shared cost with nothing
+  expected is not judged. Dishes sold with no recipe are listed, since they took nothing.
+
+**ABC & days on hand (تصنيف ABC وكفاية المخزون)** (`GET abc?from&to`), each bought material that
+is not archived:
+
+- **Used**: sold, made into prep items, wasted or short at a count in the period, at the cost when it
+  happened (what had no price then, at the average now). Largest first, by the running share of that
+  worth: **A** while the share before it is under 75%, **B** under 90%, **C** the rest (and anything
+  unused).
+- **Days on hand** = on hand ÷ used a day, over the period's days so far. Under 2: **stockout
+  risk**. Stock on hand with nothing used in the period: **dead or slow stock**, and the money it
+  ties up at the average cost.
 
 ## Sales
 

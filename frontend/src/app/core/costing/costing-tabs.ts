@@ -9,6 +9,7 @@ export type CostingTab =
   | 'Recipes'
   | 'Production'
   | 'Menu'
+  | 'Intelligence'
   | 'Sales'
   | 'Purchases'
   | 'ExpenseItems'
@@ -45,6 +46,10 @@ export const costingTabs: readonly CostingTabInfo[] = [
   { tab: 'Recipes', group: costingGroups.catalog, path: 'recipes', en: 'Recipes', ar: 'الوصفات', icon: 'menu_book', hint: { en: 'Recipe cards, prep items and recipe categories', ar: 'بطاقات الوصفات والمصنعات وأقسامها' } },
   { tab: 'Production', group: costingGroups.catalog, path: 'production', en: 'Production', ar: 'الإنتاج', icon: 'soup_kitchen', hint: { en: 'Prep items made in batches', ar: 'تشغيل المصنعات' } },
   { tab: 'Menu', group: costingGroups.catalog, path: 'menu', en: 'Menu', ar: 'قائمة الطعام', icon: 'restaurant_menu', hint: { en: 'Items, sizes, add-ons and their prices', ar: 'الأصناف والأحجام والإضافات وأسعارها' } },
+  {
+    tab: 'Intelligence', group: costingGroups.catalog, path: 'intelligence', en: 'Material & demand intelligence', ar: 'تحليلات الخامات والطلبيات', icon: 'query_stats',
+    hint: { en: 'Price variance, the order planner, theoretical vs actual usage, ABC', ar: 'انحراف الأسعار وتخطيط الطلبيات والاستهلاك وتصنيف ABC' },
+  },
   { tab: 'Sales', group: costingGroups.operations, path: 'sales', en: 'Sales', ar: 'المبيعات', icon: 'point_of_sale', hint: { en: 'Sales entered or imported, refunds', ar: 'المبيعات المدخلة أو المستوردة والمرتجعات' } },
   { tab: 'Purchases', group: costingGroups.operations, path: 'purchases', en: 'Purchases', ar: 'المشتريات', icon: 'shopping_cart', hint: { en: 'Invoices, the daily batch, suppliers and categories', ar: 'الفواتير ويومية المشتريات والموردين والأقسام' } },
   { tab: 'ExpenseItems', group: costingGroups.operations, path: 'expense-items', en: 'Expense items', ar: 'المصروفات العمومية', icon: 'receipt_long', hint: { en: 'General expenses, not stock', ar: 'المصروفات العامة غير المخزنية' } },

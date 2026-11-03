@@ -47,7 +47,12 @@ public enum CostingTabs
     // The cost targets, beverage categories, shared costs and monthly expenses.
     CostSettings = 1 << 11,
 
-    All = Materials | ExpenseItems | Purchases | Financials | Waste | Counts | Recipes | Production | Menu | Sales | Reports | CostSettings,
+    // Material & demand intelligence: purchase price variance and what it does to the recipes, the
+    // order planner, theoretical against actual consumption, ABC and days on hand.
+    Intelligence = 1 << 12,
+
+    All = Materials | ExpenseItems | Purchases | Financials | Waste | Counts | Recipes | Production | Menu | Sales | Reports | CostSettings
+        | Intelligence,
 }
 
 public static class CostingTabSet
@@ -55,7 +60,8 @@ public static class CostingTabSet
     // In the order the sections are shown.
     public static readonly IReadOnlyList<CostingTabs> Each =
     [
-        CostingTabs.Materials, CostingTabs.Recipes, CostingTabs.Production, CostingTabs.Menu, CostingTabs.Sales, CostingTabs.Purchases,
+        CostingTabs.Materials, CostingTabs.Recipes, CostingTabs.Production, CostingTabs.Menu, CostingTabs.Intelligence, CostingTabs.Sales,
+        CostingTabs.Purchases,
         CostingTabs.ExpenseItems, CostingTabs.Counts, CostingTabs.Waste, CostingTabs.Financials, CostingTabs.Reports, CostingTabs.CostSettings,
     ];
 
@@ -72,9 +78,9 @@ public static class CostingTabSet
     {
         UserRole.Manager => CostingTabs.All,
         UserRole.Accountant => CostingTabs.Materials | CostingTabs.ExpenseItems | CostingTabs.Purchases | CostingTabs.Financials | CostingTabs.Sales
-            | CostingTabs.Reports,
+            | CostingTabs.Reports | CostingTabs.Intelligence,
         UserRole.CostController => CostingTabs.Materials | CostingTabs.Recipes | CostingTabs.Production | CostingTabs.Menu | CostingTabs.Sales
-            | CostingTabs.Counts | CostingTabs.Waste | CostingTabs.Reports | CostingTabs.CostSettings,
+            | CostingTabs.Counts | CostingTabs.Waste | CostingTabs.Reports | CostingTabs.CostSettings | CostingTabs.Intelligence,
         UserRole.Storekeeper => CostingTabs.Materials | CostingTabs.Purchases | CostingTabs.Counts | CostingTabs.Waste | CostingTabs.Production,
         _ => CostingTabs.None,
     };

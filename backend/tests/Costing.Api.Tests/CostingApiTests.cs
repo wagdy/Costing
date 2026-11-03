@@ -77,7 +77,7 @@ public class CostingApiTests
         async Task<string[]> Tabs(HttpClient client) =>
             (await Json(await client.GetAsync("/api/auth/me", Cancel))).GetProperty("tabs").EnumerateArray().Select(t => t.GetString()!).ToArray();
 
-        Assert.Equal(12, (await Tabs(manager)).Length);
+        Assert.Equal(13, (await Tabs(manager)).Length);
         Assert.Equal(["Materials", "Production", "Purchases", "Counts", "Waste"], await Tabs(storekeeper));
 
         // The safe: the accountant's and a manager's; not the storekeeper's nor the cost controller's.
@@ -88,6 +88,9 @@ public class CostingApiTests
         Assert.Equal(HttpStatusCode.OK, await Get(controller, "/api/inventory/production-orders"));
         Assert.Equal(HttpStatusCode.Forbidden, await Get(accountant, "/api/inventory/production-orders"));
         Assert.Equal(HttpStatusCode.OK, await Get(accountant, "/api/costing/recipes"));
+        // The intelligence reports: costs, so not the storekeeper's.
+        Assert.Equal(HttpStatusCode.OK, await Get(controller, "/api/costing/intelligence/abc?from=2026-10-01&to=2026-10-31"));
+        Assert.Equal(HttpStatusCode.Forbidden, await Get(storekeeper, "/api/costing/intelligence/abc?from=2026-10-01&to=2026-10-31"));
         // Everyone's materials list; the counts the storekeeper's.
         Assert.Equal(HttpStatusCode.OK, await Get(storekeeper, "/api/inventory/raw-materials"));
         Assert.Equal(HttpStatusCode.OK, await Get(storekeeper, "/api/inventory/stock-counts"));
@@ -648,6 +651,48 @@ public class CostingApiTests
         Assert.Equal(("Posted", "receipt.jpg"), (attached.GetProperty("status").GetString(), attached.GetProperty("attachment").GetProperty("fileName").GetString()));
         var listed = (await Json(await manager.GetAsync("/api/inventory/purchase-invoices?status=Posted", Cancel))).EnumerateArray().Single();
         Assert.Equal(("receipt.jpg", 280m), (listed.GetProperty("attachmentFileName").GetString(), listed.GetProperty("total").GetDecimal()));
+    }
+
+    // Material & demand intelligence: each report as a table and as a workbook, the order planned
+    // from the sales and downloaded as approved.
+    [Fact]
+    public async Task The_intelligence_reports_answer_and_download_as_workbooks()
+    {
+        await using var api = await TestApi.StartAsync();
+        var manager = await api.ManagerAsync();
+        var today = await TodayAsync(manager);
+        var flour = (await Json(await manager.PostAsJsonAsync("/api/inventory/raw-materials", new
+        {
+            name = "Flour", unit = "Gram", purchaseUnit = "kg", purchaseUnitSize = 1000, costPerPurchaseUnit = 30, reorderLevel = 5000,
+        }, Cancel))).GetProperty("id").GetGuid();
+        var period = $"from={Iso(today.AddDays(-6))}&to={Iso(today)}";
+
+        foreach (var report in new[] { "prices", "consumption", "abc" })
+        {
+            Assert.True((await manager.GetAsync($"/api/costing/intelligence/{report}?{period}", Cancel)).IsSuccessStatusCode, report);
+            var sheet = await manager.GetAsync($"/api/costing/intelligence/{report}/sheet?{period}", Cancel);
+            Assert.Equal("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", sheet.Content.Headers.ContentType!.MediaType);
+            using var book = new XLWorkbook(await sheet.Content.ReadAsStreamAsync(Cancel));
+            Assert.NotEmpty(book.Worksheets);
+        }
+
+        // Nothing sold: the flour is ordered up to its reorder level, 5 kg, at its price.
+        var plan = await Json(await manager.PostAsJsonAsync("/api/costing/intelligence/orders", new { lookbackDays = 7, coverageDays = 7, growthPercent = 0 }, Cancel));
+        var line = plan.GetProperty("lines").EnumerateArray().Single();
+        Assert.Equal((5m, 150m), (line.GetProperty("suggested").GetDecimal(), line.GetProperty("estimatedCost").GetDecimal()));
+        var order = await manager.PostAsJsonAsync("/api/costing/intelligence/orders/sheet", new
+        {
+            lines = new[] { new { rawMaterialId = flour, quantity = 6 } }, groupBy = "Supplier", coverageDays = 7,
+        }, Cancel);
+        Assert.True(order.IsSuccessStatusCode, await order.Content.ReadAsStringAsync(Cancel));
+        using (var book = new XLWorkbook(await order.Content.ReadAsStreamAsync(Cancel)))
+        {
+            // The supplier's heading, the line, its subtotal, and the total: 6 kg at 30.
+            var sheet = book.Worksheet("Order");
+            Assert.Equal(("No supplier yet", 180d), (sheet.Cell(5, 1).GetString(), sheet.Cell(8, 6).GetDouble()));
+        }
+        Assert.Equal(HttpStatusCode.UnprocessableEntity,
+            (await manager.PostAsJsonAsync("/api/costing/intelligence/orders", new { lookbackDays = 0, coverageDays = 7 }, Cancel)).StatusCode);
     }
 
     private static MultipartFormDataContent File(byte[] content, string name)
