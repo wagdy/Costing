@@ -15,7 +15,7 @@ namespace Costing.Api.Controllers;
 [Authorize(Policy = Permissions.InventoryView)]
 public sealed class CostingController(
     CostingService costing, VarianceService variance, KpiService kpis, BreakEvenService breakEven, PurchaseSpendingService spending,
-    MediatR.ISender sender, Costing.Application.Common.IBusinessCalendar calendar) : ControllerBase
+    TreasuryService treasury, MediatR.ISender sender, Costing.Application.Common.IBusinessCalendar calendar) : ControllerBase
 {
     // Raw materials with their costs: what each costs per purchase unit, the last price paid, and
     // the stock's value.
@@ -123,6 +123,13 @@ public sealed class CostingController(
     [CostingTab(CostingTabs.Reports | CostingTabs.CostSettings)]
     public Task<SpendingReport> GetSpending([FromQuery] DateOnly from, [FromQuery] DateOnly to, CancellationToken cancellationToken) =>
         spending.GetAsync(from, to, cancellationToken);
+
+    // The safe between two days, both included: where its money came from and went, the tax held
+    // for the tax authority, and day by day.
+    [HttpGet("treasury")]
+    [CostingTab(CostingTabs.Reports | CostingTabs.Financials)]
+    public Task<TreasuryAnalytics> GetTreasury([FromQuery] DateOnly from, [FromQuery] DateOnly to, CancellationToken cancellationToken) =>
+        treasury.GetAnalyticsAsync(from, to, cancellationToken);
 
     // The break-even worksheet over a run of months (one month: from = to), at a year's pace.
     [HttpGet("break-even")]

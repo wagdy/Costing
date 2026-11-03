@@ -311,31 +311,63 @@ known; its cost counts on the day, and voiding it (on approval) takes it off.
 
 ## Financials: takings, tax and the safe
 
+**The safe is the one treasury.** Everything collected goes into it: the cash, the Visa and the tax
+collected on them, as well as the opening balance and any funding. Everything paid goes out of it:
+invoices paid in cash, supplier payments, expense vouchers, tax paid over, advances and salaries.
+
 **A day's takings (توريد إيراد اليومية)** are entered once a day from its Z report, on Financials →
-Safe → Takings in (or a day on Funding with sales and no takings yet):
+Safe → Takings in (or a day on Funding with sales and no takings yet), in this order:
 
 | Field | Stored as | What it does |
 | --- | --- | --- |
 | Date (تاريخ اليومية) | `RevenueDate` | The business day the takings are of |
-| Cash (إيراد الكاش) | `GrossAmount` | Into the safe, less what was paid straight out of it |
-| Visa / Card (إيراد الفيزا) | `CardAmount` | To the bank: never in the safe |
-| Total tax collected (إجمالي الضريبة المحصلة) | `TaxAmount` | Owed to the tax authority: never revenue |
-| Voids & refunds (قيمة الفويد والمرتجعات) | `VoidsAmount` | Said, not taken off again (cash and card are after them) |
+| Cash (إيراد الكاش) | `GrossAmount` | Cash sales before tax: revenue, into the safe |
+| Visa / Card (إيراد الفيزا) | `CardAmount` | Visa sales before tax: revenue, into the safe |
+| Total tax collected (إجمالي الضريبة المحصلة) | `TaxAmount` | Collected on top: into the safe, owed to the tax authority, never revenue |
+| Voids & refunds (قيمة الفويد والمرتجعات) | `VoidsAmount` | Said, not taken off again (cash and Visa are after them) |
 | Void reasons / notes (أسباب الفويد وملاحظات اليومية) | `Notes`, up to 500 characters | Why |
 
-Cash or card must be more than nothing, and the tax no more than both. A day entered already is
-refused: void that entry (it puts the cash back on the day it is voided) and enter it again.
+Cash or Visa must be more than nothing, and the tax no more than both. A day entered already is
+refused: void that entry (it takes it back out on the day it is voided) and enter it again. The
+dialog shows, as it is typed:
 
-**Tax is separate from revenue.** Gross takings = cash + card = net sales + tax. The P&L (Reports →
-KPIs, and the break-even) takes revenue as the month's **net sales**: its takings less the tax
-collected in them, shared between food and drinks as the month's sales are at the menu's prices.
-The tax collected is shown above it, owed, and never reaches gross or net profit. The voids are said
-beside it.
+- **Net sales revenue (صافي إيراد المبيعات)** = Cash + Visa: the P&L's revenue.
+- **Tax collected (الضريبة المحصلة)** = Tax: a liability held in the safe.
+- **Total inflow into the safe (إجمالي الوارد للخزنة)** = Cash + Visa + Tax, less what was paid
+  straight out of the day's takings before they were entered (invoices, suppliers, advances,
+  salaries paid out of the drawer).
 
-**The safe** moves by cash only: each day's cash less what the day's takings paid (invoices,
-suppliers, advances, salaries paid out of the drawer). Card takings and tax are on the takings, the
-day-by-day list on Funding (cash, card, tax, net sales, voids, paid out, into the safe) and the
-reconciliation, which sets each day's net sales against its sales at the menu's prices.
+**Tax is never revenue and never an expense.** The P&L (Reports → KPIs, and the break-even) takes
+revenue as the month's net sales, shared between food and drinks as the month's sales are at the
+menu's prices; gross takings (cash + Visa + tax) and the tax are shown above it. The tax is paid
+over with an **Expense voucher** marked **Tax remittance (سداد/توريد ضرائب)**: a `TaxPayment` entry,
+out of the safe, which lowers the tax owed and stays off the P&L. It is listed with the expense
+vouchers, marked, and kept out of their total. The dialog shows the tax held now and what it leaves.
+
+**The Safe tab's strip** reads a month from start to finish:
+
+1. Total cash revenue · 2. Total Visa revenue · 3. Total tax collected (with the tax held now)
+4. Total in / receipts = cash + Visa + tax + funding + the balance the month opened with (its
+   opening balance and external funding shown beneath)
+5. Total out / payments: every payment, what the takings paid straight out of them too
+6. In the safe now · 7. Closing balance = Total in − Total out
+
+An entry voided in the month and its void are in neither; an earlier month's entry voided this
+month counts here, against its own line. Each takings row in the ledger shows its Cash, Visa, Tax
+and Net sales as badges (and what was paid out of it), its In what reached the safe.
+
+**Reports → Safe & treasury (تحليل الخزنة والتدفقات النقدية)** counts any period the same way: where
+the money came from (cash sales, Visa sales, tax collected, opening balance, external funding) and
+where it went (supplier payments and cash purchases, operating expense vouchers by category, staff
+advances and wages, tax paid over), each as a pie and a table of amounts and shares; the tax
+liability reconciliation to the period's last day (collected − paid over = still owed in the safe);
+and day by day, total in, total out, net cash flow, the running balance, and the voids with their
+reasons. What the takings paid straight out of them is counted under what it paid for.
+
+**Takings entered before this** had the tax inside their cash and card, and only the cash in the
+safe. Migration `UnifySafeTakings` took the tax off the cash and card in proportion, so cash + Visa +
+tax still add up to what was collected and the net sales are unchanged, and added each day's Visa
+to what reached the safe: from then on the safe's balances, earlier months' too, include the Visa.
 
 The tax rate on Financials → Tax & service (`FinancialSettings.TaxPercent`, a manager's) is kept for
 the bills entered as printed; a day's takings carry the tax as the Z report gives it.

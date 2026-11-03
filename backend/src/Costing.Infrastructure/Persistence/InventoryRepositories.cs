@@ -269,6 +269,11 @@ internal sealed class SafeTransactionRepository(CostingDbContext db) : ISafeTran
 
     public Task<bool> AnyOpeningBalanceAsync(CancellationToken cancellationToken = default) =>
         db.SafeTransactions.AnyAsync(t => t.Kind == SafeTransactionKind.OpeningBalance && t.ReversalOf == null && t.VoidedAtUtc == null, cancellationToken);
+
+    public async Task<decimal> TaxOwedAsync(CancellationToken cancellationToken = default) =>
+        await db.SafeTransactions
+            .Where(t => t.Kind == SafeTransactionKind.RevenueTransfer || t.Kind == SafeTransactionKind.TaxPayment)
+            .SumAsync(t => t.Kind == SafeTransactionKind.RevenueTransfer ? t.TaxAmount : t.Amount, cancellationToken);
 }
 
 internal sealed class SupplierLedgerRepository(CostingDbContext db) : ISupplierLedgerRepository

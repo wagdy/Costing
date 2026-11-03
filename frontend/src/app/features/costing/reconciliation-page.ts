@@ -10,7 +10,7 @@ import { MoneyPipe } from '../../core/ui/money.pipe';
 import { monthBounds } from './financials';
 
 // The reconciliation (مطابقة الإيرادات): each business day's net sales against what it sold at the
-// menu's prices. A is the day's takings, cash and card, less the tax collected in them. B is every
+// menu's prices. A is the day's takings, cash and Visa, before the tax collected on them. B is every
 // item of the day's sales summary at its menu price, before tax. The difference shows a day short
 // (discounts, staff meals, cash missing) or over (money taken for items not entered).
 @Component({
@@ -52,7 +52,7 @@ import { monthBounds } from './financials';
         </div>
       </div>
       <p class="note">
-        A: each day's takings as its Z report gave them, cash and card, less the tax collected in them. B: every item of the day's sales summary
+        A: each day's takings as its Z report gave them, cash and Visa, before the tax collected on them. B: every item of the day's sales summary
         at its menu price, before tax. Below zero, the takings fall short of what was sold (discounts, staff meals, cash missing); above it,
         money came in for items not entered.
         <span class="note-ar" lang="ar" dir="rtl">الفرق بالسالب: الإيراد أقل من المبيعات بأسعار المنيو (خصومات أو وجبات عاملين أو عجز). بالموجب: إيراد لأصناف لم تُسجل.</span>

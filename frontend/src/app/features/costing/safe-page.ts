@@ -9,16 +9,18 @@ import { CostingApi, SafeEntry, SafeMonth, SafeTransactionKind, fundingSourceLab
 import { errorMessage } from '../../core/http/error-message';
 import { MoneyPipe } from '../../core/ui/money.pipe';
 import { Approvals, pendingLabel } from './approvals';
-import { Treasury, entryTax } from './financials';
+import { Treasury } from './financials';
+import { TakingsBadges } from './takings-badges';
 
-// The safe (الخزنة): what is in it now, and month by month the balance it opened with (carried
-// over from the month before, or the treasury's own opening entry, and from where), what came in
-// and went out, and what it closed with; every entry, with the balance after it. Entries waiting
-// for a manager are listed first: no cash has moved for them. An entry is voided, never edited: a
-// reversing entry dated the day of the void.
+// The safe (الخزنة), the one treasury: a day's cash, Visa and the tax collected on them all go in.
+// Month by month, a strip read from start to finish: the cash, Visa and tax taken; all that came in,
+// with the balance it opened with and the funding put in; all that went out; what is in it now;
+// and the balance the month closed with (in less out). Then every entry, with the balance after it,
+// a day's takings with their breakdown. Entries waiting for a manager are listed first: no cash has
+// moved for them. An entry is voided, never edited: a reversing entry dated the day of the void.
 @Component({
   selector: 'app-safe-page',
-  imports: [DatePipe, MatButtonModule, MatIconModule, MatProgressBarModule, MatTooltipModule, MoneyPipe],
+  imports: [DatePipe, MatButtonModule, MatIconModule, MatProgressBarModule, MatTooltipModule, MoneyPipe, TakingsBadges],
   template: `
     <div class="toolbar">
       <button mat-icon-button (click)="move(-1)" aria-label="The month before"><mat-icon>chevron_left</mat-icon></button>
@@ -48,28 +50,40 @@ import { Treasury, entryTax } from './financials';
           <span class="inline-ar">أدخل الرصيد الافتتاحي للخزنة.</span>
         </p>
       }
-      <div class="tiles">
-        <div class="tile key">
-          <span class="label">In the safe now · رصيد الخزنة</span>
+      <div class="strip" role="list" aria-label="The month's safe, from start to finish">
+        <div class="tile" role="listitem">
+          <span class="label">Total cash revenue <span class="ar">إجمالي إيراد الكاش</span></span>
+          <strong>{{ s.cashTakings ?? 0 | money }}</strong>
+        </div>
+        <div class="tile" role="listitem">
+          <span class="label">Total Visa revenue <span class="ar">إجمالي إيراد الفيزا</span></span>
+          <strong>{{ s.cardTakings ?? 0 | money }}</strong>
+        </div>
+        <div class="tile" role="listitem">
+          <span class="label">Total tax collected <span class="ar">إجمالي الضريبة</span></span>
+          <strong>{{ s.taxCollected ?? 0 | money }}</strong>
+          <small class="muted">{{ s.taxOwedNow ?? 0 | money }} held for the tax authority now</small>
+        </div>
+        <div class="tile" role="listitem">
+          <span class="label">Total in / receipts <span class="ar">إجمالي الوارد / المقبوضات</span></span>
+          <strong class="in">{{ s.totalIn ?? 0 | money }}</strong>
+          <small class="muted">
+            {{ s.openingBalance + (s.fundingIn ?? 0) | money }} opening balance &amp; external funding
+            <span class="ar">الرصيد الافتتاحي والتمويل الخارجي</span>
+          </small>
+        </div>
+        <div class="tile" role="listitem">
+          <span class="label">Total out / payments <span class="ar">إجمالي المدفوعات / المنصرف</span></span>
+          <strong class="out">{{ s.totalOut ?? 0 | money }}</strong>
+        </div>
+        <div class="tile key" role="listitem">
+          <span class="label">In the safe now <span class="ar">رصيد الخزنة الحالي</span></span>
           <strong [class.negative]="s.balanceNow < 0">{{ s.balanceNow | money }}</strong>
         </div>
-        <div class="tile">
-          <span class="label">Opened with · الرصيد الافتتاحي</span>
-          <strong>{{ s.openingBalance | money }}</strong>
-          <small class="muted">{{ openingText(s) }}</small>
-        </div>
-        <div class="tile">
-          <span class="label">In · المقبوضات</span>
-          <strong class="in">{{ s.in | money }}</strong>
-        </div>
-        <div class="tile">
-          <span class="label">Out · المدفوعات</span>
-          <strong class="out">{{ s.out | money }}</strong>
-        </div>
-        <div class="tile">
-          <span class="label">Closed with · الرصيد الختامي</span>
+        <div class="tile" role="listitem">
+          <span class="label">Closing balance <span class="ar">الرصيد الختامي</span></span>
           <strong [class.negative]="s.closingBalance < 0">{{ s.closingBalance | money }}</strong>
-          <small class="muted">{{ isThisMonth() ? 'so far' : 'carried over to the next month' }}</small>
+          <small class="muted">in less out, {{ isThisMonth() ? 'so far' : 'carried over to the next month' }}</small>
         </div>
       </div>
       @if (s.voidedIn || s.voidedOut) {
@@ -117,12 +131,7 @@ import { Treasury, entryTax } from './financials';
                 <td class="nowrap">{{ e.date | date: 'd MMM' }}</td>
                 <td>
                   <span class="kind" [class]="e.kind">{{ kinds[e.kind].en }}</span> {{ e.description }}
-                  @if (entryTax(e); as t) {
-                    <div class="muted small">
-                      Cash {{ t.cash | money }}{{ t.card ? ' · card ' : '' }}{{ t.card ? (t.card | money) : '' }} · tax {{ t.tax | money
-                      }}{{ t.percent !== null ? ' at ' + t.percent + '%' : '' }} · net sales {{ t.net | money }}
-                    </div>
-                  }
+                  <app-takings-badges [entry]="e" />
                   @if (e.notes && !e.reversalOf) {
                     <div class="muted small">{{ e.notes }}</div>
                   }
@@ -170,6 +179,47 @@ import { Treasury, entryTax } from './financials';
       text-align: center;
       font: var(--mat-sys-title-medium);
     }
+    /* Seven cards in order: in one row where there is room for them, four and three on a laptop,
+       two to a row on a phone; an amount wraps before it would be cut off. */
+    .strip {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+      margin-bottom: 16px;
+
+      .tile {
+        align-content: start;
+        padding: 12px 14px;
+      }
+      .label {
+        display: grid;
+        line-height: 1.3;
+      }
+      .ar {
+        font-size: 11px;
+        opacity: 0.8;
+      }
+      strong {
+        font: var(--mat-sys-title-large);
+        font-variant-numeric: tabular-nums;
+        overflow-wrap: anywhere;
+      }
+      small {
+        display: grid;
+        font-size: 11.5px;
+        line-height: 1.35;
+      }
+    }
+    @media (min-width: 900px) {
+      .strip {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+      }
+    }
+    @media (min-width: 1800px) {
+      .strip {
+        grid-template-columns: repeat(7, minmax(0, 1fr));
+      }
+    }
     h3 {
       margin: 16px 0 8px;
       font: var(--mat-sys-title-small);
@@ -216,7 +266,6 @@ export class SafePage {
   protected readonly approvals = inject(Approvals);
   protected readonly pendingLabel = pendingLabel;
   protected readonly kinds = safeKindLabels;
-  protected readonly entryTax = entryTax;
 
   protected readonly year = signal(new Date().getFullYear());
   protected readonly month = signal(new Date().getMonth() + 1);

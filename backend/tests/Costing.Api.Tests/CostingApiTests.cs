@@ -322,7 +322,8 @@ public class CostingApiTests
         var manager = await api.ManagerAsync();
         var (_, large, _) = await PizzaAsync(manager);
         var today = await TodayAsync(manager);
-        // The day's sales summary, and its Z report: 820.80 taken, 600 cash and 220.80 by card, 100.80 of it tax.
+        // The day's sales summary, and its Z report: 720 sold, 600 cash and 120 by Visa, and 100.80 of tax
+        // on top: 820.80 taken, all into the safe.
         await Json(await manager.PostAsJsonAsync("/api/sales/daily", new
         {
             id = Guid.NewGuid(), date = Iso(today), lines = new[] { new { menuItemId = 6101, variantId = large, quantity = 4 } },
@@ -330,10 +331,20 @@ public class CostingApiTests
         var takings = await Json(await manager.PostAsJsonAsync("/api/financials/vouchers", new
         {
             requestId = Guid.NewGuid(), transactionId = Guid.NewGuid(), kind = "RevenueTransfer", amount = 600, date = Iso(today), revenueDate = Iso(today),
-            cardAmount = 220.80, taxAmount = 100.80, voidsAmount = 15, notes = "A pizza dropped",
+            cardAmount = 120, taxAmount = 100.80, voidsAmount = 15, notes = "A pizza dropped",
         }, Cancel));
-        Assert.Equal((600m, 220.80m, 100.80m, 15m, 720m), (takings.GetProperty("amount").GetDecimal(), takings.GetProperty("cardAmount").GetDecimal(),
+        Assert.Equal((820.80m, 120m, 100.80m, 15m, 720m), (takings.GetProperty("amount").GetDecimal(), takings.GetProperty("cardAmount").GetDecimal(),
             takings.GetProperty("taxAmount").GetDecimal(), takings.GetProperty("voidsAmount").GetDecimal(), takings.GetProperty("netAmount").GetDecimal()));
+        // The tax is held in the safe until it is paid over: a tax payment, not an expense voucher.
+        await Json(await manager.PostAsJsonAsync("/api/financials/vouchers", new
+        {
+            requestId = Guid.NewGuid(), transactionId = Guid.NewGuid(), kind = "TaxPayment", amount = 60, date = Iso(today),
+        }, Cancel));
+        var tax = await Json(await manager.GetAsync("/api/financials/tax", Cancel));
+        Assert.Equal((100.80m, 60m, 40.80m), (tax.GetProperty("collected").GetDecimal(), tax.GetProperty("paid").GetDecimal(), tax.GetProperty("owed").GetDecimal()));
+        var treasury = await Json(await manager.GetAsync($"/api/costing/treasury?from={Iso(today)}&to={Iso(today)}", Cancel));
+        Assert.Equal((820.80m, 60m, 760.80m), (treasury.GetProperty("totalIn").GetDecimal(), treasury.GetProperty("totalOut").GetDecimal(),
+            treasury.GetProperty("closingBalance").GetDecimal()));
         // The tax rate is the financials' own, set beside the service charge.
         var settings = await Json(await manager.PutAsJsonAsync("/api/financials/settings", new { servicePercent = 12, taxPercent = 14 }, Cancel));
         Assert.Equal((12m, 14m), (settings.GetProperty("servicePercent").GetDecimal(), settings.GetProperty("taxPercent").GetDecimal()));
@@ -344,6 +355,7 @@ public class CostingApiTests
                      $"/api/costing/break-even?fromYear={today.Year}&fromMonth={today.Month}&toYear={today.Year}&toMonth={today.Month}", "/api/costing/menu", "/api/costing/materials", "/api/costing/settings",
                      $"/api/financials/reconciliation?from={Iso(today)}&to={Iso(today)}", $"/api/financials/daily-cash?from={Iso(today)}&to={Iso(today)}",
                      $"/api/costing/purchases/spending?from={Iso(today.AddDays(-30))}&to={Iso(today)}",
+                     $"/api/financials/safe?year={today.Year}&month={today.Month}",
                  })
             Assert.True((await manager.GetAsync(path, Cancel)).IsSuccessStatusCode, path);
 

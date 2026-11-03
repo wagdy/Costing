@@ -17,6 +17,7 @@ function entry(overrides: Partial<SafeEntry>): SafeEntry {
 const month: SafeMonth = {
   year: 2026, month: 10, from: '2026-10-01', to: '2026-10-31', openingBalance: 12_000, openingKind: 'CarriedOver', openingSource: null,
   in: 5_000, out: 1_250, voidedIn: 0, voidedOut: 0, closingBalance: 15_750, balanceNow: 15_750, hasOpeningBalance: true,
+  cashTakings: 0, cardTakings: 0, taxCollected: 0, netSales: 0, fundingIn: 5_000, totalIn: 17_000, totalOut: 1_250, taxOwedNow: 0,
   entries: [
     entry({ id: 'f', in: 5_000, balance: 17_000 }),
     entry({ id: 'v', kind: 'ExpenseVoucher', description: 'Electricity', out: 1_250, balance: 15_750, recordedBy: 'Mona', approvedBy: 'Omar', date: '2026-10-05' }),
@@ -53,13 +54,29 @@ describe('the safe', () => {
     treasury.enter.mockReset().mockResolvedValue(true);
   });
 
-  it('shows what is in it, what the month opened with and why, and every entry with the balance after it', async () => {
+  it('reads the month from start to finish in seven cards, then every entry with the balance after it', async () => {
+    safe.mockReturnValue(of({ ...month, cashTakings: 3_000, cardTakings: 1_000, taxCollected: 560, netSales: 4_000, taxOwedNow: 160 }));
     const { el } = await render();
 
     const now = new Date();
     expect(safe).toHaveBeenCalledWith(now.getFullYear(), now.getMonth() + 1);
-    expect(text(el.querySelector('.tile.key')!)).toContain('L.E 15,750.00');
-    expect(text(el.querySelectorAll('.tile')[1])).toContain('carried over from the month before · رصيد مرحل');
+    const tiles = [...el.querySelectorAll('.strip .tile')];
+    expect(tiles.map((t) => text(t.querySelector('.label')!))).toEqual([
+      'Total cash revenue إجمالي إيراد الكاش',
+      'Total Visa revenue إجمالي إيراد الفيزا',
+      'Total tax collected إجمالي الضريبة',
+      'Total in / receipts إجمالي الوارد / المقبوضات',
+      'Total out / payments إجمالي المدفوعات / المنصرف',
+      'In the safe now رصيد الخزنة الحالي',
+      'Closing balance الرصيد الختامي',
+    ]);
+    expect(tiles.map((t) => text(t.querySelector('strong')!))).toEqual([
+      'L.E 3,000.00', 'L.E 1,000.00', 'L.E 560.00', 'L.E 17,000.00', 'L.E 1,250.00', 'L.E 15,750.00', 'L.E 15,750.00',
+    ]);
+    // What came in from the balance it opened with and the funding put in: 12,000 and 5,000.
+    expect(text(tiles[3].querySelector('small')!)).toBe('L.E 17,000.00 opening balance & external funding الرصيد الافتتاحي والتمويل الخارجي');
+    expect(text(tiles[2].querySelector('small')!)).toBe('L.E 160.00 held for the tax authority now');
+    expect(tiles[5].classList).toContain('key');
     const rows = [...el.querySelectorAll('tbody tr')].map((r) => [...r.querySelectorAll('td')].slice(0, 6).map(text));
     expect(rows[0]).toEqual(['1 Oct', 'Opened with · carried over from the month before · رصيد مرحل', 'L.E 12,000.00', '']);
     expect(rows[1]).toEqual(['2 Oct', 'Funding Funding · owners’ financing', 'L.E 5,000.00', '', 'L.E 17,000.00', 'Omar']);
@@ -79,34 +96,40 @@ describe('the safe', () => {
     );
   });
 
-  it('shows a day’s takings worked out at the till’s rate: the tax in them, and the net sales', async () => {
-    safe.mockReturnValue(of({
-      ...month,
-      entries: [entry({ id: 't', kind: 'RevenueTransfer', description: 'Takings of 12 Oct', in: 1_140, balance: 13_140, includesTax: true, taxPercent: 14, tax: 140 })],
-    }));
-    const { el } = await render();
-
-    expect(text(el.querySelectorAll('tbody tr')[1].querySelectorAll('td')[1])).toBe(
-      'Takings in Takings of 12 Oct Cash L.E 1,140.00 · tax L.E 140.00 at 14% · net sales L.E 1,000.00',
-    );
-  });
-
-  it('shows a day’s Z report: its cash, what of it reached the safe, its card, the tax collected and the net sales', async () => {
+  it('shows a day’s takings worked out at the till’s rate: the tax taken off them, and the net sales', async () => {
     safe.mockReturnValue(of({
       ...month,
       entries: [entry({
-        id: 't', kind: 'RevenueTransfer', description: 'Takings of 13 Oct · L.E 10,495.00 cash, less L.E 1,454.07 paid out of it · L.E 2,000.00 card, to the bank',
-        in: 9_040.93, balance: 21_040.93, gross: 10_495, card: 2_000, includesTax: true, taxPercent: null, tax: 1_535,
+        id: 't', kind: 'RevenueTransfer', description: 'Takings of 12 Oct', in: 1_140, balance: 13_140, gross: 1_000, includesTax: true, taxPercent: 14, tax: 140,
+      })],
+    }));
+    const { el } = await render();
+
+    const chips = [...el.querySelectorAll('tbody tr')[1].querySelectorAll('app-takings-badges .chip')].map(text);
+    expect(chips).toEqual(['Cash كاشL.E 1,000.00', 'Visa فيزاL.E 0.00', 'Tax ضريبةL.E 140.00 at 14%', 'Net sales صافي المبيعاتL.E 1,000.00']);
+  });
+
+  it('shows a day’s Z report as badges, cash, Visa, tax and net sales, all of it in the safe less what was paid out of it', async () => {
+    safe.mockReturnValue(of({
+      ...month,
+      entries: [entry({
+        id: 't', kind: 'RevenueTransfer', description: 'Takings of 13 Oct · L.E 14,030.00 collected, less L.E 1,454.07 paid out of it',
+        in: 12_575.93, balance: 24_575.93, gross: 10_495, card: 2_000, includesTax: true, taxPercent: null, tax: 1_535,
       })],
     }));
     const { el } = await render();
 
     const cells = el.querySelectorAll('tbody tr')[1].querySelectorAll('td');
-    expect(text(cells[1])).toBe(
-      'Takings in Takings of 13 Oct · L.E 10,495.00 cash, less L.E 1,454.07 paid out of it · L.E 2,000.00 card, to the bank ' +
-        'Cash L.E 10,495.00 · card L.E 2,000.00 · tax L.E 1,535.00 · net sales L.E 10,960.00',
-    );
-    expect(text(cells[2])).toBe('L.E 9,040.93');
+    expect(text(cells[1].firstElementChild!)).toBe('Takings in');
+    expect([...cells[1].querySelectorAll('.chip')].map(text)).toEqual([
+      'Cash كاشL.E 10,495.00',
+      'Visa فيزاL.E 2,000.00',
+      'Tax ضريبةL.E 1,535.00',
+      'Net sales صافي المبيعاتL.E 12,495.00',
+      'Paid out of it منصرف منهL.E 1,454.07',
+    ]);
+    // The whole of it, 14,030, less the 1,454.07 paid out of it.
+    expect(text(cells[2])).toBe('L.E 12,575.93');
   });
 
   it('enters money in and out, and voids an entry through the approvals', async () => {

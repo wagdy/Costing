@@ -89,29 +89,52 @@ public class TreasuryTests
             null, canApprove ? "staff-omar" : "staff-mona", canApprove ? "Omar" : "Mona", canApprove));
 
     [Fact]
-    public async Task A_days_z_report_puts_only_its_cash_in_the_safe_and_keeps_the_tax_apart_from_the_net_sales()
+    public async Task A_days_z_report_puts_its_cash_visa_and_tax_in_the_safe_and_keeps_the_tax_apart_from_the_net_sales()
     {
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
         var entered = (await ZReport(today, cash: 4_000, card: 2_840, tax: 840, voids: 150, notes: "Two pizzas sent back, one wrong order")).Transaction!;
 
-        Assert.Equal((4_000m, (decimal?)4_000m, 2_840m, 840m, 150m, 6_000m), (entered.Amount, entered.GrossAmount, entered.CardAmount, entered.TaxAmount,
+        Assert.Equal((7_680m, (decimal?)4_000m, 2_840m, 840m, 150m, 6_840m), (entered.Amount, entered.GrossAmount, entered.CardAmount, entered.TaxAmount,
             entered.VoidsAmount, entered.NetAmount));
         Assert.Equal(("Two pizzas sent back, one wrong order", true, (decimal?)null), (entered.Notes, entered.IncludesTax, entered.TaxPercent));
-        // The safe holds the cash, never the card nor more for the tax.
-        Assert.Equal(4_000m, await _pos.Inventory.Safe.SafeBalanceAsync());
+        // The safe holds all of it: the cash, the Visa and the tax held for the tax authority.
+        Assert.Equal(7_680m, await _pos.Inventory.Safe.SafeBalanceAsync());
 
-        // A day all by card: nothing into the safe, the takings entered all the same.
+        // A day all by Visa: into the safe all the same.
         var yesterday = today.AddDays(-1);
-        var card = (await ZReport(yesterday, cash: 0, card: 1_140, tax: 140)).Transaction!;
-        Assert.Equal((0m, 1_140m, 1_000m), (card.Amount, card.CardAmount, card.NetAmount));
-        Assert.Equal(4_000m, await _pos.Inventory.Safe.SafeBalanceAsync());
+        var card = (await ZReport(yesterday, cash: 0, card: 1_000, tax: 140)).Transaction!;
+        Assert.Equal((1_140m, 1_000m, 1_000m), (card.Amount, card.CardAmount, card.NetAmount));
+        Assert.Equal(8_820m, await _pos.Inventory.Safe.SafeBalanceAsync());
 
         // An accountant's: the request says the breakdown, and nothing moves until approved.
         var asked = (await ZReport(today.AddDays(-2), cash: 500, card: 70, tax: 70, canApprove: false)).Request!;
         Assert.StartsWith("Takings of ", asked.Summary);
-        Assert.EndsWith("· L.E 500.00 cash, L.E 70.00 card · net sales L.E 500.00, L.E 500.00 into the safe", asked.Summary);
+        Assert.EndsWith("· L.E 500.00 cash, L.E 70.00 card · net sales L.E 570.00, L.E 640.00 into the safe", asked.Summary);
         Assert.Contains(asked.Changes, c => c.Label == "Tax collected · الضريبة المحصلة" && c.After == "L.E 70.00");
-        Assert.Equal(4_000m, await _pos.Inventory.Safe.SafeBalanceAsync());
+        Assert.Contains(asked.Changes, c => c.Label == "Safe" && c.Before == "L.E 8,820.00" && c.After == "L.E 9,460.00");
+        Assert.Equal(8_820m, await _pos.Inventory.Safe.SafeBalanceAsync());
+    }
+
+    // The tax held in the safe paid over (سداد ضرائب): out of the safe, the tax owed down by it.
+    [Fact]
+    public async Task Tax_paid_over_comes_out_of_the_safe_and_off_what_is_owed()
+    {
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        await ZReport(today, cash: 1_000, card: 0, tax: 140);
+        Task<SafeVoucherResultDto> Pay(decimal amount, bool canApprove, Guid? expense = null) => _pos.Send(new RecordSafeVoucherCommand(
+            Guid.NewGuid(), new SafeVoucher(Guid.NewGuid(), SafeTransactionKind.TaxPayment, amount, today, ExpenseItemId: expense, Notes: "October"),
+            null, canApprove ? "staff-omar" : "staff-mona", canApprove ? "Omar" : "Mona", canApprove));
+
+        var asked = (await Pay(100, canApprove: false)).Request!;
+        Assert.Equal("Tax payment · L.E 100.00", asked.Summary);
+        Assert.Contains(asked.Changes, c => c.Label == "Tax owed · الضريبة المستحقة" && c.Before == "L.E 140.00" && c.After == "L.E 40.00");
+        Assert.Equal(1_140m, await _pos.Inventory.Safe.SafeBalanceAsync());
+
+        var paid = (await Pay(100, canApprove: true)).Transaction!;
+        Assert.Equal((SafeTransactionKind.TaxPayment, -100m), (paid.Kind, paid.Amount));
+        Assert.Equal((1_040m, 40m), (await _pos.Inventory.Safe.SafeBalanceAsync(), await _pos.Inventory.Safe.TaxOwedAsync()));
+
+        await Assert.ThrowsAsync<DomainException>(() => Pay(10, canApprove: true, expense: Guid.NewGuid()));
     }
 
     [Fact]
@@ -121,14 +144,14 @@ public class TreasuryTests
 
         Assert.StartsWith("Enter the day's cash or card takings.",
             (await Assert.ThrowsAsync<DomainException>(() => ZReport(today, cash: 0, card: 0, tax: 0))).Message);
-        Assert.StartsWith("The tax collected cannot be more than the day's takings.",
+        Assert.StartsWith("The tax collected cannot be more than the day's sales.",
             (await Assert.ThrowsAsync<DomainException>(() => ZReport(today, cash: 100, card: 50, tax: 200))).Message);
         Assert.StartsWith("The cash, card, tax and voids are zero or more.",
             (await Assert.ThrowsAsync<DomainException>(() => ZReport(today, cash: 100, card: -5, tax: 0))).Message);
 
         await ZReport(today, cash: 300, card: 200, tax: 50);
         var twice = await Assert.ThrowsAsync<DomainException>(() => ZReport(today, cash: 10, card: 0, tax: 0));
-        Assert.Contains("are entered already: L.E 500.00", twice.Message);
+        Assert.Contains("are entered already: L.E 550.00", twice.Message);
         Assert.Contains("إيراد هذا اليوم مسجل بالفعل", twice.Message);
     }
 }

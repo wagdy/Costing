@@ -1336,6 +1336,11 @@ export class CostingApi {
     return this.http.get<SpendingReport>('/api/costing/purchases/spending', { params: { from, to } });
   }
 
+  // The safe's analysis between two days, both included, as yyyy-mm-dd.
+  treasuryAnalytics(from: string, to: string): Observable<TreasuryAnalytics> {
+    return this.http.get<TreasuryAnalytics>('/api/costing/treasury', { params: { from, to } });
+  }
+
   // The Excel template to fill in: the columns, and the unit and category lists.
   rawMaterialsTemplate(): Observable<Blob> {
     return this.http.get('/api/inventory/raw-materials/template', { responseType: 'blob' });
@@ -1468,6 +1473,11 @@ export class CostingApi {
 
   dayRevenue(from: string, to: string): Observable<DayRevenueReport> {
     return this.http.get<DayRevenueReport>('/api/financials/revenue', { params: { from, to } });
+  }
+
+  // The tax held in the safe: collected, paid over, still owed.
+  taxPosition(): Observable<TaxPosition> {
+    return this.http.get<TaxPosition>('/api/financials/tax');
   }
 
   takingsPreview(day: string): Observable<TakingsPreview> {
@@ -1919,7 +1929,9 @@ export type SafeTransactionKind =
   | 'SupplierPayment'
   | 'InvoicePayment'
   | 'EmployeeAdvance'
-  | 'SalaryPayment';
+  | 'SalaryPayment'
+  // The tax collected paid over to the tax authority (سداد ضرائب): out of the safe, not an expense.
+  | 'TaxPayment';
 export type CashFund = 'Safe' | 'DayRevenue';
 // Where money put into the safe came from (مصدر التمويل).
 export type FundingSource = 'CarriedOver' | 'OwnerFinancing' | 'Other';
@@ -1939,6 +1951,7 @@ export const safeKindLabels: Record<SafeTransactionKind, { en: string; ar: strin
   InvoicePayment: { en: 'Invoice paid', ar: 'سداد فاتورة' },
   EmployeeAdvance: { en: 'Employee advance', ar: 'سلفة موظف' },
   SalaryPayment: { en: 'Salary paid', ar: 'صرف راتب' },
+  TaxPayment: { en: 'Tax payment', ar: 'سداد ضرائب' },
 };
 
 // One line of the safe's ledger: in or out, and the balance after it (null where not running).
@@ -1964,13 +1977,13 @@ export interface SafeEntry {
   reversalOf: string | null;
   voidedAtUtc: string | null;
   voidedBy: string | null;
-  // A day's takings: the tax collected in them (signed as in and out are), and the till's rate when
+  // A day's takings: the tax collected on them (signed as in and out are), and the till's rate when
   // it was worked out at it.
   includesTax: boolean;
   taxPercent: number | null;
   tax: number;
-  // A day's takings: their cash, as entered (in is what of it reached the safe); their card
-  // takings, to the bank; and the day's voids and refunds.
+  // A day's takings: their cash and card sales before tax, as entered (in is what of all of it,
+  // tax too, reached the safe); and the day's voids and refunds.
   gross: number | null;
   card?: number;
   voids?: number;
@@ -1998,6 +2011,67 @@ export interface SafeMonth {
   balanceNow: number;
   hasOpeningBalance: boolean;
   entries: SafeEntry[];
+  // The summary strip, in order: the month's cash, Visa and tax taken (and the net sales, cash and
+  // Visa); all that came in (totalIn), the balance it opened with and the funding put in (fundingIn)
+  // too; all that went out (totalOut), what the takings paid straight out of them too. closingBalance
+  // is totalIn − totalOut. taxOwedNow: the tax held in the safe for the tax authority now.
+  cashTakings?: number;
+  cardTakings?: number;
+  taxCollected?: number;
+  netSales?: number;
+  fundingIn?: number;
+  totalIn?: number;
+  totalOut?: number;
+  taxOwedNow?: number;
+}
+
+// The tax the takings collected and what was paid over: what is still owed, held in the safe.
+export interface TaxPosition {
+  collected: number;
+  paid: number;
+  owed: number;
+}
+
+// One line of the safe's analysis: where money came from or went, its share of all of it, and what
+// it is made of (the expense vouchers by category, say).
+export interface TreasuryFlowLine {
+  key: string;
+  en: string;
+  ar: string | null;
+  amount: number;
+  sharePercent: number | null;
+  items: TreasuryFlowLine[];
+}
+
+// One business day of the safe: in, out, the net, the balance it ended with, and its voids with why.
+export interface TreasuryDay {
+  date: string;
+  in: number;
+  out: number;
+  net: number;
+  balance: number;
+  voids: number;
+  voidReasons: string[];
+}
+
+// The safe over a period (تحليل الخزنة والتدفقات النقدية): totalIn has the balance it opened with;
+// netFlow is what came in during it less what went out; the tax collected and paid over in it, and
+// still owed to its last day.
+export interface TreasuryAnalytics {
+  from: string;
+  to: string;
+  openingBalance: number;
+  totalIn: number;
+  totalOut: number;
+  netFlow: number;
+  closingBalance: number;
+  inflows: TreasuryFlowLine[];
+  outflows: TreasuryFlowLine[];
+  taxCollected: number;
+  taxPaid: number;
+  taxToDate: TaxPosition;
+  voids: number;
+  days: TreasuryDay[];
 }
 
 export interface FundingReport {
@@ -2011,9 +2085,9 @@ export interface FundingReport {
   entries: SafeEntry[];
 }
 
-// One business day's takings as its Z report gave them: cash and card, the tax collected in them,
-// the net sales (cash + card − tax), the voids; what was paid straight out of the cash, and what of
-// it is in the safe. entered: the takings are; hasSales: the day's sales are.
+// One business day's takings as its Z report gave them: cash and card before tax, the tax collected
+// on them, the net sales (cash + card), the voids; what was paid straight out of them, and what of
+// them is in the safe. entered: the takings are; hasSales: the day's sales are.
 export interface DayRevenue {
   date: string;
   cash: number;
@@ -2052,10 +2126,11 @@ export interface TakingsPreview {
   employeePayments?: number;
 }
 
+// A tax payment (isTaxPayment) is listed with the vouchers, with no expense item: not an expense.
 export interface ExpenseVoucherRow {
   id: string;
   date: string;
-  expenseItemId: string;
+  expenseItemId: string | null;
   expenseItem: string;
   category: string | null;
   amount: number;
@@ -2064,13 +2139,16 @@ export interface ExpenseVoucherRow {
   approvedBy: string | null;
   voidedAtUtc: string | null;
   voidedBy: string | null;
+  isTaxPayment?: boolean;
 }
 
+// total: the expenses; taxPaid: the tax paid over, apart.
 export interface ExpenseVoucherReport {
   from: string;
   to: string;
   total: number;
   vouchers: ExpenseVoucherRow[];
+  taxPaid?: number;
 }
 
 // What is owed to one supplier, and how it came about.

@@ -13,7 +13,8 @@ import { Treasury, monthBounds } from './financials';
 
 // Expense vouchers (إذن صرف مصروفات): cash paid out of the safe for an expense (a bill, wages,
 // petty cash), each under its expense item, so it counts on the profit and loss under its
-// category, as an invoice's expense line does. A month at a time; voided ones are kept, struck out.
+// category, as an invoice's expense line does. The tax paid over (سداد ضرائب) is listed with them,
+// marked, and never counted as an expense. A month at a time; voided ones are kept, struck out.
 @Component({
   selector: 'app-expense-vouchers-page',
   imports: [DatePipe, MatButtonModule, MatIconModule, MatProgressBarModule, MatTooltipModule, MoneyPipe],
@@ -24,7 +25,12 @@ import { Treasury, monthBounds } from './financials';
       <button mat-icon-button (click)="move(1)" [disabled]="isThisMonth()" aria-label="The month after"><mat-icon>chevron_right</mat-icon></button>
       <span class="spacer"></span>
       @if (report(); as r) {
-        <span class="muted">{{ r.total | money }} paid out</span>
+        <span class="muted">
+          {{ r.total | money }} of expenses
+          @if (r.taxPaid) {
+            · {{ r.taxPaid | money }} tax paid over
+          }
+        </span>
       }
       <button mat-flat-button (click)="add()"><mat-icon>add</mat-icon> New expense voucher</button>
     </div>
@@ -63,6 +69,9 @@ import { Treasury, monthBounds } from './financials';
                 <td class="nowrap">{{ v.date | date: 'd MMM' }}</td>
                 <td>
                   {{ v.expenseItem }}
+                  @if (v.isTaxPayment) {
+                    <span class="tax-badge">Not an expense<span class="ar">ليس مصروفًا</span></span>
+                  }
                   @if (v.notes) {
                     <div class="muted small">{{ v.notes }}</div>
                   }
@@ -98,6 +107,18 @@ import { Treasury, monthBounds } from './financials';
   `,
   styleUrl: './costing.scss',
   styles: `
+    .tax-badge {
+      margin-inline-start: 6px;
+      padding: 0 8px;
+      border-radius: 999px;
+      background: color-mix(in srgb, var(--app-warn) 14%, transparent);
+      color: var(--app-warn);
+      font: var(--mat-sys-label-small);
+
+      .ar {
+        margin-inline-start: 4px;
+      }
+    }
     .month {
       min-width: 140px;
       text-align: center;

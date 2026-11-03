@@ -34,13 +34,13 @@ public sealed record SafeEntryRow(
     Guid? ReversalOf,
     DateTime? VoidedAtUtc,
     string? VoidedBy,
-    // A day's takings entered with the tax in them: the rate, and the tax in their gross (signed as
-    // In and Out are: a voided entry's reversal takes it back).
+    // A day's takings: the tax collected on them, and the till's rate when it was worked out at it
+    // (signed as In and Out are: a voided entry's reversal takes it back).
     bool IncludesTax = false,
     decimal? TaxPercent = null,
     decimal Tax = 0,
-    // A day's takings: their cash, as entered; In is what of it reached the safe. Their card
-    // takings, settled to the bank, and the day's voids and refunds, said.
+    // A day's takings: their cash and card sales before tax, as entered; In is what of all of it,
+    // tax too, reached the safe. And the day's voids and refunds, said.
     decimal? Gross = null,
     decimal Card = 0,
     decimal Voids = 0);
@@ -55,7 +55,10 @@ public enum SafeOpening
 }
 
 // The safe in one month: the balance it opened with and why, what came in and went out, the
-// balance it closed with; and the balance now.
+// balance it closed with; and the balance now. The summary strip reads in order: the month's cash,
+// card and tax takings; all that came in, with the balance it opened with and the funding put in
+// (FundingIn); all that went out, what was paid straight out of the takings too; then the balance
+// now and the month's closing balance (TotalIn − TotalOut).
 public sealed record SafeMonth(
     int Year,
     int Month,
@@ -74,7 +77,48 @@ public sealed record SafeMonth(
     decimal ClosingBalance,
     decimal BalanceNow,
     bool HasOpeningBalance,
-    IReadOnlyList<SafeEntryRow> Entries);
+    IReadOnlyList<SafeEntryRow> Entries,
+    decimal CashTakings = 0,
+    decimal CardTakings = 0,
+    decimal TaxCollected = 0,
+    decimal NetSales = 0,
+    decimal FundingIn = 0,
+    decimal TotalIn = 0,
+    decimal TotalOut = 0,
+    // The tax held in the safe for the tax authority now: collected, less what was paid over.
+    decimal TaxOwedNow = 0);
+
+// The tax the takings collected and what was paid over of it (سداد ضرائب): what is still owed,
+// held in the safe for it. Below zero, more was paid than these takings collected.
+public sealed record TaxPosition(decimal Collected, decimal Paid, decimal Owed);
+
+// One line of the treasury's analysis (تحليل الخزنة): where money came from or went, its share of
+// all of it, and what it is made of (the expense vouchers by category, say).
+public sealed record TreasuryFlowLine(string Key, string En, string? Ar, decimal Amount, decimal? SharePercent, IReadOnlyList<TreasuryFlowLine> Items);
+
+// One business day of the safe: what came in and went out, the net, the balance it ended with, and
+// the voids and refunds its takings said, with why.
+public sealed record TreasuryDay(DateOnly Date, decimal In, decimal Out, decimal Net, decimal Balance, decimal Voids, IReadOnlyList<string> VoidReasons);
+
+// The safe over a period (تحليل الخزنة والتدفقات النقدية): the balance it opened with, all that came
+// in (that balance too) by where it came from, all that went out by what it paid for, what is left;
+// the tax collected and paid over in the period and, to its last day, still owed; and day by day.
+// What stands: an entry voided in the period and its void are in neither.
+public sealed record TreasuryAnalytics(
+    DateOnly From,
+    DateOnly To,
+    decimal OpeningBalance,
+    decimal TotalIn,
+    decimal TotalOut,
+    decimal NetFlow,
+    decimal ClosingBalance,
+    IReadOnlyList<TreasuryFlowLine> Inflows,
+    IReadOnlyList<TreasuryFlowLine> Outflows,
+    decimal TaxCollected,
+    decimal TaxPaid,
+    TaxPosition TaxToDate,
+    decimal Voids,
+    IReadOnlyList<TreasuryDay> Days);
 
 // Money put into the safe, by where it came from, over a period.
 public sealed record FundingReport(
@@ -87,13 +131,10 @@ public sealed record FundingReport(
     decimal Total,
     IReadOnlyList<SafeEntryRow> Entries);
 
-// One business day's cash: what the till and cash-on-delivery took, the takings entered for it
-// (gross), what was paid straight out of them, what of them went into the safe, and what is left:
-// the till's cash not entered as takings (below zero, more was entered than the till took). Only
-// from the treasury's opening on.
-// One business day's takings as its Z report gave them: the cash and the card, the tax collected
-// in them, and so the net sales (Cash + Card − Tax); the voids, said; what was paid straight out of
-// the cash, and what of it is in the safe. Entered: the takings are; HasSales: the day's sales are.
+// One business day's takings as its Z report gave them: the cash and the card before tax, and so
+// the net sales (Cash + Card), and the tax collected on them; the voids, said; what was paid
+// straight out of them, and what of them is in the safe. Entered: the takings are; HasSales: the
+// day's sales are.
 public sealed record DayRevenue(
     DateOnly Date, decimal Cash, decimal Card, decimal Tax, decimal NetSales, decimal Voids, decimal PaidOut, decimal Transferred, bool Entered,
     bool HasSales);
@@ -120,11 +161,13 @@ public sealed record TakingsPreview(DateOnly Date, decimal? Entered, decimal Pai
 
 public sealed record DailyCashReport(DateOnly From, DateOnly To, decimal Gross, decimal Deductions, decimal NetToSafe, IReadOnlyList<DailyCashDay> Days);
 
+// A tax payment (IsTaxPayment) is listed with the vouchers, with no expense item: not an expense.
 public sealed record ExpenseVoucherRow(
-    Guid Id, DateOnly Date, Guid ExpenseItemId, string ExpenseItem, string? Category, decimal Amount, string? Notes, string RecordedBy, string? ApprovedBy,
-    DateTime? VoidedAtUtc, string? VoidedBy);
+    Guid Id, DateOnly Date, Guid? ExpenseItemId, string ExpenseItem, string? Category, decimal Amount, string? Notes, string RecordedBy, string? ApprovedBy,
+    DateTime? VoidedAtUtc, string? VoidedBy, bool IsTaxPayment = false);
 
-public sealed record ExpenseVoucherReport(DateOnly From, DateOnly To, decimal Total, IReadOnlyList<ExpenseVoucherRow> Vouchers);
+// Total: the expenses; TaxPaid: the tax paid over, apart.
+public sealed record ExpenseVoucherReport(DateOnly From, DateOnly To, decimal Total, IReadOnlyList<ExpenseVoucherRow> Vouchers, decimal TaxPaid = 0);
 
 // What is owed to one supplier, and how it came about.
 public sealed record SupplierBalance(
@@ -178,7 +221,7 @@ public sealed record SaveFinancialSettingsRequest(decimal ServicePercent, decima
 
 // One business day of the reconciliation (مطابقة الإيرادات), or the period's total (no Date).
 //
-// The takings (A): the day's cash and card as its Z report gave them, less the tax collected in
+// The takings (A): the day's cash and card as its Z report gave them, before the tax collected on
 // them: its net sales. The sales (B): every item of the day's sales summary at its menu price,
 // before tax (a bill entered as printed: what it charged before tax, less what was handed back).
 //
@@ -240,6 +283,9 @@ public sealed class TreasuryService(CostingDbContext db, IBusinessCalendar clock
             return Row(t, names, balance);
         }).ToList();
 
+        var takings = standing.Where(t => t.Kind == SafeTransactionKind.RevenueTransfer).ToList();
+        var (cash, card, tax) = (takings.Sum(t => t.GrossAmount ?? t.Amount), takings.Sum(t => t.CardAmount), takings.Sum(t => t.TaxAmount));
+        var funding = standing.Where(t => t.Kind is SafeTransactionKind.OpeningBalance or SafeTransactionKind.Funding).Sum(t => t.Amount);
         return new SafeMonth(
             year, month, from, to, Money(before),
             anyBefore ? SafeOpening.CarriedOver : opening is not null ? SafeOpening.OpeningEntry : SafeOpening.None,
@@ -251,7 +297,178 @@ public sealed class TreasuryService(CostingDbContext db, IBusinessCalendar clock
             Money(balance),
             Money(await safe.SumAsync(t => t.Amount, cancellationToken)),
             await db.SafeTransactions.AnyAsync(t => t.Kind == SafeTransactionKind.OpeningBalance && t.ReversalOf == null && t.VoidedAtUtc == null, cancellationToken),
-            entries);
+            entries,
+            Money(cash), Money(card), Money(tax), Money(cash + card), Money(funding),
+            Money(before + cash + card + tax + funding),
+            Money(Out(standing)),
+            (await GetTaxPositionAsync(null, cancellationToken)).Owed);
+    }
+
+    // All that went out of the safe in these entries: what was paid from it (a voided payment's void
+    // taking it back), and what the takings had paid straight out of them before they went in.
+    private static decimal Out(IEnumerable<SafeTransaction> entries) =>
+        entries.Sum(t => t.Kind switch
+        {
+            SafeTransactionKind.RevenueTransfer => t.TakingsTotal - t.Amount,
+            SafeTransactionKind.OpeningBalance or SafeTransactionKind.Funding => 0,
+            _ => -t.Amount,
+        });
+
+    // ---- The tax held for the tax authority ----
+
+    // The tax the takings collected and what was paid over, up to and including `through`, or ever.
+    // A voided entry nets out with its void.
+    public async Task<TaxPosition> GetTaxPositionAsync(DateOnly? through, CancellationToken cancellationToken)
+    {
+        var entries = db.SafeTransactions.AsNoTracking()
+            .Where(t => (t.Kind == SafeTransactionKind.RevenueTransfer || t.Kind == SafeTransactionKind.TaxPayment) && (through == null || t.BusinessDate <= through));
+        var collected = await entries.Where(t => t.Kind == SafeTransactionKind.RevenueTransfer).SumAsync(t => t.TaxAmount, cancellationToken);
+        var paid = -await entries.Where(t => t.Kind == SafeTransactionKind.TaxPayment).SumAsync(t => t.Amount, cancellationToken);
+        return new TaxPosition(Money(collected), Money(paid), Money(collected - paid));
+    }
+
+    // ---- The safe's analysis ----
+
+    // Where the safe's money came from and went over a period, as the Safe tab's strip counts it:
+    // in, the balance it opened with, the takings (cash, card and the tax on them) and the funding;
+    // out, every payment, what the takings paid straight out of them too, each under what it paid
+    // for. An entry voided in the period and its void are in neither; an earlier entry's void takes
+    // from its own line. Each day of the period with anything in or out, oldest first, with the
+    // balance it ended with.
+    public async Task<TreasuryAnalytics> GetAnalyticsAsync(DateOnly from, DateOnly to, CancellationToken cancellationToken)
+    {
+        Period(from, to);
+        var safe = db.SafeTransactions.AsNoTracking().Where(t => t.Fund == CashFund.Safe);
+        var before = await safe.Where(t => t.BusinessDate < from).SumAsync(t => t.Amount, cancellationToken);
+        var rows = await safe.Where(t => t.BusinessDate >= from && t.BusinessDate <= to)
+            .OrderBy(t => t.BusinessDate).ThenBy(t => t.RecordedAtUtc)
+            .ToListAsync(cancellationToken);
+        var ids = rows.Select(t => t.Id).ToHashSet();
+        var cancelled = rows.Where(t => t.ReversalOf is { } original && ids.Contains(original))
+            .SelectMany(t => new[] { t.Id, t.ReversalOf!.Value })
+            .ToHashSet();
+        var standing = rows.Where(t => !cancelled.Contains(t.Id)).ToList();
+
+        // What each takings entry had paid straight out of it, by what it paid: the payments out of
+        // its day's takings made while they were not in the safe.
+        var takings = standing.Where(t => t.Kind == SafeTransactionKind.RevenueTransfer).ToList();
+        var days = takings.Select(t => t.RevenueDate!.Value).Distinct().ToList();
+        var drawer = (await db.SafeTransactions.AsNoTracking()
+                .Where(t => t.Fund == CashFund.DayRevenue && t.RevenueDate != null && days.Contains(t.RevenueDate.Value))
+                .ToListAsync(cancellationToken))
+            .ToLookup(t => t.RevenueDate!.Value);
+        var paidOut = new List<(SafeTransaction Payment, decimal Amount)>();
+        foreach (var entry in takings)
+        {
+            var takenOff = entry.TakingsTotal - entry.Amount;
+            var payments = drawer[entry.RevenueDate!.Value].ToList();
+            var drawn = -payments.Sum(p => p.Amount);
+            if (takenOff == 0 || drawn == 0)
+            {
+                if (takenOff != 0)
+                    paidOut.Add((entry, takenOff));
+                continue;
+            }
+            // Each payment's share of what the entry took off, to the piastre, the last taking the rest.
+            var left = takenOff;
+            for (var i = 0; i < payments.Count; i++)
+            {
+                var part = i == payments.Count - 1 ? left : Math.Round(takenOff * -payments[i].Amount / drawn, 2, MidpointRounding.AwayFromZero);
+                paidOut.Add((payments[i], part));
+                left -= part;
+            }
+        }
+
+        var outgoing = standing.Where(t => t.Kind is not (SafeTransactionKind.RevenueTransfer or SafeTransactionKind.OpeningBalance or SafeTransactionKind.Funding))
+            .Select(t => (Payment: t, Amount: -t.Amount))
+            .Concat(paidOut)
+            .ToList();
+
+        var (cash, card, tax) = (takings.Sum(t => t.GrossAmount ?? t.Amount), takings.Sum(t => t.CardAmount), takings.Sum(t => t.TaxAmount));
+        var opening = before + standing.Where(t => t.Kind == SafeTransactionKind.OpeningBalance).Sum(t => t.Amount);
+        var funding = standing.Where(t => t.Kind == SafeTransactionKind.Funding).ToList();
+        var totalIn = cash + card + tax + opening + funding.Sum(t => t.Amount);
+        var totalOut = outgoing.Sum(o => o.Amount);
+
+        decimal? Share(decimal part, decimal whole) => whole != 0 ? Math.Round(part * 100 / whole, 1, MidpointRounding.AwayFromZero) : null;
+        TreasuryFlowLine Line(string key, string en, string? ar, decimal amount, decimal whole, IReadOnlyList<TreasuryFlowLine>? items = null) =>
+            new(key, en, ar, Money(amount), Share(amount, whole), items ?? []);
+
+        var inflows = new List<TreasuryFlowLine>
+        {
+            Line("cash", "Cash sales", "مبيعات الكاش", cash, totalIn),
+            Line("card", "Visa sales", "مبيعات الفيزا", card, totalIn),
+            Line("tax", "Tax collected", "الضريبة المحصلة", tax, totalIn),
+            Line("opening", "Opening balance", "الرصيد الافتتاحي", opening, totalIn),
+            Line("funding", "External funding", "التمويل الخارجي", funding.Sum(t => t.Amount), totalIn,
+                funding.GroupBy(t => t.Source)
+                    .Select(g => g.Key == FundingSource.OwnerFinancing
+                        ? Line("funding-owners", "Owners' financing", "تمويل الشركاء", g.Sum(t => t.Amount), totalIn)
+                        : Line("funding-other", "Other source", "مصدر آخر", g.Sum(t => t.Amount), totalIn))
+                    .Where(l => l.Amount != 0)
+                    .ToList()),
+        };
+
+        // The expense vouchers by their expense's category, as the profit and loss files them.
+        var expenseIds = outgoing.Where(o => o.Payment.ExpenseItemId != null).Select(o => o.Payment.ExpenseItemId!.Value).Distinct().ToList();
+        var expenseItems = await db.ExpenseItems.AsNoTracking().Where(e => expenseIds.Contains(e.Id)).ToDictionaryAsync(e => e.Id, cancellationToken);
+        var categories = await db.PurchaseCategories.AsNoTracking().ToDictionaryAsync(c => c.Id, cancellationToken);
+        decimal Paid(params SafeTransactionKind[] kinds) => outgoing.Where(o => kinds.Contains(o.Payment.Kind)).Sum(o => o.Amount);
+        var vouchers = outgoing.Where(o => o.Payment.Kind == SafeTransactionKind.ExpenseVoucher)
+            .GroupBy(o => expenseItems.GetValueOrDefault(o.Payment.ExpenseItemId!.Value)?.CategoryId)
+            .Select(g =>
+            {
+                var category = g.Key is { } id ? categories.GetValueOrDefault(id) : null;
+                return Line($"expense-{g.Key}", category?.Name ?? "A removed expense", category?.NameAr, g.Sum(o => o.Amount), totalOut);
+            })
+            .Where(l => l.Amount != 0)
+            .OrderByDescending(l => l.Amount)
+            .ToList();
+        var outflows = new List<TreasuryFlowLine>
+        {
+            Line("suppliers", "Supplier payments & cash purchases", "مدفوعات الموردين والمشتريات النقدية",
+                Paid(SafeTransactionKind.SupplierPayment, SafeTransactionKind.InvoicePayment), totalOut,
+                [
+                    Line("supplier-payments", "Supplier payments", "سداد موردين", Paid(SafeTransactionKind.SupplierPayment), totalOut),
+                    Line("invoice-payments", "Invoices paid in cash", "فواتير نقدية", Paid(SafeTransactionKind.InvoicePayment), totalOut),
+                ]),
+            Line("expenses", "Operating expense vouchers", "أذون صرف المصروفات", Paid(SafeTransactionKind.ExpenseVoucher), totalOut, vouchers),
+            Line("staff", "Staff advances & wages", "سلف وأجور الموظفين",
+                Paid(SafeTransactionKind.EmployeeAdvance, SafeTransactionKind.SalaryPayment), totalOut,
+                [
+                    Line("advances", "Advances", "سلف", Paid(SafeTransactionKind.EmployeeAdvance), totalOut),
+                    Line("salaries", "Salaries", "رواتب", Paid(SafeTransactionKind.SalaryPayment), totalOut),
+                ]),
+            Line("tax", "Tax paid over", "سداد الضرائب", Paid(SafeTransactionKind.TaxPayment), totalOut),
+        };
+        // Takings whose payments out of them are not on record any more: said apart, not lost.
+        if (Paid(SafeTransactionKind.RevenueTransfer) is not 0 and var unnamed)
+            outflows.Add(Line("takings", "Paid out of the takings", "مصروف من الإيراد", unnamed, totalOut));
+
+        // Day by day: each day's in and out as the strip counts them, and the balance it ended with.
+        var balance = before;
+        var daily = standing.GroupBy(t => t.BusinessDate).OrderBy(g => g.Key)
+            .Select(g =>
+            {
+                var dayIn = g.Sum(t => t.Kind switch
+                {
+                    SafeTransactionKind.RevenueTransfer => t.TakingsTotal,
+                    SafeTransactionKind.OpeningBalance or SafeTransactionKind.Funding => t.Amount,
+                    _ => 0,
+                });
+                var dayOut = Out(g);
+                balance += dayIn - dayOut;
+                var said = g.Where(t => t.Kind == SafeTransactionKind.RevenueTransfer).ToList();
+                return new TreasuryDay(
+                    g.Key, Money(dayIn), Money(dayOut), Money(dayIn - dayOut), Money(balance), Money(said.Sum(t => t.VoidsAmount)),
+                    said.Where(t => !t.IsReversal && t.Notes is not null).Select(t => t.Notes!).ToList());
+            })
+            .ToList();
+
+        return new TreasuryAnalytics(
+            from, to, Money(before), Money(totalIn), Money(totalOut), Money(totalIn - before - totalOut), Money(totalIn - totalOut),
+            inflows, outflows, Money(tax), Money(Paid(SafeTransactionKind.TaxPayment)), await GetTaxPositionAsync(to, cancellationToken),
+            Money(takings.Sum(t => t.VoidsAmount)), daily);
     }
 
     // ---- Funding sources ----
@@ -308,7 +525,7 @@ public sealed class TreasuryService(CostingDbContext db, IBusinessCalendar clock
                 // then, less what was paid out of the safe for it since.
                 var transferred = ofDay.Where(m => m.Fund == CashFund.Safe).Sum(m => m.Amount);
                 return new DayRevenue(
-                    day, Money(cash), Money(card), Money(tax), Money(cash + card - tax), Money(takings.Sum(m => m.VoidsAmount)), Money(paid),
+                    day, Money(cash), Money(card), Money(tax), Money(cash + card), Money(takings.Sum(m => m.VoidsAmount)), Money(paid),
                     Money(transferred), takings.Any(m => !m.IsReversal && !m.IsVoided), sold.Contains(day));
             })
             .Where(d => d.Entered || d.HasSales || d.PaidOut != 0)
@@ -358,7 +575,7 @@ public sealed class TreasuryService(CostingDbContext db, IBusinessCalendar clock
         DailyCashLine Line(SafeTransaction t)
         {
             if (t.Kind == SafeTransactionKind.RevenueTransfer)
-                return new DailyCashLine(t.Id, t.Kind, t.BusinessDate, "Takings entered", Money(t.GrossAmount ?? t.Amount), null, [], t.RecordedBy, t.ApprovedBy);
+                return new DailyCashLine(t.Id, t.Kind, t.BusinessDate, "Takings entered", Money(t.TakingsTotal), null, [], t.RecordedBy, t.ApprovedBy);
             // An employee's advance or salary: who, and the notes as what it was for.
             if (t.Kind is SafeTransactionKind.EmployeeAdvance or SafeTransactionKind.SalaryPayment)
                 return new DailyCashLine(
@@ -394,7 +611,7 @@ public sealed class TreasuryService(CostingDbContext db, IBusinessCalendar clock
         var days = rows.GroupBy(t => t.RevenueDate!.Value).OrderByDescending(g => g.Key)
             .Select(g =>
             {
-                var gross = g.Where(t => t.Kind == SafeTransactionKind.RevenueTransfer).Sum(t => t.GrossAmount ?? t.Amount);
+                var gross = g.Where(t => t.Kind == SafeTransactionKind.RevenueTransfer).Sum(t => t.TakingsTotal);
                 var deductions = -g.Where(t => SafeTransaction.PaidOutKinds.Contains(t.Kind)).Sum(t => t.Amount);
                 var net = g.Where(t => t.Fund == CashFund.Safe).Sum(t => t.Amount);
                 var lines = standing.Where(t => t.RevenueDate == g.Key).ToList();
@@ -453,8 +670,8 @@ public sealed class TreasuryService(CostingDbContext db, IBusinessCalendar clock
 
     private static ReconciliationDay Reconcile(DateOnly? day, IReadOnlyList<SafeTransaction> takings, IReadOnlyList<SaleOrder> sales)
     {
-        // The takings, a voided entry netting out with its reversal: cash and card, less the tax
-        // collected in them.
+        // The takings, a voided entry netting out with its reversal: cash and card, before the tax
+        // collected on them.
         var (cash, card, tax) = (takings.Sum(t => t.GrossAmount ?? t.Amount), takings.Sum(t => t.CardAmount), takings.Sum(t => t.TaxAmount));
 
         // The sales before tax: a day's summary at the menu's prices; a bill entered as printed,
@@ -466,7 +683,7 @@ public sealed class TreasuryService(CostingDbContext db, IBusinessCalendar clock
             return beforeTax - refund;
         });
 
-        var net = cash + card - tax;
+        var net = cash + card;
         return new ReconciliationDay(
             day, Money(cash), Money(card), Money(tax), Money(net), Money(takings.Sum(t => t.VoidsAmount)), Money(items), Money(net - items));
     }
@@ -507,20 +724,26 @@ public sealed class TreasuryService(CostingDbContext db, IBusinessCalendar clock
     {
         Period(from, to);
         var vouchers = await db.SafeTransactions.AsNoTracking()
-            .Where(t => t.Kind == SafeTransactionKind.ExpenseVoucher && t.ReversalOf == null && t.BusinessDate >= from && t.BusinessDate <= to)
+            .Where(t => (t.Kind == SafeTransactionKind.ExpenseVoucher || t.Kind == SafeTransactionKind.TaxPayment)
+                && t.ReversalOf == null && t.BusinessDate >= from && t.BusinessDate <= to)
             .OrderByDescending(t => t.BusinessDate).ThenByDescending(t => t.RecordedAtUtc)
             .ToListAsync(cancellationToken);
         var items = await db.ExpenseItems.AsNoTracking().ToDictionaryAsync(e => e.Id, cancellationToken);
         var categories = await db.PurchaseCategories.AsNoTracking().ToDictionaryAsync(c => c.Id, c => c.Name, cancellationToken);
         var rows = vouchers.Select(t =>
         {
+            if (t.Kind == SafeTransactionKind.TaxPayment)
+                return new ExpenseVoucherRow(
+                    t.Id, t.BusinessDate, null, "Tax paid over · سداد ضرائب", "Tax · ضرائب", Money(-t.Amount), t.Notes, t.RecordedBy, t.ApprovedBy,
+                    t.VoidedAtUtc, t.VoidedBy, IsTaxPayment: true);
             var item = items.GetValueOrDefault(t.ExpenseItemId!.Value);
             return new ExpenseVoucherRow(
                 t.Id, t.BusinessDate, t.ExpenseItemId.Value, item?.Name ?? "A removed expense",
                 item is null ? null : categories.GetValueOrDefault(item.CategoryId), Money(-t.Amount), t.Notes, t.RecordedBy, t.ApprovedBy,
                 t.VoidedAtUtc, t.VoidedBy);
         }).ToList();
-        return new ExpenseVoucherReport(from, to, Money(rows.Where(r => r.VoidedAtUtc is null).Sum(r => r.Amount)), rows);
+        decimal Total(bool tax) => Money(rows.Where(r => r.VoidedAtUtc is null && r.IsTaxPayment == tax).Sum(r => r.Amount));
+        return new ExpenseVoucherReport(from, to, Total(false), rows, Total(true));
     }
 
     // ---- What is owed to suppliers ----
@@ -677,9 +900,9 @@ public sealed class TreasuryService(CostingDbContext db, IBusinessCalendar clock
             SafeTransactionKind.OpeningBalance => $"Opening balance · {SourceName(t.Source)}",
             SafeTransactionKind.Funding => $"Funding · {SourceName(t.Source)}",
             SafeTransactionKind.RevenueTransfer => $"Takings of {t.RevenueDate!.Value.ToString("d MMM", Invariant)}" +
-                (t.PaidOut != 0 ? $" · {Pounds(Math.Abs(t.GrossAmount!.Value))} cash, less {Pounds(Math.Abs(t.PaidOut))} paid out of it" : "") +
-                (t.CardAmount != 0 ? $" · {Pounds(Math.Abs(t.CardAmount))} card, to the bank" : ""),
+                (t.TakingsTotal - t.Amount != 0 ? $" · {Pounds(Math.Abs(t.TakingsTotal))} collected, less {Pounds(Math.Abs(t.TakingsTotal - t.Amount))} paid out of it" : ""),
             SafeTransactionKind.ExpenseVoucher => t.ExpenseItemId is { } e ? names.Expenses.GetValueOrDefault(e) ?? "A removed expense" : "An expense",
+            SafeTransactionKind.TaxPayment => "Tax paid over · سداد ضرائب",
             SafeTransactionKind.SupplierPayment => $"Payment to {Supplier()}" +
                 (t.RevenueDate is { } paidFrom ? $" · from the takings of {paidFrom.ToString("d MMM", Invariant)}" : ""),
             SafeTransactionKind.EmployeeAdvance when t.EmployeeId is null => "Advances, not given out yet" + Takings(),

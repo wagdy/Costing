@@ -1,6 +1,7 @@
 import { Component, Injectable, computed, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
+import { MatButtonToggleModule } from '@angular/material/button-toggle';
 import { MatCheckboxModule } from '@angular/material/checkbox';
 import { MAT_DIALOG_DATA, MatDialog, MatDialogModule, MatDialogRef } from '@angular/material/dialog';
 import { MatFormFieldModule } from '@angular/material/form-field';
@@ -19,6 +20,7 @@ import {
   SafeVoucherInput,
   SupplierBalance,
   TakingsPreview,
+  TaxPosition,
   fundingSourceLabels,
   isRequested,
   paymentMethodLabels,
@@ -86,17 +88,32 @@ export interface SafeVoucherDialogData {
   revenueDate?: string;
 }
 
-// A day's takings as a ledger line shows them: the cash and the card, the tax collected in them
-// (and the till's rate, when it was worked out at it), and so the net sales. A reversal's are its
-// entry's.
-export function entryTax(e: SafeEntry): { percent: number | null; cash: number; card: number; tax: number; net: number } | null {
+// To the piastre.
+const round = (n: number) => Math.round(n * 100) / 100;
+
+// A day's takings as a ledger line shows them: the cash and the Visa before tax, the tax collected
+// on them (and the till's rate, when it was worked out at it), so the net sales (cash + Visa) and all
+// that was collected (with the tax), and what was paid straight out of it before it went into the
+// safe. A reversal's are its entry's.
+export function entryTax(
+  e: SafeEntry,
+): { percent: number | null; cash: number; card: number; tax: number; net: number; total: number; paidOut: number } | null {
   if (e.kind !== 'RevenueTransfer') {
     return null;
   }
   const cash = e.gross != null ? Math.abs(e.gross) : e.in || e.out;
   const card = Math.abs(e.card ?? 0);
   const tax = Math.abs(e.tax);
-  return { percent: e.includesTax ? e.taxPercent : null, cash, card, tax, net: Math.round((cash + card - tax) * 100) / 100 };
+  const total = round(cash + card + tax);
+  return {
+    percent: e.includesTax ? e.taxPercent : null,
+    cash,
+    card,
+    tax,
+    net: round(cash + card),
+    total,
+    paidOut: round(total - Math.abs(e.in || e.out)),
+  };
 }
 
 // The tax in a sum that includes it, as the server takes it off: the sum less the sum over
@@ -122,6 +139,7 @@ const sourcesFor: Partial<Record<SafeTransactionKind, FundingSource[]>> = {
     EmployeePicker,
     FormsModule,
     MatButtonModule,
+    MatButtonToggleModule,
     MatCheckboxModule,
     MatDialogModule,
     MatFormFieldModule,
@@ -136,7 +154,33 @@ const sourcesFor: Partial<Record<SafeTransactionKind, FundingSource[]>> = {
       @if (loading()) {
         <mat-progress-bar mode="indeterminate" />
       }
-      <p class="muted">{{ explanation }}</p>
+      @if (expenseOrTax) {
+        <mat-button-toggle-group class="pays" [value]="taxPayment() ? 'tax' : 'expense'" (change)="taxPayment.set($event.value === 'tax')"
+          aria-label="What it pays">
+          <mat-button-toggle value="expense">Operating expense <span class="ar">مصروف تشغيل</span></mat-button-toggle>
+          <mat-button-toggle value="tax">Tax remittance <span class="ar">سداد/توريد ضرائب</span></mat-button-toggle>
+        </mat-button-toggle-group>
+      }
+      <p class="muted">{{ taxPayment() ? taxExplanation : explanation }}</p>
+      @if (taxPayment()) {
+        <dl class="breakdown" aria-live="polite">
+          <div>
+            <dt>Tax held in the safe <span class="ar">الضريبة المستحقة بالخزنة</span></dt>
+            <dd>{{ tax() ? (tax()!.owed | money) : '…' }}</dd>
+          </div>
+          @if (tax(); as t) {
+            <div class="net">
+              <dt>Left owed after this <span class="ar">المتبقي بعد السداد</span></dt>
+              <dd [class.negative]="t.owed - (amount ?? 0) < 0">{{ t.owed - (amount ?? 0) | money }}</dd>
+            </div>
+          }
+        </dl>
+        @if (tax(); as t) {
+          @if ((amount ?? 0) > t.owed) {
+            <p class="warn small">More than the tax the takings collected and not paid over yet: still paid, if it is tax from before the treasury.</p>
+          }
+        }
+      }
       <div class="form">
         @if (data.kind === 'SupplierPayment') {
           <mat-form-field class="wide">
@@ -184,7 +228,7 @@ const sourcesFor: Partial<Record<SafeTransactionKind, FundingSource[]>> = {
             <span></span>
           }
         }
-        @if (data.kind === 'ExpenseVoucher') {
+        @if (data.kind === 'ExpenseVoucher' && !taxPayment()) {
           <mat-form-field class="wide">
             <mat-label>Expense · المصروف</mat-label>
             <mat-select [(ngModel)]="expenseItemId" aria-label="Expense">
@@ -260,8 +304,20 @@ const sourcesFor: Partial<Record<SafeTransactionKind, FundingSource[]>> = {
     .error {
       color: var(--mat-sys-error);
     }
+    .warn {
+      margin: -4px 0 12px;
+      color: var(--app-warn);
+    }
     .small {
       font-size: 0.85em;
+    }
+    .pays {
+      display: flex;
+      margin-bottom: 8px;
+
+      mat-button-toggle {
+        flex: 1;
+      }
     }
     .breakdown {
       display: grid;
@@ -302,7 +358,11 @@ export class SafeVoucherDialog {
   private readonly ref = inject<MatDialogRef<SafeVoucherDialog, SafeVoucherInput>>(MatDialogRef);
   protected readonly data = inject<SafeVoucherDialogData>(MAT_DIALOG_DATA);
 
-  protected readonly label = safeKindLabels[this.data.kind];
+  protected readonly label = safeKindLabels[this.data.kind === 'TaxPayment' ? 'ExpenseVoucher' : this.data.kind];
+  // An expense voucher pays an expense, or the tax held in the safe over to the tax authority.
+  protected readonly expenseOrTax = this.data.kind === 'ExpenseVoucher' || this.data.kind === 'TaxPayment';
+  protected readonly taxPayment = signal(this.data.kind === 'TaxPayment');
+  protected readonly tax = signal<TaxPosition | null>(null);
   protected readonly sources = sourcesFor[this.data.kind] ?? [];
   protected readonly sourceLabels = fundingSourceLabels;
   protected readonly today = this.data.today ?? todayIso();
@@ -338,7 +398,10 @@ export class SafeVoucherDialog {
       'Cash advanced to an employee (سلفة), from the safe or a day’s takings. It is not an expense: it comes off their pay for the month, on the payroll. ' +
       'Naming no one makes it a lump sum handed out as advances, shared among the staff.',
     SalaryPayment: 'Cash paid to an employee, from the safe or a day’s takings.',
+    TaxPayment: '',
   }[this.data.kind];
+  protected readonly taxExplanation =
+    'The tax the takings collected, held in the safe, paid over to the tax authority. It comes out of the safe and off the tax owed; it is not an expense, so the profit and loss leaves it out.';
 
   constructor() {
     void this.load();
@@ -370,7 +433,7 @@ export class SafeVoucherDialog {
     if (this.sources.length && !this.source) {
       return 'Choose where the money came from.';
     }
-    if (this.data.kind === 'ExpenseVoucher' && !this.expenseItemId) {
+    if (this.data.kind === 'ExpenseVoucher' && !this.taxPayment() && !this.expenseItemId) {
       return 'Choose what the expense is.';
     }
     if (this.forEmployee) {
@@ -407,13 +470,13 @@ export class SafeVoucherDialog {
     const voucher: SafeVoucherInput = {
       requestId: crypto.randomUUID(),
       transactionId: crypto.randomUUID(),
-      kind: this.data.kind,
+      kind: this.expenseOrTax ? (this.taxPayment() ? 'TaxPayment' : 'ExpenseVoucher') : this.data.kind,
       amount: this.amount,
       date: this.date,
       source: this.sources.length ? this.source : null,
       revenueDate: this.forEmployee && this.paidFrom === 'DayRevenue' ? this.revenueDate : null,
       supplierId: this.data.kind === 'SupplierPayment' ? this.supplierId : null,
-      expenseItemId: this.data.kind === 'ExpenseVoucher' ? this.expenseItemId : null,
+      expenseItemId: this.data.kind === 'ExpenseVoucher' && !this.taxPayment() ? this.expenseItemId : null,
       notes: this.notes.trim() || null,
       reason: null,
       includesTax: false,
@@ -424,15 +487,21 @@ export class SafeVoucherDialog {
   }
 
   private async load(): Promise<void> {
-    if (this.data.kind !== 'ExpenseVoucher' && this.data.kind !== 'SupplierPayment' && !this.forEmployee) {
+    if (!this.expenseOrTax && this.data.kind !== 'SupplierPayment' && !this.forEmployee) {
       return;
     }
     this.loading.set(true);
     try {
       if (this.forEmployee) {
         this.employees.set(await firstValueFrom(this.staffApi.staff()));
-      } else if (this.data.kind === 'ExpenseVoucher') {
-        this.expenseItems.set(await firstValueFrom(this.api.expenseItems()));
+      } else if (this.expenseOrTax) {
+        // What the tax owed is, for a tax remittance; it is only said, so the voucher works without it.
+        const [items, tax] = await Promise.all([
+          firstValueFrom(this.api.expenseItems()),
+          firstValueFrom(this.api.taxPosition()).catch(() => null),
+        ]);
+        this.expenseItems.set(items);
+        this.tax.set(tax);
       } else {
         this.balances.set(await firstValueFrom(this.api.supplierBalances()));
         if (this.supplierId && this.amount === null) {
@@ -453,11 +522,10 @@ export interface TakingsDialogData {
   revenueDate?: string;
 }
 
-const round = (n: number) => Math.round(n * 100) / 100;
-
-// A day's takings (توريد إيراد اليومية), as its Z report gives them: the cash and the card, the tax
-// collected in them, the voids and refunds, and why. The cash goes into the safe, less what was paid
-// straight out of it; the card goes to the bank; the tax is owed, kept apart from the net sales.
+// A day's takings (توريد إيراد اليومية), as its Z report gives them, in its order: the date, the cash
+// and the Visa sales before tax, the tax collected on them, the voids and refunds, and why. All of
+// it goes into the safe, less what was paid straight out of the day's takings; the net sales (cash +
+// Visa) are the revenue, and the tax is held in the safe for the tax authority, never revenue.
 // Closes with the entry to send, or nothing when cancelled.
 @Component({
   selector: 'app-takings-dialog',
@@ -466,8 +534,9 @@ const round = (n: number) => Math.round(n * 100) / 100;
     <h2 mat-dialog-title>Takings in <span class="inline-ar">توريد إيراد اليومية</span></h2>
     <mat-dialog-content>
       <p class="muted">
-        The day's Z report: its cash and card, the tax collected in them, and its voids. Only the cash goes into the safe.
-        <span class="note-ar" lang="ar" dir="rtl">تقرير Z لليوم: الكاش والفيزا والضريبة المحصلة والفويد. الكاش فقط يدخل الخزنة.</span>
+        The day's Z report: its cash and Visa sales before tax, the tax collected on them, and its voids. All of it goes into the safe; the
+        tax is held there for the tax authority.
+        <span class="note-ar" lang="ar" dir="rtl">تقرير Z لليوم: الكاش والفيزا والضريبة المحصلة والفويد. الإجمالي كله يدخل الخزنة، والضريبة التزام بها.</span>
       </p>
       <div class="form">
         <mat-form-field class="wide">
@@ -502,33 +571,29 @@ const round = (n: number) => Math.round(n * 100) / 100;
       </div>
       <dl class="breakdown" aria-live="polite">
         <div>
-          <dt>Gross takings <span class="inline-ar">إجمالي الإيراد</span> <span class="muted small">cash + card</span></dt>
-          <dd>{{ figures().gross | money }}</dd>
+          <dt>Net sales revenue <span class="inline-ar">صافي إيراد المبيعات</span> <span class="muted small">cash + Visa, for the P&amp;L</span></dt>
+          <dd>{{ figures().net | money }}</dd>
         </div>
         <div>
-          <dt>Less tax collected <span class="inline-ar">الضريبة المحصلة</span> <span class="muted small">owed, not revenue</span></dt>
+          <dt>Tax collected <span class="inline-ar">الضريبة المحصلة - التزام ضريبي بالخزنة</span> <span class="muted small">owed, never revenue</span></dt>
           <dd>{{ figures().tax | money }}</dd>
         </div>
+        @if (paidOut()) {
+          <div>
+            <dt>Paid straight out of them <span class="inline-ar">المنصرف من الإيراد</span></dt>
+            <dd>({{ paidOut() | money }})</dd>
+          </div>
+        }
         <div class="net">
-          <dt>Net sales <span class="inline-ar">صافي المبيعات</span></dt>
-          <dd [class.negative]="figures().net < 0">{{ figures().net | money }}</dd>
-        </div>
-        <div>
           <dt>
-            Cash into the safe <span class="inline-ar">الصافي للخزنة</span>
-            @if (paidOut()) {
-              <span class="muted small">cash less {{ paidOut() | money }} paid out of it</span>
-            }
+            Total inflow into the safe <span class="inline-ar">إجمالي الوارد للخزنة</span>
+            <span class="muted small">cash + Visa + tax{{ paidOut() ? ', less what was paid out of them' : '' }}</span>
           </dt>
           <dd [class.negative]="figures().intoSafe < 0">{{ figures().intoSafe | money }}</dd>
         </div>
-        <div>
-          <dt>Card, to the bank <span class="inline-ar">الفيزا للبنك</span></dt>
-          <dd>{{ figures().card | money }}</dd>
-        </div>
       </dl>
       @if (figures().intoSafe < 0) {
-        <p class="error small">What was paid out of these takings is {{ -figures().intoSafe | money }} more than their cash: that comes out of the safe.</p>
+        <p class="error small">What was paid out of these takings is {{ -figures().intoSafe | money }} more than they came to: that comes out of the safe.</p>
       }
       @if (!data.canApprove) {
         <p class="ask">A manager approves safe entries: no cash moves until then. <span class="inline-ar">يُرسل للمدير للموافقة.</span></p>
@@ -630,7 +695,7 @@ export class TakingsDialog {
   protected readonly figures = computed(() => {
     this.version();
     const [cash, card, tax] = [this.cash, this.card, this.tax].map((n) => Number(n) || 0);
-    return { gross: round(cash + card), tax: round(tax), net: round(cash + card - tax), card: round(card), intoSafe: round(cash - this.paidOut()) };
+    return { net: round(cash + card), tax: round(tax), total: round(cash + card + tax), intoSafe: round(cash + card + tax - this.paidOut()) };
   });
 
   // What stops it being sent, said plainly in both languages.
@@ -650,11 +715,11 @@ export class TakingsDialog {
     if (figures.some((n) => n !== null && `${n}` !== '' && (!Number.isFinite(Number(n)) || Number(n) < 0))) {
       return 'The cash, card, tax and voids are zero or more. · المبالغ صفر أو أكثر.';
     }
-    if (this.figures().gross <= 0) {
+    if (this.figures().net <= 0) {
       return "Enter the day's cash or card takings. · أدخل إيراد الكاش أو الفيزا.";
     }
-    if (this.figures().tax > this.figures().gross) {
-      return "The tax collected cannot be more than the day's takings. · الضريبة لا تزيد عن إجمالي الإيراد.";
+    if (this.figures().tax > this.figures().net) {
+      return "The tax collected cannot be more than the day's sales. · الضريبة لا تزيد عن إجمالي المبيعات.";
     }
     if (this.notes.trim().length > 500) {
       return 'Keep the notes under 500 characters. · الملاحظات 500 حرف على الأكثر.';
@@ -864,10 +929,11 @@ export class Treasury {
       } else if (kind === 'RevenueTransfer') {
         this.notify.info(
           `Takings of ${voucher.revenueDate} entered: net sales ${this.company.money(result.netAmount ?? 0)}, tax ${this.company.money(result.taxAmount)}` +
-            ` kept apart, ${this.company.money(result.amount)} cash into the safe.`,
+            ` held for the tax authority, ${this.company.money(result.amount)} into the safe.`,
         );
       } else {
-        this.notify.info(`${safeKindLabels[kind].en} entered: ${this.company.money(voucher.amount)}.`);
+        // As sent: an expense voucher may have gone as a tax payment.
+        this.notify.info(`${safeKindLabels[voucher.kind].en} entered: ${this.company.money(voucher.amount)}.`);
       }
       return true;
     } catch (error) {

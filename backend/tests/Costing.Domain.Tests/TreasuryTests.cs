@@ -92,21 +92,57 @@ public class TreasuryTests
         Assert.Throws<DomainException>(() => SafeTransaction.RevenueTransfer(Guid.NewGuid(), 100, Today, Today, null, "Omar", taxPercent: -1));
     }
 
+    // The safe is the one treasury: a day's cash and Visa sales and the tax collected on them all go
+    // in. The net sales are the cash and Visa; the tax is held for the tax authority.
+    [Fact]
+    public void A_days_cash_visa_and_tax_all_go_into_the_safe()
+    {
+        var takings = SafeTransaction.RevenueTransfer(Guid.NewGuid(), 1_000, Today, Today, "2 voids", "Omar", card: 500, tax: 210, voids: 35);
+        Assert.Equal(
+            (1_710m, 1_710m, 1_500m, 210m, 0m, 35m),
+            (takings.Amount, takings.TakingsTotal, takings.NetAmount, takings.TaxAmount, takings.PaidOut, takings.VoidsAmount));
+
+        // The drawer paid 300 out of them first: the rest goes in.
+        var paid = SafeTransaction.RevenueTransfer(Guid.NewGuid(), 1_000, Today, Today, null, "Omar", paidOut: 300, card: 500, tax: 210);
+        Assert.Equal((1_410m, 300m), (paid.Amount, paid.PaidOut));
+        var reversal = paid.Void(Guid.NewGuid(), Today, "Omar");
+        Assert.Equal((-1_410m, -1_710m, -1_500m, -300m), (reversal.Amount, reversal.TakingsTotal, reversal.NetAmount, reversal.PaidOut));
+
+        // With the till's rate, the cash and Visa entered include the tax: it is worked out and
+        // taken off each in proportion, and the three add back up to what was entered.
+        Assert.Equal((1_000m, 500m, 210m), SafeTransaction.Takings(1_140, 570, null, 14));
+        Assert.Equal((87.72m, 0m, 12.28m), SafeTransaction.Takings(100, 0, null, 14));
+
+        Assert.Throws<DomainException>(() => SafeTransaction.RevenueTransfer(Guid.NewGuid(), 100, Today, Today, null, "Omar", card: 50, tax: 150.01m));
+        Assert.Throws<DomainException>(() => SafeTransaction.RevenueTransfer(Guid.NewGuid(), 0, Today, Today, null, "Omar", tax: 0));
+        Assert.Throws<DomainException>(() => SafeTransaction.RevenueTransfer(Guid.NewGuid(), 100, Today, Today, null, "Omar", card: -1));
+    }
+
+    // The tax paid over (سداد ضرائب): out of the safe, never an expense.
+    [Fact]
+    public void Tax_paid_over_comes_out_of_the_safe()
+    {
+        var paid = SafeTransaction.TaxPayment(Guid.NewGuid(), 210, Today, "October's VAT", "Omar");
+        Assert.Equal((SafeTransactionKind.TaxPayment, CashFund.Safe, -210m, (Guid?)null), (paid.Kind, paid.Fund, paid.Amount, paid.ExpenseItemId));
+        Assert.Equal(210m, paid.Void(Guid.NewGuid(), Today, "Omar").Amount);
+        Assert.Throws<DomainException>(() => SafeTransaction.TaxPayment(Guid.NewGuid(), 0, Today, null, "Omar"));
+    }
+
     [Fact]
     public void A_days_takings_go_into_the_safe_gross_less_what_was_paid_out_of_them()
     {
-        // The POS says 10,495; the drawer paid 1,454.07 out of it: 9,040.93 into the safe, the tax
-        // in the gross.
+        // The POS says 10,495 with tax in it; the drawer paid 1,454.07 out of it: 9,040.93 into the
+        // safe, the tax worked out of it and kept apart.
         var takings = SafeTransaction.RevenueTransfer(Guid.NewGuid(), 10_495, Today, Today, null, "Omar", taxPercent: 14, paidOut: 1_454.07m);
         Assert.Equal(
-            ((decimal?)10_495m, 9_040.93m, 1_454.07m, 1_288.86m, 9_206.14m),
+            ((decimal?)9_206.14m, 9_040.93m, 1_454.07m, 1_288.86m, 9_206.14m),
             (takings.GrossAmount, takings.Amount, takings.PaidOut, takings.TaxAmount, takings.NetAmount));
         // Paid out more than the gross: the rest comes out of the safe.
         Assert.Equal(-20m, SafeTransaction.RevenueTransfer(Guid.NewGuid(), 50, Today, Today, null, "Omar", paidOut: 70).Amount);
         Assert.Throws<DomainException>(() => SafeTransaction.RevenueTransfer(Guid.NewGuid(), 50, Today, Today, null, "Omar", paidOut: -1));
         // Voided, the gross goes back with what went in.
         var reversal = takings.Void(Guid.NewGuid(), Today, "Omar");
-        Assert.Equal(((decimal?)-10_495m, -9_040.93m), (reversal.GrossAmount, reversal.Amount));
+        Assert.Equal(((decimal?)-9_206.14m, -9_040.93m), (reversal.GrossAmount, reversal.Amount));
 
         // Paid out of a day's takings once they are in the safe: out of the safe.
         var later = SafeTransaction.InvoicePayment(Guid.NewGuid(), 45, Today, Guid.NewGuid(), null, Today, "Omar", takingsInSafe: true);

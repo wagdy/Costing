@@ -163,13 +163,14 @@ const costingChildren: Routes = [
     ],
   },
   {
-    // Reports (التقارير): where the money went, and the food cost reports.
+    // Reports (التقارير): where the money went, the safe's money in and out, and the food cost reports.
     path: 'reports',
     canActivate: [costingTabGuard('Reports')],
     loadComponent: () => import('./features/costing/costing-reports-shell').then((m) => m.CostingReportsShell),
     children: [
       { path: '', pathMatch: 'full', redirectTo: 'spending' },
       { path: 'spending', loadComponent: () => import('./features/costing/spending-page').then((m) => m.SpendingPage) },
+      { path: 'treasury', loadComponent: () => import('./features/costing/treasury-page').then((m) => m.TreasuryPage) },
       { path: 'theoretical', loadComponent: () => import('./features/costing/theoretical-page').then((m) => m.TheoreticalPage) },
       { path: 'variance', loadComponent: () => import('./features/costing/variance-page').then((m) => m.VariancePage) },
       { path: 'kpis', loadComponent: () => import('./features/costing/kpis-page').then((m) => m.KpisPage) },

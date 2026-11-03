@@ -126,7 +126,7 @@ const expenseFields: { key: keyof MonthlyExpenses; en: string; ar: string; hours
             <table class="grid statement">
               <tbody>
                 <tr class="takings">
-                  <td>Gross takings · إجمالي الإيراد <span class="muted small">cash {{ r.statement.cashTakings ?? 0 | money }} + card {{ r.statement.cardTakings ?? 0 | money }}</span></td>
+                  <td>Gross takings · إجمالي الإيراد <span class="muted small">cash {{ r.statement.cashTakings ?? 0 | money }} + Visa {{ r.statement.cardTakings ?? 0 | money }} + tax {{ r.statement.taxCollected ?? 0 | money }}</span></td>
                   <td class="num">{{ r.statement.grossTakings ?? 0 | money }}</td>
                   <td></td>
                 </tr>
@@ -197,8 +197,8 @@ const expenseFields: { key: keyof MonthlyExpenses; en: string; ar: string; hours
             </table>
           </div>
           <p class="note small">
-            Revenue is the month's net sales: its takings, cash and card, less the tax collected in them, which is owed to the tax authority and
-            never profit (gross takings = net sales + tax). Food and beverage sales share it as the month's sales are, at the menu's prices.
+            Revenue is the month's net sales: its takings, cash and Visa before the tax collected on them, which is owed to the tax authority
+            and never profit (gross takings = net sales + tax). Food and beverage sales share it as the month's sales are, at the menu's prices.
             Food and beverage cost: what the sales took by their recipes, with shared costs such as frying oil on the meals. Losses are counted
             against food. Expenses on the month's posted purchase invoices are taken off on their category's line, with what is entered by hand.
             @if (r.statement.voids) {

@@ -71,8 +71,8 @@ public sealed record MonthStatement(
     // Consumable assets broken in the month (Costing → Waste's breakage), at their cost. Said, not
     // counted again: what they cost was counted when they were bought, as an expense.
     decimal Breakage = 0,
-    // The month's takings: cash and card, their total, the tax collected in it (a liability, not
-    // revenue), the voids and refunds said, and how many days' takings are entered.
+    // The month's takings: cash and card before tax, all that was collected with the tax on them, the
+    // tax (a liability, not revenue), the voids and refunds said, and how many days' takings are entered.
     decimal CashTakings = 0,
     decimal CardTakings = 0,
     decimal GrossTakings = 0,
@@ -165,14 +165,12 @@ public sealed class KpiService(CostingDbContext db, IBusinessCalendar clock, Cos
         }
         var soldAtMenuPrices = food + drinks + deliveryFees;
 
-        // Revenue: the month's takings, as each day's Z report gave them, less the tax in them.
-        // A voided day nets out with its reversal.
+        // Revenue: the month's net sales, the cash and card each day's Z report gave before the tax
+        // collected on them, which is owed, never revenue. A voided day nets out with its reversal.
         var takings = await db.SafeTransactions.AsNoTracking()
             .Where(t => t.Kind == SafeTransactionKind.RevenueTransfer && t.RevenueDate >= theoretical.From && t.RevenueDate <= theoretical.To)
             .ToListAsync(cancellationToken);
-        var (cashTakings, cardTakings) = (takings.Sum(t => t.GrossAmount ?? t.Amount), takings.Sum(t => t.CardAmount));
-        var taxCollected = takings.Sum(t => t.TaxAmount);
-        var revenueTotal = cashTakings + cardTakings - taxCollected;
+        var revenueTotal = takings.Sum(t => t.NetAmount);
         var takingsDays = takings.Where(t => !t.IsReversal && !t.IsVoided).Select(t => t.RevenueDate).Distinct().Count();
         (food, drinks) = food + drinks > 0
             ? (revenueTotal * food / (food + drinks), revenueTotal - revenueTotal * food / (food + drinks))
@@ -265,7 +263,8 @@ public sealed class KpiService(CostingDbContext db, IBusinessCalendar clock, Cos
                 Money(costOfSales), Money(grossProfit),
                 expenses?.WagesAndBenefits, expenses?.OtherControllableCosts, expenses?.OccupationCost, expenses?.Interest, expenses?.Depreciation,
                 Money(netProfit), loggedControllable, loggedOccupation, loggedOtherFixed, logged, loggedWages, Money(totalExpenses), breakage,
-                Money(cashTakings), Money(cardTakings), Money(cashTakings + cardTakings), Money(taxCollected), Money(takings.Sum(t => t.VoidsAmount)),
+                Money(takings.Sum(t => t.GrossAmount ?? t.Amount)), Money(takings.Sum(t => t.CardAmount)), Money(takings.Sum(t => t.TakingsTotal)),
+                Money(takings.Sum(t => t.TaxAmount)), Money(takings.Sum(t => t.VoidsAmount)),
                 takingsDays, Money(soldAtMenuPrices)),
             ToDto(expenses), kpis, items,
             withoutRecipe.Count, withoutRecipe.Sum(r => r.NetSales));

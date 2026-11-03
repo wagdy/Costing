@@ -7,7 +7,8 @@ import { firstValueFrom } from 'rxjs';
 import { CostingApi, DayRevenue, DayRevenueReport, FundingReport, safeKindLabels } from '../../core/costing/costing.api';
 import { errorMessage } from '../../core/http/error-message';
 import { MoneyPipe } from '../../core/ui/money.pipe';
-import { Treasury, entryTax, monthBounds } from './financials';
+import { Treasury, monthBounds } from './financials';
+import { TakingsBadges } from './takings-badges';
 
 // Funding sources (مصادر التمويل): every sum put into the safe in a month, by where it came from:
 // carried over, the owners' financing, another source, and the days' cash takings. Below, each
@@ -16,7 +17,7 @@ import { Treasury, entryTax, monthBounds } from './financials';
 // day's takings are entered from its row.
 @Component({
   selector: 'app-funding-page',
-  imports: [DatePipe, MatButtonModule, MatIconModule, MatProgressBarModule, MoneyPipe],
+  imports: [DatePipe, MatButtonModule, MatIconModule, MatProgressBarModule, MoneyPipe, TakingsBadges],
   template: `
     <div class="toolbar">
       <button mat-icon-button (click)="move(-1)" aria-label="The month before"><mat-icon>chevron_left</mat-icon></button>
@@ -70,12 +71,7 @@ import { Treasury, entryTax, monthBounds } from './financials';
                 <td class="nowrap">{{ e.date | date: 'd MMM' }}</td>
                 <td>
                   <span class="kind">{{ kinds[e.kind].en }}</span> {{ e.description }}
-                  @if (entryTax(e); as t) {
-                    <div class="muted small">
-                      Cash {{ t.cash | money }}{{ t.card ? ' · card ' : '' }}{{ t.card ? (t.card | money) : '' }} · tax {{ t.tax | money
-                      }}{{ t.percent !== null ? ' at ' + t.percent + '%' : '' }} · net sales {{ t.net | money }}
-                    </div>
-                  }
+                  <app-takings-badges [entry]="e" />
                   @if (e.notes && !e.reversalOf) {
                     <div class="muted small">{{ e.notes }}</div>
                   }
@@ -96,10 +92,10 @@ import { Treasury, entryTax, monthBounds } from './financials';
 
     <h3>Each day's takings <span class="inline-ar">إيرادات الأيام</span></h3>
     <p class="note">
-      Each business day's Z report, from the treasury's opening balance on: its cash and card, the tax collected in them (owed, not revenue),
-      and so its net sales. Only the cash goes into the safe, less what was paid straight out of it. A day with sales and no takings yet is
-      a click from entering them.
-      <span class="note-ar" lang="ar" dir="rtl">تقرير Z لكل يوم: الكاش والفيزا والضريبة المحصلة وصافي المبيعات. الكاش فقط يدخل الخزنة بعد خصم المنصرف منه.</span>
+      Each business day's Z report, from the treasury's opening balance on: its cash and Visa sales before tax, and so its net sales, and the
+      tax collected on them (owed, not revenue). All of it goes into the safe, less what was paid straight out of it. A day with sales and no
+      takings yet is a click from entering them.
+      <span class="note-ar" lang="ar" dir="rtl">تقرير Z لكل يوم: الكاش والفيزا وصافي المبيعات والضريبة المحصلة. الإجمالي كله يدخل الخزنة بعد خصم المنصرف منه.</span>
     </p>
     @if (revenue(); as r) {
       <div class="table-wrap">
@@ -108,7 +104,7 @@ import { Treasury, entryTax, monthBounds } from './financials';
             <tr>
               <th>Day<span class="ar">اليوم</span></th>
               <th class="num">Cash<span class="ar">الكاش</span></th>
-              <th class="num">Card<span class="ar">الفيزا</span></th>
+              <th class="num">Visa<span class="ar">الفيزا</span></th>
               <th class="num">Tax<span class="ar">الضريبة</span></th>
               <th class="num">Net sales<span class="ar">صافي المبيعات</span></th>
               <th class="num">Voids<span class="ar">الفويد</span></th>
@@ -193,7 +189,7 @@ export class FundingPage {
   private readonly api = inject(CostingApi);
   private readonly treasury = inject(Treasury);
   protected readonly kinds = safeKindLabels;
-  protected readonly entryTax = entryTax;
+
 
   protected readonly year = signal(new Date().getFullYear());
   protected readonly month = signal(new Date().getMonth() + 1);

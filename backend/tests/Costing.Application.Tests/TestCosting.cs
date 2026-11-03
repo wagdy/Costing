@@ -507,6 +507,13 @@ public sealed class SafeStore : ISafeTransactionRepository
             .Select(t => t.PurchaseInvoiceId!.Value).ToHashSet());
     public Task<bool> AnyOpeningBalanceAsync(CancellationToken cancellationToken = default) =>
         Task.FromResult(_entries.Any(t => t.Kind == SafeTransactionKind.OpeningBalance && !t.IsReversal && !t.IsVoided));
+    public Task<decimal> TaxOwedAsync(CancellationToken cancellationToken = default) =>
+        Task.FromResult(_entries.Sum(t => t.Kind switch
+        {
+            SafeTransactionKind.RevenueTransfer => t.TaxAmount,
+            SafeTransactionKind.TaxPayment => t.Amount,
+            _ => 0,
+        }));
     public Task<IReadOnlyList<SafeTransaction>> GetForPayrollMonthAsync(DateOnly month, Guid? employeeId = null, CancellationToken cancellationToken = default) =>
         Task.FromResult<IReadOnlyList<SafeTransaction>>(_entries
             .Where(t => t.PayrollMonth == month && t.EmployeeId != null && (employeeId == null || t.EmployeeId == employeeId)).ToList());

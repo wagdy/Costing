@@ -32,6 +32,11 @@ public sealed class FinancialsController(ISender sender, TreasuryService treasur
     public Task<SafeMonth> GetSafe([FromQuery] int year, [FromQuery] int month, CancellationToken cancellationToken) =>
         treasury.GetSafeAsync(year, month, cancellationToken);
 
+    // The tax the takings collected, what was paid over, and what is still owed, held in the safe.
+    [HttpGet("tax")]
+    [CostingTab(CostingTabs.Financials)]
+    public Task<TaxPosition> GetTax(CancellationToken cancellationToken) => treasury.GetTaxPositionAsync(null, cancellationToken);
+
     [HttpGet("funding")]
     [CostingTab(CostingTabs.Financials)]
     public Task<FundingReport> GetFunding([FromQuery] DateOnly from, [FromQuery] DateOnly to, CancellationToken cancellationToken) =>

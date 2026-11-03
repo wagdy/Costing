@@ -42,6 +42,7 @@ describe('the costing navigation', () => {
     expect(reports.children!.map((r) => [r.path, r.redirectTo ?? (r.loadComponent ? 'page' : undefined)])).toEqual([
       ['', 'spending'],
       ['spending', 'page'],
+      ['treasury', 'page'],
       ['theoretical', 'page'],
       ['variance', 'page'],
       ['kpis', 'page'],
@@ -101,6 +102,7 @@ describe('the costing navigation', () => {
     ];
     expect([...(fixture.nativeElement as HTMLElement).querySelectorAll('nav a')].map(link)).toEqual([
       ['/spending', 'pie_chart', 'Spending analysis', 'تحليل الإنفاق'],
+      ['/treasury', 'account_balance', 'Safe & treasury', 'تحليل الخزنة والتدفقات النقدية'],
       ['/theoretical', 'calculate', 'Theoretical cost', 'التكلفة النظرية'],
       ['/variance', 'compare_arrows', 'Variance', 'الانحراف'],
       ['/kpis', 'insights', 'KPIs', 'المؤشرات'],

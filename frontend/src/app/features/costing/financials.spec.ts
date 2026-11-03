@@ -18,12 +18,13 @@ describe('entering a safe entry', () => {
   const supplierBalances = vi.fn();
   const expenseItems = vi.fn();
   const takingsPreview = vi.fn();
+  const taxPosition = vi.fn();
   const close = vi.fn();
 
   async function dialog(data: SafeVoucherDialogData) {
     TestBed.configureTestingModule({
       providers: [
-        { provide: CostingApi, useValue: { supplierBalances, expenseItems, takingsPreview } },
+        { provide: CostingApi, useValue: { supplierBalances, expenseItems, takingsPreview, taxPosition } },
         { provide: MenuSalesApi, useValue: { staff } },
         { provide: MAT_DIALOG_DATA, useValue: data },
         { provide: MatDialogRef, useValue: { close } },
@@ -32,7 +33,7 @@ describe('entering a safe entry', () => {
     const fixture = TestBed.createComponent(SafeVoucherDialog);
     await fixture.whenStable();
     fixture.detectChanges();
-    return { el: fixture.nativeElement as HTMLElement, page: fixture.componentInstance as unknown as Record<string, any> };
+    return { fixture, el: fixture.nativeElement as HTMLElement, page: fixture.componentInstance as unknown as Record<string, any> };
   }
 
   beforeEach(() => {
@@ -41,6 +42,7 @@ describe('entering a safe entry', () => {
       { supplierId: 'delta', supplier: 'Delta Oils', isArchived: false, openingDebt: 0, creditPurchases: 100, payments: 100, balance: 0, lastPaidOn: null, openInvoices: 0 },
     ]));
     expenseItems.mockReset().mockReturnValue(of([]));
+    taxPosition.mockReset().mockReturnValue(of({ collected: 560, paid: 400, owed: 160 }));
     staff.mockReset().mockReturnValue(of([employee('hassan', 'Hassan'), employee('old', 'Left Already', false)]));
     takingsPreview.mockReset().mockImplementation((day: string) => of({ date: day, entered: null, paidOut: 0, invoices: 0 }));
     close.mockReset();
@@ -103,6 +105,46 @@ describe('entering a safe entry', () => {
     expect(close.mock.lastCall![0]).toMatchObject({
       kind: 'SalaryPayment', amount: 5_526.33, employeeId: 'old', payrollMonth: '2026-09-01', revenueDate: null, date: '2026-10-20',
     });
+  });
+
+  // An expense voucher pays an operating expense, or the tax held in the safe over to the tax
+  // authority (سداد/توريد ضرائب): no expense item then, and sent as a tax payment.
+  it('pays the tax held in the safe over as a tax remittance, saying what is left owed', async () => {
+    const { fixture, el, page } = await dialog({ kind: 'ExpenseVoucher', canApprove: true, today: '2026-10-12' });
+
+    expect([...el.querySelectorAll('mat-button-toggle')].map(text)).toEqual(['Operating expense مصروف تشغيل', 'Tax remittance سداد/توريد ضرائب']);
+    const type = (value: string) => {
+      const amount = el.querySelector<HTMLInputElement>('input[aria-label="Amount"]')!;
+      amount.value = value;
+      amount.dispatchEvent(new Event('input'));
+      fixture.detectChanges();
+    };
+    type('100');
+    expect(page['problem']()).toBe('Choose what the expense is.');
+
+    page['taxPayment'].set(true);
+    fixture.detectChanges();
+    expect(el.querySelector('[aria-label="Expense"]')).toBeNull();
+    expect([...el.querySelectorAll('.breakdown dd')].map(text)).toEqual(['L.E 160.00', 'L.E 60.00']);
+    expect(page['problem']()).toBeNull();
+
+    // More than is held: said, and paid all the same (tax from before the treasury).
+    type('200');
+    expect(text(el.querySelector('.warn')!)).toContain('More than the tax the takings collected');
+    expect(page['problem']()).toBeNull();
+
+    type('100');
+    page['notes'] = 'October VAT';
+    page['done']();
+    expect(close.mock.lastCall![0]).toMatchObject({ kind: 'TaxPayment', amount: 100, expenseItemId: null, notes: 'October VAT' });
+  });
+
+  it('opened as a tax payment, starts on the tax remittance', async () => {
+    const { el, page } = await dialog({ kind: 'TaxPayment', canApprove: true, today: '2026-10-12' });
+
+    expect(text(el.querySelector('h2')!)).toBe('Expense voucher إذن صرف مصروفات');
+    expect(page['taxPayment']()).toBe(true);
+    expect(text(el.querySelector('.breakdown dd')!)).toBe('L.E 160.00');
   });
 
   it('asks where the money came from, and tells an accountant that a manager approves it', async () => {
@@ -171,13 +213,15 @@ describe('a day’s takings from its Z report', () => {
     expect(takingsPreview).toHaveBeenCalledWith('2026-10-14');
   });
 
-  it('keeps the tax apart from the net sales, and puts only the cash in the safe, less what was paid out of it', async () => {
+  it('keeps the tax apart from the net sales, and puts all of it in the safe, cash, Visa and tax, less what was paid out of it', async () => {
     takingsPreview.mockImplementation((day: string) => of({ date: day, entered: null, paidOut: 1_454.07, invoices: 2, supplierPayments: 0 }));
     const { el, page, fill } = await dialog({ revenueDate: '2026-10-13' });
 
     fill({ cash: 10_495, card: 2_000, tax: 1_535, voids: 120 }, 'Two pizzas sent back');
-    expect([...el.querySelectorAll('.breakdown dd')].map(text)).toEqual(['L.E 12,495.00', 'L.E 1,535.00', 'L.E 10,960.00', 'L.E 9,040.93', 'L.E 2,000.00']);
-    expect(text(el.querySelector('.breakdown')!)).toContain('cash less L.E 1,454.07 paid out of it');
+    // Net sales 12,495 for the P&L; 1,535 of tax held; 12,575.93 into the safe after the 1,454.07 paid out.
+    expect([...el.querySelectorAll('.breakdown dd')].map(text)).toEqual(['L.E 12,495.00', 'L.E 1,535.00', '(L.E 1,454.07)', 'L.E 12,575.93']);
+    expect([...el.querySelectorAll('.breakdown dt')].map((dt) => text(dt).split(' ')[0])).toEqual(['Net', 'Tax', 'Paid', 'Total']);
+    expect(text(el.querySelector('.breakdown .net')!)).toContain('cash + Visa + tax, less what was paid out of them');
     expect(page['problem']()).toBeNull();
 
     page['done']();
@@ -194,7 +238,7 @@ describe('a day’s takings from its Z report', () => {
     fill({ cash: 0, card: 300, tax: 0 });
     expect(page['problem']()).toBeNull();
     fill({ cash: 100, card: 50, tax: 200 });
-    expect(page['problem']()).toBe("The tax collected cannot be more than the day's takings. · الضريبة لا تزيد عن إجمالي الإيراد.");
+    expect(page['problem']()).toBe("The tax collected cannot be more than the day's sales. · الضريبة لا تزيد عن إجمالي المبيعات.");
     fill({ cash: 100, card: -5, tax: 0 });
     expect(page['problem']()).toBe('The cash, card, tax and voids are zero or more. · المبالغ صفر أو أكثر.');
 
@@ -263,17 +307,19 @@ describe('sending a safe entry', () => {
     expect(notify.info).toHaveBeenCalledWith('Submitted to the manager for approval. Nothing is made until it is approved.');
   });
 
-  it('asks for a day’s takings as its Z report gives them, and says the net sales, the tax kept apart and the cash into the safe', async () => {
-    const takings = { ...voucher, kind: 'RevenueTransfer' as const, amount: 900, revenueDate: '2026-10-11', cardAmount: 240, taxAmount: 140 };
+  it('asks for a day’s takings as its Z report gives them, and says the net sales, the tax held and all that went into the safe', async () => {
+    const takings = { ...voucher, kind: 'RevenueTransfer' as const, amount: 760, revenueDate: '2026-10-11', cardAmount: 240, taxAmount: 140 };
     open.mockReturnValue({ afterClosed: () => of(takings) });
-    recordVoucher.mockReturnValue(of({ id: 't', kind: 'RevenueTransfer', amount: 900, taxAmount: 140, cardAmount: 240, netAmount: 1_000 }));
+    recordVoucher.mockReturnValue(of({ id: 't', kind: 'RevenueTransfer', amount: 1_140, taxAmount: 140, cardAmount: 240, netAmount: 1_000 }));
 
     expect(await service(true).enter('RevenueTransfer', { revenueDate: '2026-10-11' })).toBe(true);
 
     expect(open.mock.lastCall![0]).toBe(TakingsDialog);
     expect(open.mock.lastCall![1].data).toEqual({ canApprove: true, today: '2026-10-12', revenueDate: '2026-10-11' });
     expect(recordVoucher).toHaveBeenCalledWith(takings);
-    expect(notify.info).toHaveBeenCalledWith('Takings of 2026-10-11 entered: net sales L.E 1,000.00, tax L.E 140.00 kept apart, L.E 900.00 cash into the safe.');
+    expect(notify.info).toHaveBeenCalledWith(
+      'Takings of 2026-10-11 entered: net sales L.E 1,000.00, tax L.E 140.00 held for the tax authority, L.E 1,140.00 into the safe.',
+    );
   });
 
   it('sends nothing when cancelled', async () => {
