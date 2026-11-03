@@ -103,7 +103,15 @@ public sealed class PurchaseInvoice : AggregateRoot
 
     public IReadOnlyList<PurchaseInvoiceLine> Lines => _lines.AsReadOnly();
 
-    // What the lines with a price came to: in all, for stock, and for expenses.
+    // A discount on the whole invoice (خصم الفاتورة), shared among its priced lines.
+    public decimal Discount { get; private set; }
+
+    // What the lines came to as written (Subtotal), and their own discounts.
+    public decimal Subtotal => _lines.Sum(l => l.LineTotal ?? 0);
+    public decimal LineDiscounts => _lines.Sum(l => l.Discount);
+
+    // What the lines with a price came to after every discount: in all, what is paid (الصافي
+    // المستحق), for stock, and for expenses.
     public decimal Total => _lines.Sum(l => l.Cost ?? 0);
     public decimal InventoryTotal => _lines.Where(l => l.ItemType == PurchaseItemType.Inventory).Sum(l => l.Cost ?? 0);
     public decimal ExpenseTotal => _lines.Where(l => l.ItemType == PurchaseItemType.Expense).Sum(l => l.Cost ?? 0);
@@ -123,13 +131,15 @@ public sealed class PurchaseInvoice : AggregateRoot
 
     // Replaces the draft's details and lines. Each line is as written on the invoice: a quantity
     // in a unit that holds UnitSize of the material's own (5 in kg of 1000 g), or of an expense.
+    // discount: the invoice's own, off the total after the lines' discounts.
     public void Record(
         Guid? supplierId,
         string? supplierInvoiceNumber,
         DateOnly? invoiceDate,
         IReadOnlyCollection<PurchaseInvoiceLineEntry> lines,
         PurchasePaymentMethod? paymentMethod = null,
-        DateOnly? revenueDate = null)
+        DateOnly? revenueDate = null,
+        decimal discount = 0)
     {
         if (Status != PurchaseInvoiceStatus.Draft)
             throw new DomainException(Status == PurchaseInvoiceStatus.Voided
@@ -147,13 +157,44 @@ public sealed class PurchaseInvoice : AggregateRoot
         if (paymentMethod is { } method && (!Enum.IsDefined(method) || (method == PurchasePaymentMethod.BeforeTreasury && RevisionOf is null)))
             throw new DomainException("Choose how the invoice is paid: from the safe, from a day's takings, or on credit.");
 
+        var recorded = lines.Select(l => new PurchaseInvoiceLine(Id, l)).ToList();
+        ShareDiscount(recorded, discount);
+
         SupplierId = supplierId;
         SupplierInvoiceNumber = Clean(supplierInvoiceNumber);
         InvoiceDate = invoiceDate;
         PaymentMethod = paymentMethod;
         RevenueDate = paymentMethod == PurchasePaymentMethod.DayRevenue ? revenueDate : null;
+        Discount = Math.Round(discount, 2, MidpointRounding.AwayFromZero);
         _lines.Clear();
-        _lines.AddRange(lines.Select(l => new PurchaseInvoiceLine(Id, l)));
+        _lines.AddRange(recorded);
+    }
+
+    // The invoice's discount, shared among the priced lines by what each comes to after its own
+    // discount, so each material's cost is what it really came to. To the piastre: each line's share
+    // rounded down, and the piastres left go one each to the lines that lost the most to rounding.
+    private static void ShareDiscount(IReadOnlyList<PurchaseInvoiceLine> lines, decimal discount)
+    {
+        if (discount < 0)
+            throw new DomainException("A discount cannot be less than nothing. · الخصم لا يكون بالسالب.");
+        var cents = (long)Math.Round(discount * 100, MidpointRounding.AwayFromZero);
+        if (cents == 0)
+            return;
+
+        var priced = lines.Where(l => l.Cost > 0).ToList();
+        var net = priced.Sum(l => l.Cost!.Value);
+        if (priced.Count == 0)
+            throw new DomainException("Give the lines their totals before taking a discount off the invoice. · أدخل إجمالي البنود قبل خصم الفاتورة.");
+        if (cents > Math.Round(net * 100, MidpointRounding.AwayFromZero))
+            throw new DomainException("The invoice's discount cannot be more than its lines come to. · خصم الفاتورة لا يزيد عن إجمالي البنود.");
+
+        var exact = priced.Select(l => cents * l.Cost!.Value / net).ToList();
+        var shares = exact.Select(e => (long)Math.Floor(e)).ToList();
+        var left = cents - shares.Sum();
+        foreach (var i in Enumerable.Range(0, priced.Count).OrderByDescending(i => exact[i] - shares[i]).ThenBy(i => i).Take((int)left))
+            shares[i]++;
+        for (var i = 0; i < priced.Count; i++)
+            priced[i].Share(shares[i] / 100m);
     }
 
     // Takes the stock in and returns the ledger entries, for the caller to add in the same unit of
@@ -249,9 +290,9 @@ public sealed class PurchaseInvoice : AggregateRoot
 }
 
 // A line as the manager enters it: Quantity in the unit chosen (UnitLabel), which holds UnitSize
-// of the material's own unit; Cost is what the line came to, when the invoice gives it. An
-// expense line names its ExpenseItemId instead of a material, is in its own units (UnitSize 1),
-// and always has its cost: it is nothing else.
+// of the material's own unit; Cost is what the line came to as written, when the invoice gives
+// it, and Discount what was taken off it (الخصم). An expense line names its ExpenseItemId instead
+// of a material, is in its own units (UnitSize 1), and always has its cost: it is nothing else.
 public sealed record PurchaseInvoiceLineEntry(
     Guid? RawMaterialId,
     decimal EnteredQuantity,
@@ -259,7 +300,8 @@ public sealed record PurchaseInvoiceLineEntry(
     decimal UnitSize,
     decimal? Cost,
     PurchaseItemType ItemType = PurchaseItemType.Inventory,
-    Guid? ExpenseItemId = null);
+    Guid? ExpenseItemId = null,
+    decimal Discount = 0);
 
 public sealed class PurchaseInvoiceLine : Entity
 {
@@ -273,11 +315,19 @@ public sealed class PurchaseInvoiceLine : Entity
             throw new DomainException("A line cannot cost less than nothing.");
         if (entry.UnitLabel?.Trim().Length > 32)
             throw new DomainException("Keep each line's unit under 32 characters.");
+        if (entry.Discount < 0)
+            throw new DomainException("A discount cannot be less than nothing. · الخصم لا يكون بالسالب.");
+        if (entry.Discount > 0 && entry.Cost is null)
+            throw new DomainException("Give a discounted line its total before the discount. · أدخل إجمالي البند قبل خصمه.");
+        if (entry.Discount > entry.Cost)
+            throw new DomainException("A line's discount cannot be more than the line. · خصم البند لا يزيد عن إجماليه.");
 
         InvoiceId = invoiceId;
         ItemType = entry.ItemType;
         EnteredQuantity = entry.EnteredQuantity;
-        Cost = entry.Cost;
+        LineTotal = entry.Cost is { } total ? Math.Round(total, 2, MidpointRounding.AwayFromZero) : null;
+        Discount = Math.Round(entry.Discount, 2, MidpointRounding.AwayFromZero);
+        Cost = LineTotal - Discount;
         switch (entry.ItemType)
         {
             case PurchaseItemType.Inventory:
@@ -321,5 +371,18 @@ public sealed class PurchaseInvoiceLine : Entity
     // What it comes to in the material's own unit: 5,000 g. An expense's is as entered.
     public decimal Quantity { get; private set; }
 
+    // What the line came to as written (إجمالي البند), what was taken off it, and its share of the
+    // invoice's discount.
+    public decimal? LineTotal { get; private set; }
+    public decimal Discount { get; private set; }
+    public decimal DiscountShare { get; private set; }
+
+    // What it really cost, after both discounts: what goes into the average cost and is paid.
     public decimal? Cost { get; private set; }
+
+    internal void Share(decimal share)
+    {
+        DiscountShare = share;
+        Cost = LineTotal - Discount - share;
+    }
 }

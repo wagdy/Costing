@@ -152,7 +152,7 @@ public sealed class InventoryController(ISender sender) : ControllerBase
     public Task<PurchaseInvoiceDto> SavePurchaseInvoice(Guid invoiceId, SavePurchaseInvoiceRequest request, CancellationToken cancellationToken) =>
         sender.Send(new SavePurchaseInvoiceCommand(
             invoiceId, request.SupplierId, request.SupplierInvoiceNumber, request.InvoiceDate, request.Lines, StaffName,
-            request.PaymentMethod, request.RevenueDate), cancellationToken);
+            request.PaymentMethod, request.RevenueDate, request.Discount), cancellationToken);
 
     // Step two, after the review: the stock goes in, and it is paid as chosen: on credit, owed to
     // the supplier; in cash, paid for a manager and waiting for one's approval for anyone else
@@ -190,7 +190,7 @@ public sealed class InventoryController(ISender sender) : ControllerBase
             request.RequestId, invoiceId,
             new InvoiceCorrection(
                 request.NewInvoiceId, request.SupplierId, request.SupplierInvoiceNumber, request.InvoiceDate, request.Lines, request.PaymentMethod,
-                request.RevenueDate),
+                request.RevenueDate, request.Discount),
             request.Reason, StaffId, StaffName, CanApprove), cancellationToken);
         return result.Outcome == ApprovalOutcome.Requested ? Accepted(result) : Ok(result);
     }
@@ -204,7 +204,7 @@ public sealed class InventoryController(ISender sender) : ControllerBase
             invoiceId,
             new InvoiceCorrection(
                 request.NewInvoiceId, request.SupplierId, request.SupplierInvoiceNumber, request.InvoiceDate, request.Lines, request.PaymentMethod,
-                request.RevenueDate),
+                request.RevenueDate, request.Discount),
             StaffName), cancellationToken);
 
     // Pays a posted cash invoice that is not paid (its payment was rejected or voided), or puts it
@@ -731,7 +731,8 @@ public sealed record CorrectPurchaseInvoiceRequest(
     IReadOnlyList<PurchaseInvoiceLineEntry> Lines,
     PurchasePaymentMethod? PaymentMethod,
     DateOnly? RevenueDate = null,
-    string? Reason = null);
+    string? Reason = null,
+    decimal Discount = 0);
 
 public sealed record SavePurchaseInvoiceRequest(
     Guid? SupplierId,
@@ -739,7 +740,8 @@ public sealed record SavePurchaseInvoiceRequest(
     DateOnly? InvoiceDate,
     IReadOnlyList<PurchaseInvoiceLineEntry> Lines,
     PurchasePaymentMethod? PaymentMethod = null,
-    DateOnly? RevenueDate = null);
+    DateOnly? RevenueDate = null,
+    decimal Discount = 0);
 
 public sealed record PayPurchaseInvoiceRequest(Guid RequestId, PurchasePaymentMethod Method, DateOnly? RevenueDate = null);
 

@@ -236,7 +236,7 @@ import { PickRow } from '../shared/pick-row';
             <button mat-button (click)="viewPaper(invoiceId, p)"><mat-icon>{{ icon(p) }}</mat-icon> {{ p }}</button>
             <button mat-button (click)="file.click()" [disabled]="saving()">Replace</button>
           } @else {
-            <button mat-stroked-button (click)="file.click()" [disabled]="saving()"><mat-icon>add_a_photo</mat-icon> Attach the paper</button>
+            <button mat-stroked-button (click)="file.click()" [disabled]="saving()"><mat-icon>add_a_photo</mat-icon> Attach the paper <span class="inline-ar">إرفاق الفاتورة</span></button>
           }
         </div>
       </div>
@@ -626,7 +626,7 @@ export class PurchasesPage {
       this.invoiceDate = invoice.invoiceDate ?? PurchasesPage.today();
       this.paymentMethod = invoice.paymentMethod ?? 'BeforeTreasury';
       this.revenueDate = invoice.revenueDate ?? this.today;
-      this.editor.fill(invoice.lines);
+      this.editor.fill(invoice.lines, invoice.discount ?? 0);
       this.correctionRequestId = crypto.randomUUID();
       this.correcting.set(invoice);
       this.touch();
@@ -889,7 +889,7 @@ export class PurchasesPage {
     this.revenueDate = invoice.revenueDate ?? this.today;
     this.paper.set(invoice.attachment?.fileName ?? null);
     this.review.set(null);
-    this.editor.fill(invoice.lines);
+    this.editor.fill(invoice.lines, invoice.discount ?? 0);
     this.touch();
   }
 
@@ -919,6 +919,7 @@ export class PurchasesPage {
       paymentMethod: this.paymentMethod,
       revenueDate: this.paymentMethod === 'DayRevenue' ? this.revenueDate || null : null,
       lines: this.editor.toSave(partial),
+      discount: this.editor.discountToSave(partial),
     };
   }
 

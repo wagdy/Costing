@@ -56,11 +56,18 @@ export interface InvoiceLine {
   unitSize: number | null;
   // An expense line's unit, as written (bottle, visit); none for a bill.
   unitLabel: string;
+  // What the line came to as written (إجمالي السطر), and what was taken off it (الخصم).
   cost: number | null;
+  discount: number | null;
 }
 
 export function blankLine(): InvoiceLine {
-  return { itemType: null, rawMaterialId: null, expenseItemId: null, quantity: null, unitSize: null, unitLabel: '', cost: null };
+  return { itemType: null, rawMaterialId: null, expenseItemId: null, quantity: null, unitSize: null, unitLabel: '', cost: null, discount: 0 };
+}
+
+// To the piastre, as amounts are kept.
+function piastres(amount: number): number {
+  return Math.round(amount * 100) / 100;
 }
 
 const baseLabels = { Gram: 'g', Millilitre: 'ml', Piece: 'pc' } as const;
@@ -159,22 +166,67 @@ export class PurchaseCatalog {
   }
 }
 
-// One invoice's lines as they are entered.
+// One invoice's lines as they are entered, and its own discount.
 export class InvoiceLines {
   readonly lines = signal<InvoiceLine[]>([blankLine()]);
+
+  // The discount on the whole invoice (خصم الفاتورة), off what the lines come to after theirs.
+  readonly discount = signal<number | null>(0);
 
   // The lines are changed in place by the form; this bumps the signal so totals follow.
   readonly version = signal(0);
 
+  // What the lines came to as written, and their own discounts.
+  readonly subtotal = computed(() => {
+    this.version();
+    return piastres(this.lines().reduce((sum, l) => sum + (l.cost ?? 0), 0));
+  });
+
+  readonly lineDiscounts = computed(() => {
+    this.version();
+    return piastres(this.lines().reduce((sum, l) => sum + (l.discount ?? 0), 0));
+  });
+
+  // The invoice's discount shared among the priced lines by what each comes to after its own, as
+  // the server shares it: to the piastre, each share rounded down and the piastres left one each to
+  // the lines that lost the most to rounding. None while the discount is more than the lines.
+  readonly shares = computed(() => {
+    this.version();
+    const shares = new Map<InvoiceLine, number>();
+    const cents = Math.round((this.discount() ?? 0) * 100);
+    const priced = this.lines().filter((l) => (this.ownNet(l) ?? 0) > 0);
+    const net = priced.reduce((sum, l) => sum + this.ownNet(l)!, 0);
+    if (cents <= 0 || cents > Math.round(net * 100)) {
+      return shares;
+    }
+    const exact = priced.map((l) => (cents * this.ownNet(l)!) / net);
+    const floors = exact.map((e) => Math.floor(e + 1e-9));
+    const left = cents - floors.reduce((sum, f) => sum + f, 0);
+    priced
+      .map((_, i) => i)
+      .sort((a, b) => exact[b] - floors[b] - (exact[a] - floors[a]) || a - b)
+      .slice(0, left)
+      .forEach((i) => floors[i]++);
+    priced.forEach((l, i) => shares.set(l, floors[i] / 100));
+    return shares;
+  });
+
+  // Both discounts together, and what is paid after them (الصافي المستحق).
+  readonly totalDiscount = computed(() => {
+    this.version();
+    return piastres(this.lineDiscounts() + [...this.shares().values()].reduce((sum, s) => sum + s, 0));
+  });
+
   readonly total = computed(() => {
     this.version();
-    return this.lines().reduce((sum, l) => sum + (l.cost ?? 0), 0);
+    return piastres(this.lines().reduce((sum, l) => sum + (this.netCost(l) ?? 0), 0));
   });
 
   // The total split: what goes into stock, and what is expenses.
   readonly totals = computed(() => {
     this.version();
-    const sum = (type: PurchaseItemType) => this.lines().filter((l) => l.itemType === type).reduce((s, l) => s + (l.cost ?? 0), 0);
+    const sum = (type: PurchaseItemType) =>
+      piastres(this.lines().filter((l) => l.itemType === type).reduce((s, l) => s + (this.netCost(l) ?? 0), 0));
     return { stock: sum('Inventory'), expenses: sum('Expense') };
   });
 
@@ -204,8 +256,49 @@ export class InvoiceLines {
       if (line.cost === null ? line.itemType === 'Expense' : line.cost < 0) {
         found.push({ where, what: line.cost === null ? 'enter what the expense cost' : 'the line total cannot be below 0', field: field('Line total') });
       }
+      const discount = line.discount ?? 0;
+      if (discount < 0) {
+        found.push({ where, what: 'the discount cannot be below 0', field: field('Discount') });
+      } else if (discount > 0 && line.cost === null) {
+        found.push({ where, what: 'enter the line total before its discount', field: field('Discount') });
+      } else if (line.cost !== null && discount > line.cost) {
+        found.push({ where, what: 'the discount cannot be more than the line total', field: field('Discount') });
+      }
       return found;
-    });
+    }).concat(this.discountProblems(prefix));
+  }
+
+  private discountProblems(prefix: string): FormProblem[] {
+    const discount = this.discount() ?? 0;
+    const where = prefix ? `${prefix}invoice discount` : 'Invoice discount';
+    const field = `${prefix}Invoice discount`;
+    const net = this.lines().reduce((sum, l) => sum + Math.max(this.ownNet(l) ?? 0, 0), 0);
+    if (discount < 0) {
+      return [{ where, what: 'it cannot be below 0', field }];
+    }
+    if (discount > 0 && net <= 0) {
+      return [{ where, what: 'enter the line totals before the invoice discount', field }];
+    }
+    if (Math.round(discount * 100) > Math.round(net * 100)) {
+      return [{ where, what: 'it cannot be more than the lines come to', field }];
+    }
+    return [];
+  }
+
+  // What a line comes to after its own discount; and after its share of the invoice's too: what it
+  // really cost, what is paid, and what goes into the average. Null with no line total.
+  ownNet(line: InvoiceLine): number | null {
+    return line.cost === null ? null : piastres(line.cost - (line.discount ?? 0));
+  }
+
+  netCost(line: InvoiceLine): number | null {
+    const own = this.ownNet(line);
+    return own === null ? null : piastres(own - (this.shares().get(line) ?? 0));
+  }
+
+  // A line's share of the invoice's discount, while it has one.
+  share(line: InvoiceLine): number {
+    return this.shares().get(line) ?? 0;
   }
 
   constructor(readonly catalog: PurchaseCatalog) {}
@@ -224,6 +317,7 @@ export class InvoiceLines {
 
   reset(): void {
     this.lines.set([blankLine()]);
+    this.discount.set(0);
     this.touch();
   }
 
@@ -353,20 +447,26 @@ export class InvoiceLines {
     return `${base.toLocaleString('en-EG', { maximumFractionDigits: 3 })} ${baseLabels[material.unit]}`;
   }
 
-  // What the line paid per purchase unit, whatever unit it was entered in: comparable with the
-  // average beside it. An expense's: per one of what it is counted in.
+  // What the line paid per purchase unit after every discount, whatever unit it was entered in:
+  // comparable with the average beside it, which it moves. An expense's: per one of what it is
+  // counted in.
   unitPrice(line: InvoiceLine): number | null {
+    const cost = this.netCost(line);
     if (this.expense(line)) {
-      return line.cost !== null && line.quantity ? line.cost / line.quantity : null;
+      return cost !== null && line.quantity ? cost / line.quantity : null;
     }
     const material = this.material(line);
     const base = this.baseQuantity(line);
-    return material && base && line.cost !== null ? (line.cost / base) * material.purchaseUnitSize : null;
+    return material && base && cost !== null ? (cost / base) * material.purchaseUnitSize : null;
   }
 
   // The lines as an invoice sends them. Lines not finished yet are left out of a draft saved only
-  // to hold its paper (partial).
+  // to hold its paper (partial), and a discount not right yet kept back from it.
   toSave(partial = false): SavePurchaseLine[] {
+    const discountOf = (l: InvoiceLine) => {
+      const discount = l.discount ?? 0;
+      return partial && (discount < 0 || discount > (l.cost ?? 0)) ? 0 : discount;
+    };
     return this.lines()
       .filter((l) => !partial || ((l.rawMaterialId || (l.expenseItemId && l.cost !== null)) && (l.quantity ?? 0) > 0))
       .map((l): SavePurchaseLine => {
@@ -379,6 +479,7 @@ export class InvoiceLines {
             unitLabel: l.unitLabel.trim() || null,
             unitSize: 1,
             cost: l.cost,
+            discount: discountOf(l),
           };
         }
         const material = this.material(l)!;
@@ -391,12 +492,26 @@ export class InvoiceLines {
           unitLabel: purchaseUnits(material).find((u) => u.size === size)?.label ?? material.purchaseUnit,
           unitSize: size,
           cost: l.cost,
+          discount: discountOf(l),
         };
       });
   }
 
-  // A saved invoice's lines, back on screen as they were entered.
-  fill(lines: PurchaseInvoiceLine[]): void {
+  // The invoice's discount as sent: on a draft saved only to hold its paper, none while it is more
+  // than the lines finished so far come to.
+  discountToSave(partial = false): number {
+    const discount = this.discount() ?? 0;
+    if (!partial) {
+      return discount;
+    }
+    const net = this.toSave(true).reduce((sum, l) => sum + Math.max((l.cost ?? 0) - l.discount, 0), 0);
+    return discount > 0 && Math.round(discount * 100) <= Math.round(net * 100) ? discount : 0;
+  }
+
+  // A saved invoice's lines and discount, back on screen as they were entered: each line at its
+  // total as written, before its discounts.
+  fill(lines: PurchaseInvoiceLine[], discount = 0): void {
+    this.discount.set(discount);
     this.lines.set(
       lines.length
         ? lines.map((l) => ({
@@ -410,7 +525,8 @@ export class InvoiceLines {
             quantity: l.enteredQuantity,
             unitSize: l.unitSize,
             unitLabel: l.itemType === 'Expense' && l.unitLabel !== 'unit' ? l.unitLabel : '',
-            cost: l.cost,
+            cost: l.lineTotal ?? l.cost,
+            discount: l.discount ?? 0,
           }))
         : [blankLine()],
     );
@@ -488,8 +604,9 @@ export class InvoiceSupplier {
 const defaultMatcher = new ErrorStateMatcher();
 
 // An invoice's lines as a table: each line's item, found by typing or added there, its quantity
-// in the unit billed, its total, what it comes to per purchase unit beside the average now; a line
-// added or taken off; and the total, split into stock and expenses when it has both.
+// in the unit billed, its total and discount, what it comes to per purchase unit after every
+// discount beside the average now; a line added or taken off; and the subtotal, the invoice's
+// discount, and what is paid after them, split into stock and expenses when it has both.
 @Component({
   selector: 'app-invoice-lines',
   imports: [FormsModule, GridKeys, MatAutocompleteModule, MatButtonModule, MatFormFieldModule, MatIconModule, MatInputModule, MatSelectModule, MoneyPipe, PickRow],
@@ -502,6 +619,7 @@ const defaultMatcher = new ErrorStateMatcher();
             <th>Item<span class="ar">الصنف</span></th>
             <th class="num">Quantity<span class="ar">الكمية</span></th>
             <th class="num">Line total<span class="ar">إجمالي السطر</span></th>
+            <th class="num">Discount<span class="ar">الخصم</span></th>
             <th class="num">AP$ per purchase unit<span class="ar">سعر وحدة الشراء</span></th>
             <th class="num">Average now<span class="ar">المتوسط الحالي</span></th>
             <th></th>
@@ -591,6 +709,20 @@ const defaultMatcher = new ErrorStateMatcher();
                   <small class="warn-text">Its amount</small>
                 }
               </td>
+              <td class="num">
+                <mat-form-field subscriptSizing="dynamic" class="discount">
+                  <span matTextPrefix>{{ company.currency() }}&nbsp;</span>
+                  <input matInput type="number" min="0" step="any" [(ngModel)]="line.discount" (ngModelChange)="e.touch()"
+                    [attr.aria-label]="label() + 'Discount, line ' + (i + 1)" [errorStateMatcher]="marked(label() + 'Discount, line ' + (i + 1))" />
+                  <mat-error>{{ said(label() + 'Discount, line ' + (i + 1)) }}</mat-error>
+                </mat-form-field>
+                @if (e.share(line) > 0) {
+                  <small class="muted share" title="Its share of the invoice discount · نصيبه من خصم الفاتورة">+ {{ e.share(line) | money }} shared</small>
+                }
+                @if (e.share(line) > 0 || (line.discount ?? 0) > 0) {
+                  <small class="net">Net · الصافي {{ e.netCost(line) | money }}</small>
+                }
+              </td>
               <td class="num">{{ e.unitPrice(line) === null ? '' : (e.unitPrice(line) | money) }}</td>
               <td class="num muted">
                 @if (e.expense(line); as x) {
@@ -608,16 +740,45 @@ const defaultMatcher = new ErrorStateMatcher();
           }
         </tbody>
         <tfoot>
-          <tr>
+          <tr class="subtotal">
             <td>
               <button mat-button (click)="e.add()"><mat-icon>add</mat-icon> Add line</button>
             </td>
+            <td class="num">Subtotal · الإجمالي قبل الخصم</td>
+            <td class="num">{{ e.subtotal() | money }}</td>
+            <td class="num muted">{{ e.lineDiscounts() > 0 ? (e.lineDiscounts() | money) : '' }}</td>
+            <td colspan="3"></td>
+          </tr>
+          <tr class="invoice-discount">
+            <td></td>
+            <td class="num">Invoice discount · خصم الفاتورة</td>
+            <td></td>
+            <td class="num">
+              <mat-form-field subscriptSizing="dynamic" class="discount">
+                <span matTextPrefix>{{ company.currency() }}&nbsp;</span>
+                <input matInput type="number" min="0" step="any" [ngModel]="e.discount()" (ngModelChange)="e.discount.set($event); e.touch()"
+                  [attr.aria-label]="label() + 'Invoice discount'" [errorStateMatcher]="marked(label() + 'Invoice discount')" />
+                <mat-error>{{ said(label() + 'Invoice discount') }}</mat-error>
+              </mat-form-field>
+            </td>
+            <td colspan="3" class="muted hint">Shared among the lines by their totals · يُوزَّع على البنود</td>
+          </tr>
+          @if (e.totalDiscount() > 0) {
+            <tr class="total-discount">
+              <td></td>
+              <td class="num">Total discount · إجمالي الخصم</td>
+              <td class="num">− {{ e.totalDiscount() | money }}</td>
+              <td colspan="4"></td>
+            </tr>
+          }
+          <tr class="net-payable">
+            <td></td>
             <td class="num">
               @if (e.totals().expenses > 0) {
                 <span class="split">Stock · مخزون</span>
                 <span class="split">Expenses · مصروفات</span>
               }
-              Total · الإجمالي
+              Net payable · الصافي المستحق
             </td>
             <td class="num">
               @if (e.totals().expenses > 0) {
@@ -626,7 +787,7 @@ const defaultMatcher = new ErrorStateMatcher();
               }
               {{ e.total() | money }}
             </td>
-            <td colspan="3"></td>
+            <td colspan="4"></td>
           </tr>
         </tfoot>
       </table>
@@ -635,15 +796,23 @@ const defaultMatcher = new ErrorStateMatcher();
   styleUrl: './costing.scss',
   styles: `
     .material {
-      min-width: 240px;
+      min-width: 216px;
       width: 100%;
     }
     .add-new {
       color: var(--mat-sys-primary);
       font-weight: 500;
     }
+    /* Seven columns of fields side by side: kept tight, so a laptop's screen holds them all. */
+    .grid th,
+    .grid td {
+      padding-inline: 8px;
+    }
     .small {
-      width: 130px;
+      width: 112px;
+    }
+    .discount {
+      width: 112px;
     }
     .quantity {
       display: flex;
@@ -651,7 +820,7 @@ const defaultMatcher = new ErrorStateMatcher();
       justify-content: flex-end;
     }
     .unit {
-      width: 110px;
+      width: 96px;
     }
     .warn-text {
       color: var(--mat-sys-error);
@@ -669,6 +838,29 @@ const defaultMatcher = new ErrorStateMatcher();
       display: block;
       font-weight: 400;
       color: var(--mat-sys-on-surface-variant);
+    }
+    .share {
+      display: block;
+      max-width: 112px;
+      margin-inline-start: auto;
+      white-space: normal;
+    }
+    .net {
+      display: block;
+      color: var(--app-slate-700, #334155);
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    tfoot tr:not(.net-payable) td {
+      font-weight: 400;
+      border-bottom: none;
+    }
+    tfoot .hint {
+      font-size: 12px;
+      text-align: start;
+    }
+    tfoot .net-payable td {
+      font-weight: 700;
     }
   `,
 })

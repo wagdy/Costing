@@ -88,6 +88,79 @@ public class PurchaseInvoiceTests
         Assert.Throws<DomainException>(() => invoice.Post(new Dictionary<Guid, RawMaterial>(), "Omar"));
     }
 
+    // A receipt with discounts: a line's own off that line, the invoice's shared among the priced
+    // lines by what each comes to after its own. What is paid and what goes into the average cost
+    // are the net, never the price before the discount.
+    [Fact]
+    public void Discounts_come_off_what_is_paid_and_what_the_stock_cost()
+    {
+        var tomatoes = new RawMaterial("Tomatoes", UnitOfMeasure.Gram);
+        var oil = new RawMaterial("Frying oil", UnitOfMeasure.Millilitre);
+        var cleaning = Guid.NewGuid();
+        var invoice = new PurchaseInvoice(Guid.NewGuid(), "Omar");
+
+        invoice.Record(null, null, null,
+        [
+            Kg(tomatoes, 5, 100) with { Discount = 10 },
+            new PurchaseInvoiceLineEntry(oil.Id, 2, "L", 1000, 50),
+            new PurchaseInvoiceLineEntry(null, 1, null, 1, 60, PurchaseItemType.Expense, cleaning),
+        ], PurchasePaymentMethod.Safe, discount: 20);
+
+        // 90, 50 and 60 after the line's own: 200, of which 20 off is 9, 5 and 6.
+        Assert.Equal(
+            [(100m, 10m, 9m, 81m), (50m, 0m, 5m, 45m), (60m, 0m, 6m, 54m)],
+            invoice.Lines.Select(l => (l.LineTotal!.Value, l.Discount, l.DiscountShare, l.Cost!.Value)));
+        Assert.Equal((210m, 10m, 20m, 180m), (invoice.Subtotal, invoice.LineDiscounts, invoice.Discount, invoice.Total));
+        Assert.Equal((126m, 54m), (invoice.InventoryTotal, invoice.ExpenseTotal));
+
+        invoice.Post(new Dictionary<Guid, RawMaterial> { [tomatoes.Id] = tomatoes, [oil.Id] = oil }, "Omar");
+        // L.E 81 for 5 kg: 16.20 a kg, not the 20 written on the paper.
+        Assert.Equal((0.0162m, 16.2m), (tomatoes.AverageCost, tomatoes.CostPerPurchaseUnit));
+        Assert.Equal(0.0225m, oil.AverageCost);
+    }
+
+    // Shared to the piastre, the piastre left over to the first line; a line with no price, or none
+    // left after its own discount, takes no share.
+    [Fact]
+    public void The_invoice_discount_is_shared_to_the_piastre()
+    {
+        RawMaterial Material(string name) => new(name, UnitOfMeasure.Gram);
+        var (a, b, c, d) = (Material("A"), Material("B"), Material("C"), Material("D"));
+        var invoice = new PurchaseInvoice(Guid.NewGuid(), "Omar");
+
+        invoice.Record(null, null, null,
+            [Kg(a, 1, 10), Kg(b, 1, 10), Kg(c, 1, 10), Kg(d, 1, null), Kg(Material("E"), 1, 5) with { Discount = 5 }],
+            PurchasePaymentMethod.Safe, discount: 10);
+
+        Assert.Equal([3.34m, 3.33m, 3.33m, 0m, 0m], invoice.Lines.Select(l => l.DiscountShare));
+        Assert.Equal([6.66m, 6.67m, 6.67m, null, 0m], invoice.Lines.Select(l => l.Cost));
+        Assert.Equal((35m, 20m), (invoice.Subtotal, invoice.Total));
+
+        // Recorded again without one: as written.
+        invoice.Record(null, null, null, [Kg(a, 1, 10)], PurchasePaymentMethod.Safe);
+        Assert.Equal((0m, 0m, 10m), (invoice.Discount, invoice.Lines.Single().DiscountShare, invoice.Total));
+    }
+
+    [Fact]
+    public void A_discount_is_never_more_than_what_it_comes_off()
+    {
+        var tomatoes = new RawMaterial("Tomatoes", UnitOfMeasure.Gram);
+        var invoice = new PurchaseInvoice(Guid.NewGuid(), "Omar");
+        void Record(PurchaseInvoiceLineEntry line, decimal discount = 0) => invoice.Record(null, null, null, [line], PurchasePaymentMethod.Safe, discount: discount);
+
+        Assert.Throws<DomainException>(() => Record(Kg(tomatoes, 1, 10) with { Discount = -1 }));
+        Assert.Throws<DomainException>(() => Record(Kg(tomatoes, 1, 10) with { Discount = 10.01m }));
+        Assert.Throws<DomainException>(() => Record(Kg(tomatoes, 1, null) with { Discount = 1 }));
+        Assert.Throws<DomainException>(() => Record(Kg(tomatoes, 1, 10), -1));
+        Assert.Throws<DomainException>(() => Record(Kg(tomatoes, 1, 10) with { Discount = 4 }, 6.01m));
+        Assert.Throws<DomainException>(() => Record(Kg(tomatoes, 1, null), 1));
+        Assert.Empty(invoice.Lines);
+
+        // All of it off: a gift, at nothing.
+        Record(Kg(tomatoes, 1, 10) with { Discount = 4 }, 6);
+        Assert.Equal(0m, invoice.Total);
+    }
+
     // The paper can be replaced while the invoice is a draft. Once posted, a missing one can still
     // be added, but one attached stays as it is.
     [Fact]

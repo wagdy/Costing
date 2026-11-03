@@ -30,6 +30,7 @@ const text = (el: Element) => el.textContent!.replace(/\s+/g, ' ').trim();
 
 describe('a day’s purchases entered together', () => {
   const postPurchaseBatch = vi.fn();
+  const attachPurchaseInvoiceFile = vi.fn();
   const notify = { info: vi.fn(), error: vi.fn() };
   const approvals = { canApprove: vi.fn(() => true), refresh: vi.fn() };
 
@@ -58,6 +59,7 @@ describe('a day’s purchases entered together', () => {
             businessToday: () => of({ today: '2026-10-13' }),
             supplierBalances: () => of(balances),
             postPurchaseBatch,
+            attachPurchaseInvoiceFile,
           },
         },
         { provide: Approvals, useValue: approvals },
@@ -81,6 +83,7 @@ describe('a day’s purchases entered together', () => {
   beforeEach(() => {
     localStorage.removeItem('otantik-till.purchase-batch');
     postPurchaseBatch.mockReset();
+    attachPurchaseInvoiceFile.mockReset();
     notify.info.mockReset();
     approvals.canApprove.mockReturnValue(true);
   });
@@ -354,6 +357,98 @@ describe('a day’s purchases entered together', () => {
 
     const other = await render(false);
     expect([...other.el.querySelectorAll('button')].map(text).some((t) => t.includes('Add employee advance'))).toBe(false);
+  });
+
+  // A receipt's discounts and its paper (إرفاق الفاتورة), per invoice of the batch: the discounts go
+  // with it, and the paper is attached once it is posted, kept with it in the archive.
+  describe('discounts and papers', () => {
+    const receipt = new File([new Uint8Array([0xff, 0xd8, 0xff])], 'receipt.jpg', { type: 'image/jpeg' });
+
+    // The file picker, as if a file had been chosen in it.
+    function chosen(file: File): HTMLInputElement {
+      const input = document.createElement('input');
+      input.type = 'file';
+      Object.defineProperty(input, 'files', { value: [file] });
+      return input;
+    }
+
+    // Two invoices: Nile Farms', 100 less 10 and 5 off the invoice, with its paper; Delta Dairy's, as written.
+    async function twoInvoices() {
+      const rendered = await render();
+      const { page } = rendered;
+      page['paymentMethod'] = 'Credit';
+      fill(page['blocks']()[0], nile, tomatoes, 5, 100);
+      const first = page['blocks']()[0];
+      first['editor'].lines()[0].discount = 10;
+      first['editor'].discount.set(5);
+      first['editor'].touch();
+      page['choosePaper'](first, chosen(receipt));
+      page['addBlock']();
+      fill(page['blocks']()[1], delta, milk, 10, 420);
+      page['changed']();
+      const ids = page['blocks']().map((b: Record<string, any>) => b['id']);
+      postPurchaseBatch.mockReturnValue(of({ invoices: [posted(ids[0], nile, 85, 'OnCredit'), posted(ids[1], delta, 420, 'OnCredit')], payments: [] }));
+      return { ...rendered, ids };
+    }
+
+    it('sends each invoice with its discounts, and attaches its paper once it is posted', async () => {
+      const { fixture, el, page, ids } = await twoInvoices();
+      expect(page['total']()).toBe(505);
+      fixture.detectChanges();
+      expect(text(el.querySelector('.block .paper')!)).toBe('image receipt.jpgswap_horizclose');
+      expect(text([...el.querySelectorAll('.block .paper')][1])).toBe('add_a_photo Attach the paper إرفاق الفاتورة');
+      attachPurchaseInvoiceFile.mockImplementation((id: string) => of({ ...posted(id, nile, 85, 'OnCredit'), attachment: { fileName: 'receipt.jpg' } }));
+
+      await page['submit']();
+
+      const sent = postPurchaseBatch.mock.lastCall![0] as PurchaseBatch;
+      expect(sent.invoices.map((i) => [i.discount, i.lines[0].cost, i.lines[0].discount])).toEqual([
+        [5, 100, 10],
+        [0, 420, 0],
+      ]);
+      expect(attachPurchaseInvoiceFile.mock.calls).toEqual([[ids[0], receipt]]);
+      expect(notify.info).toHaveBeenCalledWith('2 invoices posted. 1 paper attached.');
+      fixture.detectChanges();
+      expect([...el.querySelectorAll('.posted tbody tr')].map((r) => text(r.querySelector('.paper-cell')!))).toEqual(['image receipt.jpg', '—']);
+    });
+
+    it('takes only a photo or a PDF under 10 MB, and keeps one that could not be sent to try again', async () => {
+      const { fixture, el, page, ids } = await twoInvoices();
+      notify.error.mockReset();
+      const block = page['blocks']()[1];
+      page['choosePaper'](block, chosen(new File(['notes'], 'notes.txt', { type: 'text/plain' })));
+      expect(notify.error).toHaveBeenCalledWith(null, 'Attach a photo (JPEG, PNG or WebP) or a PDF of the invoice.');
+      const huge = new File(['x'], 'huge.jpg', { type: 'image/jpeg' });
+      Object.defineProperty(huge, 'size', { value: 10 * 1024 * 1024 + 1 });
+      page['choosePaper'](block, chosen(huge));
+      expect(notify.error).toHaveBeenLastCalledWith(null, 'The file must be under 10 MB.');
+      expect(block['paper']).toBeNull();
+      attachPurchaseInvoiceFile.mockReturnValueOnce(throwError(() => new HttpErrorResponse({ status: 503 })));
+
+      await page['submit']();
+
+      expect(notify.error).toHaveBeenLastCalledWith(null, '2 invoices posted. A paper could not be attached: try again below.');
+      fixture.detectChanges();
+      const row = el.querySelector('.posted tbody tr')!;
+      expect(text(row.querySelector('.paper-cell')!)).toBe('receipt.jpg not attachedrefresh Try again');
+
+      attachPurchaseInvoiceFile.mockImplementation((id: string) => of({ ...posted(id, nile, 85, 'OnCredit'), attachment: { fileName: 'receipt.jpg' } }));
+      (row.querySelector('.paper-cell button') as HTMLButtonElement).click();
+      await fixture.whenStable();
+      fixture.detectChanges();
+      expect(attachPurchaseInvoiceFile).toHaveBeenLastCalledWith(ids[0], receipt);
+      expect(text(el.querySelector('.posted tbody tr .paper-cell')!)).toBe('image receipt.jpg');
+    });
+
+    it('keeps the discounts after a reload, but not the paper', async () => {
+      const first = await twoInvoices();
+      first.fixture.detectChanges();
+      TestBed.resetTestingModule();
+
+      const { page } = await render();
+      const block = page['blocks']()[0];
+      expect([block['editor'].lines()[0].discount, block['editor'].discount(), block['paper']]).toEqual([10, 5, null]);
+    });
   });
 
   it('keeps the payments after a reload, until they are sent', async () => {

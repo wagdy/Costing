@@ -2,6 +2,7 @@ import { Component, ElementRef, computed, effect, inject, signal } from '@angula
 import { FormsModule } from '@angular/forms';
 import { MatAutocompleteModule } from '@angular/material/autocomplete';
 import { MatButtonModule } from '@angular/material/button';
+import { MatDialog } from '@angular/material/dialog';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatIconModule } from '@angular/material/icon';
 import { MatInputModule } from '@angular/material/input';
@@ -31,17 +32,23 @@ import { Approvals } from './approvals';
 import { BusinessDay } from './financials';
 import { FormChecks, FormProblem } from './form-checks';
 import { InvoiceLine, InvoiceLines, InvoiceLinesTable, InvoiceSupplier, PurchaseCatalog } from './invoice-lines';
+import { paperIcon, viewInvoicePaper } from './invoice-paper';
 import { SupplierPaymentEntry, SupplierPaymentFields, newSupplierPayment, paymentProblems } from './supplier-payment-fields';
 import { PickRow } from '../shared/pick-row';
 
 // One invoice of the batch: its id, made here; its supplier, number and lines, entered as on the
-// invoice screen.
+// invoice screen; and the photo or scan of its paper, sent once the invoice is posted.
 interface BatchBlock {
   id: string;
   supplier: InvoiceSupplier;
   number: string;
   editor: InvoiceLines;
+  paper: File | null;
 }
+
+// What a paper can be, as the invoice screen takes it.
+const paperTypes = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'];
+const paperMaxBytes = 10 * 1024 * 1024;
 
 // A supplier paid in the batch (سداد مورد): an old debt settled, no invoice and no stock, entered as
 // on the new invoice screen.
@@ -52,7 +59,15 @@ interface StoredBatch {
   invoiceDate: string;
   paymentMethod: PurchasePaymentMethod | null;
   revenueDate: string;
-  blocks: { id: string; supplierId: string | null; supplierName: string | null; number: string; lines: Omit<InvoiceLine, 'entry'>[] }[];
+  // A paper chosen is not kept: a reload asks for it again.
+  blocks: {
+    id: string;
+    supplierId: string | null;
+    supplierName: string | null;
+    number: string;
+    lines: Omit<InvoiceLine, 'entry'>[];
+    discount?: number | null;
+  }[];
   payments?: PaymentBlock[];
   advances?: AdvanceEntry[];
 }
@@ -65,7 +80,9 @@ const storageKey = 'otantik-till.purchase-batch';
 // invoice, its stock in and paid as chosen: on credit owed to its supplier, in cash paid for a
 // manager and asked of one for anyone else. A payment is cash, never on credit, and never more than
 // the supplier is owed; so is an employee's advance (سلفة), which comes off their pay for the month.
-// None is saved unless all can be. A batch not sent yet is kept in this browser.
+// None is saved unless all can be. Each invoice's paper (إرفاق الفاتورة) is attached once it is
+// posted, kept in the invoices' archive as one entered alone. A batch not sent yet is kept in this
+// browser, but for its papers.
 @Component({
   selector: 'app-purchase-batch-page',
   providers: [PurchaseCatalog],
@@ -103,8 +120,9 @@ const storageKey = 'otantik-till.purchase-batch';
                 <tr>
                   <th>Supplier<span class="ar">المورد</span></th>
                   <th>Invoice no.<span class="ar">رقم الفاتورة</span></th>
-                  <th class="num">Total<span class="ar">الإجمالي</span></th>
+                  <th class="num">Net payable<span class="ar">الصافي المستحق</span></th>
                   <th>Payment<span class="ar">السداد</span></th>
+                  <th>Paper<span class="ar">الفاتورة</span></th>
                 </tr>
               </thead>
               <tbody>
@@ -114,6 +132,16 @@ const storageKey = 'otantik-till.purchase-batch';
                     <td>{{ inv.supplierInvoiceNumber ?? '—' }}</td>
                     <td class="num">{{ inv.total | money }}</td>
                     <td>{{ statusLabels[inv.paymentStatus].en }}<span class="ar">{{ statusLabels[inv.paymentStatus].ar }}</span></td>
+                    <td class="paper-cell">
+                      @if (inv.attachment; as paper) {
+                        <button mat-button (click)="viewPaper(inv.id, paper.fileName)"><mat-icon>{{ icon(paper.fileName) }}</mat-icon> {{ paper.fileName }}</button>
+                      } @else if (unsent().get(inv.id); as file) {
+                        <span class="warn-text">{{ file.name }} not attached</span>
+                        <button mat-button (click)="sendPaper(inv.id, file)" [disabled]="saving()"><mat-icon>refresh</mat-icon> Try again</button>
+                      } @else {
+                        <span class="muted">—</span>
+                      }
+                    </td>
                   </tr>
                 }
               </tbody>
@@ -254,10 +282,27 @@ const storageKey = 'otantik-till.purchase-batch';
               }
               <mat-error>{{ checks.message('Invoice ' + (i + 1) + ', supplier') }}</mat-error>
             </mat-form-field>
-            <mat-form-field subscriptSizing="dynamic">
+            <mat-form-field subscriptSizing="dynamic" class="number">
               <mat-label>Invoice no. · رقم الفاتورة</mat-label>
               <input matInput [(ngModel)]="block.number" (ngModelChange)="changed()" maxlength="64" data-western-digits [attr.aria-label]="'Invoice ' + (i + 1) + ', number'" />
             </mat-form-field>
+            <div class="paper">
+              <input #file type="file" [accept]="paperAccept" hidden (change)="choosePaper(block, file)" [attr.aria-label]="'Invoice ' + (i + 1) + ', paper'" />
+              @if (block.paper; as p) {
+                <span class="paper-name" [title]="p.name"><mat-icon>{{ icon(p.name) }}</mat-icon> {{ p.name }}</span>
+                <button mat-icon-button (click)="file.click()" [disabled]="saving()" title="Replace · استبدال"
+                  [attr.aria-label]="'Invoice ' + (i + 1) + ', replace the paper'">
+                  <mat-icon>swap_horiz</mat-icon>
+                </button>
+                <button mat-icon-button (click)="dropPaper(block)" [disabled]="saving()" [attr.aria-label]="'Invoice ' + (i + 1) + ', take the paper off'">
+                  <mat-icon>close</mat-icon>
+                </button>
+              } @else {
+                <button mat-stroked-button (click)="file.click()" [disabled]="saving()">
+                  <mat-icon>add_a_photo</mat-icon> Attach the paper <span class="inline-ar">إرفاق الفاتورة</span>
+                </button>
+              }
+            </div>
             <span class="spacer"></span>
             <strong class="block-total">{{ block.editor.total() | money }}</strong>
             <button mat-icon-button (click)="removeBlock(i)" [disabled]="blocks().length === 1 && !payments().length && !advances().length" [attr.aria-label]="'Take invoice ' + (i + 1) + ' off the batch'">
@@ -350,8 +395,12 @@ const storageKey = 'otantik-till.purchase-batch';
         font: var(--mat-sys-title-small);
       }
     }
+    /* Sized, so the supplier, number, paper and total share one line. */
     .supplier {
-      min-width: 240px;
+      width: 250px;
+    }
+    .number {
+      width: 190px;
     }
     .payment-block {
       border-style: dashed;
@@ -379,6 +428,29 @@ const storageKey = 'otantik-till.purchase-batch';
       border-radius: 8px;
       background: color-mix(in srgb, var(--app-warn) 14%, transparent);
     }
+    .paper {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .paper-name {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      max-width: 140px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--app-slate-700, #334155);
+
+      mat-icon {
+        flex: none;
+        color: var(--app-slate-500, #64748b);
+      }
+    }
+    .paper-cell {
+      white-space: nowrap;
+    }
     .posted {
       margin-bottom: 16px;
       padding: 12px;
@@ -404,6 +476,7 @@ export class PurchaseBatchPage {
   private readonly catalog = inject(PurchaseCatalog);
   protected readonly approvals = inject(Approvals);
   private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
+  private readonly dialog = inject(MatDialog);
 
   protected readonly loading = signal(true);
   protected readonly saving = signal(false);
@@ -412,6 +485,10 @@ export class PurchaseBatchPage {
   protected readonly problems = signal<string | null>(null);
   // The invoices and payments the last batch made.
   protected readonly posted = signal<PurchaseBatchResult | null>(null);
+  // Papers of the last batch that could not be sent, by their invoice: tried again from there.
+  protected readonly unsent = signal(new Map<string, File>());
+  protected readonly paperAccept = paperTypes.join(',');
+  protected readonly icon = paperIcon;
   protected readonly blocks = signal<BatchBlock[]>([this.block()]);
   protected readonly payments = signal<PaymentBlock[]>([]);
   protected readonly advances = signal<AdvanceEntry[]>([]);
@@ -582,6 +659,55 @@ export class PurchaseBatchPage {
       .reduce((sum, p) => sum + (p.amount ?? 0), 0);
   }
 
+  // A photo or scan of the invoice's paper, kept with it until the batch is sent.
+  protected choosePaper(block: BatchBlock, input: HTMLInputElement): void {
+    const file = input.files?.[0];
+    input.value = '';
+    if (!file) {
+      return;
+    }
+    if (!paperTypes.includes(file.type)) {
+      this.notify.error(null, 'Attach a photo (JPEG, PNG or WebP) or a PDF of the invoice.');
+      return;
+    }
+    if (file.size > paperMaxBytes) {
+      this.notify.error(null, 'The file must be under 10 MB.');
+      return;
+    }
+    block.paper = file;
+    this.changed();
+  }
+
+  protected dropPaper(block: BatchBlock): void {
+    block.paper = null;
+    this.changed();
+  }
+
+  protected viewPaper(invoiceId: string, fileName: string): void {
+    viewInvoicePaper(this.dialog, invoiceId, fileName);
+  }
+
+  // A posted invoice's paper, attached to it in the archive. Refused, it waits to be tried again,
+  // and says so unless the batch says it (say).
+  protected async sendPaper(invoiceId: string, file: File, say = true): Promise<boolean> {
+    try {
+      const saved = await firstValueFrom(this.api.attachPurchaseInvoiceFile(invoiceId, file));
+      this.posted.update((result) => result && { ...result, invoices: result.invoices.map((i) => (i.id === invoiceId ? saved : i)) });
+      this.unsent.update((unsent) => {
+        const left = new Map(unsent);
+        left.delete(invoiceId);
+        return left;
+      });
+      return true;
+    } catch (error) {
+      this.unsent.update((unsent) => new Map(unsent).set(invoiceId, file));
+      if (say) {
+        this.notify.error(error, `${file.name} could not be attached.`);
+      }
+      return false;
+    }
+  }
+
   // "2 invoices posted, 1 supplier paid, 1 advance paid".
   protected sentLabel(result: PurchaseBatchResult): string {
     const [invoices, payments, advances] = [result.invoices.length, result.payments.length, result.advances?.length ?? 0];
@@ -614,6 +740,8 @@ export class PurchaseBatchPage {
     }
     this.saving.set(true);
     this.problems.set(null);
+    // Each paper goes to its invoice once it is posted.
+    const papers = this.blocks().filter((b) => b.paper).map((b) => ({ invoiceId: b.id, file: b.paper! }));
     try {
       const made = await firstValueFrom(
         this.api.postPurchaseBatch({
@@ -625,25 +753,35 @@ export class PurchaseBatchPage {
             supplierId: b.supplier.id,
             supplierInvoiceNumber: b.number.trim() || null,
             lines: b.editor.toSave(),
+            discount: b.editor.discount() ?? 0,
           })),
           payments: this.payments().map((p) => ({ transactionId: p.id, supplierId: p.supplierId!, amount: p.amount!, notes: p.notes.trim() || null })),
           advances: this.advances().map((a) => ({ transactionId: a.id, employeeId: a.employeeId, amount: a.amount!, notes: a.notes.trim() || null })),
         }),
       );
       this.posted.set(made);
+      this.unsent.set(new Map());
       this.checks.clear();
-      const pending =
-        made.invoices.filter((i) => i.paymentStatus === 'Pending').length +
-        made.payments.filter((p) => p.outcome === 'Requested').length +
-        (made.advances ?? []).filter((a) => a.outcome === 'Requested').length;
-      this.notify.info(
-        `${this.sentLabel(made)}.` + (pending ? ` ${pending === 1 ? '1 payment waits' : `${pending} payments wait`} for a manager's approval.` : ''),
-      );
       this.blocks.set([this.block()]);
       this.payments.set([]);
       this.advances.set([]);
       this.changed();
       void this.approvals.refresh();
+      const sent = await Promise.all(papers.map((p) => this.sendPaper(p.invoiceId, p.file, false)));
+      const attached = sent.filter((ok) => ok).length;
+      const pending =
+        made.invoices.filter((i) => i.paymentStatus === 'Pending').length +
+        made.payments.filter((p) => p.outcome === 'Requested').length +
+        (made.advances ?? []).filter((a) => a.outcome === 'Requested').length;
+      const said =
+        `${this.sentLabel(made)}.` +
+        (attached ? ` ${attached === 1 ? '1 paper' : `${attached} papers`} attached.` : '') +
+        (pending ? ` ${pending === 1 ? '1 payment waits' : `${pending} payments wait`} for a manager's approval.` : '');
+      if (attached < papers.length) {
+        this.notify.error(null, `${said} ${papers.length - attached === 1 ? 'A paper' : 'Some papers'} could not be attached: try again below.`);
+      } else {
+        this.notify.info(said);
+      }
       await Promise.all([this.catalog.loadMaterials(), this.loadBalances()]);
     } catch (error) {
       this.problems.set(errorMessage(error, 'The batch could not be posted.'));
@@ -653,7 +791,7 @@ export class PurchaseBatchPage {
   }
 
   private block(): BatchBlock {
-    return { id: crypto.randomUUID(), supplier: new InvoiceSupplier(this.catalog), number: '', editor: new InvoiceLines(this.catalog) };
+    return { id: crypto.randomUUID(), supplier: new InvoiceSupplier(this.catalog), number: '', editor: new InvoiceLines(this.catalog), paper: null };
   }
 
   // Nothing entered on it yet.
@@ -662,6 +800,7 @@ export class PurchaseBatchPage {
       !block.supplier.id &&
       !(typeof block.supplier.entry === 'string' && block.supplier.entry.trim()) &&
       !block.number.trim() &&
+      !block.paper &&
       block.editor.lines().every((l) => !l.rawMaterialId && !l.expenseItemId)
     );
   }
@@ -692,6 +831,7 @@ export class PurchaseBatchPage {
         supplierName: typeof b.supplier.entry === 'string' ? b.supplier.entry : null,
         number: b.number,
         lines: b.editor.lines().map(({ entry, ...line }) => ({ ...line, ...(typeof entry === 'string' ? { typed: entry } : {}) })),
+        discount: b.editor.discount(),
       })),
       payments: this.payments().map((p) => ({ ...p })),
       advances: this.advances().map((a) => ({ ...a })),
@@ -746,9 +886,10 @@ export class PurchaseBatchPage {
               (line.rawMaterialId && this.catalog.materials().find((m) => m.id === line.rawMaterialId)) ||
               (line.expenseItemId && this.catalog.expenses().find((e) => e.id === line.expenseItemId)) ||
               typed;
-            return { ...line, entry };
+            return { ...line, discount: line.discount ?? 0, entry };
           }),
         );
+        block.editor.discount.set(b.discount ?? 0);
         block.editor.touch();
         return block;
       }),

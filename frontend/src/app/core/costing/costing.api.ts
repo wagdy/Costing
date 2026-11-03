@@ -624,12 +624,17 @@ export interface PurchaseInvoiceLine {
   unitLabel: string;
   unitSize: number;
   quantity: number;
+  // After every discount: what the line really cost. As written (lineTotal), less its own
+  // discount and its share of the invoice's.
   cost: number | null;
   itemType: PurchaseItemType;
   expenseItemId: string | null;
   categoryId: string | null;
   category: string | null;
   categoryAr: string | null;
+  lineTotal?: number | null;
+  discount?: number;
+  discountShare?: number;
 }
 
 export interface PurchaseAttachment {
@@ -666,6 +671,11 @@ export interface PurchaseInvoice {
   // A correction (تعديل فاتورة): the invoice it corrects; and on that one, the invoice that corrected it.
   revisionOf?: string | null;
   replacedBy?: string | null;
+  // total is what is paid (الصافي المستحق): the lines as written (subtotal), less their own
+  // discounts (lineDiscounts) and the invoice's (discount).
+  subtotal?: number;
+  lineDiscounts?: number;
+  discount?: number;
 }
 
 // A posted invoice as it should have been: a new invoice (newInvoiceId, made here) that replaces
@@ -680,6 +690,7 @@ export interface InvoiceCorrectionInput {
   paymentMethod: PurchasePaymentMethod | null;
   revenueDate: string | null;
   reason: string | null;
+  discount: number;
 }
 
 // What a correction would change, line by line: what the manager sees on the request.
@@ -977,6 +988,8 @@ export interface SavePurchaseInvoice {
   // Required to post: from the safe, from a day's takings (revenueDate), or on credit (a supplier).
   paymentMethod: PurchasePaymentMethod | null;
   revenueDate: string | null;
+  // The invoice's own discount (خصم الفاتورة), off what the lines come to after theirs.
+  discount: number;
 }
 
 // A stock line names its material; an expense line its expense item, in units of 1, with its cost.
@@ -989,7 +1002,7 @@ export interface PurchaseBatch {
   invoiceDate: string;
   paymentMethod: PurchasePaymentMethod;
   revenueDate: string | null;
-  invoices: { invoiceId: string; supplierId: string | null; supplierInvoiceNumber: string | null; lines: SavePurchaseLine[] }[];
+  invoices: { invoiceId: string; supplierId: string | null; supplierInvoiceNumber: string | null; lines: SavePurchaseLine[]; discount: number }[];
   payments: { transactionId: string; supplierId: string; amount: number; notes: string | null }[];
   // No employee: advances handed out with no one named, shared among the staff.
   advances?: { transactionId: string; employeeId: string | null; amount: number; notes: string | null }[];
@@ -1028,7 +1041,9 @@ export interface SavePurchaseLine {
   enteredQuantity: number;
   unitLabel: string | null;
   unitSize: number;
+  // As written, and what was taken off it (الخصم).
   cost: number | null;
+  discount: number;
 }
 
 // Where an expense filed under a category counts in the profit and loss.

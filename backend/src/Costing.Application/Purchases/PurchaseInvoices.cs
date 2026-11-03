@@ -36,7 +36,12 @@ public sealed record PurchaseInvoiceLineDto(
     Guid? ExpenseItemId,
     Guid? CategoryId,
     string? Category,
-    string? CategoryAr);
+    string? CategoryAr,
+    // Cost is after every discount: the line as written (LineTotal), less its own (Discount) and
+    // its share of the invoice's (DiscountShare).
+    decimal? LineTotal = null,
+    decimal Discount = 0,
+    decimal DiscountShare = 0);
 
 public sealed record PurchaseInvoiceDto(
     Guid Id,
@@ -62,7 +67,12 @@ public sealed record PurchaseInvoiceDto(
     InvoicePaymentStatus PaymentStatus = InvoicePaymentStatus.NotPosted,
     // A correction: the invoice it corrects; and on that one, the invoice that corrected it.
     Guid? RevisionOf = null,
-    Guid? ReplacedBy = null);
+    Guid? ReplacedBy = null,
+    // Total is what is paid: the lines as written (Subtotal), less their own discounts
+    // (LineDiscounts) and the invoice's (Discount).
+    decimal Subtotal = 0,
+    decimal LineDiscounts = 0,
+    decimal Discount = 0);
 
 // What an invoice's lines are named and filed under, read together for a DTO.
 internal sealed record InvoiceReading(
@@ -112,7 +122,10 @@ internal sealed record InvoiceReading(
         invoice.PaymentMethod,
         invoice.RevenueDate,
         RevisionOf: invoice.RevisionOf,
-        ReplacedBy: invoice.ReplacedBy);
+        ReplacedBy: invoice.ReplacedBy,
+        Subtotal: invoice.Subtotal,
+        LineDiscounts: invoice.LineDiscounts,
+        Discount: invoice.Discount);
 
     private static PurchaseInvoiceLineDto Line(
         PurchaseInvoiceLine l,
@@ -126,14 +139,14 @@ internal sealed record InvoiceReading(
             var category = expense is null ? null : categories.GetValueOrDefault(expense.CategoryId);
             return new PurchaseInvoiceLineDto(
                 null, expense?.Name ?? "A removed expense", null, l.EnteredQuantity, l.UnitLabel, l.UnitSize, l.Quantity, l.Cost,
-                l.ItemType, l.ExpenseItemId, category?.Id, category?.Name, category?.NameAr);
+                l.ItemType, l.ExpenseItemId, category?.Id, category?.Name, category?.NameAr, l.LineTotal, l.Discount, l.DiscountShare);
         }
 
         var material = materials.GetValueOrDefault(l.RawMaterialId!.Value);
         var filed = material is null ? null : categories.GetValueOrDefault(material.CategoryId);
         return new PurchaseInvoiceLineDto(
             l.RawMaterialId, material?.Name ?? "A removed material", material?.Unit ?? UnitOfMeasure.Piece, l.EnteredQuantity, l.UnitLabel,
-            l.UnitSize, l.Quantity, l.Cost, l.ItemType, null, filed?.Id, filed?.Name, filed?.NameAr);
+            l.UnitSize, l.Quantity, l.Cost, l.ItemType, null, filed?.Id, filed?.Name, filed?.NameAr, l.LineTotal, l.Discount, l.DiscountShare);
     }
 }
 
@@ -202,7 +215,8 @@ internal sealed class GetPurchaseInvoiceQueryHandler(
             : null;
 }
 
-// Step one: the invoice as entered, kept as a draft. Created on its first save.
+// Step one: the invoice as entered, kept as a draft. Created on its first save. Discount: the
+// invoice's own (خصم الفاتورة), off what its lines come to after theirs.
 public sealed record SavePurchaseInvoiceCommand(
     Guid InvoiceId,
     Guid? SupplierId,
@@ -211,7 +225,8 @@ public sealed record SavePurchaseInvoiceCommand(
     IReadOnlyList<PurchaseInvoiceLineEntry> Lines,
     string StaffName = "",
     PurchasePaymentMethod? PaymentMethod = null,
-    DateOnly? RevenueDate = null) : IRequest<PurchaseInvoiceDto>;
+    DateOnly? RevenueDate = null,
+    decimal Discount = 0) : IRequest<PurchaseInvoiceDto>;
 
 // The checks and the recording of an invoice as entered, for a draft saved on its own and for each
 // invoice of a daily batch alike. Tracked, for the caller to save.
@@ -284,7 +299,9 @@ internal sealed class InvoiceRecorder(
                 throw new DomainException($"{supplier.Name} is archived. Restore it on the Suppliers tab to invoice it again.");
         }
 
-        invoice.Record(request.SupplierId, request.SupplierInvoiceNumber, request.InvoiceDate, request.Lines, request.PaymentMethod, request.RevenueDate);
+        invoice.Record(
+            request.SupplierId, request.SupplierInvoiceNumber, request.InvoiceDate, request.Lines, request.PaymentMethod, request.RevenueDate,
+            request.Discount);
     }
 }
 

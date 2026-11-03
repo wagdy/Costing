@@ -597,6 +597,47 @@ public class CostingApiTests
         Assert.Equal(25_000m, await OnHandAsync(manager, flour));
     }
 
+    // A day's batch with a discounted receipt: the discounts come in as sent and the net is what
+    // is owed; the receipt's photo, attached once its invoice is posted, is kept in the archive.
+    [Fact]
+    public async Task A_batch_invoice_takes_its_discounts_and_its_paper_after_posting()
+    {
+        await using var api = await TestApi.StartAsync();
+        var manager = await api.ManagerAsync();
+        var today = await TodayAsync(manager);
+        var flour = (await Json(await manager.PostAsJsonAsync("/api/inventory/raw-materials", new
+        {
+            name = "Flour", unit = "Gram", purchaseUnit = "kg", purchaseUnitSize = 1000,
+        }, Cancel))).GetProperty("id").GetGuid();
+        var nile = Guid.NewGuid();
+        await Json(await manager.PutAsJsonAsync($"/api/inventory/suppliers/{nile}", new { name = "Nile Mills" }, Cancel));
+
+        var id = Guid.NewGuid();
+        var batch = await Json(await manager.PostAsJsonAsync("/api/inventory/purchase-invoices/batch", new
+        {
+            invoiceDate = Iso(today), paymentMethod = "Credit",
+            invoices = new[]
+            {
+                new
+                {
+                    invoiceId = id, supplierId = nile, supplierInvoiceNumber = "M-1", discount = 5,
+                    lines = new[] { new { rawMaterialId = flour, enteredQuantity = 10, unitLabel = "kg", unitSize = 1000, cost = 300, discount = 15 } },
+                },
+            },
+        }, Cancel));
+        var invoice = batch.GetProperty("invoices").EnumerateArray().Single();
+        Assert.Equal((300m, 15m, 5m, 280m), (invoice.GetProperty("subtotal").GetDecimal(), invoice.GetProperty("lineDiscounts").GetDecimal(),
+            invoice.GetProperty("discount").GetDecimal(), invoice.GetProperty("total").GetDecimal()));
+
+        var photo = new ByteArrayContent([0xFF, 0xD8, 0xFF, 0xE0, 0, 0x10, 0x4A, 0x46, 0x49, 0x46]);
+        photo.Headers.ContentType = new MediaTypeHeaderValue("image/jpeg");
+        var attached = await Json(await manager.PutAsync(
+            $"/api/inventory/purchase-invoices/{id}/attachment", new MultipartFormDataContent { { photo, "file", "receipt.jpg" } }, Cancel));
+        Assert.Equal(("Posted", "receipt.jpg"), (attached.GetProperty("status").GetString(), attached.GetProperty("attachment").GetProperty("fileName").GetString()));
+        var listed = (await Json(await manager.GetAsync("/api/inventory/purchase-invoices?status=Posted", Cancel))).EnumerateArray().Single();
+        Assert.Equal(("receipt.jpg", 280m), (listed.GetProperty("attachmentFileName").GetString(), listed.GetProperty("total").GetDecimal()));
+    }
+
     private static MultipartFormDataContent File(byte[] content, string name)
     {
         var file = new ByteArrayContent(content);

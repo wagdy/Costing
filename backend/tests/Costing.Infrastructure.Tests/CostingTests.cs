@@ -1540,6 +1540,62 @@ public class CostingTests
         Assert.Equal(count, await node.Db(db => db.PurchaseInvoices.CountAsync()));
     }
 
+    // A receipt with discounts, single or in a day's batch: the safe pays, and the supplier is owed,
+    // the net payable; the stock goes in at the net; and the invoice reads back as written.
+
+    [Fact]
+    public async Task Discounted_invoices_are_paid_owed_and_costed_at_the_net()
+    {
+        await using var node = await TestSystem.StartAsync();
+        var ct = TestContext.Current.CancellationToken;
+        using var scope = node.Scope();
+        var treasury = node.Service<TreasuryService>(scope);
+        var today = treasury.Today;
+        var tomatoes = (await node.Send(new CreateRawMaterialCommand("Tomatoes", UnitOfMeasure.Gram))).Id;
+        var milk = (await node.Send(new CreateRawMaterialCommand("Milk", UnitOfMeasure.Millilitre))).Id;
+        var nile = (await node.Send(new SaveSupplierCommand(Guid.NewGuid(), "Nile Farms"))).Id;
+        await node.Send(new RecordSafeVoucherCommand(
+            Guid.NewGuid(), new SafeVoucher(Guid.NewGuid(), SafeTransactionKind.OpeningBalance, 10_000, today, FundingSource.CarriedOver),
+            null, "staff-omar", "Omar", CanApprove: true));
+        async Task<decimal> Safe() => (await treasury.GetSafeAsync(today.Year, today.Month, ct)).BalanceNow;
+        Task<decimal?> Average(Guid id) => node.Db(db => db.RawMaterials.Where(m => m.Id == id).Select(m => m.AverageCost).SingleAsync());
+
+        // 5 kg at 100 less 10, 10 L at 400, and 30 off the invoice: 490 after the lines' own, 460 to pay.
+        var single = Guid.NewGuid();
+        await node.Send(new SavePurchaseInvoiceCommand(
+            single, nile, "F-7", today, [new(tomatoes, 5, "kg", 1000, 100, Discount: 10), new(milk, 10, "L", 1000, 400)], "Omar",
+            PurchasePaymentMethod.Safe, Discount: 30));
+        var posted = await node.Send(new PostPurchaseInvoiceCommand(single, "Omar"));
+        Assert.Equal((500m, 10m, 30m, 460m), (posted.Subtotal, posted.LineDiscounts, posted.Discount, posted.Total));
+        Assert.Equal(
+            [(100m, 10m, 5.51m, 84.49m), (400m, 0m, 24.49m, 375.51m)],
+            posted.Lines.Select(l => (l.LineTotal!.Value, l.Discount, l.DiscountShare, l.Cost!.Value)));
+        Assert.Equal(10_000m - 460, await Safe());
+        Assert.Equal(84.49m / 5000, await Average(tomatoes));
+
+        // Read back from the database as it was written.
+        var read = (await node.Send(new GetPurchaseInvoiceQuery(single)))!;
+        Assert.Equal((500m, 30m, 460m), (read.Subtotal, read.Discount, read.Total));
+        Assert.Equal([100m, 400m], read.Lines.Select(l => l.LineTotal!.Value));
+
+        // A day's batch on credit: the supplier is owed the net.
+        var batch = await node.Send(new PostPurchaseBatchCommand(
+            today, PurchasePaymentMethod.Credit, null,
+            [new BatchInvoice(Guid.NewGuid(), nile, "F-8", [new(tomatoes, 5, "kg", 1000, 120, Discount: 20)], Discount: 10)],
+            "Omar", "staff-omar", true));
+        Assert.Equal(90m, Assert.Single(batch.Invoices).Total);
+        Assert.Equal(90m, (await treasury.GetSupplierStatementAsync(nile, ct))!.Balance);
+
+        // Corrected for its invoice discount alone: a change, paid at the new net.
+        var fix = new InvoiceCorrection(
+            Guid.NewGuid(), nile, "F-7", today, [new(tomatoes, 5, "kg", 1000, 100, Discount: 10), new(milk, 10, "L", 1000, 400)],
+            PurchasePaymentMethod.Safe, null, Discount: 40);
+        var done = await node.Send(new CorrectPurchaseInvoiceCommand(Guid.NewGuid(), single, fix, null, "staff-omar", "Omar", true));
+        Assert.Equal("Invoice F-7 · Nile Farms corrected · L.E 460.00 → L.E 450.00", done.Request.Summary);
+        Assert.Contains(done.Request.Changes, c => c.Label == "Invoice discount" && c.Before == "L.E 30.00" && c.After == "L.E 40.00");
+        Assert.Equal(10_000m - 450, await Safe());
+    }
+
     // A posted invoice corrected (تعديل فاتورة): voided and posted again as it should have been, as a
     // new invoice naming it, nothing posted rewritten. A manager's at once; an accountant's a request,
     // the invoice as it was and locked until a manager rejects it (with a reason, kept) or approves it.

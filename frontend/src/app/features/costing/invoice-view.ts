@@ -1,5 +1,5 @@
 import { DatePipe, DecimalPipe } from '@angular/common';
-import { Component, input } from '@angular/core';
+import { Component, computed, input } from '@angular/core';
 import { PurchaseInvoice, PurchaseInvoiceLine, UnitOfMeasure, paymentMethodLabels, paymentStatusLabels } from '../../core/costing/costing.api';
 import { MoneyPipe } from '../../core/ui/money.pipe';
 import { PaperPreview } from './invoice-paper';
@@ -8,8 +8,10 @@ const baseLabels: Record<UnitOfMeasure, string> = { Gram: 'g', Millilitre: 'ml',
 
 // One invoice, read-only: who it is from and when, each line as billed (quantity, unit, unit
 // price, line total) and what it put into stock, or that it is an expense and under which
-// category, the total split into stock and expenses, and the paper itself. Shown for review
-// before posting, from the history's Show, and on the invoice's own page.
+// category, the total split into stock and expenses, and the paper itself. With discounts, each
+// line's (its own and its share of the invoice's) and what it came to after them, and the
+// subtotal, less the discounts, as what is paid. Shown for review before posting, from the
+// history's Show, and on the invoice's own page.
 @Component({
   selector: 'app-invoice-view',
   imports: [DatePipe, DecimalPipe, MoneyPipe, PaperPreview],
@@ -19,7 +21,11 @@ const baseLabels: Record<UnitOfMeasure, string> = { Gram: 'g', Millilitre: 'ml',
       <div><dt>Supplier · المورد</dt><dd>{{ inv.supplierName ?? '—' }}</dd></div>
       <div><dt>Invoice no. · رقم الفاتورة</dt><dd>{{ inv.supplierInvoiceNumber ?? '—' }}</dd></div>
       <div><dt>Date · التاريخ</dt><dd>{{ date() | date: 'd MMM y' }}</dd></div>
-      <div><dt>Total · الإجمالي</dt><dd class="total">{{ inv.total | money }}</dd></div>
+      @if (discounted()) {
+        <div><dt>Net payable · الصافي المستحق</dt><dd class="total">{{ inv.total | money }}</dd></div>
+      } @else {
+        <div><dt>Total · الإجمالي</dt><dd class="total">{{ inv.total | money }}</dd></div>
+      }
       <div>
         <dt>Paid · طريقة الدفع</dt>
         <dd>
@@ -55,6 +61,10 @@ const baseLabels: Record<UnitOfMeasure, string> = { Gram: 'g', Millilitre: 'ml',
             <th>Unit<span class="ar">الوحدة</span></th>
             <th class="num">Unit price<span class="ar">سعر الوحدة</span></th>
             <th class="num">Line total<span class="ar">إجمالي السطر</span></th>
+            @if (discounted()) {
+              <th class="num">Discount<span class="ar">الخصم</span></th>
+              <th class="num">Net<span class="ar">الصافي</span></th>
+            }
             <th class="num">Into stock<span class="ar">إلى المخزون</span></th>
           </tr>
         </thead>
@@ -70,32 +80,75 @@ const baseLabels: Record<UnitOfMeasure, string> = { Gram: 'g', Millilitre: 'ml',
               <td>{{ l.category ?? '—' }}</td>
               <td class="num">{{ l.enteredQuantity | number: '1.0-3' }}</td>
               <td>{{ l.unitLabel }}</td>
-              <td class="num">{{ l.cost === null ? '' : (l.cost / l.enteredQuantity | money) }}</td>
-              <td class="num">{{ l.cost === null ? 'No price' : (l.cost | money) }}</td>
+              <td class="num">{{ written(l) === null ? '' : (written(l)! / l.enteredQuantity | money) }}</td>
+              <td class="num">{{ written(l) === null ? 'No price' : (written(l) | money) }}</td>
+              @if (discounted()) {
+                <td class="num">
+                  {{ off(l) > 0 ? (off(l) | money) : '' }}
+                  @if (l.discountShare) {
+                    <small class="muted share">{{ l.discountShare | money }} of the invoice's</small>
+                  }
+                </td>
+                <td class="num">{{ l.cost === null ? '' : (l.cost | money) }}</td>
+              }
               <td class="num muted">{{ l.itemType === 'Expense' ? 'Not stock' : (l.quantity | number: '1.0-3') + ' ' + base(l) }}</td>
             </tr>
           } @empty {
-            <tr><td colspan="7" class="muted">No lines.</td></tr>
+            <tr><td [attr.colspan]="discounted() ? 9 : 7" class="muted">No lines.</td></tr>
           }
         </tbody>
         <tfoot>
-          @if (inv.expenseTotal > 0) {
+          @if (discounted()) {
+            <!-- Subtotal, less every discount, as what is paid: each under its column. -->
             <tr class="split">
-              <td colspan="5">Into stock · إلى المخزون</td>
-              <td class="num">{{ inv.inventoryTotal | money }}</td>
+              <td colspan="5">{{ inv.lines.length }} {{ inv.lines.length === 1 ? 'line' : 'lines' }} · Subtotal · الإجمالي قبل الخصم</td>
+              <td class="num">{{ inv.subtotal ?? 0 | money }}</td>
+              <td class="num">− {{ (inv.lineDiscounts ?? 0) + (inv.discount ?? 0) | money }}</td>
+              <td colspan="2"></td>
+            </tr>
+            @if ((inv.discount ?? 0) > 0) {
+              <tr class="split">
+                <td colspan="6">Of which the invoice discount · منها خصم الفاتورة</td>
+                <td class="num">{{ inv.discount | money }}</td>
+                <td colspan="2"></td>
+              </tr>
+            }
+            @if (inv.expenseTotal > 0) {
+              <tr class="split">
+                <td colspan="7">Into stock · إلى المخزون</td>
+                <td class="num">{{ inv.inventoryTotal | money }}</td>
+                <td></td>
+              </tr>
+              <tr class="split">
+                <td colspan="7">Expenses · مصروفات</td>
+                <td class="num">{{ inv.expenseTotal | money }}</td>
+                <td></td>
+              </tr>
+            }
+            <tr>
+              <td colspan="7">Net payable · الصافي المستحق</td>
+              <td class="num">{{ inv.total | money }}</td>
               <td></td>
             </tr>
-            <tr class="split">
-              <td colspan="5">Expenses · مصروفات</td>
-              <td class="num">{{ inv.expenseTotal | money }}</td>
+          } @else {
+            @if (inv.expenseTotal > 0) {
+              <tr class="split">
+                <td colspan="5">Into stock · إلى المخزون</td>
+                <td class="num">{{ inv.inventoryTotal | money }}</td>
+                <td></td>
+              </tr>
+              <tr class="split">
+                <td colspan="5">Expenses · مصروفات</td>
+                <td class="num">{{ inv.expenseTotal | money }}</td>
+                <td></td>
+              </tr>
+            }
+            <tr>
+              <td colspan="5">{{ inv.lines.length }} {{ inv.lines.length === 1 ? 'line' : 'lines' }}</td>
+              <td class="num">{{ inv.total | money }}</td>
               <td></td>
             </tr>
           }
-          <tr>
-            <td colspan="5">{{ inv.lines.length }} {{ inv.lines.length === 1 ? 'line' : 'lines' }}</td>
-            <td class="num">{{ inv.total | money }}</td>
-            <td></td>
-          </tr>
         </tfoot>
       </table>
     </div>
@@ -138,6 +191,10 @@ const baseLabels: Record<UnitOfMeasure, string> = { Gram: 'g', Millilitre: 'ml',
     tfoot tr.split td {
       font-weight: 400;
     }
+    .share {
+      display: block;
+      white-space: nowrap;
+    }
     .paper {
       margin-top: 16px;
 
@@ -152,6 +209,22 @@ export class InvoiceView {
   protected readonly methods = paymentMethodLabels;
   protected readonly statuses = paymentStatusLabels;
   readonly invoice = input.required<PurchaseInvoice>();
+
+  // Anything taken off it, by a line or on the whole invoice.
+  protected readonly discounted = computed(() => {
+    const inv = this.invoice();
+    return (inv.lineDiscounts ?? 0) > 0 || (inv.discount ?? 0) > 0;
+  });
+
+  // A line as written on the paper, before its discounts.
+  protected written(line: PurchaseInvoiceLine): number | null {
+    return line.lineTotal ?? line.cost;
+  }
+
+  // What was taken off a line: its own discount and its share of the invoice's.
+  protected off(line: PurchaseInvoiceLine): number {
+    return (line.discount ?? 0) + (line.discountShare ?? 0);
+  }
 
   // The date on the supplier's paper; when none was written, the day it was posted or entered.
   protected date(): string {

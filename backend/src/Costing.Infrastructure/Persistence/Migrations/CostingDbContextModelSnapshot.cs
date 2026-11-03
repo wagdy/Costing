@@ -629,6 +629,10 @@ namespace Costing.Infrastructure.Persistence.Migrations
                         .HasMaxLength(200)
                         .HasColumnType("character varying(200)");
 
+                    b.Property<decimal>("Discount")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)");
+
                     b.Property<DateOnly?>("InvoiceDate")
                         .HasColumnType("date");
 
@@ -695,6 +699,14 @@ namespace Costing.Infrastructure.Persistence.Migrations
                         .HasPrecision(18, 2)
                         .HasColumnType("numeric(18,2)");
 
+                    b.Property<decimal>("Discount")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)");
+
+                    b.Property<decimal>("DiscountShare")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)");
+
                     b.Property<decimal>("EnteredQuantity")
                         .HasPrecision(18, 3)
                         .HasColumnType("numeric(18,3)");
@@ -709,6 +721,10 @@ namespace Costing.Infrastructure.Persistence.Migrations
                         .IsRequired()
                         .HasMaxLength(32)
                         .HasColumnType("character varying(32)");
+
+                    b.Property<decimal?>("LineTotal")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)");
 
                     b.Property<decimal>("Quantity")
                         .HasPrecision(18, 3)

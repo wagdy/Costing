@@ -9,6 +9,7 @@ import {
   PurchaseInvoice,
   PurchaseInvoiceSummary,
   SavePurchaseInvoice,
+  SavePurchaseLine,
   SafeVoucherInput,
   Supplier,
   SupplierBalance,
@@ -40,9 +41,13 @@ const nileFarms = supplier('nile', 'Nile Farms');
 const deltaOils = supplier('delta', 'Delta Oils');
 
 // What the till answers with: the invoice as saved, each line also in the material's own unit.
+// An invoice as saved, its discounts none unless given.
+type InvoiceBody = Omit<SavePurchaseInvoice, 'paymentMethod' | 'revenueDate' | 'discount' | 'lines'> &
+  Partial<Pick<SavePurchaseInvoice, 'paymentMethod' | 'revenueDate' | 'discount'>> & { lines: (Omit<SavePurchaseLine, 'discount'> & { discount?: number })[] };
+
 function asInvoice(
   id: string,
-  body: Omit<SavePurchaseInvoice, 'paymentMethod' | 'revenueDate'> & Partial<SavePurchaseInvoice>,
+  body: InvoiceBody,
   status: PurchaseInvoice['status'] = 'Draft',
 ): PurchaseInvoice {
   return {
@@ -123,7 +128,7 @@ describe('entering a supplier invoice', () => {
     page['touch']();
   }
 
-  const blank = { itemType: null, rawMaterialId: null, expenseItemId: null, quantity: null, unitSize: null, unitLabel: '', cost: null };
+  const blank = { itemType: null, rawMaterialId: null, expenseItemId: null, quantity: null, unitSize: null, unitLabel: '', cost: null, discount: 0 };
 
   // The lines of the last draft saved.
   const savedLines = () => (savePurchaseInvoice.mock.lastCall![1] as SavePurchaseInvoice).lines;
@@ -199,9 +204,10 @@ describe('entering a supplier invoice', () => {
       paymentMethod: 'Safe',
       revenueDate: null,
       lines: [
-        { itemType: 'Inventory', rawMaterialId: 'oil', expenseItemId: null, enteredQuantity: 20, unitLabel: 'L', unitSize: 1000, cost: 1900 },
-        { itemType: 'Inventory', rawMaterialId: 'bun', expenseItemId: null, enteredQuantity: 50, unitLabel: 'piece', unitSize: 1, cost: null },
+        { itemType: 'Inventory', rawMaterialId: 'oil', expenseItemId: null, enteredQuantity: 20, unitLabel: 'L', unitSize: 1000, cost: 1900, discount: 0 },
+        { itemType: 'Inventory', rawMaterialId: 'bun', expenseItemId: null, enteredQuantity: 50, unitLabel: 'piece', unitSize: 1, cost: null, discount: 0 },
       ],
+      discount: 0,
     });
     expect(postPurchaseInvoice).not.toHaveBeenCalled();
     expect(page['review']()).toMatchObject({ id, status: 'Draft', total: 1900, supplierName: 'Delta Oils' });
@@ -273,7 +279,9 @@ describe('entering a supplier invoice', () => {
     expect(page['unitPrice'](page['lines']()[0])).toBe(20);
     await page['save']();
 
-    expect(savedLines()).toEqual([{ itemType: 'Inventory', rawMaterialId: 'tomatoes', expenseItemId: null, enteredQuantity: 5, unitLabel: 'kg', unitSize: 1000, cost: 100 }]);
+    expect(savedLines()).toEqual([
+      { itemType: 'Inventory', rawMaterialId: 'tomatoes', expenseItemId: null, enteredQuantity: 5, unitLabel: 'kg', unitSize: 1000, cost: 100, discount: 0 },
+    ]);
     expect(page['review']().lines[0].quantity).toBe(5000);
   });
 
@@ -290,8 +298,8 @@ describe('entering a supplier invoice', () => {
     await page['save']();
 
     expect(savedLines()).toEqual([
-      { itemType: 'Inventory', rawMaterialId: 'tomatoes', expenseItemId: null, enteredQuantity: 2500, unitLabel: 'g', unitSize: 1, cost: 62.5 },
-      { itemType: 'Inventory', rawMaterialId: 'oil', expenseItemId: null, enteredQuantity: 0.1, unitLabel: 'L', unitSize: 1000, cost: 9.5 },
+      { itemType: 'Inventory', rawMaterialId: 'tomatoes', expenseItemId: null, enteredQuantity: 2500, unitLabel: 'g', unitSize: 1, cost: 62.5, discount: 0 },
+      { itemType: 'Inventory', rawMaterialId: 'oil', expenseItemId: null, enteredQuantity: 0.1, unitLabel: 'L', unitSize: 1000, cost: 9.5, discount: 0 },
     ]);
   });
 
@@ -513,7 +521,7 @@ describe('entering a supplier invoice', () => {
         'farm.jpg',
       ]);
       expect(page['lines']()).toEqual([
-        { entry: tomatoes, itemType: 'Inventory', rawMaterialId: 'tomatoes', expenseItemId: null, quantity: 5, unitSize: 1000, unitLabel: '', cost: 100 },
+        { entry: tomatoes, itemType: 'Inventory', rawMaterialId: 'tomatoes', expenseItemId: null, quantity: 5, unitSize: 1000, unitLabel: '', cost: 100, discount: 0 },
       ]);
 
       // How it is paid comes back too.
@@ -600,8 +608,8 @@ describe('entering a supplier invoice', () => {
 
       await page['save']();
       expect(savedLines()).toEqual([
-        { itemType: 'Inventory', rawMaterialId: 'oil', expenseItemId: null, enteredQuantity: 20, unitLabel: 'L', unitSize: 1000, cost: 1900 },
-        { itemType: 'Expense', rawMaterialId: null, expenseItemId: 'power', enteredQuantity: 1, unitLabel: null, unitSize: 1, cost: 1500 },
+        { itemType: 'Inventory', rawMaterialId: 'oil', expenseItemId: null, enteredQuantity: 20, unitLabel: 'L', unitSize: 1000, cost: 1900, discount: 0 },
+        { itemType: 'Expense', rawMaterialId: null, expenseItemId: 'power', enteredQuantity: 1, unitLabel: null, unitSize: 1, cost: 1500, discount: 0 },
       ]);
       await page['confirm']();
       expect(notify.info).toHaveBeenCalledWith(expect.stringContaining('1 line into stock, 1 expense recorded'));
@@ -653,6 +661,74 @@ describe('entering a supplier invoice', () => {
 
       expect(page['lines']()[0]).toMatchObject({ entry: spray, itemType: 'Expense', expenseItemId: 'spray', quantity: 4, unitLabel: 'bottle', cost: 200 });
     });
+  });
+});
+
+// A receipt with discounts on the new invoice screen: each line's own and the invoice's sent as
+// entered, what is paid the net; a draft or an invoice corrected comes back as it was written.
+describe('a supplier invoice with discounts', () => {
+  const savePurchaseInvoice = vi.fn();
+  const purchaseInvoice = vi.fn();
+
+  async function render() {
+    TestBed.configureTestingModule({
+      providers: [
+        provideRouter([]),
+        {
+          provide: CostingApi,
+          useValue: {
+            materials: () => of(all),
+            purchaseInvoices: () => of([]),
+            purchaseInvoice,
+            suppliers: () => of([nileFarms, deltaOils]),
+            expenseItems: () => of([power, spray]),
+            savePurchaseInvoice,
+            supplierBalances: () => of([]),
+          },
+        },
+        { provide: MatDialog, useValue: { open: vi.fn() } },
+        { provide: NotifyService, useValue: { info: vi.fn(), error: vi.fn() } },
+      ],
+    });
+    const fixture = TestBed.createComponent(PurchasesPage);
+    await fixture.whenStable();
+    return fixture.componentInstance as unknown as Record<string, any>;
+  }
+
+  beforeEach(() => {
+    savePurchaseInvoice.mockReset().mockImplementation((id: string, body: SavePurchaseInvoice) => of(asInvoice(id, body)));
+  });
+
+  it('sends each line as written with its discount, and the invoice discount; what is paid is the net', async () => {
+    const page = await render();
+    page['paymentMethod'] = 'Safe';
+    page['lines'].set([
+      { entry: tomatoes, itemType: 'Inventory', rawMaterialId: 'tomatoes', expenseItemId: null, quantity: 5, unitSize: null, unitLabel: '', cost: 100, discount: 10 },
+    ]);
+    page['editor'].discount.set(5);
+    page['touch']();
+
+    expect(page['total']()).toBe(85);
+    // L.E 85 for 5 kg: 17 a kg.
+    expect(page['unitPrice'](page['lines']()[0])).toBe(17);
+    await page['save']();
+
+    expect(savePurchaseInvoice.mock.lastCall![1]).toMatchObject({ discount: 5, lines: [{ rawMaterialId: 'tomatoes', cost: 100, discount: 10 }] });
+  });
+
+  it('brings a draft back at its lines as written, with its discounts', async () => {
+    // As the server keeps it: 100 written, 10 off it and 5 off the invoice, 85 its cost.
+    const draft = asInvoice('draft-3', {
+      supplierId: 'nile', supplierInvoiceNumber: null, invoiceDate: '2026-10-05', discount: 5,
+      lines: [{ itemType: 'Inventory', rawMaterialId: 'tomatoes', expenseItemId: null, enteredQuantity: 5, unitLabel: 'kg', unitSize: 1000, cost: 100 }],
+    });
+    purchaseInvoice.mockReturnValue(of({ ...draft, lines: draft.lines.map((l) => ({ ...l, cost: 85, lineTotal: 100, discount: 10, discountShare: 5 })) }));
+    const page = await render();
+
+    await page['continueDraft']('draft-3');
+
+    expect(page['lines']()[0]).toMatchObject({ cost: 100, discount: 10 });
+    expect([page['editor'].discount(), page['total']()]).toEqual([5, 85]);
   });
 });
 

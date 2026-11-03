@@ -44,8 +44,9 @@ supplier, menu item), its unit and what it costs now. Where one can be added the
 expense, a supplier on an invoice), "Add new" is offered when nothing is called what was typed.
 
 In the line grids (an invoice's, a recipe's or prep item's ingredients, waste, a day's sales), Enter
-moves from the item to its quantity to its price; Enter on a line's last field goes to the next line,
-or adds one, so a whole invoice can be entered without the mouse.
+moves from the item to its quantity to its price (on an invoice, then its discount); Enter on a
+line's last field goes to the next line, or adds one, so a whole invoice can be entered without the
+mouse. Enter in a grid's footer (an invoice's discount) stays there.
 
 ## Roles and permissions
 
@@ -275,6 +276,32 @@ average from then on, as its first batch would.
 counted periodically. A material forgotten the first time can be opened in a second opening count.
 Voiding an opening count (on approval) takes its stock back out and lets its materials be opened
 again.
+
+## Purchases: discounts and the paper
+
+A supplier's receipt is entered as written, on **New invoice** (فاتورة جديدة) or as one invoice of a
+**Daily batch** (يومية المشتريات), and both take its discounts the same way:
+
+- **A line's discount** (الخصم), beside its line total, 0 unless given: what was taken off that
+  line. It needs the line's total and is never more than it.
+- **The invoice's discount** (خصم الفاتورة), in the footer, 0 unless given: taken off what the
+  lines come to after their own, and never more than that. It is shared among the priced lines
+  by what each comes to after its own discount, to the piastre (each share rounded down, the
+  piastres left one each to the lines that lost the most to rounding).
+- The footer reads **Subtotal − Total discount = Net payable** (الصافي المستحق).
+
+Everything after it uses the net, never the price before the discount: each line's AP$ per
+purchase unit and the material's moving average when posted; what the safe or a day's takings
+pay, and what the supplier is owed on credit; the purchases and expense reports. The invoice
+keeps each line as written (its line total), its own discount and its share of the invoice's,
+so it reads back, is corrected and is shown as it was on the paper. Invoices entered before
+discounts read as having none.
+
+**The paper** (إرفاق الفاتورة), a photo (JPEG, PNG, WebP) or PDF under 10 MB: on New invoice it is
+attached as the invoice is entered; on a Daily batch each invoice has its own **Attach the paper**,
+and the papers are sent once the batch is posted, each to its invoice, kept in the Invoices
+archive as one entered alone. One that could not be sent is offered again in the posted batch
+(Try again); a paper chosen is not kept by the browser if the page is reloaded before sending.
 
 ## Waste and breakage
 

@@ -30,7 +30,8 @@ public sealed record InvoiceCorrection(
     DateOnly? InvoiceDate,
     IReadOnlyList<PurchaseInvoiceLineEntry> Lines,
     PurchasePaymentMethod? PaymentMethod,
-    DateOnly? RevenueDate);
+    DateOnly? RevenueDate,
+    decimal Discount = 0);
 
 public sealed record CorrectPurchaseInvoiceCommand(
     Guid RequestId, Guid InvoiceId, InvoiceCorrection Correction, string? Reason, string StaffId, string StaffName, bool CanApprove)
@@ -127,7 +128,7 @@ internal sealed class InvoiceCorrector(
             original,
             new SavePurchaseInvoiceCommand(
                 change.NewInvoiceId, change.SupplierId, change.SupplierInvoiceNumber, change.InvoiceDate, change.Lines, staffName,
-                change.PaymentMethod, change.RevenueDate),
+                change.PaymentMethod, change.RevenueDate, change.Discount),
             track,
             cancellationToken);
         corrected.EnsurePostable();
@@ -197,6 +198,7 @@ internal sealed class InvoiceCorrector(
             Change(name, before.TryGetValue(key, out var was) ? Line(was) : null, after.TryGetValue(key, out var now) ? Line(now) : null);
         }
 
+        Change("Invoice discount", original.Discount == 0 ? null : Money(original.Discount), corrected.Discount == 0 ? null : Money(corrected.Discount));
         changes.Add(new ApprovalChange("Total", Money(original.Total), Money(corrected.Total)));
         var what = (original.SupplierInvoiceNumber is { } number ? $"Invoice {number}" : $"Invoice of {Day(original.InvoiceDate) ?? "no date"}") +
                    (Supplier(original) is { } supplier ? $" · {supplier}" : "");
@@ -207,22 +209,24 @@ internal sealed class InvoiceCorrector(
         a.SupplierId == b.SupplierId && a.SupplierInvoiceNumber == b.SupplierInvoiceNumber && a.InvoiceDate == b.InvoiceDate
         && (a.PaymentMethod ?? PurchasePaymentMethod.BeforeTreasury) == (b.PaymentMethod ?? PurchasePaymentMethod.BeforeTreasury)
         && a.RevenueDate == b.RevenueDate
+        && a.Discount == b.Discount
         && a.Lines.Count == b.Lines.Count
         && a.Lines.Select(Entry).Order().SequenceEqual(b.Lines.Select(Entry).Order());
 
     // A line as a value to compare: amounts read back keep their trailing zeros (6.0000), so each is
     // written plainly.
     private static string Entry(PurchaseInvoiceLine l) =>
-        string.Join("|", l.ItemType, l.RawMaterialId, l.ExpenseItemId, Plain(l.EnteredQuantity), l.UnitLabel, Plain(l.UnitSize), l.Cost is { } c ? Plain(c) : null);
+        string.Join("|", l.ItemType, l.RawMaterialId, l.ExpenseItemId, Plain(l.EnteredQuantity), l.UnitLabel, Plain(l.UnitSize),
+            l.LineTotal is { } c ? Plain(c) : null, Plain(l.Discount));
 
     private static string Plain(decimal value) => value.ToString("0.##########", Invariant);
 
     private static (Guid? Material, Guid? Expense) Key(PurchaseInvoiceLine l) => (l.RawMaterialId, l.ExpenseItemId);
 
-    // "5 kg · L.E 100.00".
+    // "5 kg · L.E 100.00", or "5 kg · L.E 100.00 less L.E 10.00".
     private static string Line(PurchaseInvoiceLine l) =>
         $"{l.EnteredQuantity.ToString("0.###", Invariant)}{(string.IsNullOrWhiteSpace(l.UnitLabel) ? "" : " " + l.UnitLabel)} · " +
-        (l.Cost is { } cost ? Money(cost) : "no price");
+        (l.LineTotal is { } total ? Money(total) + (l.Discount > 0 ? $" less {Money(l.Discount)}" : "") : "no price");
 
     private static string PaidBy(PurchaseInvoice i) => i.PaymentMethod switch
     {

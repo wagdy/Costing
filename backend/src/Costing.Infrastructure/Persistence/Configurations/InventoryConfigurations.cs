@@ -179,6 +179,7 @@ internal sealed class PurchaseInvoiceConfiguration : IEntityTypeConfiguration<Pu
         builder.Property(i => i.AttachmentContentType).HasMaxLength(64);
         builder.Property(i => i.AttachedBy).HasMaxLength(200);
         builder.Property(i => i.PaymentMethod).IsEnumName();
+        builder.Property(i => i.Discount).HasPrecision(18, 2);
         builder.Ignore(i => i.HasAttachment);
         builder.Ignore(i => i.Total);
         builder.HasMany(i => i.Lines).WithOne().HasForeignKey(l => l.InvoiceId).OnDelete(DeleteBehavior.Cascade);
@@ -273,6 +274,9 @@ internal sealed class PurchaseInvoiceLineConfiguration : IEntityTypeConfiguratio
         builder.Property(l => l.UnitLabel).HasMaxLength(32);
         builder.Property(l => l.UnitSize).IsQuantity();
         builder.Property(l => l.Quantity).IsQuantity();
+        builder.Property(l => l.LineTotal).HasPrecision(18, 2);
+        builder.Property(l => l.Discount).HasPrecision(18, 2);
+        builder.Property(l => l.DiscountShare).HasPrecision(18, 2);
         builder.Property(l => l.Cost).HasPrecision(18, 2);
         builder.Property(l => l.ItemType).IsEnumName();
         builder.HasOne<RawMaterial>().WithMany().HasForeignKey(l => l.RawMaterialId).OnDelete(DeleteBehavior.Restrict);

@@ -45,7 +45,8 @@ export class GridKeys {
     if (!(field instanceof HTMLInputElement) || (event as KeyboardEvent).shiftKey || (event as KeyboardEvent).isComposing) {
       return;
     }
-    const row = field.closest('tr');
+    // The lines only: a field in the footer (an invoice's discount) keeps its Enter.
+    const row = field.closest('tbody tr');
     if (!row || !this.host.nativeElement.contains(row)) {
       return;
     }

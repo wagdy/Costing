@@ -32,7 +32,8 @@ namespace Costing.Application.Purchases;
 // problem is said by the one it is on. InvoiceId and a payment's or advance's TransactionId are
 // made by the till: a batch sent again does not post an invoice, pay a supplier, or advance, twice.
 
-public sealed record BatchInvoice(Guid InvoiceId, Guid? SupplierId, string? SupplierInvoiceNumber, IReadOnlyList<PurchaseInvoiceLineEntry> Lines);
+public sealed record BatchInvoice(
+    Guid InvoiceId, Guid? SupplierId, string? SupplierInvoiceNumber, IReadOnlyList<PurchaseInvoiceLineEntry> Lines, decimal Discount = 0);
 
 public sealed record BatchPayment(Guid TransactionId, Guid SupplierId, decimal Amount, string? Notes = null);
 
@@ -120,7 +121,7 @@ internal sealed class PostPurchaseBatchHandler(
                 var invoice = await recorder.RecordAsync(
                     new SavePurchaseInvoiceCommand(
                         entry.InvoiceId, entry.SupplierId, entry.SupplierInvoiceNumber, request.InvoiceDate, entry.Lines, request.StaffName,
-                        request.PaymentMethod, request.RevenueDate),
+                        request.PaymentMethod, request.RevenueDate, entry.Discount),
                     cancellationToken);
                 await poster.PostAsync(invoice, request.StaffName, request.StaffId, request.CanApprove, cancellationToken);
                 made.Add(invoice);
