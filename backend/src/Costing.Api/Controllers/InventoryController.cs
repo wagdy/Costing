@@ -254,9 +254,10 @@ public sealed class InventoryController(ISender sender) : ControllerBase
         return download ? File(attached.Content, attached.ContentType, attached.FileName) : File(attached.Content, attached.ContentType);
     }
 
-    // The suppliers, by name; the archived ones too when asked for.
+    // The suppliers, by name; the archived ones too when asked for. The end of the day hands its
+    // invoices in under them.
     [HttpGet("suppliers")]
-    [CostingTab(CostingTabs.Purchases | CostingTabs.Financials)]
+    [CostingTab(CostingTabs.Purchases | CostingTabs.Financials | CostingTabs.EndOfDay)]
     [Authorize(Policy = Permissions.InventoryManage)]
     public Task<IReadOnlyList<SupplierDto>> GetSuppliers([FromQuery] bool includeArchived, CancellationToken cancellationToken) =>
         sender.Send(new GetSuppliersQuery(includeArchived), cancellationToken);

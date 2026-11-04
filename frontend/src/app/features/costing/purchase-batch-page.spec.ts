@@ -6,6 +6,7 @@ import { of, throwError } from 'rxjs';
 import { AuthService } from '../../core/auth/auth.service';
 import { CostingApi, MaterialCost, PurchaseBatch, PurchaseInvoice, Supplier, SupplierBalance } from '../../core/costing/costing.api';
 import { CostingAccess, CostingTab } from '../../core/costing/costing-tabs';
+import { EndOfDay, EndOfDayApi, EndOfDayInvoice } from '../../core/costing/end-of-day.api';
 import { MenuSalesApi } from '../../core/costing/menu-sales.api';
 import { Employee } from '../../core/costing/staff';
 import { NotifyService } from '../../core/ui/notify.service';
@@ -33,6 +34,8 @@ describe('a day’s purchases entered together', () => {
   const attachPurchaseInvoiceFile = vi.fn();
   const notify = { info: vi.fn(), error: vi.fn() };
   const approvals = { canApprove: vi.fn(() => true), refresh: vi.fn() };
+  // The end of day of each date: none unless a test hands one in.
+  const endOfDay = { day: vi.fn(), photo: vi.fn() };
 
   // financials: signed in as someone who works Financials, who may advance employees in the batch.
   async function render(financials = false) {
@@ -65,6 +68,7 @@ describe('a day’s purchases entered together', () => {
         { provide: Approvals, useValue: approvals },
         { provide: NotifyService, useValue: notify },
         { provide: MatDialog, useValue: { open: vi.fn() } },
+        { provide: EndOfDayApi, useValue: endOfDay },
       ],
     });
     const fixture = TestBed.createComponent(PurchaseBatchPage);
@@ -86,6 +90,10 @@ describe('a day’s purchases entered together', () => {
     attachPurchaseInvoiceFile.mockReset();
     notify.info.mockReset();
     approvals.canApprove.mockReturnValue(true);
+    endOfDay.day.mockReset().mockReturnValue(of(null));
+    endOfDay.photo.mockReset().mockReturnValue(of(new Blob(['x'], { type: 'image/jpeg' })));
+    URL.createObjectURL = vi.fn(() => 'blob:photo');
+    URL.revokeObjectURL = vi.fn();
   });
 
   it('never greys out Submit batch: clicked with something missing, it sends nothing, marks each field and says what', async () => {
@@ -361,6 +369,85 @@ describe('a day’s purchases entered together', () => {
 
   // A receipt's discounts and its paper (إرفاق الفاتورة), per invoice of the batch: the discounts go
   // with it, and the paper is attached once it is posted, kept with it in the archive.
+  describe('invoices handed in at the end of the day', () => {
+    const handedIn = (id: string, kind: 'Cash' | 'Credit', supplier: Supplier, total: number, purchaseInvoiceId: string | null = null): EndOfDayInvoice => ({
+      id, kind, supplierId: supplier.id, supplier: supplier.name, reportedTotal: total, note: kind === 'Credit' ? 'Pay Thursday' : null,
+      photo: { fileName: `${id}.jpg`, contentType: 'image/jpeg', bytes: 900 }, addedAtUtc: '2026-10-13T20:00:00Z', purchaseInvoiceId, postedAtUtc: null,
+    });
+    // The 13th: a cash invoice and one on credit to post, and a cash one posted already.
+    const closed = {
+      id: 'day-13', date: '2026-10-13', status: 'Submitted', cashAmount: 3_000, cardAmount: 1_000, taxAmount: 560, voidsAmount: 0, notes: null, salesPhoto: null,
+      invoices: [handedIn('h1', 'Cash', nile, 400), handedIn('h2', 'Credit', delta, 1_280), handedIn('h3', 'Cash', nile, 50, 'p-old')],
+      cashInvoices: 2, cashInvoicesTotal: 450, creditInvoices: 1, creditInvoicesTotal: 1_280, netSales: 4_000, totalRevenue: 4_560,
+      cashAfterInvoices: 2_550, expectedIntoSafe: 4_110, posted: 1, takingsEntered: null, createdBy: 'Hany', createdAtUtc: '', updatedBy: 'Hany', updatedAtUtc: '',
+      submittedBy: 'Hany', submittedAtUtc: '2026-10-13T21:00:00Z', reopenedBy: null, reopenedAtUtc: null,
+    } satisfies EndOfDay;
+
+    it('opens the date as its invoices: each with its supplier, paid as handed in, its photo above its lines, and its total matched', async () => {
+      endOfDay.day.mockImplementation((date: string) => of(date === '2026-10-13' ? closed : null));
+      const { fixture, el, page } = await render();
+      fixture.detectChanges();
+
+      expect(text(el.querySelector('.handed-in')!)).toBe(
+        'assignment_turned_inEnd of day of Tue 13 Oct handed in تقفيل اليوم 2 cash (L.E 450.00) · 1 on credit (L.E 1,280.00) · by Hany. ' +
+          '2 to post below, each with its photo; 1 posted already. Open · فتح',
+      );
+      const blocks = page['blocks']();
+      expect(blocks.map((b: Record<string, any>) => [b['supplier'].id, b['credit'], b['handedIn'].invoiceId])).toEqual([['nile', false, 'h1'], ['delta', true, 'h2']]);
+      // Paid as not chosen yet: out of that day's takings.
+      expect([page['paymentMethod'], page['revenueDate']]).toEqual(['DayRevenue', '2026-10-13']);
+      expect(el.querySelectorAll('section.block app-photo-viewer').length).toBe(2);
+      expect([...el.querySelectorAll('section.block .mat-button-toggle-checked')].map(text)).toEqual(['Cash · نقدي', 'On credit · آجل']);
+      expect(text(el.querySelector('.handed-note')!)).toBe('sticky_note_2 Pay Thursday');
+      expect(text(el.querySelector('.reported')!)).toBe('Reported · المُبلغ: L.E 400.00L.E 400.00 to go · متبقي');
+
+      fill(blocks[0], nile, tomatoes, 5, 400);
+      fill(blocks[1], delta, milk, 4, 1_300);
+      fixture.detectChanges();
+      const [first, second] = [...el.querySelectorAll('.reported')];
+      expect([text(first), first.classList.contains('matched')]).toEqual(['Reported · المُبلغ: L.E 400.00check_circle Matched · مطابق', true]);
+      expect(text(second)).toBe('Reported · المُبلغ: L.E 1,280.00L.E 20.00 over · زيادة');
+
+      postPurchaseBatch.mockReturnValue(of({ invoices: [posted('i1', nile, 400, 'Paid'), posted('i2', delta, 1_300, 'OnCredit')], payments: [] }));
+      await page['submit']();
+      const sent = postPurchaseBatch.mock.lastCall![0] as PurchaseBatch;
+      expect([sent.paymentMethod, sent.revenueDate]).toEqual(['DayRevenue', '2026-10-13']);
+      expect(sent.invoices.map((i) => [i.supplierId, i.onCredit, i.endOfDayInvoiceId])).toEqual([['nile', false, 'h1'], ['delta', true, 'h2']]);
+      // Its photo is its paper already: nothing to attach.
+      expect(attachPurchaseInvoiceFile).not.toHaveBeenCalled();
+    });
+
+    it('is posted with the date it was handed in on, and an invoice on credit needs its supplier', async () => {
+      endOfDay.day.mockImplementation((date: string) => of(date === '2026-10-13' ? closed : null));
+      const { page } = await render();
+      const [cash] = page['blocks']();
+      fill(cash, nile, tomatoes, 5, 400);
+      page['removeBlock'](1);
+      page['invoiceDate'] = '2026-10-12';
+      page['dateChosen']();
+      await Promise.resolve();
+
+      expect(page['missing']()).toContainEqual({ where: 'Invoice 1', what: 'it was handed in on 2026-10-13: post it with that date', field: 'Invoice date' });
+      // Another invoice, put on credit with no supplier.
+      page['addBlock']();
+      const added = page['blocks']()[1];
+      page['payAs'](added, 'Credit');
+      expect(page['missing']()).toContainEqual({ where: 'Invoice 2', what: 'on credit, choose who it is owed to', field: 'Invoice 2, supplier' });
+    });
+
+    it('waits for a day not submitted yet, and says so', async () => {
+      endOfDay.day.mockReturnValue(of({ ...closed, status: 'Draft', submittedBy: null }));
+      const { fixture, el, page } = await render();
+      fixture.detectChanges();
+
+      expect(text(el.querySelector('.handed-in')!)).toBe(
+        'assignment_turned_inThe end of day of this date is not submitted yet لم يتم إرسال تقفيل هذا اليوم بعد3 invoices handed in so far: they come here once it is submitted.' +
+          'Open · فتح',
+      );
+      expect(page['blocks']().every((b: Record<string, any>) => !b['handedIn'])).toBe(true);
+    });
+  });
+
   describe('discounts and papers', () => {
     const receipt = new File([new Uint8Array([0xff, 0xd8, 0xff])], 'receipt.jpg', { type: 'image/jpeg' });
 

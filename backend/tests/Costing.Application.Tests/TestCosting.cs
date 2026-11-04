@@ -8,6 +8,7 @@ using Costing.Domain.Access;
 using Costing.Domain.Approvals;
 using Costing.Domain.Categories;
 using Costing.Domain.Common;
+using Costing.Domain.EndOfDay;
 using Costing.Domain.Expenses;
 using Costing.Domain.Menu;
 using Costing.Domain.Production;
@@ -42,6 +43,7 @@ public sealed class TestCosting
     public TabStore Tabs { get; } = new();
     public ProfileStore Profile { get; } = new();
     public SettingsStore Settings { get; } = new();
+    public EndOfDayStore EndOfDays { get; } = new();
 
     // Names and dates for the records: the business day can be set a day behind the calendar, as
     // it is after midnight.
@@ -82,6 +84,8 @@ public sealed class TestCosting
         services.AddSingleton<IUserTabAccessRepository>(Tabs);
         services.AddSingleton<ICompanyProfile>(Profile);
         services.AddSingleton<Costing.Domain.Company.ICompanySettingsStore>(Settings);
+        services.AddSingleton<IEndOfDayRepository>(EndOfDays);
+        services.AddSingleton<IEndOfDayPhotoStore>(EndOfDays);
         _services = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true, ValidateOnBuild = true });
         Menu.SeedTestMenu();
     }
@@ -250,6 +254,20 @@ public sealed class BreakageStore : ListStore<BreakageEntry>, IBreakageEntryRepo
         Task.FromResult<IReadOnlyList<BreakageEntry>>(All.Where(b => b.BusinessDate >= from && b.BusinessDate <= to).ToList());
     public Task<BreakageEntry?> GetForTransactionAsync(Guid assetTransactionId, CancellationToken cancellationToken = default) =>
         Task.FromResult(All.SingleOrDefault(b => b.AssetTransactionId == assetTransactionId));
+}
+
+public sealed class EndOfDayStore : ListStore<EndOfDayReport>, IEndOfDayRepository, IEndOfDayPhotoStore
+{
+    private readonly Dictionary<Guid, byte[]> _photos = new();
+
+    public Task<EndOfDayReport?> GetByDateAsync(DateOnly date, CancellationToken cancellationToken = default) => Task.FromResult(All.SingleOrDefault(d => d.Date == date));
+    public Task<IReadOnlyList<EndOfDayReport>> GetBetweenAsync(DateOnly from, DateOnly to, CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyList<EndOfDayReport>>(All.Where(d => d.Date >= from && d.Date <= to).ToList());
+    public Task<EndOfDayReport?> GetByInvoiceAsync(Guid invoiceId, CancellationToken cancellationToken = default) =>
+        Task.FromResult(All.SingleOrDefault(d => d.Invoices.Any(i => i.Id == invoiceId)));
+    public void Put(Guid id, byte[] content) => _photos[id] = content;
+    public Task<byte[]?> GetAsync(Guid id, CancellationToken cancellationToken = default) => Task.FromResult(_photos.GetValueOrDefault(id));
+    public void Remove(Guid id) => _photos.Remove(id);
 }
 
 public sealed class TabStore : ListStore<UserTabAccess>, IUserTabAccessRepository

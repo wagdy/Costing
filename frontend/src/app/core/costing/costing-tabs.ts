@@ -11,6 +11,7 @@ export type CostingTab =
   | 'Menu'
   | 'Intelligence'
   | 'Sales'
+  | 'EndOfDay'
   | 'Purchases'
   | 'ExpenseItems'
   | 'Counts'
@@ -51,6 +52,10 @@ export const costingTabs: readonly CostingTabInfo[] = [
     hint: { en: 'Price variance, the order planner, theoretical vs actual usage, ABC', ar: 'انحراف الأسعار وتخطيط الطلبيات والاستهلاك وتصنيف ABC' },
   },
   { tab: 'Sales', group: costingGroups.operations, path: 'sales', en: 'Sales', ar: 'المبيعات', icon: 'point_of_sale', hint: { en: 'Sales entered or imported, refunds', ar: 'المبيعات المدخلة أو المستوردة والمرتجعات' } },
+  {
+    tab: 'EndOfDay', group: costingGroups.operations, path: 'end-of-day', en: 'End of the day', ar: 'تقفيل اليوم', icon: 'assignment_turned_in',
+    hint: { en: "The day's invoices photographed, cash and on credit, and its sales report", ar: 'تصوير فواتير اليوم النقدية والآجل وريبورت المبيعات' },
+  },
   { tab: 'Purchases', group: costingGroups.operations, path: 'purchases', en: 'Purchases', ar: 'المشتريات', icon: 'shopping_cart', hint: { en: 'Invoices, the daily batch, suppliers and categories', ar: 'الفواتير ويومية المشتريات والموردين والأقسام' } },
   { tab: 'ExpenseItems', group: costingGroups.operations, path: 'expense-items', en: 'Expense items', ar: 'المصروفات العمومية', icon: 'receipt_long', hint: { en: 'General expenses, not stock', ar: 'المصروفات العامة غير المخزنية' } },
   { tab: 'Counts', group: costingGroups.operations, path: 'counts', en: 'Stock counts', ar: 'الجرد', icon: 'fact_check', hint: { en: 'Counts, drafted and posted', ar: 'الجرد مسودة ثم ترحيل' } },

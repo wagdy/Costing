@@ -71,11 +71,15 @@ public class MenuSalesTests
         Assert.False(CostingTabSet.DefaultFor(UserRole.Storekeeper).HasAny(CostingTabs.Financials | CostingTabs.Reports));
         Assert.True(CostingTabSet.DefaultFor(UserRole.Accountant).HasFlag(CostingTabs.Financials));
         Assert.True(CostingTabSet.DefaultFor(UserRole.CostController).HasFlag(CostingTabs.Recipes));
-        Assert.Equal(13, CostingTabSet.Each.Count);
+        Assert.Equal(14, CostingTabSet.Each.Count);
         // The intelligence reports: the cost controller's and the accountant's, never the storekeeper's.
         Assert.True(CostingTabSet.DefaultFor(UserRole.CostController).HasFlag(CostingTabs.Intelligence));
         Assert.True(CostingTabSet.DefaultFor(UserRole.Accountant).HasFlag(CostingTabs.Intelligence));
         Assert.False(CostingTabSet.DefaultFor(UserRole.Storekeeper).HasFlag(CostingTabs.Intelligence));
+        // The end of the day: handed in by the storekeeper or the accountant, not the cost controller.
+        Assert.True(CostingTabSet.DefaultFor(UserRole.Storekeeper).HasFlag(CostingTabs.EndOfDay));
+        Assert.True(CostingTabSet.DefaultFor(UserRole.Accountant).HasFlag(CostingTabs.EndOfDay));
+        Assert.False(CostingTabSet.DefaultFor(UserRole.CostController).HasFlag(CostingTabs.EndOfDay));
         Assert.Equal(CostingTabs.All, CostingTabSet.Join(CostingTabSet.Each));
         Assert.Equal([CostingTabs.Materials, CostingTabs.Sales], CostingTabSet.Split(CostingTabs.Sales | CostingTabs.Materials));
 

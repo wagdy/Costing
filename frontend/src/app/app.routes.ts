@@ -82,6 +82,13 @@ const costingChildren: Routes = [
     loadComponent: () => import('./features/costing/sales-page').then((m) => m.SalesPage),
   },
   {
+    // The end of the day: the day's invoices and sales report handed in, for the daily batch and
+    // the takings. ?date= to open a day.
+    path: 'end-of-day',
+    canActivate: [costingTabGuard('EndOfDay')],
+    loadComponent: () => import('./features/costing/end-of-day-page').then((m) => m.EndOfDayPage),
+  },
+  {
     // Material & demand intelligence: prices and their recipe impact, the order planner,
     // theoretical against actual consumption, ABC and days on hand.
     path: 'intelligence',

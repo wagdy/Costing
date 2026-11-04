@@ -6,6 +6,7 @@ using Costing.Domain.Common;
 using Costing.Domain.Access;
 using Costing.Domain.Approvals;
 using Costing.Domain.Categories;
+using Costing.Domain.EndOfDay;
 using Costing.Domain.Expenses;
 using Costing.Domain.Menu;
 using Costing.Domain.Production;
@@ -69,6 +70,8 @@ public sealed class CostingDbContext(DbContextOptions<CostingDbContext> options)
     public DbSet<SharedCost> SharedCosts => Set<SharedCost>();
     public DbSet<MonthlyExpenses> MonthlyExpenses => Set<MonthlyExpenses>();
     public DbSet<ManualSalesSheet> ManualSalesSheets => Set<ManualSalesSheet>();
+    public DbSet<EndOfDayReport> EndOfDayReports => Set<EndOfDayReport>();
+    public DbSet<EndOfDayPhotoContent> EndOfDayPhotos => Set<EndOfDayPhotoContent>();
 
     public DbSet<UserTabAccess> UserTabAccess => Set<UserTabAccess>();
     public DbSet<Domain.Company.CompanySettings> CompanySettings => Set<Domain.Company.CompanySettings>();

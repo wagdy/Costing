@@ -7,6 +7,7 @@ using Costing.Application.Common;
 using Costing.Application.Treasury;
 using Costing.Domain.Approvals;
 using Costing.Domain.Categories;
+using Costing.Domain.EndOfDay;
 using Costing.Domain.Expenses;
 using Costing.Domain.Purchases;
 using Costing.Domain.RawMaterials;
@@ -28,12 +29,23 @@ namespace Costing.Application.Purchases;
 // An employee's advance (سلفة) can be paid in it as well, as a payment is: from the safe or the
 // day's takings, never on credit, and owed by the employee until the payroll of its month deducts it.
 //
+// An invoice can be on credit in a batch paid in cash (OnCredit), owed to its supplier as one on a
+// batch on credit. One handed in at the end of the day (تقفيل اليوم) names it (EndOfDayInvoiceId):
+// posted, it is that invoice's purchase invoice, with its photo as its paper; on the day it was
+// handed in, once, and only once the day is submitted.
+//
 // All or nothing: every invoice, payment and advance is checked before any is saved, and each
 // problem is said by the one it is on. InvoiceId and a payment's or advance's TransactionId are
 // made by the till: a batch sent again does not post an invoice, pay a supplier, or advance, twice.
 
 public sealed record BatchInvoice(
-    Guid InvoiceId, Guid? SupplierId, string? SupplierInvoiceNumber, IReadOnlyList<PurchaseInvoiceLineEntry> Lines, decimal Discount = 0);
+    Guid InvoiceId,
+    Guid? SupplierId,
+    string? SupplierInvoiceNumber,
+    IReadOnlyList<PurchaseInvoiceLineEntry> Lines,
+    decimal Discount = 0,
+    bool OnCredit = false,
+    Guid? EndOfDayInvoiceId = null);
 
 public sealed record BatchPayment(Guid TransactionId, Guid SupplierId, decimal Amount, string? Notes = null);
 
@@ -70,6 +82,9 @@ internal sealed class PostPurchaseBatchHandler(
     ISupplierLedgerRepository suppliersLedger,
     TreasuryWriter treasury,
     IStaffMemberRepository employees,
+    IEndOfDayRepository endOfDays,
+    IEndOfDayPhotoStore endOfDayPhotos,
+    IPurchaseAttachmentStore attachments,
     IUnitOfWork unitOfWork) : IRequestHandler<PostPurchaseBatchCommand, PurchaseBatchResult>
 {
     public const int MaxInvoices = 50;
@@ -89,6 +104,9 @@ internal sealed class PostPurchaseBatchHandler(
             throw new DomainException("Before the treasury is for the invoices from before it, not for new ones.");
         if (request.Invoices.Select(i => i.InvoiceId).Distinct().Count() != request.Invoices.Count)
             throw new DomainException("The same invoice is in the batch twice.");
+        var handedIn = request.Invoices.Where(i => i.EndOfDayInvoiceId is not null).Select(i => i.EndOfDayInvoiceId).ToList();
+        if (handedIn.Distinct().Count() != handedIn.Count)
+            throw new DomainException("The same invoice handed in at the end of the day is in the batch twice. · فاتورة التقفيل مكررة.");
         if (payments.Count > 0 || advances.Count > 0)
         {
             if (request.PaymentMethod == PurchasePaymentMethod.Credit)
@@ -118,12 +136,16 @@ internal sealed class PostPurchaseBatchHandler(
 
                 if (entry.Lines.Count == 0)
                     throw new DomainException("It has no lines: add what was bought, or take the invoice off the batch.");
+                var day = entry.EndOfDayInvoiceId is { } given ? await HandedInAsync(given, entry.InvoiceId, request.InvoiceDate, cancellationToken) : null;
+                var method = entry.OnCredit ? PurchasePaymentMethod.Credit : request.PaymentMethod;
                 var invoice = await recorder.RecordAsync(
                     new SavePurchaseInvoiceCommand(
                         entry.InvoiceId, entry.SupplierId, entry.SupplierInvoiceNumber, request.InvoiceDate, entry.Lines, request.StaffName,
-                        request.PaymentMethod, request.RevenueDate, entry.Discount),
+                        method, method == PurchasePaymentMethod.DayRevenue ? request.RevenueDate : null, entry.Discount),
                     cancellationToken);
                 await poster.PostAsync(invoice, request.StaffName, request.StaffId, request.CanApprove, cancellationToken);
+                if (day is not null)
+                    await PostedFromAsync(day, entry.EndOfDayInvoiceId!.Value, invoice, request.StaffName, cancellationToken);
                 made.Add(invoice);
             }
             catch (Exception error) when (error is DomainException or NotFoundException)
@@ -239,6 +261,33 @@ internal sealed class PostPurchaseBatchHandler(
         foreach (var invoice in made)
             dtos.Add(await reading.DtoAsync(invoice, cancellationToken));
         return new PurchaseBatchResult(dtos, paid, advanced);
+    }
+
+    // The day an invoice was handed in on: submitted, of the batch's date, and not posted as another.
+    private async Task<EndOfDayReport> HandedInAsync(Guid handedIn, Guid invoiceId, DateOnly invoiceDate, CancellationToken cancellationToken)
+    {
+        var day = await endOfDays.GetByInvoiceAsync(handedIn, cancellationToken)
+            ?? throw new DomainException("The invoice handed in at the end of the day is not there any more: reload the batch. · فاتورة التقفيل لم تعد موجودة.");
+        if (!day.IsSubmitted)
+            throw new DomainException("Its end of day is not submitted yet: it is posted once it is handed in. · لم يتم إرسال تقفيل هذا اليوم بعد.");
+        if (day.Date != invoiceDate)
+            throw new DomainException(
+                $"It was handed in at the end of {day.Date.ToString("d MMM yyyy", CultureInfo.InvariantCulture)}: post it with that date. · سجّلها بتاريخ يومها.");
+        if (day.Invoice(handedIn).PurchaseInvoiceId is { } posted && posted != invoiceId)
+            throw new DomainException("It is posted already, as another purchase invoice. · مرحلة بالفعل في فاتورة أخرى.");
+        return day;
+    }
+
+    // Posted: the invoice handed in is this one, and its photo, its paper.
+    private async Task PostedFromAsync(EndOfDayReport day, Guid handedIn, PurchaseInvoice invoice, string staffName, CancellationToken cancellationToken)
+    {
+        var given = day.Invoice(handedIn);
+        day.Posted(handedIn, invoice.Id);
+        if (!invoice.HasAttachment && await endOfDayPhotos.GetAsync(handedIn, cancellationToken) is { } photo)
+        {
+            invoice.Attach(given.PhotoFileName, given.PhotoContentType, photo.Length, staffName);
+            attachments.Put(invoice.Id, photo);
+        }
     }
 
     private static string Money(decimal value) => CompanyMoney.Text(value);

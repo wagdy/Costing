@@ -51,8 +51,12 @@ public enum CostingTabs
     // order planner, theoretical against actual consumption, ABC and days on hand.
     Intelligence = 1 << 12,
 
+    // The end of the day (تقفيل اليوم): the day's invoices photographed, cash and on credit, and its
+    // sales report, handed in for the daily batch and the takings. Alone, it is a branch's only page.
+    EndOfDay = 1 << 13,
+
     All = Materials | ExpenseItems | Purchases | Financials | Waste | Counts | Recipes | Production | Menu | Sales | Reports | CostSettings
-        | Intelligence,
+        | Intelligence | EndOfDay,
 }
 
 public static class CostingTabSet
@@ -61,7 +65,7 @@ public static class CostingTabSet
     public static readonly IReadOnlyList<CostingTabs> Each =
     [
         CostingTabs.Materials, CostingTabs.Recipes, CostingTabs.Production, CostingTabs.Menu, CostingTabs.Intelligence, CostingTabs.Sales,
-        CostingTabs.Purchases,
+        CostingTabs.EndOfDay, CostingTabs.Purchases,
         CostingTabs.ExpenseItems, CostingTabs.Counts, CostingTabs.Waste, CostingTabs.Financials, CostingTabs.Reports, CostingTabs.CostSettings,
     ];
 
@@ -78,10 +82,11 @@ public static class CostingTabSet
     {
         UserRole.Manager => CostingTabs.All,
         UserRole.Accountant => CostingTabs.Materials | CostingTabs.ExpenseItems | CostingTabs.Purchases | CostingTabs.Financials | CostingTabs.Sales
-            | CostingTabs.Reports | CostingTabs.Intelligence,
+            | CostingTabs.Reports | CostingTabs.Intelligence | CostingTabs.EndOfDay,
         UserRole.CostController => CostingTabs.Materials | CostingTabs.Recipes | CostingTabs.Production | CostingTabs.Menu | CostingTabs.Sales
             | CostingTabs.Counts | CostingTabs.Waste | CostingTabs.Reports | CostingTabs.CostSettings | CostingTabs.Intelligence,
-        UserRole.Storekeeper => CostingTabs.Materials | CostingTabs.Purchases | CostingTabs.Counts | CostingTabs.Waste | CostingTabs.Production,
+        UserRole.Storekeeper => CostingTabs.Materials | CostingTabs.Purchases | CostingTabs.Counts | CostingTabs.Waste | CostingTabs.Production
+            | CostingTabs.EndOfDay,
         _ => CostingTabs.None,
     };
 }

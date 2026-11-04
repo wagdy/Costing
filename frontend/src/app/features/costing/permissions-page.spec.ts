@@ -118,14 +118,17 @@ describe('a user’s sections', () => {
     const { el, page } = await render(samir);
 
     const options = [...el.querySelectorAll('.tab-option')];
-    expect(options).toHaveLength(13);
+    expect(options).toHaveLength(14);
     expect(options.map((o) => o.getAttribute('data-tab'))).toEqual([
-      'Materials', 'Recipes', 'Production', 'Menu', 'Intelligence', 'Sales', 'Purchases', 'ExpenseItems', 'Counts', 'Waste', 'Financials', 'Reports', 'CostSettings',
+      'Materials', 'Recipes', 'Production', 'Menu', 'Intelligence', 'Sales', 'EndOfDay', 'Purchases', 'ExpenseItems', 'Counts', 'Waste', 'Financials',
+      'Reports', 'CostSettings',
     ]);
-    expect(text(options[8].querySelector('.name')!)).toBe('Stock counts الجرد');
-    expect(text(options[8].querySelector('.hint')!)).toBe('Counts, drafted and posted · الجرد مسودة ثم ترحيل');
-    expect(options[8].querySelector('input')!.checked).toBe(true);
+    expect(text(options[9].querySelector('.name')!)).toBe('Stock counts الجرد');
+    expect(text(options[9].querySelector('.hint')!)).toBe('Counts, drafted and posted · الجرد مسودة ثم ترحيل');
+    expect(options[9].querySelector('input')!.checked).toBe(true);
     expect(text(options[4].querySelector('.name')!)).toBe('Material & demand intelligence تحليلات الخامات والطلبيات');
+    // The end of the day: a branch's page, alone if a manager says.
+    expect(text(options[6].querySelector('.name')!)).toBe('End of the day تقفيل اليوم');
     // Ticked by a manager: they can be put back to their role's.
     expect([...el.querySelectorAll('button')].map(text)).toContain('Their role’s · حسب الدور');
 

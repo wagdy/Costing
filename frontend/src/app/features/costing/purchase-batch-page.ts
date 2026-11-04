@@ -1,14 +1,16 @@
+import { DatePipe } from '@angular/common';
 import { Component, ElementRef, computed, effect, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { MatAutocompleteModule } from '@angular/material/autocomplete';
 import { MatButtonModule } from '@angular/material/button';
+import { MatButtonToggleModule } from '@angular/material/button-toggle';
 import { MatDialog } from '@angular/material/dialog';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatIconModule } from '@angular/material/icon';
 import { MatInputModule } from '@angular/material/input';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatSelectModule } from '@angular/material/select';
-import { RouterLink } from '@angular/router';
+import { ActivatedRoute, RouterLink } from '@angular/router';
 import { firstValueFrom } from 'rxjs';
 import {
   CostingApi,
@@ -22,6 +24,7 @@ import {
 import { AuthService } from '../../core/auth/auth.service';
 import { Permissions } from '../../core/auth/permissions';
 import { CostingAccess } from '../../core/costing/costing-tabs';
+import { EndOfDay, EndOfDayApi, EndOfDayInvoice, EndOfDayInvoiceKind } from '../../core/costing/end-of-day.api';
 import { MenuSalesApi } from '../../core/costing/menu-sales.api';
 import { Employee } from '../../core/costing/staff';
 import { errorMessage } from '../../core/http/error-message';
@@ -29,6 +32,7 @@ import { MoneyPipe } from '../../core/ui/money.pipe';
 import { NotifyService } from '../../core/ui/notify.service';
 import { AdvanceEntry, AdvanceFields, advanceProblems, newAdvance } from './advance-fields';
 import { Approvals } from './approvals';
+import { PhotoSource, PhotoViewer } from './end-of-day-photo';
 import { BusinessDay } from './financials';
 import { FormChecks, FormProblem } from './form-checks';
 import { InvoiceLine, InvoiceLines, InvoiceLinesTable, InvoiceSupplier, PurchaseCatalog } from './invoice-lines';
@@ -37,13 +41,31 @@ import { SupplierPaymentEntry, SupplierPaymentFields, newSupplierPayment, paymen
 import { PickRow } from '../shared/pick-row';
 
 // One invoice of the batch: its id, made here; its supplier, number and lines, entered as on the
-// invoice screen; and the photo or scan of its paper, sent once the invoice is posted.
+// invoice screen; and the photo or scan of its paper, sent once the invoice is posted. On credit
+// whatever the batch is paid by (credit). One handed in at the end of the day (handedIn) has its
+// photo for its paper, shown above its lines to type them from, and the total written on it.
 interface BatchBlock {
   id: string;
   supplier: InvoiceSupplier;
   number: string;
   editor: InvoiceLines;
   paper: File | null;
+  credit: boolean;
+  handedIn: HandedIn | null;
+  // The photo above the lines, or hidden to give them the room.
+  photoShown: boolean;
+}
+
+// An invoice handed in at the end of a day, as its block starts from it.
+interface HandedIn {
+  date: string;
+  invoiceId: string;
+  kind: EndOfDayInvoiceKind;
+  reportedTotal: number;
+  note: string | null;
+  fileName: string;
+  contentType: string;
+  source: PhotoSource;
 }
 
 // What a paper can be, as the invoice screen takes it.
@@ -67,6 +89,8 @@ interface StoredBatch {
     number: string;
     lines: Omit<InvoiceLine, 'entry'>[];
     discount?: number | null;
+    credit?: boolean;
+    handedIn?: Omit<HandedIn, 'source'> | null;
   }[];
   payments?: PaymentBlock[];
   advances?: AdvanceEntry[];
@@ -86,17 +110,20 @@ const storageKey = 'otantik-till.purchase-batch';
 @Component({
   selector: 'app-purchase-batch-page',
   providers: [PurchaseCatalog],
-  imports: [PickRow, 
+  imports: [PickRow,
+    DatePipe,
     FormsModule,
     InvoiceLinesTable,
     MatAutocompleteModule,
     MatButtonModule,
+    MatButtonToggleModule,
     MatFormFieldModule,
     MatIconModule,
     MatInputModule,
     MatProgressBarModule,
     MatSelectModule,
     MoneyPipe,
+    PhotoViewer,
     RouterLink,
     SupplierPaymentFields,
     AdvanceFields,
@@ -223,7 +250,7 @@ const storageKey = 'otantik-till.purchase-batch';
       <div class="header">
         <mat-form-field subscriptSizing="dynamic">
           <mat-label>Invoice date · تاريخ الفواتير</mat-label>
-          <input matInput type="date" [(ngModel)]="invoiceDate" (ngModelChange)="changed()" aria-label="Invoice date"
+          <input matInput type="date" [(ngModel)]="invoiceDate" (ngModelChange)="dateChosen()" aria-label="Invoice date"
             [errorStateMatcher]="checks.field('Invoice date')" />
           <mat-error>{{ checks.message('Invoice date') }}</mat-error>
         </mat-form-field>
@@ -235,7 +262,9 @@ const storageKey = 'otantik-till.purchase-batch';
               <mat-option [value]="m" [disabled]="m === 'Credit' && (payments().length > 0 || advances().length > 0)">{{ paymentLabels[m].en }} · {{ paymentLabels[m].ar }}</mat-option>
             }
           </mat-select>
-          @if (paymentMethod !== 'Credit' && (payments().length || advances().length)) {
+          @if (paymentMethod && paymentMethod !== 'Credit' && anyCredit()) {
+            <mat-hint>The cash invoices are paid so; those on credit are owed to their supplier.</mat-hint>
+          } @else if (paymentMethod !== 'Credit' && (payments().length || advances().length)) {
             <mat-hint>{{ payments().length ? 'Supplier payments' : 'Advances' }} are cash: not on credit.</mat-hint>
           } @else if (paymentMethod === 'Credit') {
             <mat-hint>Each owed to its supplier until paid by a payment voucher.</mat-hint>
@@ -257,10 +286,39 @@ const storageKey = 'otantik-till.purchase-batch';
         <p class="ask">Each invoice's cash payment, each supplier payment and each advance goes to a manager for approval; the stock is in at once.</p>
       }
 
+      @if (handedInDay(); as d) {
+        <section class="handed-in" role="status" [class.waiting]="d.status !== 'Submitted'">
+          <mat-icon>assignment_turned_in</mat-icon>
+          <div class="handed-in-text">
+            @if (d.status === 'Submitted') {
+              <strong>End of day of {{ d.date | date: 'EEE d MMM' }} handed in <span class="inline-ar">تقفيل اليوم</span></strong>
+              <span>
+                {{ d.cashInvoices }} cash ({{ d.cashInvoicesTotal | money }}) · {{ d.creditInvoices }} on credit ({{ d.creditInvoicesTotal | money }})
+                · by {{ d.submittedBy }}.
+                @if (d.posted === d.invoices.length) {
+                  {{ d.invoices.length ? 'All posted.' : 'No invoices.' }}
+                } @else {
+                  {{ d.invoices.length - d.posted }} to post below, each with its photo{{ d.posted ? '; ' + d.posted + ' posted already' : '' }}.
+                }
+              </span>
+            } @else {
+              <strong>The end of day of this date is not submitted yet <span class="inline-ar">لم يتم إرسال تقفيل هذا اليوم بعد</span></strong>
+              <span>{{ d.invoices.length }} {{ d.invoices.length === 1 ? 'invoice' : 'invoices' }} handed in so far: they come here once it is submitted.</span>
+            }
+          </div>
+          @if (canCloseDay()) {
+            <a mat-button [routerLink]="['/costing/end-of-day']" [queryParams]="{ date: d.date }">Open · فتح</a>
+          }
+        </section>
+      }
+
       @for (block of blocks(); track block.id; let i = $index) {
-        <section class="block" [attr.aria-label]="'Invoice ' + (i + 1)">
+        <section class="block" [class.from-day]="!!block.handedIn" [attr.aria-label]="'Invoice ' + (i + 1)">
           <div class="block-head">
             <h3>Invoice {{ i + 1 }} <span class="inline-ar">فاتورة {{ i + 1 }}</span></h3>
+            @if (block.handedIn; as h) {
+              <span class="tag teal" title="Handed in at the end of the day">Handed in · {{ h.kind === 'Cash' ? 'cash' : 'on credit' }}<span class="ar">من التقفيل</span></span>
+            }
             <mat-form-field subscriptSizing="dynamic" class="supplier">
               <mat-label>Supplier · المورد</mat-label>
               <input matInput [(ngModel)]="block.supplier.entry" (ngModelChange)="block.supplier.entered($event); changed()" [matAutocomplete]="suppliersList"
@@ -277,7 +335,7 @@ const storageKey = 'otantik-till.purchase-batch';
               </mat-autocomplete>
               @if (block.supplier.unresolved()) {
                 <mat-hint class="warn-text">Choose the supplier from the list, or add it.</mat-hint>
-              } @else if (paymentMethod === 'Credit' && !block.supplier.id) {
+              } @else if ((paymentMethod === 'Credit' || block.credit) && !block.supplier.id) {
                 <mat-hint class="warn-text">On credit, it is owed to a supplier: choose one.</mat-hint>
               }
               <mat-error>{{ checks.message('Invoice ' + (i + 1) + ', supplier') }}</mat-error>
@@ -286,9 +344,27 @@ const storageKey = 'otantik-till.purchase-batch';
               <mat-label>Invoice no. · رقم الفاتورة</mat-label>
               <input matInput [(ngModel)]="block.number" (ngModelChange)="changed()" maxlength="64" data-western-digits [attr.aria-label]="'Invoice ' + (i + 1) + ', number'" />
             </mat-form-field>
+            <div class="paid-as">
+              <mat-button-toggle-group [value]="paymentMethod === 'Credit' || block.credit ? 'Credit' : 'Cash'" (change)="payAs(block, $event.value)"
+                [disabled]="paymentMethod === 'Credit'" hideSingleSelectionIndicator [attr.aria-label]="'Invoice ' + (i + 1) + ', paid'">
+                <mat-button-toggle value="Cash">Cash · نقدي</mat-button-toggle>
+                <mat-button-toggle value="Credit">On credit · آجل</mat-button-toggle>
+              </mat-button-toggle-group>
+              @if (block.handedIn; as h) {
+                @if (h.kind === 'Cash' && (paymentMethod === 'Credit' || block.credit)) {
+                  <small class="warn-text">Handed in as paid in cash · سُلمت كنقدي</small>
+                } @else if (h.kind === 'Credit' && paymentMethod !== 'Credit' && !block.credit) {
+                  <small class="warn-text">Handed in as on credit · سُلمت كآجل</small>
+                }
+              }
+            </div>
             <div class="paper">
               <input #file type="file" [accept]="paperAccept" hidden (change)="choosePaper(block, file)" [attr.aria-label]="'Invoice ' + (i + 1) + ', paper'" />
-              @if (block.paper; as p) {
+              @if (block.handedIn; as h) {
+                <button mat-button (click)="block.photoShown = !block.photoShown; changed()" [attr.aria-label]="'Invoice ' + (i + 1) + ', ' + (block.photoShown ? 'hide' : 'show') + ' the photo'">
+                  <mat-icon>{{ block.photoShown ? 'hide_image' : 'image' }}</mat-icon> {{ block.photoShown ? 'Hide photo' : 'Show photo' }}
+                </button>
+              } @else if (block.paper; as p) {
                 <span class="paper-name" [title]="p.name"><mat-icon>{{ icon(p.name) }}</mat-icon> {{ p.name }}</span>
                 <button mat-icon-button (click)="file.click()" [disabled]="saving()" title="Replace · استبدال"
                   [attr.aria-label]="'Invoice ' + (i + 1) + ', replace the paper'">
@@ -304,12 +380,37 @@ const storageKey = 'otantik-till.purchase-batch';
               }
             </div>
             <span class="spacer"></span>
+            @if (block.handedIn; as h) {
+              @let left = leftOf(block);
+              <span class="reported" [class.matched]="left === 0" [attr.aria-label]="'Invoice ' + (i + 1) + ', reported total'">
+                Reported · المُبلغ: <strong>{{ h.reportedTotal | money }}</strong>
+                @if (left === 0) {
+                  <span class="match"><mat-icon>check_circle</mat-icon> Matched · مطابق</span>
+                } @else if (left > 0) {
+                  <span class="gap">{{ left | money }} to go · متبقي</span>
+                } @else {
+                  <span class="gap">{{ -left | money }} over · زيادة</span>
+                }
+              </span>
+            }
             <strong class="block-total">{{ block.editor.total() | money }}</strong>
             <button mat-icon-button (click)="removeBlock(i)" [disabled]="blocks().length === 1 && !payments().length && !advances().length" [attr.aria-label]="'Take invoice ' + (i + 1) + ' off the batch'">
               <mat-icon>delete</mat-icon>
             </button>
           </div>
-          <app-invoice-lines [editor]="block.editor" [label]="'Invoice ' + (i + 1) + ', '" [checks]="checks" />
+          @if (block.handedIn; as h) {
+            @if (h.note) {
+              <p class="handed-note muted"><mat-icon>sticky_note_2</mat-icon> {{ h.note }}</p>
+            }
+            <div class="transcribe">
+              @if (block.photoShown) {
+                <app-photo-viewer [source]="h.source" [fileName]="h.fileName" />
+              }
+              <app-invoice-lines [editor]="block.editor" [label]="'Invoice ' + (i + 1) + ', '" [checks]="checks" />
+            </div>
+          } @else {
+            <app-invoice-lines [editor]="block.editor" [label]="'Invoice ' + (i + 1) + ', '" [checks]="checks" />
+          }
         </section>
       }
 
@@ -451,6 +552,82 @@ const storageKey = 'otantik-till.purchase-batch';
     .paper-cell {
       white-space: nowrap;
     }
+    .paid-as {
+      display: grid;
+      gap: 2px;
+    }
+    .from-day {
+      border-color: color-mix(in srgb, var(--tag-teal-fg, #0f766e) 35%, var(--mat-sys-outline-variant));
+    }
+    .handed-in {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      margin: 0 0 14px;
+      padding: 10px 12px;
+      border-radius: 12px;
+      background: var(--tag-teal-bg, #e0f4f3);
+      color: var(--tag-teal-fg, #0f766e);
+
+      &.waiting {
+        background: var(--tag-warn-bg, #fff3d6);
+        color: var(--tag-warn-fg, #8a5300);
+      }
+      a {
+        margin-left: auto;
+      }
+    }
+    .handed-in-text {
+      display: grid;
+      gap: 2px;
+    }
+    .handed-note {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin: 0 0 8px;
+    }
+    .reported {
+      display: inline-flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 4px 8px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: var(--mat-sys-surface-container-high);
+      font: var(--mat-sys-label-large);
+      font-variant-numeric: tabular-nums;
+
+      .gap {
+        color: var(--app-warn);
+      }
+      &.matched {
+        background: var(--tag-ok-bg, #e6f4ea);
+        color: var(--tag-ok-fg, #1e6b34);
+      }
+      .match {
+        display: inline-flex;
+        align-items: center;
+        gap: 2px;
+        font-weight: 600;
+
+        mat-icon {
+          width: 18px;
+          height: 18px;
+          font-size: 18px;
+        }
+      }
+    }
+    /* The photo right above its lines, as wide as the block: the lines need some 980px, which leaves a photo beside them too
+       narrow to read without zooming. Hidden, the lines have the block to themselves. */
+    .transcribe {
+      display: grid;
+      gap: 12px;
+
+      app-photo-viewer {
+        --viewer-height: max(360px, 44vh);
+      }
+    }
     .posted {
       margin-bottom: 16px;
       padding: 12px;
@@ -477,6 +654,10 @@ export class PurchaseBatchPage {
   protected readonly approvals = inject(Approvals);
   private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
   private readonly dialog = inject(MatDialog);
+  private readonly endOfDay = inject(EndOfDayApi);
+  private readonly route = inject(ActivatedRoute);
+  // The end of day of the batch's date, as handed in: its invoices are the blocks.
+  protected readonly handedInDay = signal<EndOfDay | null>(null);
 
   protected readonly loading = signal(true);
   protected readonly saving = signal(false);
@@ -497,6 +678,12 @@ export class PurchaseBatchPage {
   private readonly access = inject(CostingAccess);
   private readonly auth = inject(AuthService);
   protected readonly canAdvance = computed(() => this.access.has('Financials'));
+  protected readonly canCloseDay = computed(() => this.access.has('EndOfDay'));
+  // Some invoice on credit in a batch paid in cash.
+  protected readonly anyCredit = computed(() => {
+    this.headerVersion();
+    return this.blocks().some((b) => b.credit);
+  });
   private readonly staff = signal<Employee[]>([]);
   protected readonly employees = computed(() => this.staff().filter((e) => e.isActive));
   // What each supplier is owed, for paying them: only those owed something can be paid.
@@ -565,8 +752,11 @@ export class PurchaseBatchPage {
       const name = `Invoice ${i + 1}`;
       if (b.supplier.unresolved()) {
         found.push({ where: name, what: 'choose the supplier from the list, or add it', field: `${name}, supplier` });
-      } else if (this.paymentMethod === 'Credit' && b.supplier.id === null) {
+      } else if ((this.paymentMethod === 'Credit' || b.credit) && b.supplier.id === null) {
         found.push({ where: name, what: 'on credit, choose who it is owed to', field: `${name}, supplier` });
+      }
+      if (b.handedIn && this.invoiceDate && b.handedIn.date !== this.invoiceDate) {
+        found.push({ where: name, what: `it was handed in on ${b.handedIn.date}: post it with that date`, field: 'Invoice date' });
       }
       found.push(...b.editor.problems(`${name}, `));
     });
@@ -597,6 +787,28 @@ export class PurchaseBatchPage {
   protected changed(): void {
     this.headerVersion.update((v) => v + 1);
     this.problems.set(null);
+  }
+
+  // Another date: the invoices handed in on the one before, not typed into yet, go; the new
+  // date's come.
+  protected dateChosen(): void {
+    this.blocks.update((blocks) => blocks.filter((b) => !b.handedIn || b.handedIn.date === this.invoiceDate || !this.untouched(b, true)));
+    if (!this.blocks().length && !this.payments().length && !this.advances().length) {
+      this.blocks.set([this.block()]);
+    }
+    this.changed();
+    void this.loadHandedIn();
+  }
+
+  protected payAs(block: BatchBlock, paid: 'Cash' | 'Credit'): void {
+    block.credit = paid === 'Credit';
+    this.changed();
+  }
+
+  // What is left of the total handed in once the lines, after their discounts, are typed: none
+  // when they match it.
+  protected leftOf(block: BatchBlock): number {
+    return block.handedIn ? Math.round((block.handedIn.reportedTotal - block.editor.total()) * 100) / 100 : 0;
   }
 
   protected addBlock(): void {
@@ -730,6 +942,7 @@ export class PurchaseBatchPage {
     this.revenueDate = this.today;
     this.problems.set(null);
     this.changed();
+    void this.loadHandedIn();
   }
 
   // Sent together: each invoice made and posted, or none. Done, the batch starts again with new ids;
@@ -754,6 +967,8 @@ export class PurchaseBatchPage {
             supplierInvoiceNumber: b.number.trim() || null,
             lines: b.editor.toSave(),
             discount: b.editor.discount() ?? 0,
+            onCredit: b.credit,
+            endOfDayInvoiceId: b.handedIn?.invoiceId ?? null,
           })),
           payments: this.payments().map((p) => ({ transactionId: p.id, supplierId: p.supplierId!, amount: p.amount!, notes: p.notes.trim() || null })),
           advances: this.advances().map((a) => ({ transactionId: a.id, employeeId: a.employeeId, amount: a.amount!, notes: a.notes.trim() || null })),
@@ -767,6 +982,7 @@ export class PurchaseBatchPage {
       this.advances.set([]);
       this.changed();
       void this.approvals.refresh();
+      void this.loadHandedIn();
       const sent = await Promise.all(papers.map((p) => this.sendPaper(p.invoiceId, p.file, false)));
       const attached = sent.filter((ok) => ok).length;
       const pending =
@@ -791,13 +1007,86 @@ export class PurchaseBatchPage {
   }
 
   private block(): BatchBlock {
-    return { id: crypto.randomUUID(), supplier: new InvoiceSupplier(this.catalog), number: '', editor: new InvoiceLines(this.catalog), paper: null };
+    return {
+      id: crypto.randomUUID(),
+      supplier: new InvoiceSupplier(this.catalog),
+      number: '',
+      editor: new InvoiceLines(this.catalog),
+      paper: null,
+      credit: false,
+      handedIn: null,
+      photoShown: true,
+    };
   }
 
-  // Nothing entered on it yet.
-  private untouched(block: BatchBlock): boolean {
+  // An invoice handed in at the end of the day, as a block: its supplier, paid as it was, its photo.
+  private handedInBlock(date: string, invoice: EndOfDayInvoice): BatchBlock {
+    const block = this.block();
+    block.supplier.set(invoice.supplierId, invoice.supplier);
+    block.credit = invoice.kind === 'Credit';
+    block.handedIn = {
+      date,
+      invoiceId: invoice.id,
+      kind: invoice.kind,
+      reportedTotal: invoice.reportedTotal,
+      note: invoice.note,
+      fileName: invoice.photo.fileName,
+      contentType: invoice.photo.contentType,
+      source: this.photoSource(date, invoice.id),
+    };
+    return block;
+  }
+
+  private photoSource(date: string, invoiceId: string): PhotoSource {
+    return () => this.endOfDay.photo(date, invoiceId);
+  }
+
+  // The end of day of the batch's date: each invoice handed in and not posted yet, a block of its
+  // own (once), the empty one the batch starts with going; one posted since, gone from here. Paid
+  // as not chosen yet: out of that day's takings, or on credit when every one is.
+  private async loadHandedIn(): Promise<void> {
+    const date = this.invoiceDate;
+    if (!date) {
+      this.handedInDay.set(null);
+      return;
+    }
+    let day: EndOfDay | null;
+    try {
+      day = await firstValueFrom(this.endOfDay.day(date));
+    } catch {
+      day = null;
+    }
+    if (this.invoiceDate !== date) {
+      return;
+    }
+    this.handedInDay.set(day);
+    if (day?.status !== 'Submitted') {
+      return;
+    }
+    const posted = new Set(day.invoices.filter((i) => i.purchaseInvoiceId).map((i) => i.id));
+    let blocks = this.blocks().filter((b) => !(b.handedIn && b.handedIn.date === date && posted.has(b.handedIn.invoiceId)));
+    const present = new Set(blocks.filter((b) => b.handedIn).map((b) => b.handedIn!.invoiceId));
+    const fresh = day.invoices.filter((i) => !i.purchaseInvoiceId && !present.has(i.id)).map((i) => this.handedInBlock(date, i));
+    if (fresh.length) {
+      if (blocks.length === 1 && this.untouched(blocks[0])) {
+        blocks = [];
+      }
+      blocks = [...fresh, ...blocks];
+      if (this.paymentMethod === null) {
+        const anyCash = fresh.some((b) => !b.credit);
+        this.paymentMethod = anyCash ? 'DayRevenue' : 'Credit';
+        this.revenueDate = date;
+      }
+    }
+    this.blocks.set(blocks.length ? blocks : [this.block()]);
+    this.changed();
+  }
+
+  // Nothing entered on it yet; one handed in counts as nothing entered unless asked (handedIn).
+  private untouched(block: BatchBlock, handedIn = false): boolean {
     return (
-      !block.supplier.id &&
+      (handedIn || !block.handedIn) &&
+      (handedIn || !block.supplier.id) &&
       !(typeof block.supplier.entry === 'string' && block.supplier.entry.trim()) &&
       !block.number.trim() &&
       !block.paper &&
@@ -832,6 +1121,8 @@ export class PurchaseBatchPage {
         number: b.number,
         lines: b.editor.lines().map(({ entry, ...line }) => ({ ...line, ...(typeof entry === 'string' ? { typed: entry } : {}) })),
         discount: b.editor.discount(),
+        credit: b.credit,
+        handedIn: b.handedIn ? (({ source, ...kept }) => kept)(b.handedIn) : null,
       })),
       payments: this.payments().map((p) => ({ ...p })),
       advances: this.advances().map((a) => ({ ...a })),
@@ -891,6 +1182,8 @@ export class PurchaseBatchPage {
         );
         block.editor.discount.set(b.discount ?? 0);
         block.editor.touch();
+        block.credit = b.credit ?? false;
+        block.handedIn = b.handedIn ? { ...b.handedIn, source: this.photoSource(b.handedIn.date, b.handedIn.invoiceId) } : null;
         return block;
       }),
     );
@@ -902,15 +1195,27 @@ export class PurchaseBatchPage {
       if (this.revenueDate === this.today) {
         this.revenueDate = today;
       }
+      const moved = this.invoiceDate === this.today && this.invoiceDate !== today;
       if (this.invoiceDate === this.today) {
         this.invoiceDate = today;
       }
       this.today = today;
       this.changed();
+      // Loaded already on the browser's date: the business day's end of day instead.
+      if (moved && !this.loading()) {
+        void this.loadHandedIn();
+      }
     });
     try {
       await Promise.all([this.catalog.load(), this.loadBalances(), this.loadEmployees()]);
       this.restore();
+      // Opened on a day (from the end of the day): that day's batch.
+      const asked = this.route.snapshot.queryParamMap.get('date');
+      if (asked && /^\d{4}-\d{2}-\d{2}$/.test(asked) && asked !== this.invoiceDate) {
+        this.invoiceDate = asked;
+        this.blocks.update((blocks) => blocks.filter((b) => !b.handedIn || b.handedIn.date === asked || !this.untouched(b, true)));
+      }
+      void this.loadHandedIn();
     } catch (error) {
       this.error.set(errorMessage(error, 'The purchases could not be loaded.'));
     } finally {

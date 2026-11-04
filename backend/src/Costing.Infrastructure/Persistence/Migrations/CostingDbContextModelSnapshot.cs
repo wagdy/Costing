@@ -251,6 +251,152 @@ namespace Costing.Infrastructure.Persistence.Migrations
                         });
                 });
 
+            modelBuilder.Entity("Costing.Domain.EndOfDay.EndOfDayInvoice", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("AddedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<string>("Note")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<int>("PhotoBytes")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("PhotoContentType")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("PhotoFileName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<DateTime?>("PostedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("PurchaseInvoiceId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("ReportId")
+                        .HasColumnType("uuid");
+
+                    b.Property<decimal>("ReportedTotal")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)");
+
+                    b.Property<Guid>("SupplierId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("PurchaseInvoiceId")
+                        .IsUnique();
+
+                    b.HasIndex("ReportId");
+
+                    b.HasIndex("SupplierId");
+
+                    b.ToTable("EndOfDayInvoices", "costing");
+                });
+
+            modelBuilder.Entity("Costing.Domain.EndOfDay.EndOfDayReport", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid");
+
+                    b.Property<decimal?>("CardAmount")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)");
+
+                    b.Property<decimal?>("CashAmount")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("CreatedBy")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<DateOnly>("Date")
+                        .HasColumnType("date");
+
+                    b.Property<string>("Notes")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<DateTime?>("ReopenedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("ReopenedBy")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<int?>("SalesPhotoBytes")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("SalesPhotoContentType")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("SalesPhotoFileName")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<DateTime?>("SubmittedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("SubmittedBy")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<decimal?>("TaxAmount")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("UpdatedBy")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<uint>("Version")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("xid")
+                        .HasColumnName("xmin");
+
+                    b.Property<decimal?>("VoidsAmount")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Date")
+                        .IsUnique();
+
+                    b.ToTable("EndOfDayReports", "costing");
+                });
+
             modelBuilder.Entity("Costing.Domain.Expenses.ExpenseItem", b =>
                 {
                     b.Property<Guid>("Id")
@@ -1593,6 +1739,20 @@ namespace Costing.Infrastructure.Persistence.Migrations
                     b.ToTable("Users", "identity");
                 });
 
+            modelBuilder.Entity("Costing.Infrastructure.Persistence.EndOfDayPhotoContent", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid");
+
+                    b.Property<byte[]>("Content")
+                        .IsRequired()
+                        .HasColumnType("bytea");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("EndOfDayPhotos", "costing");
+                });
+
             modelBuilder.Entity("Costing.Infrastructure.Persistence.PurchaseInvoiceAttachment", b =>
                 {
                     b.Property<Guid>("InvoiceId")
@@ -1778,6 +1938,26 @@ namespace Costing.Infrastructure.Persistence.Migrations
                     b.HasIndex("RawMaterialId");
 
                     b.ToTable("SharedCosts", "costing");
+                });
+
+            modelBuilder.Entity("Costing.Domain.EndOfDay.EndOfDayInvoice", b =>
+                {
+                    b.HasOne("Costing.Domain.Purchases.PurchaseInvoice", null)
+                        .WithMany()
+                        .HasForeignKey("PurchaseInvoiceId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Costing.Domain.EndOfDay.EndOfDayReport", null)
+                        .WithMany("Invoices")
+                        .HasForeignKey("ReportId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("Costing.Domain.Suppliers.Supplier", null)
+                        .WithMany()
+                        .HasForeignKey("SupplierId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("Costing.Domain.Expenses.ExpenseItem", b =>
@@ -2080,6 +2260,11 @@ namespace Costing.Infrastructure.Persistence.Migrations
                         .WithMany()
                         .HasForeignKey("RawMaterialId")
                         .OnDelete(DeleteBehavior.Restrict);
+                });
+
+            modelBuilder.Entity("Costing.Domain.EndOfDay.EndOfDayReport", b =>
+                {
+                    b.Navigation("Invoices");
                 });
 
             modelBuilder.Entity("Costing.Domain.Menu.MenuItem", b =>

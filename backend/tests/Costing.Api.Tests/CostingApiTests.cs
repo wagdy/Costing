@@ -77,8 +77,8 @@ public class CostingApiTests
         async Task<string[]> Tabs(HttpClient client) =>
             (await Json(await client.GetAsync("/api/auth/me", Cancel))).GetProperty("tabs").EnumerateArray().Select(t => t.GetString()!).ToArray();
 
-        Assert.Equal(13, (await Tabs(manager)).Length);
-        Assert.Equal(["Materials", "Production", "Purchases", "Counts", "Waste"], await Tabs(storekeeper));
+        Assert.Equal(14, (await Tabs(manager)).Length);
+        Assert.Equal(["Materials", "Production", "EndOfDay", "Purchases", "Counts", "Waste"], await Tabs(storekeeper));
 
         // The safe: the accountant's and a manager's; not the storekeeper's nor the cost controller's.
         Assert.Equal(HttpStatusCode.OK, await Get(accountant, "/api/financials/safe?year=2026&month=10"));
@@ -693,6 +693,94 @@ public class CostingApiTests
         }
         Assert.Equal(HttpStatusCode.UnprocessableEntity,
             (await manager.PostAsJsonAsync("/api/costing/intelligence/orders", new { lookbackDays = 0, coverageDays = 7 }, Cancel)).StatusCode);
+    }
+
+    // The end of the day handed in by a branch that works that page alone: its invoices with their
+    // photos, its sales report and the report's photo, submitted; then on the daily batch, each a
+    // purchase invoice paid as it was handed in, its photo its paper.
+    [Fact]
+    public async Task A_branch_hands_in_the_end_of_the_day_and_the_daily_batch_posts_it_with_its_photos()
+    {
+        await using var api = await TestApi.StartAsync();
+        var manager = await api.ManagerAsync();
+        var today = await TodayAsync(manager);
+        var flour = (await Json(await manager.PostAsJsonAsync("/api/inventory/raw-materials", new
+        {
+            name = "Flour", unit = "Gram", purchaseUnit = "kg", purchaseUnitSize = 1000,
+        }, Cancel))).GetProperty("id").GetGuid();
+        var nile = Guid.NewGuid();
+        await Json(await manager.PutAsJsonAsync($"/api/inventory/suppliers/{nile}", new { name = "Nile Mills" }, Cancel));
+
+        // The branch: a storekeeper given the end of the day alone.
+        var branch = await api.UserAsync(manager, "Hany", UserRole.Storekeeper);
+        var hany = api.UserIds["hany@example.com"];
+        await Json(await manager.PutAsJsonAsync($"/api/access/{hany}", new { tabs = new[] { "EndOfDay" } }, Cancel));
+        Assert.Equal(HttpStatusCode.OK, (await branch.GetAsync("/api/inventory/suppliers", Cancel)).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await branch.GetAsync("/api/inventory/purchase-invoices", Cancel)).StatusCode);
+
+        byte[] jpeg = [0xFF, 0xD8, 0xFF, 0xE0, 0, 0x10, 0x4A, 0x46, 0x49, 0x46];
+        MultipartFormDataContent Invoice(Guid id, string kind, string total)
+        {
+            var photo = new ByteArrayContent(jpeg);
+            photo.Headers.ContentType = new MediaTypeHeaderValue("image/jpeg");
+            return new MultipartFormDataContent
+            {
+                { new StringContent(id.ToString()), "invoiceId" }, { new StringContent(kind), "kind" }, { new StringContent(nile.ToString()), "supplierId" },
+                { new StringContent(total), "reportedTotal" }, { photo, "file", $"{kind}.jpg" },
+            };
+        }
+        var day = $"/api/end-of-day/{Iso(today)}";
+        var (cash, credit) = (Guid.NewGuid(), Guid.NewGuid());
+        Assert.Equal(HttpStatusCode.NoContent, (await branch.GetAsync(day, Cancel)).StatusCode);
+        await Json(await branch.PostAsync($"{day}/invoices", Invoice(cash, "Cash", "150.50"), Cancel));
+        var handedIn = await Json(await branch.PostAsync($"{day}/invoices", Invoice(credit, "Credit", "300"), Cancel));
+        Assert.Equal((150.5m, 300m), (handedIn.GetProperty("cashInvoicesTotal").GetDecimal(), handedIn.GetProperty("creditInvoicesTotal").GetDecimal()));
+        await Json(await branch.PutAsJsonAsync($"{day}/sales", new { cashAmount = 1_000, cardAmount = 500, taxAmount = 210, voidsAmount = 0 }, Cancel));
+        var z = new ByteArrayContent(jpeg);
+        z.Headers.ContentType = new MediaTypeHeaderValue("image/jpeg");
+        await Json(await branch.PutAsync($"{day}/sales-photo", new MultipartFormDataContent { { z, "file", "z-report.jpg" } }, Cancel));
+        var submitted = await Json(await branch.PostAsync($"{day}/submit", null, Cancel));
+        Assert.Equal(("Submitted", 1_559.5m), (submitted.GetProperty("status").GetString(), submitted.GetProperty("expectedIntoSafe").GetDecimal()));
+        // Reopened by a manager only; read by whoever works purchases or financials, not a cost controller.
+        Assert.Equal(HttpStatusCode.Forbidden, (await branch.PostAsync($"{day}/reopen", null, Cancel)).StatusCode);
+        var controller = await api.UserAsync(manager, "Karim", UserRole.CostController);
+        Assert.Equal(HttpStatusCode.Forbidden, (await controller.GetAsync(day, Cancel)).StatusCode);
+
+        var photo = await manager.GetAsync($"{day}/photos/{cash}", Cancel);
+        Assert.Equal("image/jpeg", photo.Content.Headers.ContentType!.MediaType);
+        Assert.Equal(jpeg, await photo.Content.ReadAsByteArrayAsync(Cancel));
+        var zPhoto = await manager.GetAsync($"{day}/photos/{submitted.GetProperty("id").GetGuid()}", Cancel);
+        Assert.Equal(HttpStatusCode.OK, zPhoto.StatusCode);
+
+        // The daily batch: the cash one out of the day's takings, the credit one owed.
+        var batch = await Json(await manager.PostAsJsonAsync("/api/inventory/purchase-invoices/batch", new
+        {
+            invoiceDate = Iso(today), paymentMethod = "DayRevenue", revenueDate = Iso(today),
+            invoices = new object[]
+            {
+                new
+                {
+                    invoiceId = Guid.NewGuid(), supplierId = nile, endOfDayInvoiceId = cash,
+                    lines = new[] { new { rawMaterialId = flour, enteredQuantity = 5, unitLabel = "kg", unitSize = 1000, cost = 150.5 } },
+                },
+                new
+                {
+                    invoiceId = Guid.NewGuid(), supplierId = nile, endOfDayInvoiceId = credit, onCredit = true,
+                    lines = new[] { new { rawMaterialId = flour, enteredQuantity = 10, unitLabel = "kg", unitSize = 1000, cost = 300 } },
+                },
+            },
+        }, Cancel));
+        var posted = batch.GetProperty("invoices").EnumerateArray().ToList();
+        Assert.Equal(["Paid", "OnCredit"], posted.Select(i => i.GetProperty("paymentStatus").GetString()));
+        Assert.Equal(["Cash.jpg", "Credit.jpg"], posted.Select(i => i.GetProperty("attachment").GetProperty("fileName").GetString()));
+        var paper = await manager.GetAsync($"/api/inventory/purchase-invoices/{posted[0].GetProperty("id").GetGuid()}/attachment", Cancel);
+        Assert.Equal(jpeg, await paper.Content.ReadAsByteArrayAsync(Cancel));
+
+        var after = await Json(await manager.GetAsync(day, Cancel));
+        Assert.Equal(2, after.GetProperty("posted").GetInt32());
+        var listed = await Json(await manager.GetAsync($"/api/end-of-day?from={Iso(today.AddDays(-6))}&to={Iso(today)}", Cancel));
+        Assert.Equal(1, listed.GetArrayLength());
+        Assert.Equal("Draft", (await Json(await manager.PostAsync($"{day}/reopen", null, Cancel))).GetProperty("status").GetString());
     }
 
     private static MultipartFormDataContent File(byte[] content, string name)

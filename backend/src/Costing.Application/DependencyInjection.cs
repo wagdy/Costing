@@ -20,6 +20,7 @@ public static class DependencyInjection
         services.AddScoped<Purchases.InvoiceCorrector>();
         services.AddScoped<RawMaterials.MaterialUnitWriter>();
         services.AddScoped<Categories.CategoryDeleter>();
+        services.AddScoped<EndOfDay.EndOfDayDays>();
         return services;
     }
 }

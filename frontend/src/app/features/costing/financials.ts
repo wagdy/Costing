@@ -5,6 +5,7 @@ import { MatButtonToggleModule } from '@angular/material/button-toggle';
 import { MatCheckboxModule } from '@angular/material/checkbox';
 import { MAT_DIALOG_DATA, MatDialog, MatDialogModule, MatDialogRef } from '@angular/material/dialog';
 import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatIconModule } from '@angular/material/icon';
 import { MatInputModule } from '@angular/material/input';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatSelectModule } from '@angular/material/select';
@@ -29,12 +30,14 @@ import {
 import { AuthService } from '../../core/auth/auth.service';
 import { errorMessage } from '../../core/http/error-message';
 import { EmployeePicker } from '../../core/costing/employee-picker';
+import { EndOfDay, EndOfDayApi } from '../../core/costing/end-of-day.api';
 import { MenuSalesApi } from '../../core/costing/menu-sales.api';
 import { Employee } from '../../core/costing/staff';
 import { Company } from '../../core/settings/company';
 import { MoneyPipe } from '../../core/ui/money.pipe';
 import { NotifyService } from '../../core/ui/notify.service';
 import { Approvals } from './approvals';
+import { viewPhoto } from './end-of-day-photo';
 
 // The treasury's screens share these: dates as the till sends them, the dialog every safe entry is
 // entered in, and the service that sends it, which is a request for anyone who may not approve.
@@ -525,11 +528,12 @@ export interface TakingsDialogData {
 // A day's takings (توريد إيراد اليومية), as its Z report gives them, in its order: the date, the cash
 // and the Visa sales before tax, the tax collected on them, the voids and refunds, and why. All of
 // it goes into the safe, less what was paid straight out of the day's takings; the net sales (cash +
-// Visa) are the revenue, and the tax is held in the safe for the tax authority, never revenue.
+// Visa) are the revenue, and the tax is held in the safe for the tax authority, never revenue. A
+// day whose end of day was handed in starts from its sales report, nothing typed over it yet.
 // Closes with the entry to send, or nothing when cancelled.
 @Component({
   selector: 'app-takings-dialog',
-  imports: [FormsModule, MatButtonModule, MatDialogModule, MatFormFieldModule, MatInputModule, MoneyPipe],
+  imports: [FormsModule, MatButtonModule, MatDialogModule, MatFormFieldModule, MatIconModule, MatInputModule, MoneyPipe],
   template: `
     <h2 mat-dialog-title>Takings in <span class="inline-ar">توريد إيراد اليومية</span></h2>
     <mat-dialog-content>
@@ -538,6 +542,21 @@ export interface TakingsDialogData {
         tax is held there for the tax authority.
         <span class="note-ar" lang="ar" dir="rtl">تقرير Z لليوم: الكاش والفيزا والضريبة المحصلة والفويد. الإجمالي كله يدخل الخزنة، والضريبة التزام بها.</span>
       </p>
+      @if (handedIn(); as d) {
+        <div class="from-day" role="status">
+          <mat-icon>assignment_turned_in</mat-icon>
+          <span>
+            From the end of day handed in by {{ d.submittedBy }}: cash {{ d.cashAmount ?? 0 | money }}, Visa {{ d.cardAmount ?? 0 | money }}, tax
+            {{ d.taxAmount ?? 0 | money }}. <span class="inline-ar">من تقفيل اليوم</span>
+          </span>
+          @if (differs()) {
+            <button mat-button (click)="useHandedIn()">Use these · استخدام</button>
+          }
+          @if (d.salesPhoto; as photo) {
+            <button mat-button (click)="viewZ(d, photo.fileName)"><mat-icon>receipt</mat-icon> Z report · تقرير Z</button>
+          }
+        </div>
+      }
       <div class="form">
         <mat-form-field class="wide">
           <mat-label>Date · تاريخ اليومية</mat-label>
@@ -619,6 +638,17 @@ export interface TakingsDialogData {
     .wide {
       grid-column: span 2;
     }
+    .from-day {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px 8px;
+      margin: 0 0 12px;
+      padding: 8px 10px;
+      border-radius: 8px;
+      background: var(--tag-teal-bg, #e0f4f3);
+      color: var(--tag-teal-fg, #0f766e);
+    }
     .ask {
       padding: 8px 10px;
       border-radius: 8px;
@@ -679,6 +709,8 @@ export class TakingsDialog {
   private readonly api = inject(CostingApi);
   private readonly ref = inject<MatDialogRef<TakingsDialog, SafeVoucherInput>>(MatDialogRef);
   protected readonly data = inject<TakingsDialogData>(MAT_DIALOG_DATA);
+  private readonly endOfDay = inject(EndOfDayApi);
+  private readonly dialog = inject(MatDialog);
 
   protected revenueDate = this.data.revenueDate ?? this.data.today;
   protected cash: number | null = null;
@@ -691,6 +723,18 @@ export class TakingsDialog {
   protected readonly paidOut = computed(() => this.preview()?.paidOut ?? 0);
   // Bumped as a figure is typed.
   private readonly version = signal(0);
+  // The day's end of day, submitted: its sales report is what the figures start from.
+  protected readonly handedIn = signal<EndOfDay | null>(null);
+  // A figure typed by hand: the end of day no longer fills them in by itself.
+  private typed = false;
+
+  // The figures are not the end of day's.
+  protected readonly differs = computed(() => {
+    this.version();
+    const d = this.handedIn();
+    return !!d && [[this.cash, d.cashAmount], [this.card, d.cardAmount], [this.tax, d.taxAmount], [this.voids, d.voidsAmount]]
+      .some(([typed, given]) => (Number(typed) || 0) !== (given ?? 0));
+  });
 
   protected readonly figures = computed(() => {
     this.version();
@@ -732,12 +776,28 @@ export class TakingsDialog {
   }
 
   protected touch(): void {
+    this.typed = true;
     this.version.update((v) => v + 1);
   }
 
   protected dayChosen(): void {
-    this.touch();
+    this.version.update((v) => v + 1);
     void this.loadPreview();
+  }
+
+  protected useHandedIn(): void {
+    const d = this.handedIn();
+    if (!d) {
+      return;
+    }
+    [this.cash, this.card, this.tax, this.voids] = [d.cashAmount, d.cardAmount, d.taxAmount, d.voidsAmount];
+    this.notes = d.notes ?? '';
+    this.typed = false;
+    this.version.update((v) => v + 1);
+  }
+
+  protected viewZ(day: EndOfDay, fileName: string): void {
+    viewPhoto(this.dialog, () => this.endOfDay.photo(day.date, day.id), fileName);
   }
 
   protected done(): void {
@@ -769,13 +829,32 @@ export class TakingsDialog {
     const day = this.revenueDate;
     if (!day) {
       this.preview.set(null);
+      this.handedIn.set(null);
       return;
     }
+    void this.loadHandedIn(day);
     try {
       const preview = await firstValueFrom(this.api.takingsPreview(day));
       if (this.revenueDate === day) this.preview.set(preview);
     } catch {
       this.preview.set(null);
+    }
+  }
+
+  // The end of day of the day chosen, if it was handed in: nothing typed yet, its figures.
+  private async loadHandedIn(day: string): Promise<void> {
+    let found: EndOfDay | null = null;
+    try {
+      found = await firstValueFrom(this.endOfDay.day(day));
+    } catch {
+      found = null;
+    }
+    if (this.revenueDate !== day) {
+      return;
+    }
+    this.handedIn.set(found?.status === 'Submitted' ? found : null);
+    if (this.handedIn() && !this.typed) {
+      this.useHandedIn();
     }
   }
 }

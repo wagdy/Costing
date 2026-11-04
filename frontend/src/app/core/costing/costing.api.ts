@@ -1002,7 +1002,16 @@ export interface PurchaseBatch {
   invoiceDate: string;
   paymentMethod: PurchasePaymentMethod;
   revenueDate: string | null;
-  invoices: { invoiceId: string; supplierId: string | null; supplierInvoiceNumber: string | null; lines: SavePurchaseLine[]; discount: number }[];
+  // An invoice on credit in a batch paid in cash (onCredit); one handed in at the end of the day names it.
+  invoices: {
+    invoiceId: string;
+    supplierId: string | null;
+    supplierInvoiceNumber: string | null;
+    lines: SavePurchaseLine[];
+    discount: number;
+    onCredit?: boolean;
+    endOfDayInvoiceId?: string | null;
+  }[];
   payments: { transactionId: string; supplierId: string; amount: number; notes: string | null }[];
   // No employee: advances handed out with no one named, shared among the staff.
   advances?: { transactionId: string; employeeId: string | null; amount: number; notes: string | null }[];

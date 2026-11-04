@@ -18,6 +18,7 @@ works it.
 | Menu (قائمة الطعام) | `/costing/menu` | Categories, items, sizes, add-ons; an Excel import |
 | Material & demand intelligence (تحليلات الخامات والطلبيات) | `/costing/intelligence` | Purchase price variance and what it does to the recipes, the order planner, theoretical against actual usage, ABC and days on hand; each to Excel |
 | Sales (المبيعات) | `/costing/sales` | Each day's sales summary, entered or imported from its sheet, for stock and food cost |
+| End of the day (تقفيل اليوم) | `/costing/end-of-day` | Each day's invoices photographed, cash and on credit, and its sales report, handed in for the daily batch and the takings |
 | Purchases (المشتريات) | `/costing/purchases` | Invoices, the day's batch, suppliers, categories |
 | Expense items (المصروفات العمومية) | `/costing/expense-items` | General expenses, never stock |
 | Stock counts (الجرد) | `/costing/counts` | Counts drafted, then posted |
@@ -57,9 +58,9 @@ until a manager ticks a user's own:
 | Role | Permissions | Sections, until a manager ticks theirs |
 | --- | --- | --- |
 | Manager (مدير) | All: `inventory.view`, `inventory.manage`, `costing.view`, `approval.decide`, `users.manage`, `settings.manage` | Every section, always |
-| Accountant (محاسب) | `inventory.view`, `inventory.manage`, `costing.view` | Raw materials, Material & demand intelligence, Expense items, Purchases, Financials, Sales, Reports |
+| Accountant (محاسب) | `inventory.view`, `inventory.manage`, `costing.view` | Raw materials, Material & demand intelligence, End of the day, Expense items, Purchases, Financials, Sales, Reports |
 | Cost Controller (مراقب تكاليف) | `inventory.view`, `inventory.manage`, `costing.view` | Raw materials, Recipes, Production, Menu, Material & demand intelligence, Sales, Stock counts, Waste, Reports, Cost settings |
-| Storekeeper (أمين المخزن) | `inventory.view`, `inventory.manage` | Raw materials, Purchases, Stock counts, Waste, Production |
+| Storekeeper (أمين المخزن) | `inventory.view`, `inventory.manage` | Raw materials, End of the day, Purchases, Stock counts, Waste, Production |
 
 - **The sections a manager ticks replace the role's.** `UserTabAccess` (`costing.UserTabAccess`)
   keeps them, with who ticked them and when; "Their role's" on Permissions deletes the row and
@@ -341,6 +342,52 @@ average from then on, as its first batch would.
 counted periodically. A material forgotten the first time can be opened in a second opening count.
 Voiding an opening count (on approval) takes its stock back out and lets its materials be opened
 again.
+
+## End of the day (تقفيل اليوم)
+
+How a branch closes its day (`/costing/end-of-day`, the End of the day section): a user given that
+section alone (Permissions) sees only this page, on a phone as on a laptop. Nothing is posted by it;
+it is what the daily batch and the takings are made from.
+
+1. **The date** (تاريخ اليوم), the business day unless another is chosen; never a day to come.
+2. **Cash purchase & expense invoices** (فواتير نقدية) and **credit / on-account invoices** (فواتير
+   آجل), each its own section: every invoice its photo (the phone's camera or a file: JPEG, PNG,
+   WebP or PDF under 10 MB, a big photo made lighter before it is sent), its supplier from the list,
+   the total written on it and a short note. Each is kept as it is added (an id made by the till, so
+   one sent twice is added once), and can be changed or taken off while the day is a draft. Each
+   section counts its invoices and adds them up as they come.
+3. **The daily sales report** (ريبورت المبيعات): the Z report's cash and Visa before tax, the tax on
+   them and the voids, kept a moment after they are typed, and a photo of the report if there is
+   one. Total revenue = cash + Visa + tax.
+
+**Review & confirm** (مراجعة وتأكيد) shows the **end of day summary report**: the cash invoices and
+those on credit, each counted and added up; the sales; the expected net cash after the cash
+invoices (cash − cash invoices) and what should reach the safe (total revenue − cash invoices, as
+the takings will show it once the cash invoices are posted out of them). **Confirm & submit**
+(تأكيد وإرسال التقفيل) locks the day: it needs its sales (cash or Visa), the tax no more than them.
+A manager reopens a day to correct it; what is posted from it stays posted.
+
+**On the daily batch**, the day opens with an invoice for each one handed in and not posted yet
+(Open · Daily batch from the day, or the batch's date chosen): its supplier, paid as handed in
+(cash or on credit, changed per invoice there), its photo above its lines to type them from (zoom,
+drag, turn, full size), and **Reported: L.E …**, the total handed in, against what the lines come
+to after every discount: **Matched** (مطابق) when they agree, what is left or over until then. A
+batch paid in cash can carry invoices on credit (each owed to its supplier). Posted, each is the
+purchase invoice of the invoice handed in, once, with its photo as its paper; it is posted with
+the day it was handed in on, and only once the day is submitted. A day not submitted yet says so.
+The batch is paid, unless chosen, out of that day's takings, or on credit when every invoice is.
+
+**The takings** (Financials → Takings in, or Takings in on the submitted day) start from the day's
+sales report, until something is typed over them (Use these brings them back), and show its Z
+report's photo. Entered, the day shows the takings beside it.
+
+`/api/end-of-day`: `GET ?from&to`, `GET {date}` (204 before anything is handed in), `PUT
+{date}/sales`, `POST {date}/invoices` (a form: invoiceId, kind Cash or Credit, supplierId,
+reportedTotal, note, file), `PUT|DELETE {date}/invoices/{id}`, `PUT {date}/invoices/{id}/photo`,
+`PUT|DELETE {date}/sales-photo`, `POST {date}/submit`, `POST {date}/reopen` (a manager's), `GET
+{date}/photos/{id}` (an invoice's by its id, the sales report's by the day's). Written with End of
+the day; read with it, Purchases or Financials. A batch invoice names `endOfDayInvoiceId` and
+`onCredit`. Kept in `costing.EndOfDayReports`, `EndOfDayInvoices` and `EndOfDayPhotos`.
 
 ## Purchases: discounts and the paper
 

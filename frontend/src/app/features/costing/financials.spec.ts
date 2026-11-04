@@ -4,6 +4,7 @@ import { of } from 'rxjs';
 import { AuthService } from '../../core/auth/auth.service';
 import { Permissions } from '../../core/auth/permissions';
 import { CostingApi, SafeVoucherInput } from '../../core/costing/costing.api';
+import { EndOfDay, EndOfDayApi } from '../../core/costing/end-of-day.api';
 import { MenuSalesApi } from '../../core/costing/menu-sales.api';
 import { Employee } from '../../core/costing/staff';
 import { NotifyService } from '../../core/ui/notify.service';
@@ -171,11 +172,13 @@ describe('entering a safe entry', () => {
 describe('a day’s takings from its Z report', () => {
   const takingsPreview = vi.fn();
   const close = vi.fn();
+  const endOfDay = { day: vi.fn(), photo: vi.fn() };
 
   async function dialog(data: Partial<TakingsDialogData> = {}) {
     TestBed.configureTestingModule({
       providers: [
         { provide: CostingApi, useValue: { takingsPreview } },
+        { provide: EndOfDayApi, useValue: endOfDay },
         { provide: MAT_DIALOG_DATA, useValue: { canApprove: true, today: '2026-10-14', ...data } satisfies TakingsDialogData },
         { provide: MatDialogRef, useValue: { close } },
       ],
@@ -196,6 +199,39 @@ describe('a day’s takings from its Z report', () => {
   beforeEach(() => {
     takingsPreview.mockReset().mockImplementation((day: string) => of({ date: day, entered: null, paidOut: 0, invoices: 0, supplierPayments: 0 }));
     close.mockReset();
+    endOfDay.day.mockReset().mockReturnValue(of(null));
+  });
+
+  it('starts from the end of day handed in for the day, and goes back to it once something is typed over it', async () => {
+    const closed = {
+      id: 'day-13', date: '2026-10-13', status: 'Submitted', cashAmount: 5_000, cardAmount: 2_500, taxAmount: 1_050, voidsAmount: 80, notes: 'Two voids',
+      salesPhoto: { fileName: 'z.jpg', contentType: 'image/jpeg', bytes: 10 }, submittedBy: 'Hany',
+    } as EndOfDay;
+    endOfDay.day.mockImplementation((day: string) => of(day === '2026-10-13' ? closed : { ...closed, status: 'Draft' }));
+    takingsPreview.mockImplementation((day: string) => of({ date: day, entered: null, paidOut: 1_360, invoices: 2, supplierPayments: 0 }));
+    const { fixture, el, page, fill } = await dialog({ revenueDate: '2026-10-13' });
+    await fixture.whenStable();
+    fixture.detectChanges();
+
+    expect(endOfDay.day).toHaveBeenCalledWith('2026-10-13');
+    expect([page['cash'], page['card'], page['tax'], page['voids'], page['notes']]).toEqual([5_000, 2_500, 1_050, 80, 'Two voids']);
+    expect(text(el.querySelector('.from-day')!)).toBe(
+      'assignment_turned_in From the end of day handed in by Hany: cash L.E 5,000.00, Visa L.E 2,500.00, tax L.E 1,050.00. من تقفيل اليومreceipt Z report · تقرير Z',
+    );
+    // All of it, less the cash invoices paid out of it.
+    expect(text(el.querySelector('.breakdown .net dd')!)).toBe('L.E 7,190.00');
+
+    fill({ cash: 4_000 });
+    expect([...el.querySelectorAll('.from-day button')].map(text)).toEqual(['Use these · استخدام', 'receipt Z report · تقرير Z']);
+    page['useHandedIn']();
+    expect(page['cash']).toBe(5_000);
+
+    // A day still a draft fills in nothing.
+    page['revenueDate'] = '2026-10-12';
+    page['dayChosen']();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(el.querySelector('.from-day')).toBeNull();
   });
 
   it('asks for the day, its cash, card, tax collected, voids and why, each in both languages', async () => {

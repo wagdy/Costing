@@ -71,6 +71,8 @@ public static class DependencyInjection
         services.AddScoped<IStockCountRepository, StockCountRepository>();
         services.AddScoped<IPurchaseInvoiceRepository, PurchaseInvoiceRepository>();
         services.AddScoped<IPurchaseAttachmentStore, PurchaseAttachmentStore>();
+        services.AddScoped<Costing.Domain.EndOfDay.IEndOfDayRepository, EndOfDayRepository>();
+        services.AddScoped<Costing.Domain.EndOfDay.IEndOfDayPhotoStore, EndOfDayPhotoStore>();
         services.AddScoped<ISupplierRepository, SupplierRepository>();
         services.AddScoped<IPurchaseCategoryRepository, PurchaseCategoryRepository>();
         services.AddScoped<ISafeTransactionRepository, SafeTransactionRepository>();
