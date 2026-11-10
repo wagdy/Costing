@@ -346,8 +346,9 @@ again.
 ## End of the day (تقفيل اليوم)
 
 How a branch closes its day (`/costing/end-of-day`, the End of the day section): a user given that
-section alone (Permissions) sees only this page, on a phone as on a laptop. Nothing is posted by it;
-it is what the daily batch and the takings are made from.
+section alone (Permissions) sees only this page, on a phone as on a laptop. It is what the daily
+batch and the takings are made from; the cash it paid out to suppliers and as advances goes to the
+safe when it is submitted.
 
 1. **The date** (تاريخ اليوم), the business day unless another is chosen; never a day to come.
 2. **Cash purchase & expense invoices** (فواتير نقدية) and **credit / on-account invoices** (فواتير
@@ -356,16 +357,52 @@ it is what the daily batch and the takings are made from.
    the total written on it and a short note. Each is kept as it is added (an id made by the till, so
    one sent twice is added once), and can be changed or taken off while the day is a draft. Each
    section counts its invoices and adds them up as they come.
-3. **The daily sales report** (ريبورت المبيعات): the Z report's cash and Visa before tax, the tax on
-   them and the voids, kept a moment after they are typed, and a photo of the report if there is
-   one. Total revenue = cash + Visa + tax.
+4. **Supplier cash payments** (إذن صرف مورد وإيصال السداد): cash paid to a supplier out of the till
+   against what the restaurant owes them, each with its supplier from the list, the amount, a note
+   and the photo of its receipt or cash-out voucher (required). No more than the supplier is owed
+   on their account, less the day's other payments to them not in the safe yet.
+5. **Employee cash advances** (سلفيات الموظفين وإيصال الصرف): advances handed to staff out of the
+   till, each with the employee (from Staff, those still there), the amount, a note and the photo
+   of the signed receipt (required). Each is deducted from the employee's pay in the payroll month
+   it is paid in, as every advance out of the safe is.
+6. **The daily sales report** (ريبورت المبيعات): the drawer's **opening float** (العهدة / الفكة),
+   the Z report's cash and Visa before tax, the tax on them and the voids, kept a moment after they
+   are typed, and a photo of the report if there is one. Total revenue = cash + Visa + tax.
+
+Under them, **Net cash expected in till** (الصافي الفعلي المتبقي في الكاش), worked out as the
+figures are typed, to count the drawer against:
+
+    Net cash = (opening float + cash sales with their tax)
+             − (cash invoices + supplier cash payments + employee cash advances)
+
+The Visa, Instapay and other online takings never reach the drawer, so they are not in it. The Z
+report gives the tax on the cash and Visa together; the cash's share of it is in proportion (tax ×
+cash ÷ (cash + Visa)), as the safe splits a day's tax. Each payment and advance, once handed in,
+has its receipt with it, and the payments and advances are taken, like the cash invoices, out of
+what should reach the safe.
 
 **Review & confirm** (مراجعة وتأكيد) shows the **end of day summary report**: the cash invoices and
-those on credit, each counted and added up; the sales; the expected net cash after the cash
-invoices (cash − cash invoices) and what should reach the safe (total revenue − cash invoices, as
-the takings will show it once the cash invoices are posted out of them). **Confirm & submit**
+those on credit, the suppliers paid and the advances, each counted and added up; the sales; the
+expected net cash after the cash invoices (cash − cash invoices); what should reach the safe (total
+revenue − the cash invoices, the supplier payments and the advances, as the takings will show it
+once all of them are out of them); and the net cash expected in the till. **Confirm & submit**
 (تأكيد وإرسال التقفيل) locks the day: it needs its sales (cash or Visa), the tax no more than them.
 A manager reopens a day to correct it; what is posted from it stays posted.
+
+**Submitted, each supplier payment and advance becomes the safe's entry** (صرف من الخزنة) out of the
+day's takings (out of the safe itself if they are entered already), dated the day, its id the
+payment's own: a **supplier payment** (سداد مورد), off the supplier's account, or an **employee
+advance** (سلفة) in the employee's payroll month. Handed in by a manager, they are entered at once;
+by anyone else, each is a request for a manager on Approvals, and nothing moves until it is
+approved. All of them or none: one that cannot be entered (a supplier owed less by then, an
+employee who has left) refuses the day, naming it. Each shows where it is: **Waiting for a
+manager**, **In the safe**, or **Refused by a manager**. One in the safe or waiting is kept as it is
+when the day is reopened (corrected on Financials → Safe); one refused can be taken off and entered
+again; one added after reopening goes to the safe when the day is submitted again. They are not
+entered again on the daily batch.
+
+There is no link to an HR system here: an advance is deducted in this system's own payroll month,
+as the safe's advances are.
 
 **On the daily batch**, the day opens with an invoice for each one handed in and not posted yet
 (Open · Daily batch from the day, or the batch's date chosen): its supplier, paid as handed in
@@ -382,12 +419,17 @@ sales report, until something is typed over them (Use these brings them back), a
 report's photo. Entered, the day shows the takings beside it.
 
 `/api/end-of-day`: `GET ?from&to`, `GET {date}` (204 before anything is handed in), `PUT
-{date}/sales`, `POST {date}/invoices` (a form: invoiceId, kind Cash or Credit, supplierId,
-reportedTotal, note, file), `PUT|DELETE {date}/invoices/{id}`, `PUT {date}/invoices/{id}/photo`,
-`PUT|DELETE {date}/sales-photo`, `POST {date}/submit`, `POST {date}/reopen` (a manager's), `GET
-{date}/photos/{id}` (an invoice's by its id, the sales report's by the day's). Written with End of
-the day; read with it, Purchases or Financials. A batch invoice names `endOfDayInvoiceId` and
-`onCredit`. Kept in `costing.EndOfDayReports`, `EndOfDayInvoices` and `EndOfDayPhotos`.
+{date}/sales` (with `openingFloat`), `POST {date}/invoices` (a form: invoiceId, kind Cash or Credit,
+supplierId, reportedTotal, note, file), `PUT|DELETE {date}/invoices/{id}`, `PUT
+{date}/invoices/{id}/photo`, `POST {date}/supplier-payments` (a form: id, supplierId, amount, note,
+file), `POST {date}/advances` (a form: id, employeeId, amount, note, file), `PUT|DELETE
+{date}/supplier-payments/{id}` and `{date}/advances/{id}`, `PUT {date}/supplier-payments/{id}/receipt`
+and `{date}/advances/{id}/receipt`, `PUT|DELETE {date}/sales-photo`, `POST {date}/submit`, `POST
+{date}/reopen` (a manager's), `GET {date}/photos/{id}` (an invoice's or a receipt's by its id, the
+sales report's by the day's). Written with End of the day; read with it, Purchases or Financials;
+`GET /api/staff` is read with End of the day too. A batch invoice names `endOfDayInvoiceId` and
+`onCredit`. Kept in `costing.EndOfDayReports` (with `OpeningFloat`), `EndOfDayInvoices`,
+`EndOfDayPayouts` (migration `AddEndOfDayPayouts`) and `EndOfDayPhotos`.
 
 ## Purchases: discounts and the paper
 

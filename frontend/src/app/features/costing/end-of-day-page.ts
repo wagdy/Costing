@@ -17,18 +17,25 @@ import {
   EndOfDayApi,
   EndOfDayInvoice,
   EndOfDayInvoiceKind,
+  EndOfDayPayout,
+  EndOfDayPayoutKind,
   EndOfDayPhoto,
   EndOfDaySales,
   endOfDayStatusLabels,
+  netCash,
   photoProblem,
   shrinkPhoto,
+  voucherLabels,
 } from '../../core/costing/end-of-day.api';
+import { MenuSalesApi } from '../../core/costing/menu-sales.api';
+import { Employee } from '../../core/costing/staff';
 import { errorMessage } from '../../core/http/error-message';
 import { MoneyPipe } from '../../core/ui/money.pipe';
 import { NotifyService } from '../../core/ui/notify.service';
 import { Company } from '../../core/settings/company';
 import { ItemPicker, PickItem } from '../shared/item-picker';
 import { Approvals } from './approvals';
+import { EodPayoutForm } from './end-of-day-payouts';
 import { PhotoSource, PhotoThumb, viewPhoto } from './end-of-day-photo';
 import { BusinessDay, Treasury } from './financials';
 
@@ -46,6 +53,32 @@ const sectionLabels: Record<EndOfDayInvoiceKind, { en: string; ar: string; count
     ar: 'تسجيل فواتير آجل',
     count: { en: 'Credit invoices count', ar: 'عدد الفواتير الآجل' },
     total: { en: 'Total credit amount', ar: 'إجمالي مبلغ الآجل' },
+  },
+};
+
+const payoutSectionLabels: Record<
+  EndOfDayPayoutKind,
+  { step: number; en: string; ar: string; hint: string; hintAr: string; count: { en: string; ar: string }; total: { en: string; ar: string }; none: string }
+> = {
+  SupplierPayment: {
+    step: 4,
+    en: 'Supplier cash payments',
+    ar: 'إذن صرف مورد وإيصال السداد',
+    hint: 'Cash paid to a supplier out of the till against what they are owed, each with its receipt or cash-out voucher.',
+    hintAr: 'المبالغ المدفوعة نقداً للموردين من الكاش، مع صورة إيصال السداد أو إذن الصرف.',
+    count: { en: 'Supplier payments', ar: 'عدد أذونات الصرف' },
+    total: { en: 'Total paid to suppliers', ar: 'إجمالي المدفوع للموردين' },
+    none: 'No supplier was paid. · لا توجد مدفوعات للموردين.',
+  },
+  EmployeeAdvance: {
+    step: 5,
+    en: 'Employee cash advances',
+    ar: 'سلفيات الموظفين وإيصال الصرف',
+    hint: "Advances handed to staff out of the till, each with its signed receipt: deducted from their pay in this month's payroll.",
+    hintAr: 'السلفيات المصروفة للموظفين من الكاش، مع صورة إيصال الصرف الموقع، وتُخصم من راتب الشهر.',
+    count: { en: 'Advances', ar: 'عدد السلفيات' },
+    total: { en: 'Total advances', ar: 'إجمالي السلفيات' },
+    none: 'No advance was given. · لا توجد سلفيات.',
   },
 };
 
@@ -311,11 +344,14 @@ export class EodInvoiceForm {
 
 export interface EndOfDaySummaryData {
   day: EndOfDay;
+  // Whether the one handing it in enters the safe's entries at once (a manager).
+  canApprove?: boolean;
 }
 
 // The end of day summary report (تقرير ملخص تقفيل اليوم), before it is handed in: the cash purchases
-// and those on credit, each counted and added up, the day's sales, and what should be left of its
-// cash and reach the safe once the cash invoices were paid out of it. True once confirmed.
+// and those on credit, each counted and added up, the suppliers paid and the advances, the day's
+// sales, what should be left in the drawer and what should reach the safe once all of it was paid
+// out. True once confirmed.
 @Component({
   selector: 'app-end-of-day-summary',
   imports: [DatePipe, MatButtonModule, MatDialogModule, MatIconModule, MoneyPipe],
@@ -335,6 +371,16 @@ export interface EndOfDaySummaryData {
           <strong>{{ d.creditInvoicesTotal | money }}</strong>
           <small>{{ d.creditInvoices }} {{ d.creditInvoices === 1 ? 'invoice' : 'invoices' }} · فاتورة</small>
         </div>
+        <div class="block">
+          <span class="label">Paid to suppliers <span class="inline-ar">مدفوعات الموردين</span></span>
+          <strong>{{ d.supplierPaymentsTotal | money }}</strong>
+          <small>{{ d.supplierPayments }} {{ d.supplierPayments === 1 ? 'payment' : 'payments' }} · إذن صرف</small>
+        </div>
+        <div class="block">
+          <span class="label">Employee advances <span class="inline-ar">سلفيات الموظفين</span></span>
+          <strong>{{ d.advancesTotal | money }}</strong>
+          <small>{{ d.advances }} {{ d.advances === 1 ? 'advance' : 'advances' }} · سلفة</small>
+        </div>
         <div class="block key">
           <span class="label">Sales revenue <span class="inline-ar">إيراد المبيعات</span></span>
           <strong>{{ d.totalRevenue | money }}</strong>
@@ -350,11 +396,25 @@ export interface EndOfDaySummaryData {
         <div><dt>Cash invoices paid out <span class="inline-ar">المدفوع للفواتير النقدية</span></dt><dd>({{ d.cashInvoicesTotal | money }})</dd></div>
         <div class="line"><dt>Expected net cash after cash invoices <span class="inline-ar">صافي الكاش بعد الفواتير النقدية</span></dt>
           <dd [class.negative]="d.cashAfterInvoices < 0">{{ d.cashAfterInvoices | money }}</dd></div>
+        <div><dt>Paid to suppliers <span class="inline-ar">مدفوعات الموردين</span></dt><dd>({{ d.supplierPaymentsTotal | money }})</dd></div>
+        <div><dt>Employee advances <span class="inline-ar">سلفيات الموظفين</span></dt><dd>({{ d.advancesTotal | money }})</dd></div>
         <div class="total"><dt>Expected into the safe <span class="inline-ar">المتوقع توريده للخزنة</span>
-          <small class="muted">total revenue less the cash invoices</small></dt><dd>{{ d.expectedIntoSafe | money }}</dd></div>
+          <small class="muted">total revenue less all paid out of it</small></dt><dd>{{ d.expectedIntoSafe | money }}</dd></div>
+      </dl>
+      <dl class="breakdown till" aria-label="Net cash expected in till">
+        <div><dt>Opening float <span class="inline-ar">العهدة / الفكة</span></dt><dd>{{ d.openingFloat ?? 0 | money }}</dd></div>
+        <div><dt>Cash sales with their tax <span class="inline-ar">مبيعات الكاش بالضريبة</span></dt><dd>{{ d.cashSalesCollected | money }}</dd></div>
+        <div><dt>Paid out of the till <span class="inline-ar">المصروف من الكاش</span></dt><dd>({{ d.cashPaidOut | money }})</dd></div>
+        <div class="total"><dt>Net cash expected in till <span class="inline-ar">الصافي الفعلي المتبقي في الكاش</span>
+          <small class="muted">count the drawer against this: the Visa is not in it</small></dt>
+          <dd [class.negative]="d.netCashInTill < 0">{{ d.netCashInTill | money }}</dd></div>
       </dl>
       @if (d.cashAfterInvoices < 0) {
         <p class="warn small">The cash invoices are {{ -d.cashAfterInvoices | money }} more than the day's cash. · الفواتير النقدية أكبر من الكاش.</p>
+      }
+      @if (d.supplierPayments + d.advances > 0) {
+        <p class="muted small">Submitted, each payment and advance goes to the safe out of the day's takings{{ canApprove ? '' : ', once a manager approves it' }}.
+          · عند الإرسال تُسجل المدفوعات والسلفيات في الخزنة{{ canApprove ? '' : ' بعد موافقة المدير' }}.</p>
       }
       @if (!d.salesPhoto) {
         <p class="muted small">No photo of the Z report: it is optional. · لا توجد صورة لتقرير Z.</p>
@@ -368,9 +428,10 @@ export interface EndOfDaySummaryData {
   `,
   styleUrl: './costing.scss',
   styles: `
+    // The four ways money went out side by side, the revenue under them across.
     .blocks {
       display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
+      grid-template-columns: repeat(4, minmax(0, 1fr));
       gap: 8px;
       margin: 4px 0 12px;
     }
@@ -387,12 +448,24 @@ export interface EndOfDaySummaryData {
         color: var(--mat-sys-on-surface-variant);
       }
       strong {
-        font: var(--mat-sys-title-large);
+        font: var(--mat-sys-title-medium);
+        font-weight: 700;
         font-variant-numeric: tabular-nums;
+        white-space: nowrap;
       }
       &.key {
+        grid-column: 1 / -1;
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: baseline;
         background: var(--mat-sys-secondary-container);
         border-color: transparent;
+
+        strong {
+          grid-row: 1 / span 2;
+          grid-column: 2;
+          font: var(--mat-sys-title-large);
+          font-weight: 700;
+        }
       }
     }
     .breakdown {
@@ -434,6 +507,9 @@ export interface EndOfDaySummaryData {
       .negative {
         color: var(--mat-sys-error);
       }
+      &.till {
+        background: color-mix(in srgb, var(--app-ok, #2e7d32) 10%, var(--mat-sys-surface-container));
+      }
     }
     .warn {
       color: var(--app-warn);
@@ -443,31 +519,37 @@ export interface EndOfDaySummaryData {
     }
     @media (max-width: 599.98px) {
       .blocks {
-        grid-template-columns: minmax(0, 1fr);
+        grid-template-columns: repeat(2, minmax(0, 1fr));
       }
     }
   `,
 })
 export class EndOfDaySummaryDialog {
   protected readonly data = inject<EndOfDaySummaryData>(MAT_DIALOG_DATA);
+  protected readonly canApprove = this.data.canApprove ?? false;
 }
 
 // The end of the day (تقفيل اليوم), as a branch closes it: the date, then the day's cash invoices
-// and those on credit, each photographed with its supplier and total, and the day's sales report.
-// Reviewed and submitted, it is locked, and the daily batch of that date opens with an invoice for
-// each, its photo with it; the takings of the day come in from its sales. Everything is kept as it
-// is typed: an invoice once added, the sales a moment after.
+// and those on credit, each photographed with its supplier and total; the cash paid out of the till
+// to suppliers and as advances to employees, each with its receipt; and the day's sales report with
+// the drawer's opening float, and below it the cash that should be left in the drawer (الصافي
+// الفعلي المتبقي في الكاش). Reviewed and submitted, it is locked: the daily batch of that date opens
+// with an invoice for each, its photo with it; each payment and advance goes to the safe (asked of
+// a manager when it is not one handing it in); the takings of the day come in from its sales.
+// Everything is kept as it is typed: an entry once added, the sales a moment after.
 @Component({
   selector: 'app-end-of-day-page',
-  imports: [DatePipe, EodInvoiceForm, FormsModule, MatButtonModule, MatFormFieldModule, MatIconModule, MatInputModule, MatProgressBarModule, MoneyPipe, PhotoThumb, RouterLink],
+  imports: [DatePipe, EodInvoiceForm, EodPayoutForm, FormsModule, MatButtonModule, MatFormFieldModule, MatIconModule, MatInputModule, MatProgressBarModule, MoneyPipe,
+    PhotoThumb, RouterLink],
   template: `
     <header class="head">
       <div>
         <h2>End of the day <span class="inline-ar">تقفيل اليوم</span></h2>
         <p class="note">
-          Photograph each of the day's invoices with its supplier and total, cash and on credit, and enter the day's sales report. Reviewed and
-          submitted, the daily batch of that date opens with an invoice for each, its photo with it.
-          <span class="note-ar" lang="ar" dir="rtl">صوّر فواتير اليوم مع المورد والإجمالي، وسجّل ريبورت المبيعات، ثم راجع وأرسل التقفيل.</span>
+          Photograph each of the day's invoices with its supplier and total, cash and on credit, and each receipt for cash paid to a supplier or
+          advanced to an employee; enter the day's sales report and the drawer's float, and check the cash left against the drawer. Reviewed and
+          submitted, the daily batch of that date opens with an invoice for each, and each payment and advance goes to the safe.
+          <span class="note-ar" lang="ar" dir="rtl">صوّر فواتير اليوم وإيصالات المدفوعات والسلفيات، وسجّل ريبورت المبيعات والعهدة، وطابق الكاش المتبقي، ثم راجع وأرسل التقفيل.</span>
         </p>
       </div>
     </header>
@@ -564,9 +646,68 @@ export class EndOfDaySummaryDialog {
         </section>
       }
 
+      @for (kind of payoutKinds; track kind) {
+        <section class="card step" [attr.aria-label]="payoutSections[kind].en">
+          <h3><span class="step-no">{{ payoutSections[kind].step }}</span> {{ payoutSections[kind].en }} <span class="inline-ar">{{ payoutSections[kind].ar }}</span></h3>
+          <p class="section-hint muted small">{{ payoutSections[kind].hint }}<span class="line-ar" lang="ar" dir="rtl">{{ payoutSections[kind].hintAr }}</span></p>
+          <div class="invoices">
+            @for (p of payoutsOf(kind); track p.id; let i = $index) {
+              @if (editing() === p.id && !locked() && p.voucher === 'None') {
+                <app-eod-payout-form [date]="date()" [kind]="kind" [suppliers]="suppliers()" [employees]="employees()" [payout]="p" (saved)="saved($event)"
+                  (cancelled)="editing.set(null)" />
+              } @else {
+                <article class="payout" [attr.aria-label]="payoutSections[kind].en + ' ' + (i + 1)">
+                  <app-photo-thumb [source]="photoOf(p.id, p.receipt)" [fileName]="p.receipt.fileName" [contentType]="p.receipt.contentType" />
+                  <div class="what">
+                    <strong dir="auto">{{ p.payee }}</strong>
+                    <span class="amount">{{ p.amount | money }}</span>
+                    @if (p.note) {
+                      <span class="muted small" dir="auto">{{ p.note }}</span>
+                    }
+                    @if (vouchers[p.voucher]; as v) {
+                      <span class="tag" [class]="v.tone">{{ v.en }}<span class="ar">{{ v.ar }}</span></span>
+                    }
+                  </div>
+                  @if (!locked() && (p.voucher === 'None' || p.voucher === 'Refused')) {
+                    <div class="row-actions">
+                      @if (p.voucher === 'None') {
+                        <button mat-icon-button (click)="editing.set(p.id)" [disabled]="busy()" [attr.aria-label]="'Change ' + p.payee + ' ' + (i + 1)" title="Change · تعديل">
+                          <mat-icon>edit</mat-icon>
+                        </button>
+                      }
+                      <button mat-icon-button (click)="removePayout(p)" [disabled]="busy()" [attr.aria-label]="'Take off ' + p.payee + ' ' + (i + 1)" title="Take off · حذف">
+                        <mat-icon>delete</mat-icon>
+                      </button>
+                    </div>
+                  }
+                </article>
+              }
+            } @empty {
+              @if (locked()) {
+                <p class="muted">{{ payoutSections[kind].none }}</p>
+              }
+            }
+          </div>
+          @if (!locked()) {
+            <app-eod-payout-form [date]="date()" [kind]="kind" [suppliers]="suppliers()" [employees]="employees()" (saved)="saved($event)"
+              (pendingChange)="pendingIn(kind, $event)" />
+          }
+          <footer class="counter" aria-live="polite">
+            <span>{{ payoutSections[kind].count.en }} <span class="inline-ar">{{ payoutSections[kind].count.ar }}</span>: <strong>{{ payoutCount(kind) }}</strong></span>
+            <span>{{ payoutSections[kind].total.en }} <span class="inline-ar">{{ payoutSections[kind].total.ar }}</span>: <strong>{{ payoutTotal(kind) | money }}</strong></span>
+          </footer>
+        </section>
+      }
+
       <section class="card step" aria-label="Daily sales report">
-        <h3><span class="step-no">4</span> Daily sales report / revenue <span class="inline-ar">تسجيل ريبورت المبيعات والإيراد</span></h3>
+        <h3><span class="step-no">6</span> Daily sales report / revenue <span class="inline-ar">تسجيل ريبورت المبيعات والإيراد</span></h3>
         <div class="sales">
+          <mat-form-field subscriptSizing="dynamic" floatLabel="always">
+            <mat-label>Opening float · العهدة / الفكة</mat-label>
+            <input matInput type="number" min="0" step="any" inputmode="decimal" [ngModel]="sales().openingFloat" (ngModelChange)="setSale('openingFloat', $event)"
+              [disabled]="locked()" placeholder="0" data-western-digits aria-label="Opening float" />
+            <span matTextSuffix>&nbsp;{{ company.currency() }}</span>
+          </mat-form-field>
           <mat-form-field subscriptSizing="dynamic" floatLabel="always">
             <mat-label>Cash · إيراد الكاش</mat-label>
             <input matInput type="number" min="0" step="any" inputmode="decimal" [ngModel]="sales().cashAmount" (ngModelChange)="setSale('cashAmount', $event)"
@@ -626,10 +767,36 @@ export class EndOfDaySummaryDialog {
         }
       </section>
 
+      <!-- The cash that should be in the drawer: counted against it -->
+      @let till = netCashInTill();
+      <section class="card till" [class.short]="till.net < 0" aria-label="Net cash expected in till">
+        <div class="till-head">
+          <mat-icon>point_of_sale</mat-icon>
+          <div>
+            <h3>Net cash expected in till <span class="inline-ar">الصافي الفعلي المتبقي في الكاش</span></h3>
+            <p class="muted small">Cash only: the Visa, Instapay and online takings never reach the drawer. Count the drawer against this.
+              <span class="line-ar" lang="ar" dir="rtl">الكاش فقط: الفيزا وإنستاباي والمدفوعات الإلكترونية لا تدخل الدرج.</span></p>
+          </div>
+          <strong class="till-net" aria-live="polite">{{ till.net | money }}</strong>
+        </div>
+        <dl class="till-sum">
+          <div><dt>Opening float <span class="inline-ar">العهدة</span></dt><dd>{{ till.float | money }}</dd></div>
+          <div class="plus"><dt>Cash sales <span class="inline-ar">مبيعات الكاش</span><small class="muted">with their tax, {{ till.cashTax | money }}</small></dt>
+            <dd>+ {{ till.collected | money }}</dd></div>
+          <div class="minus"><dt>Cash invoices <span class="inline-ar">الفواتير النقدية</span></dt><dd>− {{ totalOf('Cash') | money }}</dd></div>
+          <div class="minus"><dt>Supplier payments <span class="inline-ar">مدفوعات الموردين</span></dt><dd>− {{ payoutTotal('SupplierPayment') | money }}</dd></div>
+          <div class="minus"><dt>Employee advances <span class="inline-ar">السلفيات</span></dt><dd>− {{ payoutTotal('EmployeeAdvance') | money }}</dd></div>
+        </dl>
+        @if (till.net < 0) {
+          <p class="error small" role="status">More was paid out than the drawer took in: check the amounts. · المصروف أكبر من الكاش.</p>
+        }
+      </section>
+
       @if (!locked()) {
         <div class="submit-bar">
           <span class="muted small">
-            {{ countOf('Cash') }} cash · {{ countOf('Credit') }} on credit · revenue {{ totalRevenue() | money }}
+            {{ countOf('Cash') }} cash · {{ countOf('Credit') }} on credit · {{ payoutCount('SupplierPayment') }} paid · {{ payoutCount('EmployeeAdvance') }} advanced ·
+            revenue {{ totalRevenue() | money }} · in till {{ netCashInTill().net | money }}
           </span>
           <span class="spacer"></span>
           <button mat-flat-button (click)="review()" [disabled]="busy()">
@@ -653,6 +820,8 @@ export class EndOfDaySummaryDialog {
                   <th class="num">Cash invoices<span class="ar">نقدي</span></th>
                   <th class="num">Credit<span class="ar">آجل</span></th>
                   <th class="num">Revenue<span class="ar">الإيراد</span></th>
+                  <th class="num">Paid out<span class="ar">المدفوعات والسلف</span></th>
+                  <th class="num">Cash in till<span class="ar">الكاش المتبقي</span></th>
                   <th class="num">Posted<span class="ar">المرحّل</span></th>
                 </tr>
               </thead>
@@ -664,6 +833,8 @@ export class EndOfDaySummaryDialog {
                     <td class="num">{{ h.cashInvoices }} · {{ h.cashInvoicesTotal | money }}</td>
                     <td class="num">{{ h.creditInvoices }} · {{ h.creditInvoicesTotal | money }}</td>
                     <td class="num">{{ h.totalRevenue | money }}</td>
+                    <td class="num">{{ h.supplierPaymentsTotal + h.advancesTotal | money }}</td>
+                    <td class="num">{{ h.netCashInTill | money }}</td>
                     <td class="num">{{ h.posted }} / {{ h.invoices.length }}</td>
                   </tr>
                 }
@@ -731,7 +902,8 @@ export class EndOfDaySummaryDialog {
         grid-column: 1 / -1;
       }
     }
-    .invoice {
+    .invoice,
+    .payout {
       display: flex;
       align-items: flex-start;
       gap: 12px;
@@ -739,6 +911,98 @@ export class EndOfDaySummaryDialog {
       border: 1px solid var(--app-line);
       border-radius: 14px;
       background: var(--mat-sys-surface);
+    }
+    .invoices app-eod-payout-form {
+      grid-column: 1 / -1;
+    }
+    .section-hint {
+      margin: -6px 0 12px;
+    }
+    // Arabic on a line of its own under the English, as the page's notes have it.
+    .line-ar {
+      display: block;
+      margin-top: 2px;
+      text-align: right;
+      unicode-bidi: isolate;
+    }
+
+    // The cash that should be in the drawer: the day's figure that matters at the close.
+    .till {
+      border: 2px solid color-mix(in srgb, var(--app-ok, #2e7d32) 45%, transparent);
+      background: color-mix(in srgb, var(--app-ok, #2e7d32) 7%, var(--mat-sys-surface-container-lowest));
+
+      &.short {
+        border-color: color-mix(in srgb, var(--mat-sys-error) 55%, transparent);
+        background: color-mix(in srgb, var(--mat-sys-error) 6%, var(--mat-sys-surface-container-lowest));
+
+        .till-net {
+          color: var(--mat-sys-error);
+        }
+      }
+      h3 {
+        margin: 0 0 2px;
+      }
+      p {
+        margin: 0;
+      }
+    }
+    .till-head {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px 14px;
+
+      > mat-icon {
+        flex: none;
+        width: 32px;
+        height: 32px;
+        font-size: 32px;
+        color: var(--app-ok, #2e7d32);
+      }
+      > div {
+        flex: 1 1 260px;
+        min-width: 0;
+      }
+    }
+    .till-net {
+      margin-inline-start: auto;
+      font: var(--mat-sys-headline-medium);
+      font-weight: 800;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: -0.01em;
+      color: var(--app-ok, #2e7d32);
+    }
+    .till-sum {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 8px;
+      margin: 14px 0 0;
+
+      div {
+        display: grid;
+        gap: 2px;
+        padding: 8px 12px;
+        border-radius: 12px;
+        background: var(--mat-sys-surface-container-lowest);
+        border: 1px solid var(--app-line);
+      }
+      dt {
+        font: var(--mat-sys-label-medium);
+        color: var(--mat-sys-on-surface-variant);
+
+        small {
+          display: block;
+          font-weight: 400;
+        }
+      }
+      dd {
+        margin: 0;
+        font: var(--mat-sys-title-medium);
+        font-variant-numeric: tabular-nums;
+      }
+      .minus dd {
+        color: var(--mat-sys-error);
+      }
     }
     .what {
       display: grid;
@@ -870,9 +1134,13 @@ export class EndOfDayPage {
   private readonly access = inject(CostingAccess);
   private readonly approvals = inject(Approvals);
   private readonly route = inject(ActivatedRoute);
+  private readonly menuSales = inject(MenuSalesApi);
 
   protected readonly kinds: EndOfDayInvoiceKind[] = ['Cash', 'Credit'];
   protected readonly sections = sectionLabels;
+  protected readonly payoutKinds: EndOfDayPayoutKind[] = ['SupplierPayment', 'EmployeeAdvance'];
+  protected readonly payoutSections = payoutSectionLabels;
+  protected readonly vouchers = voucherLabels;
   protected readonly statusLabels = endOfDayStatusLabels;
 
   protected readonly today = signal(todayIso());
@@ -882,11 +1150,15 @@ export class EndOfDayPage {
   protected readonly error = signal<string | null>(null);
   protected readonly busy = signal(false);
   protected readonly suppliers = signal<PickItem[]>([]);
+  // The staff, those who left too (the day's advances name them); the form offers those still here.
+  protected readonly employees = signal<Employee[]>([]);
   protected readonly history = signal<EndOfDay[]>([]);
   protected readonly editing = signal<string | null>(null);
   protected readonly reviewProblem = signal<string | null>(null);
-  // New invoices typed or chosen and not added yet, by section.
-  private readonly pending = signal<Record<EndOfDayInvoiceKind, boolean>>({ Cash: false, Credit: false });
+  // New invoices and payments typed or chosen and not added yet, by section.
+  private readonly pending = signal<Record<EndOfDayInvoiceKind | EndOfDayPayoutKind, boolean>>({
+    Cash: false, Credit: false, SupplierPayment: false, EmployeeAdvance: false,
+  });
 
   protected readonly sales = signal<EndOfDaySales>(blankSales());
   private readonly savedSales = signal<EndOfDaySales>(blankSales());
@@ -904,6 +1176,13 @@ export class EndOfDayPage {
   protected readonly totalRevenue = computed(() => {
     const s = this.sales();
     return round((Number(s.cashAmount) || 0) + (Number(s.cardAmount) || 0) + (Number(s.taxAmount) || 0));
+  });
+  // The cash that should be in the drawer, as the sales are typed: the float and the cash sales with
+  // their tax, less the cash invoices, the suppliers paid and the advances.
+  protected readonly netCashInTill = computed(() => {
+    const day = this.day();
+    const paidOut = day ? (day.cashInvoicesTotal ?? 0) + (day.supplierPaymentsTotal ?? 0) + (day.advancesTotal ?? 0) : 0;
+    return netCash(this.sales(), round(paidOut));
   });
   protected readonly salesState = computed(() =>
     this.savingSales() ? 'Saving… · جارٍ الحفظ' : this.salesDirty() ? 'Not saved yet · لم يُحفظ' : this.day()?.netSales ? 'Saved · تم الحفظ' : '',
@@ -927,6 +1206,20 @@ export class EndOfDayPage {
     return day ? (kind === 'Cash' ? day.cashInvoicesTotal : day.creditInvoicesTotal) : 0;
   }
 
+  protected payoutsOf(kind: EndOfDayPayoutKind): EndOfDayPayout[] {
+    return (this.day()?.payouts ?? []).filter((p) => p.kind === kind);
+  }
+
+  protected payoutCount(kind: EndOfDayPayoutKind): number {
+    const day = this.day();
+    return day ? ((kind === 'SupplierPayment' ? day.supplierPayments : day.advances) ?? 0) : 0;
+  }
+
+  protected payoutTotal(kind: EndOfDayPayoutKind): number {
+    const day = this.day();
+    return day ? ((kind === 'SupplierPayment' ? day.supplierPaymentsTotal : day.advancesTotal) ?? 0) : 0;
+  }
+
   protected photoOf(id: string, photo: EndOfDayPhoto): PhotoSource {
     const date = this.date();
     const key = `${date}/${id}/${photo.fileName}/${photo.bytes}`;
@@ -938,7 +1231,7 @@ export class EndOfDayPage {
     return source;
   }
 
-  protected pendingIn(kind: EndOfDayInvoiceKind, pending: boolean): void {
+  protected pendingIn(kind: EndOfDayInvoiceKind | EndOfDayPayoutKind, pending: boolean): void {
     this.pending.update((p) => ({ ...p, [kind]: pending }));
     if (!pending) {
       this.reviewProblem.set(null);
@@ -964,6 +1257,10 @@ export class EndOfDayPage {
 
   protected async remove(invoice: EndOfDayInvoice): Promise<void> {
     await this.run(() => this.api.removeInvoice(this.date(), invoice.id), 'The invoice could not be taken off.');
+  }
+
+  protected async removePayout(payout: EndOfDayPayout): Promise<void> {
+    await this.run(() => this.api.removePayout(this.date(), payout.kind, payout.id), 'The payment could not be taken off.');
   }
 
   // A figure typed: kept a moment later, unless another follows.
@@ -1009,8 +1306,10 @@ export class EndOfDayPage {
     const problem =
       pending.Cash || pending.Credit
         ? `An invoice is filled in ${pending.Cash ? 'under cash' : 'under credit'} but not added: add it, or clear it. · توجد فاتورة لم تُضف بعد.`
+        : pending.SupplierPayment || pending.EmployeeAdvance
+          ? `${pending.SupplierPayment ? 'A supplier payment' : 'An advance'} is filled in but not added: add it, or clear it. · يوجد مبلغ لم يُضف بعد.`
         : this.editing()
-          ? 'Save or cancel the invoice being changed. · احفظ الفاتورة أو ألغِ التعديل.'
+          ? 'Save or cancel the entry being changed. · احفظ التعديل أو ألغِه.'
           : !day || day.netSales <= 0
             ? "Enter the day's sales report: its cash or Visa takings. · أدخل ريبورت المبيعات: إيراد الكاش أو الفيزا."
             : (day.taxAmount ?? 0) > day.netSales
@@ -1021,13 +1320,22 @@ export class EndOfDayPage {
       return;
     }
     const confirmed = await firstValueFrom(
-      this.dialog.open<EndOfDaySummaryDialog, EndOfDaySummaryData, boolean>(EndOfDaySummaryDialog, { data: { day: day! }, width: '640px', maxWidth: '96vw' }).afterClosed(),
+      this.dialog
+        .open<EndOfDaySummaryDialog, EndOfDaySummaryData, boolean>(EndOfDaySummaryDialog, {
+          data: { day: day!, canApprove: this.approvals.canApprove() },
+          width: '680px',
+          maxWidth: '96vw',
+        })
+        .afterClosed(),
     );
     if (!confirmed) {
       return;
     }
     if (await this.run(() => this.api.submit(this.date()), 'The end of day could not be submitted.')) {
-      this.notify.info(`The end of day of ${this.date()} is submitted. · تم إرسال التقفيل.`);
+      const asked = (this.day()?.payouts ?? []).filter((p) => p.voucher === 'Requested').length;
+      this.notify.info(
+        `The end of day of ${this.date()} is submitted${asked ? `: ${asked} ${asked === 1 ? 'payment waits' : 'payments wait'} for a manager's approval` : ''}. · تم إرسال التقفيل.`,
+      );
     }
   }
 
@@ -1054,8 +1362,8 @@ export class EndOfDayPage {
       return true;
     }
     const sales = this.sales();
-    if ([sales.cashAmount, sales.cardAmount, sales.taxAmount, sales.voidsAmount].some((n) => n !== null && (!Number.isFinite(n) || n < 0))) {
-      this.salesProblem.set('The cash, Visa, tax and voids are zero or more. · المبالغ صفر أو أكثر.');
+    if ([sales.cashAmount, sales.cardAmount, sales.taxAmount, sales.voidsAmount, sales.openingFloat].some((n) => n !== null && (!Number.isFinite(n) || n < 0))) {
+      this.salesProblem.set('The float, cash, Visa, tax and voids are zero or more. · المبالغ صفر أو أكثر.');
       return false;
     }
     const date = this.date();
@@ -1113,6 +1421,12 @@ export class EndOfDayPage {
     } catch (error) {
       this.error.set(errorMessage(error, 'The suppliers could not be loaded.'));
     }
+    try {
+      this.employees.set(await firstValueFrom(this.menuSales.staff()));
+    } catch {
+      // No staff to choose from: an advance cannot be added, the rest of the day can.
+      this.employees.set([]);
+    }
     await this.load();
   }
 
@@ -1143,16 +1457,19 @@ export class EndOfDayPage {
 }
 
 function blankSales(): EndOfDaySales {
-  return { cashAmount: null, cardAmount: null, taxAmount: null, voidsAmount: null, notes: '' };
+  return { cashAmount: null, cardAmount: null, taxAmount: null, voidsAmount: null, notes: '', openingFloat: null };
 }
 
 function salesOf(day: EndOfDay): EndOfDaySales {
-  return { cashAmount: day.cashAmount, cardAmount: day.cardAmount, taxAmount: day.taxAmount, voidsAmount: day.voidsAmount, notes: day.notes ?? '' };
+  return {
+    cashAmount: day.cashAmount, cardAmount: day.cardAmount, taxAmount: day.taxAmount, voidsAmount: day.voidsAmount, notes: day.notes ?? '',
+    openingFloat: day.openingFloat ?? null,
+  };
 }
 
 function sameSales(a: EndOfDaySales, b: EndOfDaySales): boolean {
   return a.cashAmount === b.cashAmount && a.cardAmount === b.cardAmount && a.taxAmount === b.taxAmount && a.voidsAmount === b.voidsAmount
-    && (a.notes ?? '').trim() === (b.notes ?? '').trim();
+    && a.openingFloat === b.openingFloat && (a.notes ?? '').trim() === (b.notes ?? '').trim();
 }
 
 function todayIso(): string {

@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using Costing.Domain.EndOfDay;
 using Costing.Domain.Purchases;
+using Costing.Domain.Staff;
 using Costing.Domain.Suppliers;
 
 namespace Costing.Infrastructure.Persistence.Configurations;
@@ -16,6 +17,7 @@ internal sealed class EndOfDayReportConfiguration : IEntityTypeConfiguration<End
         builder.Property(d => d.CardAmount).HasPrecision(18, 2);
         builder.Property(d => d.TaxAmount).HasPrecision(18, 2);
         builder.Property(d => d.VoidsAmount).HasPrecision(18, 2);
+        builder.Property(d => d.OpeningFloat).HasPrecision(18, 2);
         builder.Property(d => d.Notes).HasMaxLength(EndOfDayReport.MaxNotes);
         builder.Property(d => d.SalesPhotoFileName).HasMaxLength(200);
         builder.Property(d => d.SalesPhotoContentType).HasMaxLength(64);
@@ -29,8 +31,14 @@ internal sealed class EndOfDayReportConfiguration : IEntityTypeConfiguration<End
         builder.Ignore(d => d.TotalRevenue);
         builder.Ignore(d => d.CashAfterInvoices);
         builder.Ignore(d => d.ExpectedIntoSafe);
+        builder.Ignore(d => d.CashTax);
+        builder.Ignore(d => d.CashSalesCollected);
+        builder.Ignore(d => d.CashPaidOut);
+        builder.Ignore(d => d.NetCashInTill);
         builder.HasMany(d => d.Invoices).WithOne().HasForeignKey(i => i.ReportId).OnDelete(DeleteBehavior.Cascade);
         builder.Navigation(d => d.Invoices).HasField("_invoices").UsePropertyAccessMode(PropertyAccessMode.Field);
+        builder.HasMany(d => d.Payouts).WithOne().HasForeignKey(p => p.ReportId).OnDelete(DeleteBehavior.Cascade);
+        builder.Navigation(d => d.Payouts).HasField("_payouts").UsePropertyAccessMode(PropertyAccessMode.Field);
         // One a business day.
         builder.HasIndex(d => d.Date).IsUnique();
     }
@@ -51,6 +59,24 @@ internal sealed class EndOfDayInvoiceConfiguration : IEntityTypeConfiguration<En
         // A purchase invoice is the one an invoice handed in was posted as, once.
         builder.HasOne<PurchaseInvoice>().WithMany().HasForeignKey(i => i.PurchaseInvoiceId).OnDelete(DeleteBehavior.Restrict);
         builder.HasIndex(i => i.PurchaseInvoiceId).IsUnique();
+    }
+}
+
+// Cash paid out of the till on the day: to a supplier or an employee, with its receipt.
+internal sealed class EndOfDayPayoutConfiguration : IEntityTypeConfiguration<EndOfDayPayout>
+{
+    public void Configure(EntityTypeBuilder<EndOfDayPayout> builder)
+    {
+        builder.ToTable("EndOfDayPayouts", CostingDbContext.CostingSchema);
+        builder.Property(p => p.Kind).IsEnumName();
+        builder.Property(p => p.Amount).HasPrecision(18, 2);
+        builder.Property(p => p.Note).HasMaxLength(EndOfDayReport.MaxInvoiceNote);
+        builder.Property(p => p.ReceiptFileName).HasMaxLength(200);
+        builder.Property(p => p.ReceiptContentType).HasMaxLength(64);
+        builder.Ignore(p => p.Receipt);
+        builder.Ignore(p => p.PayeeId);
+        builder.HasOne<Supplier>().WithMany().HasForeignKey(p => p.SupplierId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne<StaffMember>().WithMany().HasForeignKey(p => p.EmployeeId).OnDelete(DeleteBehavior.Restrict);
     }
 }
 

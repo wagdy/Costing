@@ -199,8 +199,9 @@ public sealed record RefundRequest(Guid? LinePublicId, int? Quantity);
 [Authorize(Policy = Permissions.InventoryView)]
 public sealed class StaffController(ISender sender) : ControllerBase
 {
+    // Read where an advance is given: the safe, the daily batch, waste, and the end of the day.
     [HttpGet]
-    [CostingTab(CostingTabs.Financials | CostingTabs.Purchases | CostingTabs.Waste)]
+    [CostingTab(CostingTabs.Financials | CostingTabs.Purchases | CostingTabs.Waste | CostingTabs.EndOfDay)]
     public Task<IReadOnlyList<StaffMemberDto>> GetStaff(CancellationToken cancellationToken) => sender.Send(new GetStaffQuery(), cancellationToken);
 
     [HttpPut("{staffId:guid}")]

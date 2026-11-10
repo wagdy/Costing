@@ -5,7 +5,7 @@ namespace Costing.Infrastructure.Persistence;
 
 internal sealed class EndOfDayRepository(CostingDbContext db) : IEndOfDayRepository
 {
-    private IQueryable<EndOfDayReport> WithInvoices => db.EndOfDayReports.Include(d => d.Invoices);
+    private IQueryable<EndOfDayReport> WithInvoices => db.EndOfDayReports.Include(d => d.Invoices).Include(d => d.Payouts).AsSplitQuery();
 
     public Task<EndOfDayReport?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default) =>
         WithInvoices.SingleOrDefaultAsync(d => d.Id == id, cancellationToken);
@@ -20,6 +20,9 @@ internal sealed class EndOfDayRepository(CostingDbContext db) : IEndOfDayReposit
 
     public Task<EndOfDayReport?> GetByInvoiceAsync(Guid invoiceId, CancellationToken cancellationToken = default) =>
         WithInvoices.SingleOrDefaultAsync(d => d.Invoices.Any(i => i.Id == invoiceId), cancellationToken);
+
+    public Task<EndOfDayReport?> GetByPayoutAsync(Guid payoutId, CancellationToken cancellationToken = default) =>
+        WithInvoices.SingleOrDefaultAsync(d => d.Payouts.Any(p => p.Id == payoutId), cancellationToken);
 }
 
 // A photo handed in at the end of the day: one row each, its bytes alone.

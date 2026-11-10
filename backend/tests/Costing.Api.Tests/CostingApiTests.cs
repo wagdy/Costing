@@ -783,6 +783,78 @@ public class CostingApiTests
         Assert.Equal("Draft", (await Json(await manager.PostAsync($"{day}/reopen", null, Cancel))).GetProperty("status").GetString());
     }
 
+    // The cash a branch paid out of the till, each with its receipt sent as a file: a supplier paid,
+    // an employee advanced. Handed in by the branch, each is asked of a manager; approved, it is in
+    // the safe. The cash left in the drawer is the float and the cash sales, less all paid out.
+    [Fact]
+    public async Task A_branch_hands_in_the_cash_paid_out_of_the_till_with_its_receipts_and_a_manager_approves_it_into_the_safe()
+    {
+        await using var api = await TestApi.StartAsync();
+        var manager = await api.ManagerAsync();
+        var today = await TodayAsync(manager);
+        var (nile, mona) = (Guid.NewGuid(), Guid.NewGuid());
+        await Json(await manager.PutAsJsonAsync($"/api/inventory/suppliers/{nile}", new { name = "Nile Mills" }, Cancel));
+        Assert.True((await manager.PostAsJsonAsync($"/api/financials/suppliers/{nile}/opening-balance",
+            new { entryId = Guid.NewGuid(), owed = 1_000, date = Iso(today.AddDays(-7)) }, Cancel)).IsSuccessStatusCode);
+        await Json(await manager.PutAsJsonAsync($"/api/staff/{mona}", new { name = "Mona", jobTitle = "Cashier", isActive = true }, Cancel));
+
+        // The branch, with the end of the day alone: it reads the staff to choose who was advanced.
+        var branch = await api.UserAsync(manager, "Hany", UserRole.Storekeeper);
+        await Json(await manager.PutAsJsonAsync($"/api/access/{api.UserIds["hany@example.com"]}", new { tabs = new[] { "EndOfDay" } }, Cancel));
+        Assert.Equal(["Mona"], (await Json(await branch.GetAsync("/api/staff", Cancel))).EnumerateArray().Select(e => e.GetProperty("name").GetString()));
+
+        byte[] jpeg = [0xFF, 0xD8, 0xFF, 0xE0, 0, 0x10, 0x4A, 0x46, 0x49, 0x46];
+        MultipartFormDataContent Payout(Guid id, string payeeField, Guid payee, string amount, bool withReceipt = true)
+        {
+            var form = new MultipartFormDataContent
+            {
+                { new StringContent(id.ToString()), "id" }, { new StringContent(payee.ToString()), payeeField }, { new StringContent(amount), "amount" },
+                { new StringContent("Cash out of the drawer"), "note" },
+            };
+            if (withReceipt)
+            {
+                var receipt = new ByteArrayContent(jpeg);
+                receipt.Headers.ContentType = new MediaTypeHeaderValue("image/jpeg");
+                form.Add(receipt, "file", $"{payeeField}-receipt.jpg");
+            }
+            return form;
+        }
+        var day = $"/api/end-of-day/{Iso(today)}";
+        var (paid, advanced) = (Guid.NewGuid(), Guid.NewGuid());
+
+        // No receipt: refused, saying so.
+        var noReceipt = await branch.PostAsync($"{day}/supplier-payments", Payout(paid, "supplierId", nile, "600", withReceipt: false), Cancel);
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, noReceipt.StatusCode);
+        Assert.Contains("Photograph the payment receipt", await noReceipt.Content.ReadAsStringAsync(Cancel));
+
+        await Json(await branch.PostAsync($"{day}/supplier-payments", Payout(paid, "supplierId", nile, "600.50"), Cancel));
+        var handedIn = await Json(await branch.PostAsync($"{day}/advances", Payout(advanced, "employeeId", mona, "250"), Cancel));
+        Assert.Equal((600.5m, 250m), (handedIn.GetProperty("supplierPaymentsTotal").GetDecimal(), handedIn.GetProperty("advancesTotal").GetDecimal()));
+        Assert.Equal(["SupplierPayment", "EmployeeAdvance"], handedIn.GetProperty("payouts").EnumerateArray().Select(p => p.GetProperty("kind").GetString()));
+
+        // Changed while a draft, as JSON.
+        await Json(await branch.PutAsJsonAsync($"{day}/supplier-payments/{paid}", new { supplierId = nile, amount = 600, note = "Last week's flour" }, Cancel));
+        var sales = await Json(await branch.PutAsJsonAsync($"{day}/sales", new { cashAmount = 1_000, cardAmount = 500, taxAmount = 210, voidsAmount = 0, openingFloat = 500 }, Cancel));
+        // 500 + 1,000 and its 140 of tax, less 600 and 250.
+        Assert.Equal((500m, 1_140m, 790m), (sales.GetProperty("openingFloat").GetDecimal(), sales.GetProperty("cashSalesCollected").GetDecimal(),
+            sales.GetProperty("netCashInTill").GetDecimal()));
+
+        // Handed in by the branch: asked of a manager.
+        var submitted = await Json(await branch.PostAsync($"{day}/submit", null, Cancel));
+        Assert.Equal(["Requested", "Requested"], submitted.GetProperty("payouts").EnumerateArray().Select(p => p.GetProperty("voucher").GetString()));
+        Assert.Equal(860m, submitted.GetProperty("expectedIntoSafe").GetDecimal());
+
+        await Json(await manager.PostAsync($"/api/inventory/approval-requests/{paid}/approve", null, Cancel));
+        await Json(await manager.PostAsync($"/api/inventory/approval-requests/{advanced}/approve", null, Cancel));
+        var after = await Json(await manager.GetAsync(day, Cancel));
+        Assert.Equal(["InSafe", "InSafe"], after.GetProperty("payouts").EnumerateArray().Select(p => p.GetProperty("voucher").GetString()));
+
+        // Each receipt kept, by its payment's id.
+        var receipt = await manager.GetAsync($"{day}/photos/{advanced}", Cancel);
+        Assert.Equal("image/jpeg", receipt.Content.Headers.ContentType!.MediaType);
+        Assert.Equal(jpeg, await receipt.Content.ReadAsByteArrayAsync(Cancel));
+    }
+
     private static MultipartFormDataContent File(byte[] content, string name)
     {
         var file = new ByteArrayContent(content);

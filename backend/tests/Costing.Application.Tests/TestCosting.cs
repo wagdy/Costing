@@ -271,6 +271,8 @@ public sealed class EndOfDayStore : ListStore<EndOfDayReport>, IEndOfDayReposito
         Task.FromResult<IReadOnlyList<EndOfDayReport>>(All.Where(d => d.Date >= from && d.Date <= to).ToList());
     public Task<EndOfDayReport?> GetByInvoiceAsync(Guid invoiceId, CancellationToken cancellationToken = default) =>
         Task.FromResult(All.SingleOrDefault(d => d.Invoices.Any(i => i.Id == invoiceId)));
+    public Task<EndOfDayReport?> GetByPayoutAsync(Guid payoutId, CancellationToken cancellationToken = default) =>
+        Task.FromResult(All.SingleOrDefault(d => d.Payouts.Any(p => p.Id == payoutId)));
     public void Put(Guid id, byte[] content) => _photos[id] = content;
     public Task<byte[]?> GetAsync(Guid id, CancellationToken cancellationToken = default) => Task.FromResult(_photos.GetValueOrDefault(id));
     public void Remove(Guid id) => _photos.Remove(id);

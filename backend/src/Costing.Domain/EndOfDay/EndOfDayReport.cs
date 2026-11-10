@@ -24,6 +24,14 @@ public enum EndOfDayInvoiceKind
     Credit = 2,
 }
 
+// Cash handed out of the till during the day, its receipt photographed: to a supplier against what
+// the restaurant owes them (إذن صرف مورد), or to an employee as an advance on their pay (سلفة).
+public enum EndOfDayPayoutKind
+{
+    SupplierPayment = 1,
+    EmployeeAdvance = 2,
+}
+
 // A photo or scan handed in, described; its bytes are kept apart (IEndOfDayPhotoStore).
 public sealed record EndOfDayPhoto(string FileName, string ContentType, int Bytes)
 {
@@ -40,17 +48,25 @@ public sealed record EndOfDayPhoto(string FileName, string ContentType, int Byte
 
 // A day's close (تقفيل اليوم) as the branch hands it in: each invoice paid in cash out of the
 // takings, each bought on credit, every one with its paper photographed, its supplier and the total
-// written on it; and the day's Z report, its cash and Visa sales before tax, the tax on them and the
-// voids, with a photo of it if there is one. Nothing is posted by it: the invoices become purchase
-// invoices on the daily batch, each transcribed from its photo, and the sales the day's takings on
-// Financials. One a business day.
+// written on it; the cash handed out of the till to suppliers and as advances to employees, each
+// with its receipt; and the day's Z report, its cash and Visa sales before tax, the tax on them and
+// the voids, with a photo of it if there is one, and the float the drawer opened with. The invoices
+// become purchase invoices on the daily batch, each transcribed from its photo, and the sales the
+// day's takings on Financials; the payments and advances become the safe's entries out of the day's
+// takings when it is handed in (Vouchered). One a business day.
+//
+// The cash that should be in the drawer (NetCashInTill) is the float, and the cash sales with the
+// tax collected on them, less every payment out of it: the cash invoices, the suppliers paid and the
+// advances. The Visa and any other takings never reach the drawer.
 public sealed class EndOfDayReport : AggregateRoot
 {
     public const int MaxInvoices = 50;
     public const int MaxNotes = 500;
     public const int MaxInvoiceNote = 200;
+    public const int MaxPayouts = 50;
 
     private readonly List<EndOfDayInvoice> _invoices = [];
+    private readonly List<EndOfDayPayout> _payouts = [];
 
     private EndOfDayReport() { }
 
@@ -74,6 +90,9 @@ public sealed class EndOfDayReport : AggregateRoot
     public decimal? VoidsAmount { get; private set; }
     public string? Notes { get; private set; }
 
+    // The cash the drawer opened the day with (العهدة / الفكة).
+    public decimal? OpeningFloat { get; private set; }
+
     // The Z report's own photo, if one was handed in.
     public string? SalesPhotoFileName { get; private set; }
     public string? SalesPhotoContentType { get; private set; }
@@ -91,11 +110,17 @@ public sealed class EndOfDayReport : AggregateRoot
 
     public IReadOnlyList<EndOfDayInvoice> Invoices => _invoices.OrderBy(i => i.AddedAtUtc).ToList().AsReadOnly();
 
+    public IReadOnlyList<EndOfDayPayout> Payouts => _payouts.OrderBy(p => p.AddedAtUtc).ToList().AsReadOnly();
+
     public bool IsSubmitted => Status == EndOfDayStatus.Submitted;
 
     public decimal TotalOf(EndOfDayInvoiceKind kind) => _invoices.Where(i => i.Kind == kind).Sum(i => i.ReportedTotal);
 
     public int CountOf(EndOfDayInvoiceKind kind) => _invoices.Count(i => i.Kind == kind);
+
+    public decimal TotalOf(EndOfDayPayoutKind kind) => _payouts.Where(p => p.Kind == kind).Sum(p => p.Amount);
+
+    public int CountOf(EndOfDayPayoutKind kind) => _payouts.Count(p => p.Kind == kind);
 
     // Cash and Visa before tax: the day's revenue.
     public decimal NetSales => (CashAmount ?? 0) + (CardAmount ?? 0);
@@ -106,18 +131,34 @@ public sealed class EndOfDayReport : AggregateRoot
     // The day's cash once the cash invoices were paid out of it.
     public decimal CashAfterInvoices => (CashAmount ?? 0) - TotalOf(EndOfDayInvoiceKind.Cash);
 
-    // What should reach the safe: everything the day took in, less the cash invoices paid out of it,
-    // as the takings will show once the invoices are posted from them.
-    public decimal ExpectedIntoSafe => TotalRevenue - TotalOf(EndOfDayInvoiceKind.Cash);
+    // The tax collected on the cash sales: the Z report gives the tax on the cash and Visa together,
+    // the cash's share of it is in proportion, as the safe splits a day's tax.
+    public decimal CashTax => NetSales > 0 ? Math.Round((TaxAmount ?? 0) * (CashAmount ?? 0) / NetSales, 2, MidpointRounding.AwayFromZero) : 0;
+
+    // The cash the sales put in the drawer: the cash sales with the tax collected on them.
+    public decimal CashSalesCollected => (CashAmount ?? 0) + CashTax;
+
+    // Everything paid out of the drawer: the cash invoices, the suppliers paid, the advances.
+    public decimal CashPaidOut => TotalOf(EndOfDayInvoiceKind.Cash) + TotalOf(EndOfDayPayoutKind.SupplierPayment) + TotalOf(EndOfDayPayoutKind.EmployeeAdvance);
+
+    // The cash that should be in the drawer at the close (الصافي الفعلي المتبقي في الكاش): the float
+    // and the cash sales, less what was paid out of it. The Visa never reaches the drawer.
+    public decimal NetCashInTill => (OpeningFloat ?? 0) + CashSalesCollected - CashPaidOut;
+
+    // What should reach the safe: everything the day took in, less all that was paid out of it, as
+    // the takings will show once the invoices are posted and the payments entered from them.
+    public decimal ExpectedIntoSafe => TotalRevenue - CashPaidOut;
 
     public EndOfDayInvoice Invoice(Guid invoiceId) =>
         _invoices.SingleOrDefault(i => i.Id == invoiceId) ?? throw new NotFoundException("End-of-day invoice", invoiceId);
 
-    public void RecordSales(decimal? cash, decimal? card, decimal? tax, decimal? voids, string? notes, string by)
+    public void RecordSales(decimal? cash, decimal? card, decimal? tax, decimal? voids, string? notes, string by, decimal? openingFloat = null)
     {
         EnsureDraft();
         if (new[] { cash, card, tax, voids }.Any(n => n < 0))
             throw new DomainException("The cash, Visa, tax and voids are zero or more. · المبالغ صفر أو أكثر.");
+        if (openingFloat < 0)
+            throw new DomainException("The opening float is zero or more. · العهدة صفر أو أكثر.");
         var cleaned = Clean(notes);
         if (cleaned?.Length > MaxNotes)
             throw new DomainException("Keep the notes under 500 characters. · الملاحظات 500 حرف على الأكثر.");
@@ -125,6 +166,7 @@ public sealed class EndOfDayReport : AggregateRoot
         CardAmount = Money(card);
         TaxAmount = Money(tax);
         VoidsAmount = Money(voids);
+        OpeningFloat = Money(openingFloat);
         Notes = cleaned;
         Touch(by);
     }
@@ -161,6 +203,56 @@ public sealed class EndOfDayReport : AggregateRoot
         EnsureDraft();
         _invoices.Remove(Unposted(invoiceId));
         Touch(by);
+    }
+
+    public EndOfDayPayout Payout(Guid payoutId) =>
+        _payouts.SingleOrDefault(p => p.Id == payoutId) ?? throw new NotFoundException("End-of-day payment", payoutId);
+
+    // Cash handed out of the till: to a supplier (payee: the supplier) or an employee (payee: the
+    // employee), with its receipt.
+    public EndOfDayPayout AddPayout(Guid id, EndOfDayPayoutKind kind, Guid payeeId, decimal amount, string? note, EndOfDayPhoto receipt, string by)
+    {
+        EnsureDraft();
+        if (_payouts.Any(p => p.Id == id))
+            throw new DomainException("This payment is handed in already.");
+        if (_payouts.Count >= MaxPayouts)
+            throw new DomainException($"A day holds at most {MaxPayouts} payments and advances. · {MaxPayouts} على الأكثر في اليوم.");
+        var payout = new EndOfDayPayout(id, Id, kind, payeeId, amount, note, receipt);
+        _payouts.Add(payout);
+        Touch(by);
+        return payout;
+    }
+
+    public void ChangePayout(Guid payoutId, Guid payeeId, decimal amount, string? note, string by)
+    {
+        EnsureDraft();
+        Unvouchered(payoutId).Change(payeeId, amount, note);
+        Touch(by);
+    }
+
+    // A clearer photo of its receipt: the money is as it was, so even once in the safe.
+    public void ReplacePayoutReceipt(Guid payoutId, EndOfDayPhoto receipt, string by)
+    {
+        EnsureDraft();
+        Payout(payoutId).Photographed(receipt);
+        Touch(by);
+    }
+
+    // Taken off. One whose safe entry a manager refused can go too: nothing was entered for it.
+    public void RemovePayout(Guid payoutId, string by, bool voucherRefused = false)
+    {
+        EnsureDraft();
+        _payouts.Remove(voucherRefused ? Payout(payoutId) : Unvouchered(payoutId));
+        Touch(by);
+    }
+
+    // Its safe entry made, or asked of a manager, once the day is handed in: kept as it is from then,
+    // and corrected on the safe.
+    public void Vouchered(Guid payoutId)
+    {
+        if (!IsSubmitted)
+            throw new DomainException("The end of day is not submitted yet: its payments go to the safe once it is handed in.");
+        Payout(payoutId).VoucheredOn();
     }
 
     public void AttachSalesPhoto(EndOfDayPhoto photo, string by)
@@ -213,6 +305,14 @@ public sealed class EndOfDayReport : AggregateRoot
         if (invoice.PurchaseInvoiceId is { } posted && posted != purchaseInvoiceId)
             throw new DomainException("It is posted already, as another purchase invoice. · مرحلة بالفعل في فاتورة أخرى.");
         invoice.PostedAs(purchaseInvoiceId);
+    }
+
+    private EndOfDayPayout Unvouchered(Guid payoutId)
+    {
+        var payout = Payout(payoutId);
+        if (payout.VoucheredAtUtc is not null)
+            throw new DomainException("It went to the safe when the day was handed in: correct it on Financials → Safe. · مسجل في الخزنة: عدّله من الخزنة.");
+        return payout;
     }
 
     private EndOfDayInvoice Unposted(Guid invoiceId)
@@ -299,7 +399,66 @@ public sealed class EndOfDayInvoice : Entity
     }
 }
 
-// Returns each day with its Invoices loaded.
+// Cash handed out of the till: to a supplier or an employee, the amount, a short note and its
+// receipt (إيصال السداد / إيصال صرف السلفة); once the day is handed in, when its safe entry was made
+// (or asked of a manager), the entry's id being the payment's own.
+public sealed class EndOfDayPayout : Entity
+{
+    private EndOfDayPayout() { }
+
+    internal EndOfDayPayout(Guid id, Guid reportId, EndOfDayPayoutKind kind, Guid payeeId, decimal amount, string? note, EndOfDayPhoto receipt)
+    {
+        if (!Enum.IsDefined(kind))
+            throw new DomainException("Say whether a supplier was paid or an employee advanced. · مورد أم سلفة.");
+        Id = id;
+        ReportId = reportId;
+        Kind = kind;
+        AddedAtUtc = DateTime.UtcNow;
+        Change(payeeId, amount, note);
+        Photographed(receipt);
+    }
+
+    public Guid ReportId { get; private set; }
+    public EndOfDayPayoutKind Kind { get; private set; }
+    public Guid? SupplierId { get; private set; }
+    public Guid? EmployeeId { get; private set; }
+    public decimal Amount { get; private set; }
+    public string? Note { get; private set; }
+    public string ReceiptFileName { get; private set; } = string.Empty;
+    public string ReceiptContentType { get; private set; } = string.Empty;
+    public int ReceiptBytes { get; private set; }
+    public EndOfDayPhoto Receipt => new(ReceiptFileName, ReceiptContentType, ReceiptBytes);
+    public DateTime AddedAtUtc { get; private set; }
+
+    // When its safe entry was made or asked for: the day handed in.
+    public DateTime? VoucheredAtUtc { get; private set; }
+
+    // Who was paid: the supplier, or the employee.
+    public Guid PayeeId => (Kind == EndOfDayPayoutKind.SupplierPayment ? SupplierId : EmployeeId) ?? Guid.Empty;
+
+    internal void Change(Guid payeeId, decimal amount, string? note)
+    {
+        if (payeeId == Guid.Empty)
+            throw new DomainException(Kind == EndOfDayPayoutKind.SupplierPayment ? "Choose the supplier. · اختر المورد." : "Choose the employee. · اختر الموظف.");
+        if (amount <= 0)
+            throw new DomainException("Enter the amount paid, more than nothing. · أدخل المبلغ المدفوع.");
+        var cleaned = string.IsNullOrWhiteSpace(note) ? null : note.Trim();
+        if (cleaned?.Length > EndOfDayReport.MaxInvoiceNote)
+            throw new DomainException("Keep the note under 200 characters. · الملاحظة 200 حرف على الأكثر.");
+        var toSupplier = Kind == EndOfDayPayoutKind.SupplierPayment;
+        SupplierId = toSupplier ? payeeId : null;
+        EmployeeId = toSupplier ? null : payeeId;
+        Amount = Math.Round(amount, 2, MidpointRounding.AwayFromZero);
+        Note = cleaned;
+    }
+
+    internal void Photographed(EndOfDayPhoto receipt) =>
+        (ReceiptFileName, ReceiptContentType, ReceiptBytes) = (receipt.FileName, receipt.ContentType, receipt.Bytes);
+
+    internal void VoucheredOn() => VoucheredAtUtc ??= DateTime.UtcNow;
+}
+
+// Returns each day with its Invoices and Payouts loaded.
 public interface IEndOfDayRepository : IRepository<EndOfDayReport>
 {
     Task<EndOfDayReport?> GetByDateAsync(DateOnly date, CancellationToken cancellationToken = default);
@@ -308,10 +467,14 @@ public interface IEndOfDayRepository : IRepository<EndOfDayReport>
 
     // The day an invoice was handed in on.
     Task<EndOfDayReport?> GetByInvoiceAsync(Guid invoiceId, CancellationToken cancellationToken = default);
+
+    // The day a payment or advance was handed in on.
+    Task<EndOfDayReport?> GetByPayoutAsync(Guid payoutId, CancellationToken cancellationToken = default);
 }
 
 // The photos handed in, kept apart from the days so a list of them never loads a megabyte each:
-// an invoice's by its id, the Z report's by its day's. Written in the same unit of work.
+// an invoice's or a payment's receipt by its id, the Z report's by its day's. Written in the same
+// unit of work.
 public interface IEndOfDayPhotoStore
 {
     void Put(Guid id, byte[] content);

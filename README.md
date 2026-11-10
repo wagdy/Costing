@@ -19,6 +19,11 @@ HR system needed beside it. Bilingual (English and Arabic, right-to-left) throug
 - **Purchases**: suppliers' invoices (stock or general expenses), a day's purchases entered as one
   batch, invoice corrections, suppliers and categories. Expense items export to Excel and import
   back, as the raw materials do.
+- **End of the day**: a branch closes its day from a phone: its invoices, cash and on credit, the
+  cash it paid suppliers and advanced to staff, each photographed with its receipt, and its sales
+  report with the drawer's float; it shows the net cash that should be left in the till. Submitted,
+  the invoices open the daily batch, and each payment and advance goes to the safe (asked of a
+  manager when it is not one handing it in).
 - **Stock counts and waste**: counts drafted then posted, spoilage, and breakage.
 - **Financials**: the safe, its funding, the day's takings (gross, with the tax in them taken off
   at the tax rate), expense vouchers, what suppliers are owed and paid, the staff the safe pays and

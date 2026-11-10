@@ -3,9 +3,15 @@ import { Injectable, inject } from '@angular/core';
 import { Observable } from 'rxjs';
 
 // The end of the day (تقفيل اليوم), as the API keeps it: a day's invoices handed in with their
-// photos, cash and on credit, and its sales report; a draft until it is submitted.
+// photos, cash and on credit; the cash paid out of the till to suppliers and as advances to
+// employees, each with its receipt; and its sales report with the float the drawer opened with. A
+// draft until it is submitted; then each payment and advance goes to the safe (or is asked of a
+// manager).
 export type EndOfDayStatus = 'Draft' | 'Submitted';
 export type EndOfDayInvoiceKind = 'Cash' | 'Credit';
+export type EndOfDayPayoutKind = 'SupplierPayment' | 'EmployeeAdvance';
+// Where a payment's safe entry is: none yet, asked of a manager, in the safe, or refused.
+export type EndOfDayVoucherState = 'None' | 'Requested' | 'InSafe' | 'Refused';
 
 export interface EndOfDayPhoto {
   fileName: string;
@@ -25,6 +31,22 @@ export interface EndOfDayInvoice {
   // The purchase invoice it was posted as on the daily batch.
   purchaseInvoiceId: string | null;
   postedAtUtc: string | null;
+}
+
+// Cash paid out of the till: to a supplier (إذن صرف مورد) or an employee as an advance (سلفة).
+export interface EndOfDayPayout {
+  id: string;
+  kind: EndOfDayPayoutKind;
+  supplierId: string | null;
+  employeeId: string | null;
+  // The supplier's or the employee's name.
+  payee: string;
+  amount: number;
+  note: string | null;
+  receipt: EndOfDayPhoto;
+  addedAtUtc: string;
+  voucher: EndOfDayVoucherState;
+  voucheredAtUtc: string | null;
 }
 
 export interface EndOfDay {
@@ -60,6 +82,19 @@ export interface EndOfDay {
   submittedAtUtc: string | null;
   reopenedBy: string | null;
   reopenedAtUtc: string | null;
+  // The float the drawer opened with; the cash paid out to suppliers and as advances.
+  openingFloat: number | null;
+  payouts: EndOfDayPayout[];
+  supplierPayments: number;
+  supplierPaymentsTotal: number;
+  advances: number;
+  advancesTotal: number;
+  // The tax on the cash sales (their share of the day's tax), the cash the sales put in the drawer,
+  // all paid out of it, and what should be left in it (الصافي الفعلي المتبقي في الكاش).
+  cashTax: number;
+  cashSalesCollected: number;
+  cashPaidOut: number;
+  netCashInTill: number;
 }
 
 export interface EndOfDaySales {
@@ -68,6 +103,36 @@ export interface EndOfDaySales {
   taxAmount: number | null;
   voidsAmount: number | null;
   notes: string | null;
+  openingFloat: number | null;
+}
+
+// A payment as it is entered: the supplier paid or the employee advanced (payeeId), how much, a note.
+export interface EndOfDayPayoutEntry {
+  payeeId: string;
+  amount: number;
+  note: string | null;
+}
+
+export const payoutKindLabels: Record<EndOfDayPayoutKind, { en: string; ar: string; payee: string; route: string }> = {
+  SupplierPayment: { en: 'Supplier payment', ar: 'إذن صرف مورد', payee: 'supplierId', route: 'supplier-payments' },
+  EmployeeAdvance: { en: 'Employee advance', ar: 'سلفة موظف', payee: 'employeeId', route: 'advances' },
+};
+
+export const voucherLabels: Record<EndOfDayVoucherState, { en: string; ar: string; tone: string } | null> = {
+  None: null,
+  Requested: { en: 'Waiting for a manager', ar: 'بانتظار موافقة المدير', tone: 'warn' },
+  InSafe: { en: 'In the safe', ar: 'مسجل في الخزنة', tone: 'ok' },
+  Refused: { en: 'Refused by a manager', ar: 'رفضه المدير', tone: 'bad' },
+};
+
+// The cash that should be left in the drawer, as the API works it out: the float, and the cash
+// sales with their share of the tax collected, less all that was paid out of it (the cash invoices,
+// the suppliers paid, the advances). The Visa never reaches the drawer.
+export function netCash(sales: Pick<EndOfDaySales, 'cashAmount' | 'cardAmount' | 'taxAmount' | 'openingFloat'>, paidOut: number) {
+  const [cash, card, tax, float] = [Number(sales.cashAmount) || 0, Number(sales.cardAmount) || 0, Number(sales.taxAmount) || 0, Number(sales.openingFloat) || 0];
+  const cashTax = cash + card > 0 ? Math.round(((tax * cash) / (cash + card)) * 100) / 100 : 0;
+  const collected = Math.round((cash + cashTax) * 100) / 100;
+  return { float, cashTax, collected, paidOut, net: Math.round((float + collected - paidOut) * 100) / 100 };
 }
 
 export interface EndOfDayInvoiceEntry {
@@ -154,7 +219,38 @@ export class EndOfDayApi {
     return this.http.post<EndOfDay>(`/api/end-of-day/${date}/reopen`, null);
   }
 
-  // A photo of the day: an invoice's by its id, the sales report's by the day's.
+  // Cash paid out of the till, with its receipt; the id made here once, so it is not added twice.
+  addPayout(date: string, kind: EndOfDayPayoutKind, id: string, entry: EndOfDayPayoutEntry, file: File): Observable<EndOfDay> {
+    const form = new FormData();
+    form.append('id', id);
+    form.append(payoutKindLabels[kind].payee, entry.payeeId);
+    form.append('amount', String(entry.amount));
+    if (entry.note) {
+      form.append('note', entry.note);
+    }
+    form.append('file', file, file.name);
+    return this.http.post<EndOfDay>(`/api/end-of-day/${date}/${payoutKindLabels[kind].route}`, form);
+  }
+
+  changePayout(date: string, kind: EndOfDayPayoutKind, id: string, entry: EndOfDayPayoutEntry): Observable<EndOfDay> {
+    return this.http.put<EndOfDay>(`/api/end-of-day/${date}/${payoutKindLabels[kind].route}/${id}`, {
+      [payoutKindLabels[kind].payee]: entry.payeeId,
+      amount: entry.amount,
+      note: entry.note,
+    });
+  }
+
+  replacePayoutReceipt(date: string, kind: EndOfDayPayoutKind, id: string, file: File): Observable<EndOfDay> {
+    const form = new FormData();
+    form.append('file', file, file.name);
+    return this.http.put<EndOfDay>(`/api/end-of-day/${date}/${payoutKindLabels[kind].route}/${id}/receipt`, form);
+  }
+
+  removePayout(date: string, kind: EndOfDayPayoutKind, id: string): Observable<EndOfDay> {
+    return this.http.delete<EndOfDay>(`/api/end-of-day/${date}/${payoutKindLabels[kind].route}/${id}`);
+  }
+
+  // A photo of the day: an invoice's or a payment's receipt by its id, the sales report's by the day's.
   photo(date: string, photoId: string): Observable<Blob> {
     return this.http.get(`/api/end-of-day/${date}/photos/${photoId}`, { responseType: 'blob' });
   }

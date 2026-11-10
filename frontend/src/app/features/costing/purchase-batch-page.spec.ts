@@ -381,6 +381,8 @@ describe('a day’s purchases entered together', () => {
       cashInvoices: 2, cashInvoicesTotal: 450, creditInvoices: 1, creditInvoicesTotal: 1_280, netSales: 4_000, totalRevenue: 4_560,
       cashAfterInvoices: 2_550, expectedIntoSafe: 4_110, posted: 1, takingsEntered: null, createdBy: 'Hany', createdAtUtc: '', updatedBy: 'Hany', updatedAtUtc: '',
       submittedBy: 'Hany', submittedAtUtc: '2026-10-13T21:00:00Z', reopenedBy: null, reopenedAtUtc: null,
+      openingFloat: null, payouts: [], supplierPayments: 0, supplierPaymentsTotal: 0, advances: 0, advancesTotal: 0,
+      cashTax: 420, cashSalesCollected: 3_420, cashPaidOut: 450, netCashInTill: 2_970,
     } satisfies EndOfDay;
 
     it('opens the date as its invoices: each with its supplier, paid as handed in, its photo above its lines, and its total matched', async () => {
