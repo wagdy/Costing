@@ -30,6 +30,11 @@ HR system needed beside it. Bilingual (English and Arabic, right-to-left) throug
 - **Users and permissions**: users sign in with an email and a password, as a Manager, an
   Accountant, a Cost Controller or a Storekeeper. Each role works its own sections until a manager
   ticks a user's on Permissions; the API holds every request to them.
+- **POS link**: a point of sale sends each shift's Z report here, with a key a manager makes on
+  Settings → POS Integration (kept only as its hash): it becomes the day's sales summary, its
+  stock taken by the recipes and what was voided after the kitchen as waste, and the day's
+  takings. Sent again it changes nothing; corrected, it replaces what it made; a day entered by hand
+  is left alone. The POS reads the menu from here too, and every call is in the sync log.
 - **Company Settings**: the company's name and logo, the currency (on every screen, sheet and
   message), the country, the time zone and the hour its business day starts.
 

@@ -253,6 +253,12 @@ export const routes: Routes = [
         loadComponent: () => import('./features/settings/settings-page').then((m) => m.SettingsPage),
       },
       {
+        // The link to the restaurant's POS: its key and the log of its calls; a manager's.
+        path: 'settings/pos-integration',
+        canActivate: [permissionGuard(Permissions.SettingsManage)],
+        loadComponent: () => import('./features/settings/pos-integration-page').then((m) => m.PosIntegrationPage),
+      },
+      {
         // Their own account and password; where a user working no section lands.
         path: 'account',
         loadComponent: () => import('./features/account/account-page').then((m) => m.AccountPage),

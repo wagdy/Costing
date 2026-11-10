@@ -72,6 +72,10 @@ public sealed class CostingDbContext(DbContextOptions<CostingDbContext> options)
     public DbSet<ManualSalesSheet> ManualSalesSheets => Set<ManualSalesSheet>();
     public DbSet<EndOfDayReport> EndOfDayReports => Set<EndOfDayReport>();
     public DbSet<EndOfDayPhotoContent> EndOfDayPhotos => Set<EndOfDayPhotoContent>();
+    public DbSet<Domain.Integrations.PosLink> PosLinks => Set<Domain.Integrations.PosLink>();
+    public DbSet<Domain.Integrations.PosZReport> PosZReports => Set<Domain.Integrations.PosZReport>();
+    public DbSet<Domain.Integrations.PosDay> PosDays => Set<Domain.Integrations.PosDay>();
+    public DbSet<Domain.Integrations.PosSyncLog> PosSyncLogs => Set<Domain.Integrations.PosSyncLog>();
 
     public DbSet<UserTabAccess> UserTabAccess => Set<UserTabAccess>();
     public DbSet<Domain.Company.CompanySettings> CompanySettings => Set<Domain.Company.CompanySettings>();

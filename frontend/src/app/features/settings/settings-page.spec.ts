@@ -1,4 +1,5 @@
 import { TestBed } from '@angular/core/testing';
+import { provideRouter } from '@angular/router';
 import { of } from 'rxjs';
 import { aCompany } from '../../../testing/fixtures';
 import { Company, SettingsApi } from '../../core/settings/company';
@@ -16,6 +17,7 @@ describe('the company settings', () => {
   async function render() {
     TestBed.configureTestingModule({
       providers: [
+        provideRouter([]),
         { provide: SettingsApi, useValue: { save, uploadLogo, removeLogo } },
         { provide: NotifyService, useValue: notify },
       ],

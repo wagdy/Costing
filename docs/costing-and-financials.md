@@ -484,6 +484,78 @@ to what reached the safe: from then on the safe's balances, earlier months' too,
 The tax rate on Financials → Tax & service (`FinancialSettings.TaxPercent`, a manager's) is kept for
 the bills entered as printed; a day's takings carry the tax as the Z report gives it.
 
+## The POS link (ربط نقطة البيع)
+
+A point of sale can send each shift's Z report here, and read the menu from here, over HTTP; it
+never touches this database. **Settings → POS Integration** (a manager's, `SettingsManage`) holds
+the link:
+
+- **The key.** *Generate key* makes one (`cpk_` and 32 random bytes) and shows it once, to be
+  pasted into the POS. Only its SHA-256 hash is kept, with its last four characters to tell it by
+  (`••••w9S8`) and who made it when; it is checked in constant time. *Regenerate key* makes a new
+  one and the old one stops working at once. (`GET /api/settings/pos-integration`, `POST
+  /api/settings/pos-integration/key`.)
+- **The sync log (سجل المزامنة).** Every call the POS makes, refused ones too: when, which call,
+  what came of it (read, recorded, unchanged, updated, refused, unauthorised, failed), the
+  business day and what happened, newest first, filtered to the Z reports or the problems. The key
+  is never written in it.
+
+### What the POS calls
+
+Every call sends the key in `X-API-Key` (or `X-Pos-Node-Key`); without it, or with a wrong one,
+the answer is 401 and the call is logged.
+
+| Call | What it does |
+| --- | --- |
+| `GET /api/integrations/pos/ping` | The link test: `{ ok, system, company, atUtc }` |
+| `GET /api/integrations/pos/menu` | The menu: categories, items by their number (6101) with price and availability, sizes by their code (6101-17), add-ons (A3) |
+| `POST /api/integrations/pos/z-report` | A shift's Z report (below) |
+| `POST /api/integrations/pos/events` | The POS's own event envelope (`{ id, kind, branchCode, occurredAtUtc, data }`): `day.closed` is read as a Z report; any other kind is answered 202 and left |
+
+A Z report:
+
+```json
+{
+  "zReportId": "a09d376d-…", "date": "2026-11-10", "shiftNumber": 1,
+  "takings": { "totalCash": 220.0, "totalCard": 30.0, "totalTax": 35.0, "voidsAmount": 330.0,
+               "voidReasons": [{ "reason": "Item quality", "count": 1, "amount": 140.0 }] },
+  "soldItems": [{ "itemCode": "6101-17", "quantitySold": 1 }, { "itemCode": 9003, "quantitySold": 2 }],
+  "wastedItems": [{ "itemCode": "6101-18", "quantity": 1, "reason": "Item quality" }]
+}
+```
+
+`zReportId` is the POS's id for the shift, the same each time it is sent. Cash and card are
+before tax, with the tax collected on them apart, as the day's takings are kept. An item is found
+by its code, or a size by its code (`6101-17`); an item sold by size without one names its size
+in `size`, and a line with no code is found by its `name`. `wastedItems` were made and then voided
+after the kitchen.
+
+### What a Z report makes
+
+- **The day's sales summary** (`DailySummary`), every line placed on the menu first: one that
+  cannot be (a code not on the menu, an item sold by size without its size) refuses the whole
+  report, 422, naming every such line, and nothing is recorded. Each item sold takes its stock by
+  its recipe (`Sale`); each wasted one is a line voided after the kitchen, its stock taken as waste
+  (`Waste`), not charged. An item with no recipe is recorded and the answer warns of it.
+- **The day's takings in the safe** (توريد إيراد يومية): the cash and card before tax, the tax,
+  the voids and their reasons in the notes, for that business day.
+- **All of it or none**: both are written in one save.
+- **Sent again as it was**: nothing changes (`Unchanged`). **Sent changed** (the shift corrected
+  on the POS): what it made is voided, the stock put back and the takings reversed, and the day
+  made again (`Updated`).
+- **A day's shifts together**: each day has one sales summary and one takings, made from all of
+  that day's reports; a second shift's report remakes the day with both.
+- **A day entered by hand is left alone**: if its sales summary or its takings were entered here
+  by hand (or by sheet), the report is refused, 422, naming which. Void them here to let the POS's
+  report in.
+- A report that collides with another change at the same moment is tried again; if it still
+  cannot be saved, the answer is 503 so the POS sends it again later.
+
+The answer says what was done: `{ zReportId, date, outcome, saleId, takingsId, items, quantity,
+wasted, salesValue, cash, card, tax, warnings }`.
+The tables are `PosLinks` (the key's hash), `PosZReports` (each report as last received, with
+its hash), `PosDays` (what the POS made of each day) and `PosSyncLogs`.
+
 ## Company settings and the business day
 
 See [company-settings.md](company-settings.md). A business day starts at the company's hour (4

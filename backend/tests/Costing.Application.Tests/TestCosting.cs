@@ -10,6 +10,7 @@ using Costing.Domain.Categories;
 using Costing.Domain.Common;
 using Costing.Domain.EndOfDay;
 using Costing.Domain.Expenses;
+using Costing.Domain.Integrations;
 using Costing.Domain.Menu;
 using Costing.Domain.Production;
 using Costing.Domain.Purchases;
@@ -44,6 +45,7 @@ public sealed class TestCosting
     public ProfileStore Profile { get; } = new();
     public SettingsStore Settings { get; } = new();
     public EndOfDayStore EndOfDays { get; } = new();
+    public PosStore Pos { get; } = new();
 
     // Names and dates for the records: the business day can be set a day behind the calendar, as
     // it is after midnight.
@@ -86,6 +88,10 @@ public sealed class TestCosting
         services.AddSingleton<Costing.Domain.Company.ICompanySettingsStore>(Settings);
         services.AddSingleton<IEndOfDayRepository>(EndOfDays);
         services.AddSingleton<IEndOfDayPhotoStore>(EndOfDays);
+        services.AddSingleton<IPosLinkStore>(Pos);
+        services.AddSingleton<IPosZReportRepository>(Pos.Reports);
+        services.AddSingleton<IPosDayRepository>(Pos.Days);
+        services.AddSingleton<IPosSyncJournal>(Pos.Journal);
         _services = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true, ValidateOnBuild = true });
         Menu.SeedTestMenu();
     }
@@ -268,6 +274,42 @@ public sealed class EndOfDayStore : ListStore<EndOfDayReport>, IEndOfDayReposito
     public void Put(Guid id, byte[] content) => _photos[id] = content;
     public Task<byte[]?> GetAsync(Guid id, CancellationToken cancellationToken = default) => Task.FromResult(_photos.GetValueOrDefault(id));
     public void Remove(Guid id) => _photos.Remove(id);
+}
+
+// The POS link: its key, the Z reports it sent, the days they made and the sync log.
+public sealed class PosStore : IPosLinkStore
+{
+    public PosLink Link { get; } = PosLink.Create();
+    public PosReportStore Reports { get; } = new();
+    public PosDayStore Days { get; } = new();
+    public PosJournal Journal { get; } = new();
+
+    public Task<PosLink> GetAsync(CancellationToken cancellationToken = default) => Task.FromResult(Link);
+}
+
+public sealed class PosReportStore : ListStore<PosZReport>, IPosZReportRepository
+{
+    public Task<IReadOnlyList<PosZReport>> GetByDateAsync(DateOnly date, CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyList<PosZReport>>(All.Where(r => r.BusinessDate == date).ToList());
+}
+
+public sealed class PosDayStore : ListStore<PosDay>, IPosDayRepository
+{
+    public Task<PosDay?> GetByDateAsync(DateOnly date, CancellationToken cancellationToken = default) => Task.FromResult(All.SingleOrDefault(d => d.Date == date));
+}
+
+public sealed class PosJournal : IPosSyncJournal
+{
+    public List<PosSyncLog> All { get; } = [];
+
+    public Task WriteAsync(PosSyncLog entry, CancellationToken cancellationToken = default)
+    {
+        All.Add(entry);
+        return Task.CompletedTask;
+    }
+
+    public Task<IReadOnlyList<PosSyncLog>> RecentAsync(int count, CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyList<PosSyncLog>>(All.OrderByDescending(l => l.AtUtc).Take(count).ToList());
 }
 
 public sealed class TabStore : ListStore<UserTabAccess>, IUserTabAccessRepository

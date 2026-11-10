@@ -13,6 +13,8 @@ import { firstValueFrom } from 'rxjs';
 import { errorMessage } from '../../core/http/error-message';
 import { Company, CompanySettings, Country, CurrencyPosition, SettingsApi, countryLabels, formatMoney } from '../../core/settings/company';
 import { NotifyService } from '../../core/ui/notify.service';
+import { SubNav } from '../shared/sub-nav';
+import { settingsTabs } from './settings-tabs';
 
 // Every time zone this browser knows, for the list; the saved one always among them.
 function timeZones(saved: string): string[] {
@@ -27,6 +29,7 @@ function timeZones(saved: string): string[] {
 @Component({
   selector: 'app-settings-page',
   imports: [
+    SubNav,
     FormsModule,
     MatAutocompleteModule,
     MatButtonModule,
@@ -42,6 +45,7 @@ function timeZones(saved: string): string[] {
     <header class="head">
       <h1>Company settings <span class="inline-ar">إعدادات الشركة</span></h1>
     </header>
+    <app-sub-nav label="Settings" [tabs]="tabs" />
 
     <section class="card" aria-labelledby="identity-title">
       <h2 id="identity-title">The company <span class="inline-ar">الشركة</span></h2>
@@ -241,6 +245,7 @@ function timeZones(saved: string): string[] {
   `,
 })
 export class SettingsPage {
+  protected readonly tabs = settingsTabs;
   private readonly api = inject(SettingsApi);
   private readonly notify = inject(NotifyService);
   protected readonly company = inject(Company);
