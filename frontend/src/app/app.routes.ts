@@ -180,6 +180,7 @@ const costingChildren: Routes = [
       { path: 'payments', loadComponent: () => import('./features/costing/supplier-payments-page').then((m) => m.SupplierPaymentsPage) },
       { path: 'advances', loadComponent: () => import('./features/costing/advances-page').then((m) => m.AdvancesPage) },
       { path: 'staff', loadComponent: () => import('./features/costing/staff-page').then((m) => m.StaffPage) },
+      { path: 'payroll', loadComponent: () => import('./features/costing/payroll-page').then((m) => m.PayrollPage) },
       { path: 'tax-service', loadComponent: () => import('./features/costing/tax-service-page').then((m) => m.TaxServicePage) },
     ],
   },
@@ -257,6 +258,12 @@ export const routes: Routes = [
         path: 'settings/pos-integration',
         canActivate: [permissionGuard(Permissions.SettingsManage)],
         loadComponent: () => import('./features/settings/pos-integration-page').then((m) => m.PosIntegrationPage),
+      },
+      {
+        // The link to the HR & Payroll system, both ways: its address and keys, the test, the log; a manager's.
+        path: 'settings/hr-integration',
+        canActivate: [permissionGuard(Permissions.SettingsManage)],
+        loadComponent: () => import('./features/settings/hr-integration-page').then((m) => m.HrIntegrationPage),
       },
       {
         // Their own account and password; where a user working no section lands.

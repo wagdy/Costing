@@ -206,12 +206,18 @@ public sealed class KpiService(CostingDbContext db, IBusinessCalendar clock, Cos
         decimal Logged(ExpenseLine line) => Money(logged.Where(e => e.ExpenseLine == line).Sum(e => e.Amount));
         var (loggedControllable, loggedOccupation, loggedOtherFixed, loggedWages) =
             (Logged(ExpenseLine.Controllable), Logged(ExpenseLine.Occupation), Logged(ExpenseLine.OtherFixed), Logged(ExpenseLine.Wages));
-        // The month's salaries paid from the safe (صرف راتب), by the payroll month they are for, a
-        // voided one netted out by its reversal. Advances are settled against pay, not counted again.
+        // The month's labor: the payroll HR approved for it, when HR sent one (its labor cost: the
+        // wages and what was added, less the penalties, whether paid yet or not); otherwise the
+        // month's salaries paid from the safe (صرف راتب), by the payroll month they are for, a voided
+        // one netted out by its reversal. Advances are settled against pay, not counted again.
         var payrollMonth = new DateOnly(year, month, 1);
-        loggedWages += Money(-await db.SafeTransactions.AsNoTracking()
-            .Where(t => t.Kind == SafeTransactionKind.SalaryPayment && t.PayrollMonth == payrollMonth)
-            .SumAsync(t => t.Amount, cancellationToken));
+        if (await db.PayrollRuns.AsNoTracking().Where(r => r.Period == payrollMonth).Select(r => (decimal?)r.LaborCost).SingleOrDefaultAsync(cancellationToken)
+            is { } payrollLabor)
+            loggedWages += payrollLabor;
+        else
+            loggedWages += Money(-await db.SafeTransactions.AsNoTracking()
+                .Where(t => t.Kind == SafeTransactionKind.SalaryPayment && t.PayrollMonth == payrollMonth)
+                .SumAsync(t => t.Amount, cancellationToken));
         // Known once entered or paid: wages as entered plus wages paid as expenses.
         decimal? wages = expenses?.WagesAndBenefits is null && loggedWages == 0 ? null : (expenses?.WagesAndBenefits ?? 0) + loggedWages;
         var totalExpenses = (wages ?? 0) + (expenses?.OtherControllableCosts ?? 0) + (expenses?.OccupationCost ?? 0)

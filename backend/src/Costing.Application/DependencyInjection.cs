@@ -21,6 +21,8 @@ public static class DependencyInjection
         services.AddScoped<RawMaterials.MaterialUnitWriter>();
         services.AddScoped<Categories.CategoryDeleter>();
         services.AddScoped<EndOfDay.EndOfDayDays>();
+        services.AddScoped<Integrations.HrOutbox>();
+        services.AddScoped<Integrations.StaffDeductionReading>();
         return services;
     }
 }

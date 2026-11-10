@@ -308,13 +308,20 @@ not entered day by day can be typed in item by item on Theoretical cost.
 
 The people the safe pays (`StaffMember`): a name and a job, kept when they leave (the safe's
 entries name them) and off the lists for new advances. Their attendance and payroll are an HR
-system's; here only:
+system's. Kept here alone while HR is not linked (added on Financials → Staff, or by name from an
+advance at the end of the day); while it is linked, they come from HR (see [The HR
+link](#the-hr-link-ربط-الموارد-البشرية)), with HR's code and department beside them, and are
+changed there. Here only:
 
 - **Advances** (سلف): cash from the safe or a day's takings, to someone named or as a lump sum
   shared among the staff. Listed by month on Financials → Advances.
 - **Salaries**: a month's pay paid from the safe or a day's takings, for the month it is
   (`PayrollMonth`, paid once the month has started), from Staff → Pay salary. The KPIs' labour
-  cost for a month is the salaries paid for it.
+  cost for a month is the salaries paid for it, or, once HR has sent that month's payroll, the
+  payroll's labor cost instead (never both).
+- **Deductions** (خصومات): a till shortage (عجز خزنة) or a staff charge (خصم على الموظف) charged
+  to someone on a day, on Financials → Payroll & deductions; kept here as a record and, while HR
+  is linked, sent to HR as a deduction from their pay. Voided, it is taken off there too.
 
 ## Stock counts: opening and periodic
 
@@ -597,6 +604,68 @@ The answer says what was done: `{ zReportId, date, outcome, saleId, takingsId, i
 wasted, salesValue, cash, card, tax, warnings }`.
 The tables are `PosLinks` (the key's hash), `PosZReports` (each report as last received, with
 its hash), `PosDays` (what the POS made of each day) and `PosSyncLogs`.
+
+## The HR link (ربط الموارد البشرية)
+
+The HR & Payroll system can be linked both ways, over HTTP, and only while the link is switched
+on. Off (as it starts), this system works on its own: the staff are kept here, nothing is sent and
+nothing is heard. **Settings → HR Integration** (a manager's, `SettingsManage`) holds it:
+
+- **Enabled**, **HR's address** (its base URL) and **HR's key**: made on HR (Settings → Costing
+  Integration) and pasted here. It is kept encrypted (AES-GCM under a key drawn from this server's
+  `Auth:SigningKey`), never shown again, only its last characters; if the signing key changes it
+  can no longer be read, and is pasted again. Switching on needs both. *Test connection* calls
+  HR's ping.
+- **This system's key for HR** (`chr_…`): made here, shown once and pasted on HR; only its SHA-256
+  hash is kept. HR calls this system with it in `X-API-Key` (or `X-Costing-Key`); a wrong one,
+  none, or the link off is answered 401 and logged.
+- **Employees from HR**: read on *Sync employees now*, soon after switching on, and every 6 hours.
+- **Waiting to be sent**: what goes to HR waits in an outbox (`HrOutbox`) and is sent every 10
+  seconds, oldest first; out of reach, it is tried again from 15 seconds, doubling, up to 10
+  minutes apart. Refused by HR (400, 401, 403, 404, 422), it stays refused with HR's reason until
+  *Try again*. *Send now* sends what is due.
+- **The sync log** (`HrSyncLogs`): every call either way, refused ones too, by direction.
+
+### From HR
+
+- **The employees** (`GET {hr}/api/integrations/hr/employees`: id, code, full name, department,
+  branch, working or not) are kept in `SyncedEmployees`, each one a staff member here: someone of
+  the same name kept here before the link becomes theirs rather than a second. Changed on HR, they
+  change here; gone from HR's list or left, they are marked left. While linked, they are changed
+  only on HR (refused here), none is added here, and the end of the day's advance chooses from
+  them by name, code or department.
+- **A month's payroll**, once a manager approves it on HR (`POST /api/integrations/hr/payroll-run`):
+
+  ```json
+  { "idempotencyKey": "…", "payrollPeriod": "2026-10", "employees": 3, "totalGrossWages": 18000,
+    "totalAdditions": 0, "totalPenalties": 15680, "totalAdvancesDeducted": 250, "totalBroughtForward": 0,
+    "netCashPayable": 2070, "departments": [{ "department": "Hall", "employees": 2, … }] }
+  ```
+
+  Kept as a `PayrollRun` by HR's id for it, one a month: its **labor cost** (gross + additions −
+  penalties) is the month's wages on the KPIs and the profit and loss (in place of the salaries
+  paid for it), and its **net cash payable** is to be paid out of the safe. The advances already
+  paid out of the safe during the month are off that net cash, so none is paid twice, and they
+  never count as an expense. Sent again as it was, nothing changes; sent changed while still to
+  be paid, it is replaced; once paid, it is refused.
+- **Financials → Payroll & deductions** lists them; *Pay out of the safe* makes one safe entry
+  (`PayrollPayment`, صرف مسير رواتب) of the net cash, a manager's at once, anyone else's asked of
+  a manager. Voided, it is owed again.
+
+### To HR
+
+Each sent with this system's id for it as its idempotency key (in the body and in
+`Idempotency-Key`), so one sent again is kept once on HR, and its void sent the same way:
+
+| Call | When |
+| --- | --- |
+| `POST {hr}/api/integrations/costing/employee-advance` | An advance to someone from HR is paid out of the safe (the end of the day's with its signed receipt, as base64), or voided |
+| `POST {hr}/api/integrations/costing/employee-deduction` | A till shortage or staff charge is charged to them, or voided |
+| `POST {hr}/api/integrations/costing/payroll-settled` | HR's payroll is paid out of the safe (its voucher, the day, who), or that payment voided |
+
+On HR, an advance is recorded as approved on their pay, a deduction as a penalty on their pay,
+and a payroll paid marks the month paid and each employee's pay owed as paid. A month whose pay
+is finalized on HR refuses a void that would change it, and the outbox shows HR's reason.
 
 ## Company settings and the business day
 

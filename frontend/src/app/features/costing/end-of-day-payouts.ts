@@ -8,6 +8,7 @@ import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { firstValueFrom } from 'rxjs';
 import { EmployeePicker } from '../../core/costing/employee-picker';
 import { EndOfDay, EndOfDayApi, EndOfDayPayout, EndOfDayPayoutKind, photoProblem, shrinkPhoto } from '../../core/costing/end-of-day.api';
+import { HrStaffApi } from '../../core/costing/hr-staff.api';
 import { Employee } from '../../core/costing/staff';
 import { errorMessage } from '../../core/http/error-message';
 import { Company } from '../../core/settings/company';
@@ -76,8 +77,27 @@ export const payoutFormLabels: Record<
         @if (kind() === 'SupplierPayment') {
           <app-item-picker [items]="suppliers()" [(value)]="payeeId" [label]="label() + ', supplier'" placeholder="Supplier · المورد" [disabled]="saving()" />
         } @else {
-          <app-employee-picker [employees]="activeEmployees()" [(value)]="payeeId" label="Employee · الموظف" [ariaLabel]="label() + ', employee'" [fill]="true"
-            [disabled]="saving()" />
+          <div class="employee">
+            <app-employee-picker [employees]="activeEmployees()" [(value)]="payeeId" label="Employee · الموظف" [ariaLabel]="label() + ', employee'" [fill]="true"
+              [disabled]="saving()" [hint]="hrLinked() ? 'From HR · من الموارد البشرية' : null"
+              [emptyLabel]="hrLinked() ? 'No employees from HR yet: sync them in Settings → HR Integration' : 'No staff yet: add one below'" />
+            @if (!hrLinked()) {
+              @if (adding()) {
+                <div class="add-staff">
+                  <mat-form-field subscriptSizing="dynamic">
+                    <mat-label>New staff member's name · اسم الموظف</mat-label>
+                    <input matInput [(ngModel)]="newName" maxlength="200" (keydown.enter)="$event.preventDefault(); addStaff()" [attr.aria-label]="label() + ', new staff member'" />
+                  </mat-form-field>
+                  <button mat-button type="button" (click)="adding.set(false)" [disabled]="saving()">Cancel</button>
+                  <button mat-stroked-button type="button" (click)="addStaff()" [disabled]="saving() || !newName.trim()"><mat-icon>person_add</mat-icon> Add · إضافة</button>
+                </div>
+              } @else {
+                <button mat-button type="button" class="add-link" (click)="adding.set(true)" [disabled]="saving()">
+                  <mat-icon>person_add</mat-icon> New staff member · موظف جديد
+                </button>
+              }
+            }
+          </div>
         }
         <mat-form-field subscriptSizing="dynamic" floatLabel="always">
           <mat-label>{{ labels().amount }}</mat-label>
@@ -162,6 +182,24 @@ export const payoutFormLabels: Record<
       justify-content: flex-end;
       gap: 8px;
     }
+    .employee {
+      display: grid;
+      gap: 4px;
+      min-width: 0;
+    }
+    .add-staff {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px;
+
+      mat-form-field {
+        flex: 1 1 180px;
+      }
+    }
+    .add-link {
+      justify-self: start;
+    }
     mat-progress-bar,
     .error {
       grid-column: 1 / -1;
@@ -187,12 +225,17 @@ export const payoutFormLabels: Record<
 })
 export class EodPayoutForm {
   private readonly api = inject(EndOfDayApi);
+  private readonly hrStaff = inject(HrStaffApi);
   protected readonly company = inject(Company);
 
   readonly date = input.required<string>();
   readonly kind = input.required<EndOfDayPayoutKind>();
   readonly suppliers = input<readonly PickItem[]>([]);
   readonly employees = input<Employee[]>([]);
+  // The staff come from HR: chosen from HR's, none added here.
+  readonly hrLinked = input(false);
+  // Someone added to the staff from here, while HR is not linked.
+  readonly staffAdded = output<Employee>();
   // The payment being changed; none for a new one.
   readonly payout = input<EndOfDayPayout | null>(null);
   readonly saved = output<EndOfDay>();
@@ -212,7 +255,14 @@ export class EodPayoutForm {
   protected readonly labels = computed(() => payoutFormLabels[this.kind()]);
   protected readonly label = computed(() => (this.payout() ? 'Payment' : `New ${this.labels().label}`));
   // Who can be advanced now: those still on the staff, and the one already chosen.
-  protected readonly activeEmployees = computed(() => this.employees().filter((e) => e.isActive || e.id === this.payout()?.employeeId));
+  protected readonly activeEmployees = computed(() =>
+    [...this.employees(), ...this.added().filter((a) => !this.employees().some((e) => e.id === a.id))].filter(
+      (e) => e.isActive || e.id === this.payout()?.employeeId,
+    ),
+  );
+  protected readonly adding = signal(false);
+  protected newName = '';
+  private readonly added = signal<Employee[]>([]);
 
   // The receipt chosen here, else the one handed in.
   protected readonly source = computed<PhotoSource | null>(() => {
@@ -269,6 +319,29 @@ export class EodPayoutForm {
     }
     this.file.set(file);
     this.touch();
+  }
+
+  // Someone not on the staff yet, added by name and chosen; the same name again is the one there is.
+  protected async addStaff(): Promise<void> {
+    const name = this.newName.trim();
+    if (!name) {
+      return;
+    }
+    this.saving.set(true);
+    this.problem.set(null);
+    try {
+      const made = await firstValueFrom(this.hrStaff.addLocal(crypto.randomUUID(), name, null));
+      this.added.update((all) => [...all.filter((e) => e.id !== made.id), made]);
+      this.payeeId.set(made.id);
+      this.staffAdded.emit(made);
+      this.newName = '';
+      this.adding.set(false);
+      this.touch();
+    } catch (error) {
+      this.problem.set(errorMessage(error, 'They could not be added to the staff. · تعذر إضافة الموظف.'));
+    } finally {
+      this.saving.set(false);
+    }
   }
 
   protected clear(): void {

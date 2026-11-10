@@ -29,6 +29,7 @@ export class FinancialsShell {
     { path: 'payments', icon: 'payments', en: 'Supplier payments', ar: 'أذونات صرف الموردين' },
     { path: 'advances', icon: 'request_quote', en: 'Advances', ar: 'السلفيات' },
     { path: 'staff', icon: 'badge', en: 'Staff', ar: 'الموظفين' },
+    { path: 'payroll', icon: 'request_page', en: 'Payroll & deductions', ar: 'الرواتب والخصومات' },
     { path: 'tax-service', icon: 'percent', en: 'Tax & service', ar: 'الضريبة والخدمة' },
   ];
 

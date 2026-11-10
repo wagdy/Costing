@@ -52,7 +52,9 @@ public sealed record SafeVoucher(
     DateOnly? PayrollMonth = null,
     decimal? CardAmount = null,
     decimal? TaxAmount = null,
-    decimal? VoidsAmount = null);
+    decimal? VoidsAmount = null,
+    // A payroll payment's: the payroll run from HR it pays.
+    Guid? PayrollRunId = null);
 
 // The tax rate the bills are charged, as set on Tax & service.
 public interface ITaxRate
@@ -104,7 +106,9 @@ internal sealed class TreasuryWriter(
     IPurchaseInvoiceRepository invoices,
     IRecordDescriptions descriptions,
     ITaxRate taxRate,
-    IStaffMemberRepository employees)
+    IStaffMemberRepository employees,
+    IPayrollRunRepository payrollRuns,
+    Costing.Application.Integrations.HrOutbox hr)
 {
     private static readonly CultureInfo Invariant = CultureInfo.InvariantCulture;
 
@@ -216,6 +220,13 @@ internal sealed class TreasuryWriter(
                 await SalaryAsync(voucher, cancellationToken);
                 break;
             }
+            case SafeTransactionKind.PayrollPayment:
+            {
+                var run = await PayrollRunAsync(voucher.PayrollRunId, cancellationToken);
+                if (voucher.Amount != run.NetCashPayable || voucher.PayrollMonth != run.Period)
+                    throw new DomainException($"The payroll of {run.PeriodName} is paid as HR sent it: {Money(run.NetCashPayable)}.");
+                break;
+            }
             default:
                 throw new DomainException("Say what the safe entry is.");
         }
@@ -275,12 +286,23 @@ internal sealed class TreasuryWriter(
                     : SafeTransaction.EmployeeAdvance(
                         id, voucher.Amount, voucher.Date, advancedTo, PayMonthOf(voucher.Date),
                         voucher.Notes, recordedBy, approvedBy, voucher.RevenueDate, await TakingsInSafeAsync(voucher.RevenueDate, cancellationToken));
+                // An employee from HR: sent to HR, to come off their pay there.
+                await hr.AdvanceAsync(entry, voided: false, cancellationToken);
                 break;
             case SafeTransactionKind.SalaryPayment:
                 entry = SafeTransaction.SalaryPayment(
                     id, voucher.Amount, voucher.Date, voucher.EmployeeId!.Value, voucher.PayrollMonth!.Value, voucher.Notes, recordedBy, approvedBy,
                     voucher.RevenueDate, await TakingsInSafeAsync(voucher.RevenueDate, cancellationToken));
                 break;
+            case SafeTransactionKind.PayrollPayment:
+            {
+                // Paid: the run is paid, and HR told so.
+                var run = await PayrollRunAsync(voucher.PayrollRunId, cancellationToken);
+                entry = SafeTransaction.PayrollPayment(id, voucher.Amount, voucher.Date, run.Id, run.Period, voucher.Notes, recordedBy, approvedBy);
+                run.Disbursed(entry.Id, approvedBy ?? recordedBy);
+                await hr.PayrollAsync(run, entry, voided: false, cancellationToken);
+                break;
+            }
             default:
                 throw new DomainException("Say what the safe entry is.");
         }
@@ -295,6 +317,15 @@ internal sealed class TreasuryWriter(
     public async Task VoidAsync(SafeTransaction entry, string by, CancellationToken cancellationToken)
     {
         safe.Add(entry.Void(Guid.NewGuid(), Today, by, await TakingsInSafeAsync(entry.RevenueDate, cancellationToken)));
+        // An advance to an employee from HR: taken off their pay there too.
+        if (entry.Kind == SafeTransactionKind.EmployeeAdvance)
+            await hr.AdvanceAsync(entry, voided: true, cancellationToken);
+        // A payroll payment: the run is owed again, and HR told so.
+        if (entry.Kind == SafeTransactionKind.PayrollPayment && entry.PayrollRunId is { } runId && await payrollRuns.GetByIdAsync(runId, cancellationToken) is { } run)
+        {
+            run.Undisbursed();
+            await hr.PayrollAsync(run, entry, voided: true, cancellationToken);
+        }
         if (entry.Kind == SafeTransactionKind.SupplierPayment)
             foreach (var line in (await suppliersLedger.GetBySourceAsync(entry.Id, cancellationToken)).Where(l => !l.IsReversal))
                 suppliersLedger.Add(line.Reverse(Today, by));
@@ -434,6 +465,15 @@ internal sealed class TreasuryWriter(
                 changes.Add(new ApprovalChange("Paid from", null, salaryFrom));
                 break;
             }
+            case SafeTransactionKind.PayrollPayment:
+            {
+                var run = await PayrollRunAsync(voucher.PayrollRunId, cancellationToken);
+                summary = $"Payroll from HR · {run.PeriodName} · {amount}";
+                changes.Add(new ApprovalChange("Payroll of", null, run.PeriodName));
+                changes.Add(new ApprovalChange("Employees", null, run.Employees.ToString(Invariant)));
+                changes.Add(new ApprovalChange("Advances already paid", null, Money(run.TotalAdvancesDeducted)));
+                break;
+            }
             default:
                 throw new DomainException("Say what the safe entry is.");
         }
@@ -481,6 +521,7 @@ internal sealed class TreasuryWriter(
             SafeTransactionKind.EmployeeAdvance => $"Employee advance · {await EmployeeNameAsync(entry.EmployeeId, cancellationToken)}" + From(entry.RevenueDate),
             SafeTransactionKind.SalaryPayment => $"Salary · {await EmployeeNameAsync(entry.EmployeeId, cancellationToken)}" +
                 (entry.PayrollMonth is { } month ? $" · {MonthName(month)}" : "") + From(entry.RevenueDate),
+            SafeTransactionKind.PayrollPayment => $"Payroll from HR · {(entry.PayrollMonth is { } paid ? MonthName(paid) : "a month")}",
             _ => $"Invoice payment from {(entry.RevenueDate is { } day ? $"the takings of {Day(day)}" : "the safe")}",
         };
         return $"{what} · {Money(Math.Abs(entry.Amount))} · {Day(entry.BusinessDate)}";
@@ -499,6 +540,15 @@ internal sealed class TreasuryWriter(
             ? (chosen.Day == 1 ? chosen : throw new DomainException("A pay month is named by its first day."))
             : throw new DomainException("Choose the month whose pay this is.");
         return (employee, month);
+    }
+
+    // A payroll run from HR still to be paid.
+    private async Task<PayrollRun> PayrollRunAsync(Guid? id, CancellationToken cancellationToken)
+    {
+        var run = id is { } runId
+            ? await payrollRuns.GetByIdAsync(runId, cancellationToken) ?? throw new NotFoundException("Payroll run", runId)
+            : throw new DomainException("Choose the payroll run to pay.");
+        return run.IsDisbursed ? throw new DomainException($"The payroll of {run.PeriodName} is paid already. · المسير مصروف بالفعل.") : run;
     }
 
     private async Task<StaffMember> EmployeeAsync(Guid? id, CancellationToken cancellationToken) =>
@@ -586,6 +636,8 @@ internal sealed class RecordSafeVoucherHandler(
             return new SafeVoucherResultDto(ApprovalOutcome.Requested, null, ApprovalRequestDto.From(already));
         if (request.Voucher.Kind == SafeTransactionKind.InvoicePayment)
             throw new DomainException("An invoice is paid from the invoice itself.");
+        if (request.Voucher.Kind == SafeTransactionKind.PayrollPayment)
+            throw new DomainException("A payroll from HR is paid from Financials → Staff → Payroll from HR.");
         var voucher = await treasury.WithTaxRateAsync(request.Voucher, cancellationToken);
 
         if (request.CanApprove)

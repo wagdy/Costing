@@ -12,6 +12,7 @@ import { NotifyService } from '../../core/ui/notify.service';
 import { Approvals } from './approvals';
 import { EndOfDayPage, EndOfDaySummaryDialog, EodInvoiceForm } from './end-of-day-page';
 import { EodPayoutForm } from './end-of-day-payouts';
+import { HrStaffApi } from '../../core/costing/hr-staff.api';
 import { Treasury } from './financials';
 
 const text = (el: Element) => el.textContent!.replace(/\s+/g, ' ').trim();
@@ -94,6 +95,8 @@ describe('the end of the day', () => {
   };
   const open = vi.fn();
   const enter = vi.fn();
+  const addLocal = vi.fn();
+  let linked = false;
   const notify = { info: vi.fn(), error: vi.fn() };
   let tabs: CostingTab[] = ['EndOfDay'];
   let manager = false;
@@ -105,6 +108,7 @@ describe('the end of the day', () => {
         { provide: EndOfDayApi, useValue: api },
         { provide: CostingApi, useValue: { suppliers: () => of([nile, delta]), businessToday: () => of({ today: '2026-11-04' }) } },
         { provide: MenuSalesApi, useValue: { staff: () => of(staff) } },
+        { provide: HrStaffApi, useValue: { status: () => of({ linked, employeesSyncedAtUtc: null }), addLocal } },
         { provide: CostingAccess, useValue: { has: (tab: CostingTab) => tabs.includes(tab) } },
         { provide: Approvals, useValue: { canApprove: () => manager } },
         { provide: Treasury, useValue: { enter } },
@@ -133,6 +137,8 @@ describe('the end of the day', () => {
     notify.error.mockReset();
     tabs = ['EndOfDay'];
     manager = false;
+    linked = false;
+    addLocal.mockReset();
     URL.createObjectURL = vi.fn(() => 'blob:photo');
     URL.revokeObjectURL = vi.fn();
   });
@@ -313,6 +319,32 @@ describe('the end of the day', () => {
     advance['amount'] = 150;
     await advance['save']();
     expect(advance['problem']()).toBe('Choose the employee from the list. · اختر الموظف من القائمة.');
+  });
+
+  it('adds someone new to the staff from the advance form while HR is not linked, and chooses them', async () => {
+    const { fixture, el, page, payoutForms } = await render();
+    const advance = payoutForms()[1];
+    const addButton = [...el.querySelectorAll<HTMLButtonElement>('app-eod-payout-form button')].find((b) => text(b).includes('New staff member'));
+    expect(addButton).toBeTruthy();
+
+    addLocal.mockReturnValue(of({ id: 'samir', name: 'Samir', jobTitle: null, isActive: true }));
+    advance['adding'].set(true);
+    advance['newName'] = ' Samir ';
+    await advance['addStaff']();
+    fixture.detectChanges();
+    expect(addLocal).toHaveBeenCalledWith(expect.any(String), 'Samir', null);
+    expect(advance['payeeId']()).toBe('samir');
+    expect(advance['adding']()).toBe(false);
+    // On the page's staff from now, for every form.
+    expect(page['employees']().map((e: Employee) => e.name)).toContain('Samir');
+  });
+
+  it('chooses the employee from HR’s while it is linked, and adds no one here', async () => {
+    linked = true;
+    const { el, payoutForms } = await render();
+    expect(payoutForms()[1]['hrLinked']()).toBe(true);
+    expect([...el.querySelectorAll('app-eod-payout-form button')].some((b) => text(b).includes('New staff member'))).toBe(false);
+    expect(text(el.querySelectorAll('app-eod-payout-form')[1])).toContain('From HR · من الموارد البشرية');
   });
 
   it('works out the cash left in the till as the sales are typed: the float and the cash sales, less all paid out, the Visa never in it', async () => {

@@ -40,6 +40,11 @@ HR system needed beside it. Bilingual (English and Arabic, right-to-left) throug
   stock taken by the recipes and what was voided after the kitchen as waste, and the day's
   takings. Sent again it changes nothing; corrected, it replaces what it made; a day entered by hand
   is left alone. The POS reads the menu from here too, and every call is in the sync log.
+- **HR link** (optional, off by default): linked on Settings → HR Integration with an address and
+  a key each way, the staff come from the HR & Payroll system; each advance paid out of the safe
+  (with its signed receipt) and each till shortage or staff charge goes onto their pay there; the
+  payroll HR approves comes here as the month's labor cost and net cash, paid out of the safe, and
+  HR is told. Off, everything works here alone.
 - **Company Settings**: the company's name and logo, the currency (on every screen, sheet and
   message), the country, the time zone and the hour its business day starts.
 

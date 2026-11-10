@@ -509,6 +509,170 @@ namespace Costing.Infrastructure.Persistence.Migrations
                     b.ToTable("ExpenseItems", "costing");
                 });
 
+            modelBuilder.Entity("Costing.Domain.Integrations.HrLink", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("BaseUrl")
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<int>("EmployeesSynced")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTime?>("EmployeesSyncedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<bool>("Enabled")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("HrKeyHint")
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
+                    b.Property<string>("HrKeyProtected")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
+
+                    b.Property<DateTime?>("KeyCreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("KeyCreatedBy")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<string>("KeyHash")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("KeyHint")
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
+                    b.Property<DateTime?>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("UpdatedBy")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<uint>("Version")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("xid")
+                        .HasColumnName("xmin");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("HrLinks", "costing");
+                });
+
+            modelBuilder.Entity("Costing.Domain.Integrations.HrOutboxItem", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Action")
+                        .IsRequired()
+                        .HasMaxLength(10)
+                        .HasColumnType("character varying(10)");
+
+                    b.Property<int>("Attempts")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("IdempotencyKey")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)");
+
+                    b.Property<string>("LastError")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<DateTime>("NextAttemptAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Payload")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTime?>("SentAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<string>("Summary")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<uint>("Version")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("xid")
+                        .HasColumnName("xmin");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CreatedAtUtc");
+
+                    b.HasIndex("Status", "NextAttemptAtUtc");
+
+                    b.ToTable("HrOutbox", "costing");
+                });
+
+            modelBuilder.Entity("Costing.Domain.Integrations.HrSyncLog", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("AtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Call")
+                        .IsRequired()
+                        .HasMaxLength(60)
+                        .HasColumnType("character varying(60)");
+
+                    b.Property<string>("Detail")
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)");
+
+                    b.Property<string>("Direction")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<string>("Message")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<string>("Outcome")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<Guid?>("Reference")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AtUtc");
+
+                    b.ToTable("HrSyncLogs", "costing");
+                });
+
             modelBuilder.Entity("Costing.Domain.Integrations.PosDay", b =>
                 {
                     b.Property<Guid>("Id")
@@ -656,6 +820,57 @@ namespace Costing.Infrastructure.Persistence.Migrations
                     b.HasIndex("BusinessDate");
 
                     b.ToTable("PosZReports", "costing");
+                });
+
+            modelBuilder.Entity("Costing.Domain.Integrations.SyncedEmployee", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Branch")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<string>("Code")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)");
+
+                    b.Property<string>("Department")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<string>("FullName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<Guid>("HrEmployeeId")
+                        .HasColumnType("uuid");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("boolean");
+
+                    b.Property<Guid>("StaffMemberId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("SyncedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<uint>("Version")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("xid")
+                        .HasColumnName("xmin");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("HrEmployeeId")
+                        .IsUnique();
+
+                    b.HasIndex("StaffMemberId")
+                        .IsUnique();
+
+                    b.ToTable("SyncedEmployees", "costing");
                 });
 
             modelBuilder.Entity("Costing.Domain.Menu.AddOn", b =>
@@ -1409,6 +1624,185 @@ namespace Costing.Infrastructure.Persistence.Migrations
                     b.ToTable("SalesReceipts", "costing");
                 });
 
+            modelBuilder.Entity("Costing.Domain.Staff.PayrollRun", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime?>("DisbursedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("DisbursedBy")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<int>("Employees")
+                        .HasColumnType("integer");
+
+                    b.Property<decimal>("LaborCost")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)");
+
+                    b.Property<decimal>("NetCashPayable")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)");
+
+                    b.Property<string>("PayloadHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<DateOnly>("Period")
+                        .HasColumnType("date");
+
+                    b.Property<DateTime>("ReceivedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("Revision")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid?>("SafeTransactionId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<decimal>("TotalAdditions")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)");
+
+                    b.Property<decimal>("TotalAdvancesDeducted")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)");
+
+                    b.Property<decimal>("TotalBroughtForward")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)");
+
+                    b.Property<decimal>("TotalGrossWages")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)");
+
+                    b.Property<decimal>("TotalPenalties")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<uint>("Version")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("xid")
+                        .HasColumnName("xmin");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Period")
+                        .IsUnique();
+
+                    b.ToTable("PayrollRuns", "costing");
+                });
+
+            modelBuilder.Entity("Costing.Domain.Staff.PayrollRunDepartment", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid");
+
+                    b.Property<decimal>("Additions")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)");
+
+                    b.Property<decimal>("AdvancesDeducted")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)");
+
+                    b.Property<int>("Employees")
+                        .HasColumnType("integer");
+
+                    b.Property<decimal>("GrossWages")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<decimal>("NetCashPayable")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)");
+
+                    b.Property<Guid>("PayrollRunId")
+                        .HasColumnType("uuid");
+
+                    b.Property<decimal>("Penalties")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("PayrollRunId");
+
+                    b.ToTable("PayrollRunDepartments", "costing");
+                });
+
+            modelBuilder.Entity("Costing.Domain.Staff.StaffDeduction", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid");
+
+                    b.Property<decimal>("Amount")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)");
+
+                    b.Property<DateOnly>("Date")
+                        .HasColumnType("date");
+
+                    b.Property<Guid>("EmployeeId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<string>("Reason")
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<DateTime>("RecordedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("RecordedBy")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<uint>("Version")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("xid")
+                        .HasColumnName("xmin");
+
+                    b.Property<DateTime?>("VoidedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("VoidedBy")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Date");
+
+                    b.HasIndex("EmployeeId");
+
+                    b.ToTable("StaffDeductions", "costing");
+                });
+
             modelBuilder.Entity("Costing.Domain.Staff.StaffMember", b =>
                 {
                     b.Property<Guid>("Id")
@@ -1685,6 +2079,9 @@ namespace Costing.Infrastructure.Persistence.Migrations
                     b.Property<DateOnly?>("PayrollMonth")
                         .HasColumnType("date");
 
+                    b.Property<Guid?>("PayrollRunId")
+                        .HasColumnType("uuid");
+
                     b.Property<Guid?>("PurchaseInvoiceId")
                         .HasColumnType("uuid");
 
@@ -1737,6 +2134,8 @@ namespace Costing.Infrastructure.Persistence.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("ExpenseItemId");
+
+                    b.HasIndex("PayrollRunId");
 
                     b.HasIndex("PurchaseInvoiceId");
 
@@ -2198,6 +2597,15 @@ namespace Costing.Infrastructure.Persistence.Migrations
                         .IsRequired();
                 });
 
+            modelBuilder.Entity("Costing.Domain.Integrations.SyncedEmployee", b =>
+                {
+                    b.HasOne("Costing.Domain.Staff.StaffMember", null)
+                        .WithMany()
+                        .HasForeignKey("StaffMemberId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("Costing.Domain.Menu.MenuItemVariant", b =>
                 {
                     b.HasOne("Costing.Domain.Menu.MenuItem", null)
@@ -2387,6 +2795,24 @@ namespace Costing.Infrastructure.Persistence.Migrations
                     b.Navigation("Lines");
                 });
 
+            modelBuilder.Entity("Costing.Domain.Staff.PayrollRunDepartment", b =>
+                {
+                    b.HasOne("Costing.Domain.Staff.PayrollRun", null)
+                        .WithMany("Departments")
+                        .HasForeignKey("PayrollRunId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Costing.Domain.Staff.StaffDeduction", b =>
+                {
+                    b.HasOne("Costing.Domain.Staff.StaffMember", null)
+                        .WithMany()
+                        .HasForeignKey("EmployeeId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("Costing.Domain.StockCounts.StockCountLine", b =>
                 {
                     b.HasOne("Costing.Domain.RawMaterials.RawMaterial", null)
@@ -2521,6 +2947,11 @@ namespace Costing.Infrastructure.Persistence.Migrations
             modelBuilder.Entity("Costing.Domain.Recipes.Recipe", b =>
                 {
                     b.Navigation("Ingredients");
+                });
+
+            modelBuilder.Entity("Costing.Domain.Staff.PayrollRun", b =>
+                {
+                    b.Navigation("Departments");
                 });
 
             modelBuilder.Entity("Costing.Domain.StockCounts.StockCount", b =>

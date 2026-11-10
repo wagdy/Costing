@@ -1,6 +1,7 @@
 import { TestBed } from '@angular/core/testing';
 import { of } from 'rxjs';
 import { AuthService } from '../../core/auth/auth.service';
+import { HrStaffApi } from '../../core/costing/hr-staff.api';
 import { MenuSalesApi } from '../../core/costing/menu-sales.api';
 import { Employee } from '../../core/costing/staff';
 import { NotifyService } from '../../core/ui/notify.service';
@@ -14,6 +15,7 @@ describe('the staff', () => {
   const saveStaff = vi.fn();
   const enter = vi.fn();
   const notify = { info: vi.fn(), error: vi.fn() };
+  let linked = false;
   const hassan: Employee = { id: 'hassan', name: 'Hassan', jobTitle: 'Chef', isActive: true };
   const gone: Employee = { id: 'gone', name: 'Adel', jobTitle: null, isActive: false };
   const mona: Employee = { id: 'mona', name: 'Mona', jobTitle: 'Cashier', isActive: true };
@@ -22,6 +24,7 @@ describe('the staff', () => {
     TestBed.configureTestingModule({
       providers: [
         { provide: MenuSalesApi, useValue: { staff, saveStaff } },
+        { provide: HrStaffApi, useValue: { status: () => of({ linked, employeesSyncedAtUtc: null }) } },
         { provide: AuthService, useValue: { me: () => null, can: () => canChange } },
         { provide: Treasury, useValue: { enter } },
         { provide: NotifyService, useValue: notify },
@@ -43,6 +46,23 @@ describe('the staff', () => {
     saveStaff.mockReset();
     enter.mockReset().mockResolvedValue(true);
     notify.info.mockReset();
+    linked = false;
+  });
+
+  it('while HR is linked, shows its staff with their code and department, changed on HR, and adds no one here', async () => {
+    linked = true;
+    const fromHr: Employee = { id: 'hr-1', name: 'Mona Adel', jobTitle: null, isActive: true, hrEmployeeId: 'e-17', code: '17', department: 'Hall' };
+    staff.mockReturnValue(of([fromHr, hassan]));
+    const { el, page } = await render();
+
+    expect(el.querySelector('.hr-note')).toBeTruthy();
+    expect(el.querySelector('form.add')).toBeNull();
+    const row = [...el.querySelectorAll('tbody tr')].find((r) => text(r).includes('Mona Adel'))!;
+    expect([...row.querySelectorAll('td')].slice(0, 3).map(text)).toEqual(['Mona AdelHR', '17', 'Hall']);
+    expect(row.querySelector('input.inline')).toBeNull();
+    expect(page['editable'](fromHr)).toBe(false);
+    // Someone kept here before the link is still theirs to change.
+    expect(page['editable'](hassan)).toBe(true);
   });
 
   it('lists who is working first, by name, and whoever has left after them', async () => {

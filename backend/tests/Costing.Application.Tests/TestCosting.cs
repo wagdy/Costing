@@ -46,6 +46,7 @@ public sealed class TestCosting
     public SettingsStore Settings { get; } = new();
     public EndOfDayStore EndOfDays { get; } = new();
     public PosStore Pos { get; } = new();
+    public HrStore Hr { get; } = new();
 
     // Names and dates for the records: the business day can be set a day behind the calendar, as
     // it is after midnight.
@@ -92,6 +93,14 @@ public sealed class TestCosting
         services.AddSingleton<IPosZReportRepository>(Pos.Reports);
         services.AddSingleton<IPosDayRepository>(Pos.Days);
         services.AddSingleton<IPosSyncJournal>(Pos.Journal);
+        services.AddSingleton<IHrLinkStore>(Hr);
+        services.AddSingleton<ISyncedEmployeeRepository>(Hr.Employees);
+        services.AddSingleton<IHrOutboxRepository>(Hr.Outbox);
+        services.AddSingleton<IHrSyncJournal>(Hr.Journal);
+        services.AddSingleton<IPayrollRunRepository>(Hr.Runs);
+        services.AddSingleton<IStaffDeductionRepository>(Hr.Deductions);
+        services.AddSingleton<Costing.Application.Integrations.IHrGateway>(Hr.Gateway);
+        services.AddSingleton<Costing.Application.Integrations.IHrKeyProtector>(new PlainKeys());
         _services = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true, ValidateOnBuild = true });
         Menu.SeedTestMenu();
     }
@@ -247,6 +256,95 @@ public sealed class SalesStore : ListStore<SalesReceipt>, ISalesReceiptRepositor
             .Select(r => r.Reference!).ToHashSet(StringComparer.OrdinalIgnoreCase));
     public Task<SalesReceipt?> GetDailySummaryAsync(DateOnly date, CancellationToken cancellationToken = default) =>
         Task.FromResult(All.FirstOrDefault(r => r.BusinessDate == date && r.Source == SalesSource.DailySummary && !r.IsVoided));
+}
+
+// The HR link here: its settings, the employees read from HR, what waits to be sent, the log, the
+// payroll runs sent here and the deductions; HR itself a fake (FakeHr) that answers as told.
+public sealed class HrStore : IHrLinkStore
+{
+    public HrLink Link { get; } = HrLink.Create();
+    public SyncedEmployeeStore Employees { get; } = new();
+    public HrOutboxStore Outbox { get; } = new();
+    public HrJournal Journal { get; } = new();
+    public PayrollRunStore Runs { get; } = new();
+    public StaffDeductionStore Deductions { get; } = new();
+    public FakeHr Gateway { get; } = new();
+
+    public Task<HrLink> GetAsync(CancellationToken cancellationToken = default) => Task.FromResult(Link);
+}
+
+public sealed class SyncedEmployeeStore : ListStore<SyncedEmployee>, ISyncedEmployeeRepository
+{
+    public Task<IReadOnlyList<SyncedEmployee>> GetAllAsync(CancellationToken cancellationToken = default) => Task.FromResult<IReadOnlyList<SyncedEmployee>>(All.ToList());
+    public Task<SyncedEmployee?> GetByStaffMemberAsync(Guid staffMemberId, CancellationToken cancellationToken = default) =>
+        Task.FromResult(All.SingleOrDefault(e => e.StaffMemberId == staffMemberId));
+}
+
+public sealed class HrOutboxStore : ListStore<HrOutboxItem>, IHrOutboxRepository
+{
+    public Task<IReadOnlyList<HrOutboxItem>> GetDueAsync(DateTime nowUtc, int take, CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyList<HrOutboxItem>>(All.Where(i => i.Status == HrOutboxStatus.Pending && i.NextAttemptAtUtc <= nowUtc).OrderBy(i => i.CreatedAtUtc).Take(take).ToList());
+    public Task<IReadOnlyList<HrOutboxItem>> GetRecentAsync(int take, CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyList<HrOutboxItem>>(All.OrderByDescending(i => i.CreatedAtUtc).Take(take).ToList());
+    public Task<int> CountAsync(HrOutboxStatus status, CancellationToken cancellationToken = default) => Task.FromResult(All.Count(i => i.Status == status));
+}
+
+public sealed class HrJournal : IHrSyncJournal
+{
+    public List<HrSyncLog> All { get; } = [];
+    public Task WriteAsync(HrSyncLog entry, CancellationToken cancellationToken = default)
+    {
+        All.Add(entry);
+        return Task.CompletedTask;
+    }
+    public Task<IReadOnlyList<HrSyncLog>> RecentAsync(int count, CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyList<HrSyncLog>>(All.OrderByDescending(l => l.AtUtc).Take(count).ToList());
+}
+
+public sealed class PayrollRunStore : ListStore<PayrollRun>, IPayrollRunRepository
+{
+    public Task<IReadOnlyList<PayrollRun>> GetRecentAsync(int take, CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyList<PayrollRun>>(All.OrderByDescending(r => r.Period).Take(take).ToList());
+    public Task<PayrollRun?> GetForPeriodAsync(DateOnly period, CancellationToken cancellationToken = default) => Task.FromResult(All.SingleOrDefault(r => r.Period == period));
+    public void Remove(PayrollRun run) => All.Remove(run);
+}
+
+public sealed class StaffDeductionStore : ListStore<StaffDeduction>, IStaffDeductionRepository
+{
+    public Task<IReadOnlyList<StaffDeduction>> GetBetweenAsync(DateOnly from, DateOnly to, CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyList<StaffDeduction>>(All.Where(d => d.Date >= from && d.Date <= to).ToList());
+}
+
+// HR, as a test wants it: its employees, and what it answers to what is sent (taken, unless told).
+public sealed class FakeHr : Costing.Application.Integrations.IHrGateway
+{
+    public List<Costing.Application.Integrations.HrEmployeeRecord> Employees { get; } = [];
+    public List<(string Kind, string Payload, Guid Key)> Received { get; } = [];
+    public Func<string, Costing.Application.Integrations.HrSendResult>? Answer { get; set; }
+    public bool Down { get; set; }
+
+    public Task<Costing.Application.Integrations.HrPingResult> PingAsync(string baseUrl, string key, CancellationToken cancellationToken = default) =>
+        Down ? throw new Costing.Application.Integrations.HrUnavailableException("HR could not be reached.")
+            : Task.FromResult(new Costing.Application.Integrations.HrPingResult("HR & Payroll", "Otantik"));
+
+    public Task<IReadOnlyList<Costing.Application.Integrations.HrEmployeeRecord>> EmployeesAsync(string baseUrl, string key, CancellationToken cancellationToken = default) =>
+        Down ? throw new Costing.Application.Integrations.HrUnavailableException("HR could not be reached.")
+            : Task.FromResult<IReadOnlyList<Costing.Application.Integrations.HrEmployeeRecord>>(Employees.ToList());
+
+    public Task<Costing.Application.Integrations.HrSendResult> SendAsync(string baseUrl, string key, string kind, string payload, Guid idempotencyKey, CancellationToken cancellationToken = default)
+    {
+        if (Down)
+            return Task.FromResult(new Costing.Application.Integrations.HrSendResult(Costing.Application.Integrations.HrSendOutcome.Unavailable, "HR could not be reached."));
+        Received.Add((kind, payload, idempotencyKey));
+        return Task.FromResult(Answer?.Invoke(kind) ?? new Costing.Application.Integrations.HrSendResult(Costing.Application.Integrations.HrSendOutcome.Delivered, "Taken."));
+    }
+}
+
+// HR's key kept as it is, marked: what the real protector does is the infrastructure's to test.
+public sealed class PlainKeys : Costing.Application.Integrations.IHrKeyProtector
+{
+    public string Protect(string key) => "plain:" + key;
+    public string? Unprotect(string protectedKey) => protectedKey.StartsWith("plain:", StringComparison.Ordinal) ? protectedKey[6..] : null;
 }
 
 public sealed class StaffStore : ListStore<StaffMember>, IStaffMemberRepository

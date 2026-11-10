@@ -76,6 +76,12 @@ public sealed class CostingDbContext(DbContextOptions<CostingDbContext> options)
     public DbSet<Domain.Integrations.PosZReport> PosZReports => Set<Domain.Integrations.PosZReport>();
     public DbSet<Domain.Integrations.PosDay> PosDays => Set<Domain.Integrations.PosDay>();
     public DbSet<Domain.Integrations.PosSyncLog> PosSyncLogs => Set<Domain.Integrations.PosSyncLog>();
+    public DbSet<Domain.Integrations.HrLink> HrLinks => Set<Domain.Integrations.HrLink>();
+    public DbSet<Domain.Integrations.SyncedEmployee> SyncedEmployees => Set<Domain.Integrations.SyncedEmployee>();
+    public DbSet<Domain.Integrations.HrSyncLog> HrSyncLogs => Set<Domain.Integrations.HrSyncLog>();
+    public DbSet<Domain.Integrations.HrOutboxItem> HrOutbox => Set<Domain.Integrations.HrOutboxItem>();
+    public DbSet<Domain.Staff.PayrollRun> PayrollRuns => Set<Domain.Staff.PayrollRun>();
+    public DbSet<Domain.Staff.StaffDeduction> StaffDeductions => Set<Domain.Staff.StaffDeduction>();
 
     public DbSet<UserTabAccess> UserTabAccess => Set<UserTabAccess>();
     public DbSet<Domain.Company.CompanySettings> CompanySettings => Set<Domain.Company.CompanySettings>();

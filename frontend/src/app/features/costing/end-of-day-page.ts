@@ -27,6 +27,7 @@ import {
   shrinkPhoto,
   voucherLabels,
 } from '../../core/costing/end-of-day.api';
+import { HrStaffApi } from '../../core/costing/hr-staff.api';
 import { MenuSalesApi } from '../../core/costing/menu-sales.api';
 import { Employee } from '../../core/costing/staff';
 import { errorMessage } from '../../core/http/error-message';
@@ -653,7 +654,7 @@ export class EndOfDaySummaryDialog {
           <div class="invoices">
             @for (p of payoutsOf(kind); track p.id; let i = $index) {
               @if (editing() === p.id && !locked() && p.voucher === 'None') {
-                <app-eod-payout-form [date]="date()" [kind]="kind" [suppliers]="suppliers()" [employees]="employees()" [payout]="p" (saved)="saved($event)"
+                <app-eod-payout-form [date]="date()" [kind]="kind" [suppliers]="suppliers()" [employees]="employees()" [hrLinked]="hrLinked()" (staffAdded)="staffAdded($event)" [payout]="p" (saved)="saved($event)"
                   (cancelled)="editing.set(null)" />
               } @else {
                 <article class="payout" [attr.aria-label]="payoutSections[kind].en + ' ' + (i + 1)">
@@ -689,7 +690,7 @@ export class EndOfDaySummaryDialog {
             }
           </div>
           @if (!locked()) {
-            <app-eod-payout-form [date]="date()" [kind]="kind" [suppliers]="suppliers()" [employees]="employees()" (saved)="saved($event)"
+            <app-eod-payout-form [date]="date()" [kind]="kind" [suppliers]="suppliers()" [employees]="employees()" [hrLinked]="hrLinked()" (staffAdded)="staffAdded($event)" (saved)="saved($event)"
               (pendingChange)="pendingIn(kind, $event)" />
           }
           <footer class="counter" aria-live="polite">
@@ -1135,6 +1136,7 @@ export class EndOfDayPage {
   private readonly approvals = inject(Approvals);
   private readonly route = inject(ActivatedRoute);
   private readonly menuSales = inject(MenuSalesApi);
+  private readonly hrStaff = inject(HrStaffApi);
 
   protected readonly kinds: EndOfDayInvoiceKind[] = ['Cash', 'Credit'];
   protected readonly sections = sectionLabels;
@@ -1152,6 +1154,8 @@ export class EndOfDayPage {
   protected readonly suppliers = signal<PickItem[]>([]);
   // The staff, those who left too (the day's advances name them); the form offers those still here.
   protected readonly employees = signal<Employee[]>([]);
+  // The staff come from HR while it is linked: chosen from HR's, none added here.
+  protected readonly hrLinked = signal(false);
   protected readonly history = signal<EndOfDay[]>([]);
   protected readonly editing = signal<string | null>(null);
   protected readonly reviewProblem = signal<string | null>(null);
@@ -1422,12 +1426,22 @@ export class EndOfDayPage {
       this.error.set(errorMessage(error, 'The suppliers could not be loaded.'));
     }
     try {
-      this.employees.set(await firstValueFrom(this.menuSales.staff()));
+      const [staff, hr] = await Promise.all([
+        firstValueFrom(this.menuSales.staff()),
+        firstValueFrom(this.hrStaff.status()).catch(() => ({ linked: false, employeesSyncedAtUtc: null })),
+      ]);
+      this.employees.set(staff);
+      this.hrLinked.set(hr.linked);
     } catch {
       // No staff to choose from: an advance cannot be added, the rest of the day can.
       this.employees.set([]);
     }
     await this.load();
+  }
+
+  // Someone added to the staff from an advance's form: on every form's list from now.
+  protected staffAdded(e: Employee): void {
+    this.employees.update((all) => [...all.filter((x) => x.id !== e.id), e]);
   }
 
   private async load(): Promise<void> {

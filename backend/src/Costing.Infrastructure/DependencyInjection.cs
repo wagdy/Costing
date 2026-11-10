@@ -61,6 +61,18 @@ public static class DependencyInjection
         services.AddScoped<Domain.Integrations.IPosZReportRepository, PosZReportRepository>();
         services.AddScoped<Domain.Integrations.IPosDayRepository, PosDayRepository>();
         services.AddScoped<Domain.Integrations.IPosSyncJournal, PosSyncJournal>();
+        // The HR link: its stores, HR's key kept encrypted, the calls to HR, and its clock.
+        services.AddScoped<Domain.Integrations.IHrLinkStore, HrLinkStore>();
+        services.AddScoped<Domain.Integrations.ISyncedEmployeeRepository, SyncedEmployeeRepository>();
+        services.AddScoped<Domain.Integrations.IHrOutboxRepository, HrOutboxRepository>();
+        services.AddScoped<Domain.Integrations.IHrSyncJournal, HrSyncJournal>();
+        services.AddScoped<Domain.Staff.IPayrollRunRepository, PayrollRunRepository>();
+        services.AddScoped<Domain.Staff.IStaffDeductionRepository, StaffDeductionRepository>();
+        services.AddSingleton<Application.Integrations.IHrKeyProtector, Integrations.HrKeyProtector>();
+        services.AddHttpClient(Integrations.HrGateway.ClientName, client => client.Timeout = TimeSpan.FromSeconds(20));
+        services.AddScoped<Application.Integrations.IHrGateway, Integrations.HrGateway>();
+        services.AddScoped<Integrations.IHrOutboxSender, Integrations.HrOutboxSender>();
+        services.AddHostedService<Integrations.HrSyncWorker>();
         services.AddScoped<ISalesReceiptRepository, SalesReceiptRepository>();
         services.AddScoped<IStaffMemberRepository, StaffMemberRepository>();
         services.AddScoped<IUserTabAccessRepository, UserTabAccessRepository>();

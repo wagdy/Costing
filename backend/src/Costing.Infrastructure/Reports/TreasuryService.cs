@@ -434,10 +434,10 @@ public sealed class TreasuryService(CostingDbContext db, IBusinessCalendar clock
                 ]),
             Line("expenses", "Operating expense vouchers", "أذون صرف المصروفات", Paid(SafeTransactionKind.ExpenseVoucher), totalOut, vouchers),
             Line("staff", "Staff advances & wages", "سلف وأجور الموظفين",
-                Paid(SafeTransactionKind.EmployeeAdvance, SafeTransactionKind.SalaryPayment), totalOut,
+                Paid(SafeTransactionKind.EmployeeAdvance, SafeTransactionKind.SalaryPayment, SafeTransactionKind.PayrollPayment), totalOut,
                 [
                     Line("advances", "Advances", "سلف", Paid(SafeTransactionKind.EmployeeAdvance), totalOut),
-                    Line("salaries", "Salaries", "رواتب", Paid(SafeTransactionKind.SalaryPayment), totalOut),
+                    Line("salaries", "Salaries", "رواتب", Paid(SafeTransactionKind.SalaryPayment, SafeTransactionKind.PayrollPayment), totalOut),
                 ]),
             Line("tax", "Tax paid over", "سداد الضرائب", Paid(SafeTransactionKind.TaxPayment), totalOut),
         };
@@ -908,6 +908,7 @@ public sealed class TreasuryService(CostingDbContext db, IBusinessCalendar clock
             SafeTransactionKind.EmployeeAdvance when t.EmployeeId is null => "Advances, not given out yet" + Takings(),
             SafeTransactionKind.EmployeeAdvance => $"Advance to {Employee()}" + Takings(),
             SafeTransactionKind.SalaryPayment => $"Salary of {Employee()}" + (t.PayrollMonth is { } month ? $" · {month.ToString("MMMM yyyy", Invariant)}" : "") + Takings(),
+            SafeTransactionKind.PayrollPayment => "Payroll from HR" + (t.PayrollMonth is { } run ? $" · {run.ToString("MMMM yyyy", Invariant)}" : ""),
             _ => (t.PurchaseInvoiceId is { } i && names.Invoices.GetValueOrDefault(i) is { } number ? $"Invoice {number}" : "Invoice") +
                  (t.SupplierId is null ? "" : $" · {Supplier()}") +
                  (t.RevenueDate is { } day ? $" · from the takings of {day.ToString("d MMM", Invariant)}" : ""),

@@ -1940,7 +1940,9 @@ export type SafeTransactionKind =
   | 'EmployeeAdvance'
   | 'SalaryPayment'
   // The tax collected paid over to the tax authority (سداد ضرائب): out of the safe, not an expense.
-  | 'TaxPayment';
+  | 'TaxPayment'
+  // A month's payroll approved on HR, paid out of the safe (صرف مسير رواتب): its net cash, once.
+  | 'PayrollPayment';
 export type CashFund = 'Safe' | 'DayRevenue';
 // Where money put into the safe came from (مصدر التمويل).
 export type FundingSource = 'CarriedOver' | 'OwnerFinancing' | 'Other';
@@ -1961,6 +1963,7 @@ export const safeKindLabels: Record<SafeTransactionKind, { en: string; ar: strin
   EmployeeAdvance: { en: 'Employee advance', ar: 'سلفة موظف' },
   SalaryPayment: { en: 'Salary paid', ar: 'صرف راتب' },
   TaxPayment: { en: 'Tax payment', ar: 'سداد ضرائب' },
+  PayrollPayment: { en: 'Payroll paid', ar: 'صرف مسير رواتب' },
 };
 
 // One line of the safe's ledger: in or out, and the balance after it (null where not running).

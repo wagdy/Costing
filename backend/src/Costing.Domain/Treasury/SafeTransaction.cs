@@ -48,6 +48,11 @@ public enum SafeTransactionKind
     // The tax collected paid over to the tax authority (سداد/توريد ضرائب), from the safe. Not an
     // expense: it settles what the takings collected and the safe held for it.
     TaxPayment = 9,
+
+    // A month's payroll approved on HR paid out of the safe in one (صرف مسير الرواتب): its net cash
+    // payable (PayrollRunId), the advances paid during the month taken off already. Its labor cost
+    // is the run's, counted for the month it pays.
+    PayrollPayment = 10,
 }
 
 // Where money put into the safe came from (مصدر التمويل).
@@ -123,6 +128,9 @@ public sealed class SafeTransaction : AggregateRoot
     // An advance's or a salary's: whose, and the payroll month it counts in (its first day).
     public Guid? EmployeeId { get; private set; }
     public DateOnly? PayrollMonth { get; private set; }
+
+    // A payroll payment's: the payroll run from HR it pays.
+    public Guid? PayrollRunId { get; private set; }
 
     public string? Notes { get; private set; }
 
@@ -354,6 +362,19 @@ public sealed class SafeTransaction : AggregateRoot
         };
     }
 
+    // A month's payroll from HR paid out of the safe in one: its net cash payable.
+    public static SafeTransaction PayrollPayment(
+        Guid id, decimal amount, DateOnly date, Guid payrollRunId, DateOnly payrollMonth, string? notes, string recordedBy, string? approvedBy = null)
+    {
+        if (Month(payrollMonth) > date)
+            throw new DomainException("A month's payroll is paid once the month has started.");
+        return new SafeTransaction(id, SafeTransactionKind.PayrollPayment, CashFund.Safe, -Positive(amount), date, notes, recordedBy, approvedBy)
+        {
+            PayrollMonth = payrollMonth,
+            PayrollRunId = payrollRunId,
+        };
+    }
+
     // Voids it: the opposite amount, entered on `today`, naming it. Voiding again is refused. A
     // payment out of a day's takings made before they were entered goes back into the safe when
     // they are in it now (takingsInSafe): it was taken off what went in.
@@ -381,6 +402,7 @@ public sealed class SafeTransaction : AggregateRoot
             ExpenseItemId = ExpenseItemId,
             EmployeeId = EmployeeId,
             PayrollMonth = PayrollMonth,
+            PayrollRunId = PayrollRunId,
             ReversalOf = Id,
         };
     }

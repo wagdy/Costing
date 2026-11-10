@@ -221,6 +221,7 @@ internal sealed class SafeTransactionConfiguration : IEntityTypeConfiguration<Sa
         builder.HasOne<SafeTransaction>().WithMany().HasForeignKey(t => t.ReversalOf).OnDelete(DeleteBehavior.Restrict);
         // One reversal for each entry.
         builder.HasIndex(t => t.ReversalOf).IsUnique().HasFilter("\"ReversalOf\" IS NOT NULL");
+        builder.HasIndex(t => t.PayrollRunId);
         builder.HasIndex(t => new { t.Fund, t.BusinessDate });
         builder.HasIndex(t => t.RevenueDate);
         builder.HasIndex(t => t.PurchaseInvoiceId);

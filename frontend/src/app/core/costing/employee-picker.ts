@@ -18,8 +18,9 @@ export function searchKey(text: string): string {
     .toLowerCase();
 }
 
-// An employee chosen by typing part of their name or job: the list narrows as it is typed. With
-// `none`, no one is a choice too (null): its label says what that means where it is used.
+// An employee chosen by typing part of their name, job or department, or their HR code: the list
+// narrows as it is typed. With `none`, no one is a choice too (null): its label says what that
+// means where it is used.
 @Component({
   selector: 'app-employee-picker',
   imports: [FormsModule, MatAutocompleteModule, MatFormFieldModule, MatInputModule],
@@ -33,9 +34,13 @@ export function searchKey(text: string): string {
           <mat-option [value]="null" class="none">{{ noneLabel() }}</mat-option>
         }
         @for (e of shown(); track e.id) {
-          <mat-option [value]="e.id">{{ e.name }} @if (e.jobTitle) {<span class="job">· {{ e.jobTitle }}</span>}</mat-option>
+          <mat-option [value]="e.id">
+            {{ e.name }}
+            @if (e.code) {<span class="code">#{{ e.code }}</span>}
+            @if (e.department ?? e.jobTitle; as about) {<span class="job">· {{ about }}</span>}
+          </mat-option>
         } @empty {
-          <mat-option disabled>{{ employees().length ? 'No one by that name' : 'No staff yet: add them under Financials → Staff' }}</mat-option>
+          <mat-option disabled>{{ employees().length ? 'No one by that name' : emptyLabel() }}</mat-option>
         }
       </mat-autocomplete>
       @if (hint(); as h) {
@@ -54,8 +59,13 @@ export function searchKey(text: string): string {
       width: 100%;
     }
     .job,
-    .none {
+    .none,
+    .code {
       color: var(--mat-sys-on-surface-variant);
+    }
+    .code {
+      margin-left: 4px;
+      font-variant-numeric: tabular-nums;
     }
   `,
 })
@@ -67,6 +77,8 @@ export class EmployeePicker {
   readonly none = input(false);
   readonly noneLabel = input('No one yet · لم يُحدد بعد');
   readonly hint = input<string | null>(null);
+  // Said when there is no one to choose at all.
+  readonly emptyLabel = input('No staff yet: add them under Financials → Staff');
   readonly disabled = input(false);
   // As wide as where it is put, as a form's own fields are.
   readonly fill = input(false);
@@ -79,7 +91,14 @@ export class EmployeePicker {
 
   protected readonly shown = computed(() => {
     const key = searchKey(this.filter() ?? '');
-    return this.employees().filter((e) => !key || searchKey(e.name).includes(key) || searchKey(e.jobTitle ?? '').includes(key));
+    return this.employees().filter(
+      (e) =>
+        !key ||
+        searchKey(e.name).includes(key) ||
+        searchKey(e.jobTitle ?? '').includes(key) ||
+        searchKey(e.department ?? '').includes(key) ||
+        (e.code ?? '').toLowerCase() === key.replace(/^#/, ''),
+    );
   });
 
   // An id shown as its employee's name; what is being typed, as typed.
