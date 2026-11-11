@@ -408,8 +408,12 @@ when the day is reopened (corrected on Financials → Safe); one refused can be 
 again; one added after reopening goes to the safe when the day is submitted again. They are not
 entered again on the daily batch.
 
-There is no link to an HR system here: an advance is deducted in this system's own payroll month,
-as the safe's advances are.
+An advance to someone on the staff who comes from HR, while the HR link is switched on, goes to
+HR once it is entered in the safe (when the day is handed in, or once a manager approves it): it
+waits in the HR outbox (`HrOutbox`) and is sent with its signed receipt, onto that employee's pay
+there, and its void is sent the same way (see [The HR link](#the-hr-link-ربط-الموارد-البشرية)).
+With HR not linked, or for someone kept here alone, an advance is deducted in this system's own
+payroll month, as the safe's advances are.
 
 **On the daily batch**, the day opens with an invoice for each one handed in and not posted yet
 (Open · Daily batch from the day, or the batch's date chosen): its supplier, paid as handed in

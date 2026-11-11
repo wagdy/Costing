@@ -1,0 +1,24032 @@
+# الفصل 08: نواة الفرونت إند وشاشات التشغيل
+
+[← الفصل السابق](07-excel-engines-and-ecosystem-links.md) · [الفهرس](00-index-and-build-roadmap.md) · [الفصل التالي: شاشات الماليات والتقارير والنشر →](09-frontend-financials-reports-and-deployment.md)
+
+> هذا أكبر فصل لأن شاشات التشغيل هي معظم الواجهة. اقرأ الأقسام 1-4 أولًا (المعمارية والأدوات)، ثم الشاشات بالترتيب الذي يناسبك.
+
+## 1. Angular الحديث في هذا المشروع
+
+| المفهوم | هنا |
+| --- | --- |
+| المكوّنات | **Standalone**: كل مكوّن يعلن `imports: [...]`، بلا `NgModule` |
+| الحالة | **Signals**: `signal()`, `computed()`, `effect()`؛ والتطبيق **Zoneless** (لا `zone.js`) |
+| المدخلات | `input()`, `input.required()`, `model()`، وبارامترات الرابط تصل كـ `input()` (`withComponentInputBinding`) |
+| القوالب | `@if`, `@for (…; track …)`, `@switch`, `@let` |
+| HTTP | `HttpClient` + دوال `HttpInterceptorFn` |
+| التوجيه | دوال `CanActivateFn` و **Lazy Loading** لكل صفحة |
+| النماذج | **Template-Driven** (`[(ngModel)]`) مع أداة تحقق `FormChecks` تشير للحقل المخطئ (لا Reactive Forms في المشروع) |
+| الاختبارات | Vitest + jsdom |
+
+### 1.1 دورة حياة الشاشة (نمط تكرره كل الصفحات)
+
+```text
+الإنشاء   constructor/effect() ⇐ يقرأ المدخلات (?date=, :id) ويبدأ التحميل
+التحميل   loading.set(true) → await firstValueFrom(api.x()) → data.set(...) → loading.set(false)
+الاشتقاق  computed(): القائمة بعد البحث والفلتر والترتيب، المجاميع، الصلاحيات
+العرض     @if (loading()) … @for (x of shown(); track x.id)
+الفعل     زر ⇒ async action() ⇒ نافذة MatDialog أو API ⇒ notify + إعادة تحميل
+الخطأ     catch ⇒ errorMessage(error) يعرض رسالة الخادم كما هي (عربي/إنجليزي)
+المعرّفات  crypto.randomUUID() عند فتح النموذج مرة واحدة ⇒ إعادة الإرسال لا تكرر (Idempotency)
+```
+
+## 2. ملفات المشروع
+
+`package.json` (Angular ~21.2، Material، Vitest، و `build` عبر `scripts/build.mjs`):
+
+> 📄 **`frontend/package.json`** — 36 سطر
+
+```json
+{
+  "name": "costing",
+  "version": "0.0.0",
+  "scripts": {
+    "ng": "ng",
+    "start": "ng serve",
+    "build": "node scripts/build.mjs",
+    "watch": "ng build --watch --configuration development",
+    "test": "ng test"
+  },
+  "private": true,
+  "packageManager": "npm@10.9.3",
+  "dependencies": {
+    "@angular/cdk": "21.2.8",
+    "@angular/common": "~21.2.25",
+    "@angular/compiler": "~21.2.25",
+    "@angular/core": "~21.2.25",
+    "@angular/forms": "~21.2.25",
+    "@angular/material": "21.2.8",
+    "@angular/platform-browser": "~21.2.25",
+    "@angular/router": "~21.2.25",
+    "@microsoft/signalr": "~10.0.11",
+    "material-icons": "1.13.14",
+    "rxjs": "~7.8.0",
+    "tslib": "^2.3.0"
+  },
+  "devDependencies": {
+    "@angular/build": "~21.2.24",
+    "@angular/cli": "~21.2.24",
+    "@angular/compiler-cli": "~21.2.25",
+    "jsdom": "^28.0.0",
+    "prettier": "^3.8.1",
+    "typescript": "~5.9.2",
+    "vitest": "^4.0.8"
+  }
+}
+```
+
+
+`angular.json` (esbuild، الميزانيات، الـ proxy، Vitest)، و `tsconfig*` (`strict` و `strictTemplates`)، و `vitest.config.ts`:
+
+> 📄 **`frontend/angular.json`** — 91 سطر
+
+```json
+{
+  "$schema": "./node_modules/@angular/cli/lib/config/schema.json",
+  "version": 1,
+  "cli": {
+    "packageManager": "npm",
+    "analytics": false
+  },
+  "newProjectRoot": "projects",
+  "projects": {
+    "costing": {
+      "projectType": "application",
+      "schematics": {
+        "@schematics/angular:component": {
+          "style": "scss"
+        }
+      },
+      "root": "",
+      "sourceRoot": "src",
+      "prefix": "app",
+      "architect": {
+        "build": {
+          "builder": "@angular/build:application",
+          "options": {
+            "browser": "src/main.ts",
+            "tsConfig": "tsconfig.app.json",
+            "inlineStyleLanguage": "scss",
+            "assets": [
+              {
+                "glob": "**/*",
+                "input": "public"
+              }
+            ],
+            "styles": [
+              "node_modules/material-icons/iconfont/filled.css",
+              "src/styles.scss"
+            ],
+            "outputPath": {
+              "base": "../backend/src/Costing.Api/wwwroot",
+              "browser": ""
+            }
+          },
+          "configurations": {
+            "production": {
+              "budgets": [
+                {
+                  "type": "initial",
+                  "maximumWarning": "1MB",
+                  "maximumError": "2MB"
+                },
+                {
+                  "type": "anyComponentStyle",
+                  "maximumWarning": "6kB",
+                  "maximumError": "12kB"
+                }
+              ],
+              "outputHashing": "all"
+            },
+            "development": {
+              "optimization": false,
+              "extractLicenses": false,
+              "sourceMap": true
+            }
+          },
+          "defaultConfiguration": "production"
+        },
+        "serve": {
+          "builder": "@angular/build:dev-server",
+          "configurations": {
+            "production": {
+              "buildTarget": "costing:build:production"
+            },
+            "development": {
+              "buildTarget": "costing:build:development"
+            }
+          },
+          "defaultConfiguration": "development",
+          "options": {
+            "proxyConfig": "proxy.conf.json",
+            "port": 4230
+          }
+        },
+        "test": {
+          "builder": "@angular/build:unit-test",
+          "options": {
+            "runnerConfig": "vitest.config.ts"
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+
+> 📄 **`frontend/tsconfig.json`** — 33 سطر
+
+```json
+/* To learn more about Typescript configuration file: https://www.typescriptlang.org/docs/handbook/tsconfig-json.html. */
+/* To learn more about Angular compiler options: https://angular.dev/reference/configs/angular-compiler-options. */
+{
+  "compileOnSave": false,
+  "compilerOptions": {
+    "strict": true,
+    "noImplicitOverride": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "experimentalDecorators": true,
+    "importHelpers": true,
+    "target": "ES2022",
+    "module": "preserve"
+  },
+  "angularCompilerOptions": {
+    "enableI18nLegacyMessageIdFormat": false,
+    "strictInjectionParameters": true,
+    "strictInputAccessModifiers": true,
+    "strictTemplates": true
+  },
+  "files": [],
+  "references": [
+    {
+      "path": "./tsconfig.app.json"
+    },
+    {
+      "path": "./tsconfig.spec.json"
+    }
+  ]
+}
+```
+
+
+> 📄 **`frontend/tsconfig.app.json`** — 16 سطر
+
+```json
+/* To learn more about Typescript configuration file: https://www.typescriptlang.org/docs/handbook/tsconfig-json.html. */
+/* To learn more about Angular compiler options: https://angular.dev/reference/configs/angular-compiler-options. */
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "outDir": "./out-tsc/app",
+    "types": []
+  },
+  "include": [
+    "src/**/*.ts"
+  ],
+  "exclude": [
+    "src/**/*.spec.ts",
+    "src/testing/**"
+  ]
+}
+```
+
+
+> 📄 **`frontend/tsconfig.spec.json`** — 15 سطر
+
+```json
+/* To learn more about Typescript configuration file: https://www.typescriptlang.org/docs/handbook/tsconfig-json.html. */
+/* To learn more about Angular compiler options: https://angular.dev/reference/configs/angular-compiler-options. */
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "outDir": "./out-tsc/spec",
+    "types": [
+      "vitest/globals"
+    ]
+  },
+  "include": [
+    "src/**/*.d.ts",
+    "src/**/*.spec.ts"
+  ]
+}
+```
+
+
+> 📄 **`frontend/vitest.config.ts`** — 9 سطر
+
+```ts
+import { defineConfig } from 'vitest/config';
+
+// The costing screens' specs render whole forms (the day's purchase batch, a recipe card) in jsdom:
+// on a busy machine one can take longer than vitest's 5 seconds.
+export default defineConfig({
+  test: {
+    testTimeout: 20_000,
+  },
+});
+```
+
+
+`proxy.conf.json`: `ng serve` يحوّل `/api` إلى الـ API على 5100، فالكود يستدعي `/api/...` نسبيًا دائمًا.
+
+> 📄 **`frontend/proxy.conf.json`** — 6 سطر
+
+```json
+{
+  "/api": {
+    "target": "http://localhost:5100",
+    "secure": false
+  }
+}
+```
+
+
+`scripts/build.mjs`: `ng build` في هذه النسخة لا يخرج بعد البناء (عملية esbuild تبقى حية) فيعلق بناء Docker؛ السكربت يمرر المخرجات وينهي العملية عند `Output location:` أو عند الفشل.
+
+> 📄 **`frontend/scripts/build.mjs`** — 51 سطر
+
+```js
+// `ng build` that ends when the build does. With this project's Angular 21.2 and esbuild 0.28,
+// `ng build` writes its output and then never exits: an esbuild service process stays alive. In a
+// Docker build (Railway's), that would hang the deploy for ever. This runs it, passes on all it
+// says, and ends it once it has said where its output is (done), or that the build failed. If it
+// exits by itself first, its own exit code is this one's.
+//
+//   node scripts/build.mjs --configuration production --output-path /app-dist
+import { spawn } from 'node:child_process';
+import { createRequire } from 'node:module';
+
+const ng = createRequire(import.meta.url).resolve('@angular/cli/bin/ng.js');
+const child = spawn(process.execPath, [ng, 'build', ...process.argv.slice(2)], {
+  stdio: ['ignore', 'pipe', 'pipe'],
+  env: { ...process.env, NG_CLI_ANALYTICS: 'false' },
+});
+
+let ending = false;
+let failed = false;
+
+function end(code) {
+  if (ending) {
+    return;
+  }
+  ending = true;
+  // A moment for the last of what it says to come through.
+  setTimeout(() => {
+    child.kill('SIGTERM');
+    process.exit(code);
+  }, 1000);
+}
+
+function pass(stream, to) {
+  stream.on('data', (chunk) => {
+    to.write(chunk);
+    const text = chunk.toString();
+    if (/Application bundle generation failed/.test(text)) {
+      failed = true;
+      end(1);
+    } else if (/Output location:/.test(text)) {
+      end(failed ? 1 : 0);
+    }
+  });
+}
+
+pass(child.stdout, process.stdout);
+pass(child.stderr, process.stderr);
+child.on('exit', (code, signal) => {
+  if (!ending) {
+    process.exit(code ?? (signal ? 1 : 0));
+  }
+});
+```
+
+
+## 3. نقطة البداية والتوجيه
+
+> 📄 **`frontend/src/index.html`** — 14 سطر
+
+```html
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Costing &amp; Financials</title>
+  <base href="/">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#ffffff">
+  <link rel="icon" type="image/x-icon" href="favicon.ico">
+</head>
+<body class="mat-typography">
+  <app-root></app-root>
+</body>
+</html>
+```
+
+
+> 📄 **`frontend/src/main.ts`** — 6 سطر
+
+```ts
+import { bootstrapApplication } from '@angular/platform-browser';
+import { appConfig } from './app/app.config';
+import { App } from './app/app';
+
+bootstrapApplication(App, appConfig)
+  .catch((err) => console.error(err));
+```
+
+
+> 📄 **`frontend/src/app/app.ts`** — 9 سطر
+
+```ts
+import { Component } from '@angular/core';
+import { RouterOutlet } from '@angular/router';
+
+@Component({
+  selector: 'app-root',
+  imports: [RouterOutlet],
+  template: '<router-outlet />',
+})
+export class App {}
+```
+
+
+### 3.1 `app.config.ts`: سطرًا سطرًا
+
+- `provideBrowserGlobalErrorListeners()`: الأخطاء غير المعالجة لمعالج Angular.
+- `provideRouter(routes, withComponentInputBinding())`: التوجيه، وبارامترات الرابط كمدخلات للمكوّن.
+- `provideHttpClient(withInterceptors([reachabilityInterceptor, authInterceptor]))`: مراقبة الوصول للخادم، ثم إضافة التوكن، بالترتيب.
+- `provideAppInitializer(() => inject(AuthService).restore())`: قبل أول صفحة، يتأكد من التوكن المخزن عبر `/api/auth/me`.
+- `provideAppInitializer(() => loadCompany())`: اسم الشركة وشعارها وعملتها لكل شاشة.
+- `provideAppInitializer(() => inject(WesternDigits).install())`: الأرقام العربية في حقول الأرقام تُكتب غربية تلقائيًا.
+- `MAT_FORM_FIELD_DEFAULT_OPTIONS: { appearance: 'outline' }`.
+
+> 📄 **`frontend/src/app/app.config.ts`** — 24 سطر
+
+```ts
+import { provideHttpClient, withInterceptors } from '@angular/common/http';
+import { ApplicationConfig, inject, provideAppInitializer, provideBrowserGlobalErrorListeners } from '@angular/core';
+import { MAT_FORM_FIELD_DEFAULT_OPTIONS } from '@angular/material/form-field';
+import { provideRouter, withComponentInputBinding } from '@angular/router';
+import { routes } from './app.routes';
+import { AuthService } from './core/auth/auth.service';
+import { loadCompany } from './core/settings/company';
+import { authInterceptor, reachabilityInterceptor } from './core/http/interceptors';
+import { WesternDigits } from './core/ui/western-digits';
+
+export const appConfig: ApplicationConfig = {
+  providers: [
+    provideBrowserGlobalErrorListeners(),
+    provideRouter(routes, withComponentInputBinding()),
+    provideHttpClient(withInterceptors([reachabilityInterceptor, authInterceptor])),
+    // Before the first route resolves: who is signed in, as GET /api/auth/me says.
+    provideAppInitializer(() => inject(AuthService).restore()),
+    // The company's name, logo, money and country, for every screen: the sign-in page's too.
+    provideAppInitializer(() => loadCompany()),
+    // Arabic digits typed into any field that takes numbers go in as Western ones.
+    provideAppInitializer(() => inject(WesternDigits).install()),
+    { provide: MAT_FORM_FIELD_DEFAULT_OPTIONS, useValue: { appearance: 'outline' } },
+  ],
+};
+```
+
+
+### 3.2 `app.routes.ts`
+
+كل قسم بـ `canActivate: [costingTabGuard('Materials')]` و `loadComponent` كسول، والأقسام الفرعية (الوصفات، المشتريات، الماليات، التقارير، التحليلات) كأبناء لـ Shell خاص بها، والمسار الفارغ يفتح أول قسم يملكه المستخدم.
+
+> 📄 **`frontend/src/app/app.routes.ts`** — 276 سطر
+
+```ts
+import { Routes } from '@angular/router';
+import { inject } from '@angular/core';
+import { homePath, permissionGuard, signedInGuard, signedOutGuard } from './core/auth/guards';
+import { Permissions } from './core/auth/permissions';
+import { CostingAccess, costingTabGuard } from './core/costing/costing-tabs';
+
+// Costing & Financials' sections: each guarded by its tab (CostingAccess), so a typed address opens
+// only a section the user works. Opens on the first one they do.
+const costingChildren: Routes = [
+  { path: '', pathMatch: 'full', redirectTo: () => `/costing/${inject(CostingAccess).first() ?? 'approvals'}` },
+  {
+    path: 'materials',
+    canActivate: [costingTabGuard('Materials')],
+    loadComponent: () => import('./features/costing/materials-page').then((m) => m.MaterialsPage),
+  },
+  {
+    path: 'recipes',
+    canActivate: [costingTabGuard('Recipes')],
+    loadComponent: () => import('./features/costing/recipes-shell').then((m) => m.RecipesShell),
+    children: [
+      {
+        path: '',
+        pathMatch: 'full',
+        loadComponent: () => import('./features/costing/recipes-page').then((m) => m.RecipesPage),
+      },
+      {
+        // ?targetKind=&catalogItemId=&variantId= to start linked to a menu item.
+        path: 'new',
+        data: { mode: 'new' },
+        loadComponent: () => import('./features/costing/recipe-card-page').then((m) => m.RecipeCardPage),
+      },
+      {
+        path: 'recipe/:recipeId',
+        data: { mode: 'view' },
+        loadComponent: () => import('./features/costing/recipe-card-page').then((m) => m.RecipeCardPage),
+      },
+      {
+        path: 'recipe/:recipeId/edit',
+        data: { mode: 'edit' },
+        loadComponent: () => import('./features/costing/recipe-card-page').then((m) => m.RecipeCardPage),
+      },
+      {
+        path: 'prep',
+        loadComponent: () => import('./features/costing/prep-items-page').then((m) => m.PrepItemsPage),
+      },
+      {
+        // 'new' for one not saved yet.
+        path: 'prep/:id',
+        loadComponent: () => import('./features/costing/prep-item-page').then((m) => m.PrepItemPage),
+      },
+      {
+        path: 'categories',
+        loadComponent: () => import('./features/costing/recipe-categories-page').then((m) => m.RecipeCategoriesPage),
+      },
+      // Where production was, under Recipes, before it was a section of its own.
+      { path: 'production', redirectTo: '/costing/production' },
+      {
+        // A menu item's card by its menu numbers (?variantId= for a size): sent on to the recipe it
+        // sells by.
+        path: ':kind/:id',
+        data: { mode: 'menu' },
+        loadComponent: () => import('./features/costing/recipe-card-page').then((m) => m.RecipeCardPage),
+      },
+    ],
+  },
+  {
+    // Production orders: prep items made in batches. ?prepItemId= to start with one chosen.
+    path: 'production',
+    canActivate: [costingTabGuard('Production')],
+    loadComponent: () => import('./features/costing/production-page').then((m) => m.ProductionPage),
+  },
+  {
+    // The menu: categories, items and sizes, add-ons.
+    path: 'menu',
+    canActivate: [costingTabGuard('Menu')],
+    loadComponent: () => import('./features/costing/menu-page').then((m) => m.MenuPage),
+  },
+  {
+    // Sales: entered, imported, refunded and voided.
+    path: 'sales',
+    canActivate: [costingTabGuard('Sales')],
+    loadComponent: () => import('./features/costing/sales-page').then((m) => m.SalesPage),
+  },
+  {
+    // The end of the day: the day's invoices and sales report handed in, for the daily batch and
+    // the takings. ?date= to open a day.
+    path: 'end-of-day',
+    canActivate: [costingTabGuard('EndOfDay')],
+    loadComponent: () => import('./features/costing/end-of-day-page').then((m) => m.EndOfDayPage),
+  },
+  {
+    // Material & demand intelligence: prices and their recipe impact, the order planner,
+    // theoretical against actual consumption, ABC and days on hand.
+    path: 'intelligence',
+    canActivate: [costingTabGuard('Intelligence')],
+    loadComponent: () => import('./features/costing/intelligence-shell').then((m) => m.IntelligenceShell),
+    children: [
+      { path: '', pathMatch: 'full', redirectTo: 'prices' },
+      { path: 'prices', loadComponent: () => import('./features/costing/price-variance-page').then((m) => m.PriceVariancePage) },
+      { path: 'orders', loadComponent: () => import('./features/costing/order-planner-page').then((m) => m.OrderPlannerPage) },
+      { path: 'consumption', loadComponent: () => import('./features/costing/consumption-page').then((m) => m.ConsumptionPage) },
+      { path: 'abc', loadComponent: () => import('./features/costing/abc-page').then((m) => m.AbcPage) },
+    ],
+  },
+  {
+    path: 'purchases',
+    canActivate: [costingTabGuard('Purchases')],
+    loadComponent: () => import('./features/costing/purchases-shell').then((m) => m.PurchasesShell),
+    children: [
+      { path: '', pathMatch: 'full', redirectTo: 'new' },
+      {
+        path: 'new',
+        loadComponent: () => import('./features/costing/purchases-page').then((m) => m.PurchasesPage),
+      },
+      {
+        path: 'batch',
+        loadComponent: () => import('./features/costing/purchase-batch-page').then((m) => m.PurchaseBatchPage),
+      },
+      {
+        path: 'invoices',
+        loadComponent: () => import('./features/costing/invoices-page').then((m) => m.InvoicesPage),
+      },
+      {
+        path: 'invoices/:id',
+        loadComponent: () => import('./features/costing/invoice-page').then((m) => m.InvoicePage),
+      },
+      {
+        path: 'suppliers',
+        loadComponent: () => import('./features/costing/suppliers-page').then((m) => m.SuppliersPage),
+      },
+      { path: 'spending', redirectTo: '/costing/reports/spending' },
+      { path: 'expense-items', redirectTo: '/costing/expense-items' },
+      {
+        path: 'categories',
+        loadComponent: () => import('./features/costing/purchase-categories-page').then((m) => m.PurchaseCategoriesPage),
+      },
+    ],
+  },
+  { path: 'invoices', pathMatch: 'full', redirectTo: 'purchases/invoices' },
+  { path: 'invoices/:id', redirectTo: 'purchases/invoices/:id' },
+  {
+    // General expenses (OPEX): bought, never stock.
+    path: 'expense-items',
+    canActivate: [costingTabGuard('ExpenseItems')],
+    loadComponent: () => import('./features/costing/expense-items-page').then((m) => m.ExpenseItemsPage),
+  },
+  {
+    path: 'counts',
+    canActivate: [costingTabGuard('Counts')],
+    loadComponent: () => import('./features/costing/counts-page').then((m) => m.CountsPage),
+  },
+  {
+    path: 'counts/:id',
+    canActivate: [costingTabGuard('Counts')],
+    loadComponent: () => import('./features/costing/count-sheet-page').then((m) => m.CountSheetPage),
+  },
+  {
+    path: 'waste',
+    canActivate: [costingTabGuard('Waste')],
+    loadComponent: () => import('./features/costing/waste-page').then((m) => m.WastePage),
+  },
+  {
+    // Financials (الماليات): the safe, its funding, takings, expense vouchers, what suppliers are owed
+    // and paid, the staff it pays and their advances, the tax and service.
+    path: 'financials',
+    canActivate: [costingTabGuard('Financials')],
+    loadComponent: () => import('./features/costing/financials-shell').then((m) => m.FinancialsShell),
+    children: [
+      { path: '', pathMatch: 'full', redirectTo: 'safe' },
+      { path: 'safe', loadComponent: () => import('./features/costing/safe-page').then((m) => m.SafePage) },
+      { path: 'funding', loadComponent: () => import('./features/costing/funding-page').then((m) => m.FundingPage) },
+      { path: 'reconciliation', loadComponent: () => import('./features/costing/reconciliation-page').then((m) => m.ReconciliationPage) },
+      { path: 'daily-cash', loadComponent: () => import('./features/costing/daily-cash-page').then((m) => m.DailyCashPage) },
+      { path: 'expenses', loadComponent: () => import('./features/costing/expense-vouchers-page').then((m) => m.ExpenseVouchersPage) },
+      {
+        // ?supplier= for one supplier's statement of account.
+        path: 'suppliers',
+        loadComponent: () => import('./features/costing/supplier-debts-page').then((m) => m.SupplierDebtsPage),
+      },
+      { path: 'payments', loadComponent: () => import('./features/costing/supplier-payments-page').then((m) => m.SupplierPaymentsPage) },
+      { path: 'advances', loadComponent: () => import('./features/costing/advances-page').then((m) => m.AdvancesPage) },
+      { path: 'staff', loadComponent: () => import('./features/costing/staff-page').then((m) => m.StaffPage) },
+      { path: 'payroll', loadComponent: () => import('./features/costing/payroll-page').then((m) => m.PayrollPage) },
+      { path: 'tax-service', loadComponent: () => import('./features/costing/tax-service-page').then((m) => m.TaxServicePage) },
+    ],
+  },
+  {
+    // Reports (التقارير): where the money went, the safe's money in and out, and the food cost reports.
+    path: 'reports',
+    canActivate: [costingTabGuard('Reports')],
+    loadComponent: () => import('./features/costing/costing-reports-shell').then((m) => m.CostingReportsShell),
+    children: [
+      { path: '', pathMatch: 'full', redirectTo: 'spending' },
+      { path: 'spending', loadComponent: () => import('./features/costing/spending-page').then((m) => m.SpendingPage) },
+      { path: 'treasury', loadComponent: () => import('./features/costing/treasury-page').then((m) => m.TreasuryPage) },
+      { path: 'theoretical', loadComponent: () => import('./features/costing/theoretical-page').then((m) => m.TheoreticalPage) },
+      { path: 'variance', loadComponent: () => import('./features/costing/variance-page').then((m) => m.VariancePage) },
+      { path: 'kpis', loadComponent: () => import('./features/costing/kpis-page').then((m) => m.KpisPage) },
+      { path: 'break-even', loadComponent: () => import('./features/costing/break-even-page').then((m) => m.BreakEvenPage) },
+    ],
+  },
+  { path: 'theoretical', redirectTo: 'reports/theoretical' },
+  { path: 'variance', redirectTo: 'reports/variance' },
+  { path: 'kpis', redirectTo: 'reports/kpis' },
+  { path: 'break-even', redirectTo: 'reports/break-even' },
+  {
+    // The cost targets, beverage categories, shared costs and monthly expenses.
+    path: 'settings',
+    canActivate: [costingTabGuard('CostSettings')],
+    loadComponent: () => import('./features/costing/settings-page').then((m) => m.SettingsPage),
+  },
+  {
+    // What waits for a manager: everyone who enters things sees their own; a manager decides.
+    path: 'approvals',
+    canActivate: [permissionGuard(Permissions.InventoryManage)],
+    loadComponent: () => import('./features/costing/approvals-page').then((m) => m.ApprovalsPage),
+  },
+  {
+    // Who works which section; a manager's.
+    path: 'permissions',
+    canActivate: [permissionGuard(Permissions.UsersManage)],
+    loadComponent: () => import('./features/costing/permissions-page').then((m) => m.PermissionsPage),
+  },
+];
+
+export const routes: Routes = [
+  {
+    path: 'sign-in',
+    canActivate: [signedOutGuard],
+    loadComponent: () => import('./features/sign-in/sign-in-page').then((m) => m.SignInPage),
+  },
+  {
+    path: '',
+    canActivate: [signedInGuard],
+    loadComponent: () => import('./features/shell/shell').then((m) => m.Shell),
+    children: [
+      { path: '', pathMatch: 'full', redirectTo: homePath },
+      {
+        // Costing & Financials (التكاليف والماليات): each section for whoever works it.
+        path: 'costing',
+        loadComponent: () => import('./features/costing/costing-shell').then((m) => m.CostingShell),
+        children: costingChildren,
+      },
+      {
+        // Who signs in to the system; a manager's.
+        path: 'users',
+        canActivate: [permissionGuard(Permissions.UsersManage)],
+        loadComponent: () => import('./features/users/users-page').then((m) => m.UsersPage),
+      },
+      {
+        // Company Settings: the name and logo, the currency, the country, the time zone; a manager's.
+        path: 'settings',
+        canActivate: [permissionGuard(Permissions.SettingsManage)],
+        loadComponent: () => import('./features/settings/settings-page').then((m) => m.SettingsPage),
+      },
+      {
+        // The link to the restaurant's POS: its key and the log of its calls; a manager's.
+        path: 'settings/pos-integration',
+        canActivate: [permissionGuard(Permissions.SettingsManage)],
+        loadComponent: () => import('./features/settings/pos-integration-page').then((m) => m.PosIntegrationPage),
+      },
+      {
+        // The link to the HR & Payroll system, both ways: its address and keys, the test, the log; a manager's.
+        path: 'settings/hr-integration',
+        canActivate: [permissionGuard(Permissions.SettingsManage)],
+        loadComponent: () => import('./features/settings/hr-integration-page').then((m) => m.HrIntegrationPage),
+      },
+      {
+        // Their own account and password; where a user working no section lands.
+        path: 'account',
+        loadComponent: () => import('./features/account/account-page').then((m) => m.AccountPage),
+      },
+    ],
+  },
+  { path: '**', redirectTo: '' },
+];
+```
+
+
+## 4. النواة (core)
+
+### 4.1 HTTP
+
+`authInterceptor`: يضيف `Authorization: Bearer` لطلبات `/api/` بنسخة من الطلب (`request.clone`)؛ و 401 على غير الدخول ⇐ خروج مع رسالة "انتهت الجلسة". `reachabilityInterceptor`: رمز 0 ⇐ الخادم غير متاح (شريط تنبيه).
+
+> 📄 **`frontend/src/app/core/http/interceptors.ts`** — 44 سطر
+
+```ts
+import { HttpErrorResponse, HttpInterceptorFn } from '@angular/common/http';
+import { inject } from '@angular/core';
+import { catchError, tap, throwError } from 'rxjs';
+import { AuthService } from '../auth/auth.service';
+import { ConnectivityService } from '../connectivity/connectivity.service';
+
+// The user's token on every API call. A 401 on anything but the sign-in itself means the API no
+// longer accepts it (it ran out, or the account changed), so the app goes back to the sign-in
+// screen.
+export const authInterceptor: HttpInterceptorFn = (request, next) => {
+  const auth = inject(AuthService);
+  const token = auth.token();
+  const isApi = request.url.startsWith('/api/');
+  const authorized = token && isApi ? request.clone({ setHeaders: { Authorization: `Bearer ${token}` } }) : request;
+
+  return next(authorized).pipe(
+    catchError((error: unknown) => {
+      if (
+        error instanceof HttpErrorResponse &&
+        error.status === 401 &&
+        auth.isSignedIn() &&
+        !request.url.startsWith('/api/auth/sign-in')
+      ) {
+        auth.signOut('expired');
+      }
+      return throwError(() => error);
+    }),
+  );
+};
+
+// Notes whether the server answered at all, which the banner goes by.
+export const reachabilityInterceptor: HttpInterceptorFn = (request, next) => {
+  const connectivity = inject(ConnectivityService);
+
+  return next(request).pipe(
+    tap(() => connectivity.markReachable(true)),
+    catchError((error: unknown) => {
+      if (error instanceof HttpErrorResponse) {
+        connectivity.markReachable(error.status !== 0);
+      }
+      return throwError(() => error);
+    }),
+  );
+};
+```
+
+
+> 📄 **`frontend/src/app/core/http/error-message.ts`** — 35 سطر
+
+```ts
+import { HttpErrorResponse } from '@angular/common/http';
+
+export const serverUnreachable = 'The server cannot be reached. Check this device is connected.';
+
+// An address the server has no endpoint for: a screen newer than the server running behind it.
+export const serverOutOfDate = 'The server does not have this yet: restart it so it runs the latest version.';
+
+// What to tell whoever is using the app. The API writes every refusal as ProblemDetails, its
+// detail (or errors[0]) meant to be shown as it is ("Enter an amount more than nothing.").
+export function errorMessage(error: unknown, fallback = 'Something went wrong. Please try again.'): string {
+  if (error instanceof HttpErrorResponse) {
+    if (error.status === 0) {
+      return serverUnreachable;
+    }
+    const errors = error.error?.errors;
+    if (Array.isArray(errors) && typeof errors[0] === 'string') {
+      return errors[0];
+    }
+    // A model-validation 400: errors keyed by field.
+    if (errors && typeof errors === 'object') {
+      const first = Object.values(errors as Record<string, unknown>).flat()[0];
+      if (typeof first === 'string') {
+        return first;
+      }
+    }
+    if (typeof error.error?.detail === 'string') {
+      return error.error.detail;
+    }
+    // Not found, and nothing said why: no endpoint answers there (a record not found says which).
+    if (error.status === 404) {
+      return serverOutOfDate;
+    }
+  }
+  return fallback;
+}
+```
+
+
+> 📄 **`frontend/src/app/core/connectivity/connectivity.service.ts`** — 15 سطر
+
+```ts
+import { Injectable, computed, signal } from '@angular/core';
+
+// This browser's link to the server. Everything goes through it, so while it is down the app can
+// only show what it already has.
+@Injectable({ providedIn: 'root' })
+export class ConnectivityService {
+  // Whether the last request reached the server at all.
+  private readonly httpReachable = signal(true);
+
+  readonly online = computed(() => this.httpReachable());
+
+  markReachable(reachable: boolean): void {
+    this.httpReachable.set(reachable);
+  }
+}
+```
+
+
+### 4.2 الشركة والأدوات
+
+> 📄 **`frontend/src/app/core/settings/company.ts`** — 107 سطر
+
+```ts
+import { HttpClient } from '@angular/common/http';
+import { Injectable, computed, inject, signal } from '@angular/core';
+import { Observable, firstValueFrom } from 'rxjs';
+
+// Company Settings (إعدادات الشركة), as the API keeps them (/api/settings): read by anyone, the
+// sign-in page too; changed by a manager.
+export type Country = 'Egypt' | 'SaudiArabia';
+export type CurrencyPosition = 'Before' | 'After';
+
+export interface CompanySettings {
+  name: string;
+  currencySymbol: string;
+  currencyPosition: CurrencyPosition;
+  country: Country;
+  // IANA id: "Africa/Cairo".
+  timeZoneId: string;
+  // The hour the business day starts: before it, a night past midnight is still the evening's day.
+  workdayStartsAtHour: number;
+  hasLogo: boolean;
+  // Changes with the logo: its address asks for the new one.
+  logoVersion: number;
+}
+
+export type CompanySettingsInput = Omit<CompanySettings, 'hasLogo' | 'logoVersion'>;
+
+export const countryLabels: Record<Country, { en: string; ar: string }> = {
+  Egypt: { en: 'Egypt', ar: 'مصر' },
+  SaudiArabia: { en: 'Saudi Arabia', ar: 'المملكة العربية السعودية' },
+};
+
+const numbers = new Map<string, Intl.NumberFormat>();
+
+// An amount as the company writes it: "L.E 1,400.00", "1,400.00 SAR", or the number alone. A unit
+// cost may take more digits when it has them (maxDigits): "L.E 0.0833 a g", "L.E 1.80 a piece".
+export function formatMoney(amount: number, symbol: string, position: CurrencyPosition, digits = 2, maxDigits = digits): string {
+  let format = numbers.get(`${digits}-${maxDigits}`);
+  if (!format) {
+    format = new Intl.NumberFormat('en-US', { minimumFractionDigits: digits, maximumFractionDigits: maxDigits });
+    numbers.set(`${digits}-${maxDigits}`, format);
+  }
+  const number = format.format(amount ?? 0);
+  if (!symbol) {
+    return number;
+  }
+  return position === 'Before' ? `${symbol} ${number}` : `${number} ${symbol}`;
+}
+
+// The company's settings as the app holds them, read once at start-up and replaced as a manager
+// saves them. Nothing but signals, so the money pipe and any screen read it without asking the
+// server; with nothing read yet, amounts are in L.E, the server's own default.
+@Injectable({ providedIn: 'root' })
+export class Company {
+  readonly settings = signal<CompanySettings>({
+    name: '',
+    currencySymbol: 'L.E',
+    currencyPosition: 'Before',
+    country: 'Egypt',
+    timeZoneId: 'Africa/Cairo',
+    workdayStartsAtHour: 4,
+    hasLogo: false,
+    logoVersion: 0,
+  });
+
+  // The currency it writes amounts in: "L.E", "SAR", or none.
+  readonly currency = computed(() => this.settings().currencySymbol);
+  // The company's name, or the system's own until it has one.
+  readonly name = computed(() => this.settings().name || 'Costing & Financials');
+  readonly logoUrl = computed(() => (this.settings().hasLogo ? `/api/settings/logo?v=${this.settings().logoVersion}` : null));
+
+  money(amount: number, digits = 2, maxDigits = digits): string {
+    const s = this.settings();
+    return formatMoney(amount, s.currencySymbol, s.currencyPosition, digits, maxDigits);
+  }
+}
+
+@Injectable({ providedIn: 'root' })
+export class SettingsApi {
+  private readonly http = inject(HttpClient);
+
+  get(): Observable<CompanySettings> {
+    return this.http.get<CompanySettings>('/api/settings');
+  }
+
+  save(settings: CompanySettingsInput): Observable<CompanySettings> {
+    return this.http.put<CompanySettings>('/api/settings', settings);
+  }
+
+  uploadLogo(file: File): Observable<CompanySettings> {
+    const form = new FormData();
+    form.append('file', file, file.name);
+    return this.http.put<CompanySettings>('/api/settings/logo', form);
+  }
+
+  removeLogo(): Observable<CompanySettings> {
+    return this.http.delete<CompanySettings>('/api/settings/logo');
+  }
+}
+
+// At start-up, before the first screen: the company's settings read. Unreachable, the app starts
+// with numbers alone and the system's name, and reads them again next time.
+export async function loadCompany(api = inject(SettingsApi), company = inject(Company)): Promise<void> {
+  try {
+    company.settings.set(await firstValueFrom(api.get()));
+  } catch {
+    // Started without them.
+  }
+}
+```
+
+
+`FormChecks`: زر الحفظ **لا يُعطَّل أبدًا**؛ عند النقص يُعلَّم كل حقل ناقص بالأحمر وتحته ما ينقصه ويُركّز على أوله.
+
+> 📄 **`frontend/src/app/core/ui/form-checks.ts`** — 61 سطر
+
+```ts
+import { signal } from '@angular/core';
+import { ErrorStateMatcher } from '@angular/material/core';
+import { NotifyService } from './notify.service';
+
+// What stops a form being sent, said where it is and pointing at its field: "Pay: enter the
+// monthly salary", the field the one whose accessible name is "Monthly salary".
+export interface FormProblem {
+  where: string;
+  what: string;
+  field: string;
+}
+
+// A send button that is never greyed out: clicked with something missing, nothing is sent, every
+// field that holds it up turns red with what it needs under it, the message says what is missing,
+// and the first of them is focused. A field stays marked until it is put right; clear() unmarks
+// them all, for a form started again.
+export class FormChecks {
+  // Set once a send is refused for what is missing.
+  readonly shown = signal(false);
+  private readonly matchers = new Map<string, ErrorStateMatcher>();
+
+  constructor(private readonly problems: () => FormProblem[]) {}
+
+  // How the field named so shows an error: while shown and something is wrong with it.
+  field(name: string): ErrorStateMatcher {
+    let matcher = this.matchers.get(name);
+    if (!matcher) {
+      matcher = { isErrorState: () => this.shown() && this.problems().some((p) => p.field === name) };
+      this.matchers.set(name, matcher);
+    }
+    return matcher;
+  }
+
+  // What is wrong with the field named so, said under it: "Enter the quantity".
+  message(name: string): string {
+    const what = this.problems().find((p) => p.field === name)?.what ?? '';
+    return what.charAt(0).toUpperCase() + what.slice(1);
+  }
+
+  // True when there is nothing missing. Otherwise the fields are marked, the first one is focused
+  // (within host), and the message names the first few problems.
+  passed(notify: NotifyService, host: HTMLElement): boolean {
+    const problems = this.problems();
+    if (!problems.length) {
+      return true;
+    }
+    this.shown.set(true);
+    const told = problems.slice(0, 3).map((p) => `${p.where}: ${p.what}.`);
+    const more = problems.length - told.length;
+    notify.error(null, `Cannot submit. ${told.join(' ')}${more ? ` And ${more} more, marked in red.` : ''}`);
+    const first = problems.find((p) => p.field)?.field;
+    const element = first ? host.querySelector<HTMLElement>(`[aria-label="${first.replace(/["\\]/g, '\\$&')}"]`) : null;
+    element?.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
+    element?.focus({ preventScroll: true });
+    return false;
+  }
+
+  clear(): void {
+    this.shown.set(false);
+  }
+}
+```
+
+
+> 📄 **`frontend/src/app/core/ui/money.pipe.ts`** — 13 سطر
+
+```ts
+import { Pipe, PipeTransform, inject } from '@angular/core';
+import { Company } from '../settings/company';
+
+// Amounts as the company writes them (Company Settings): "L.E 153.90", "153.90 SAR". Not pure, so
+// a currency saved on the Settings page shows at once; formatting a number is cheap.
+@Pipe({ name: 'money', pure: false })
+export class MoneyPipe implements PipeTransform {
+  private readonly company = inject(Company);
+
+  transform(value: number | null | undefined, digits = 2): string {
+    return this.company.money(value ?? 0, digits);
+  }
+}
+```
+
+
+> 📄 **`frontend/src/app/core/ui/notify.service.ts`** — 22 سطر
+
+```ts
+import { Injectable, inject } from '@angular/core';
+import { MatSnackBar } from '@angular/material/snack-bar';
+import { errorMessage } from '../http/error-message';
+
+// One place for the short messages at the bottom of the screen.
+@Injectable({ providedIn: 'root' })
+export class NotifyService {
+  private readonly snackBar = inject(MatSnackBar);
+
+  info(message: string): void {
+    this.snackBar.open(message, 'OK', { duration: 3500 });
+  }
+
+  // Something arrived that whoever uses the app did not do: kept up longer, and dismissed by hand.
+  attention(message: string): void {
+    this.snackBar.open(message, 'Got it', { duration: 8000, panelClass: 'snack-attention' });
+  }
+
+  error(error: unknown, fallback?: string): void {
+    this.snackBar.open(errorMessage(error, fallback), 'Dismiss', { duration: 6000, panelClass: 'snack-error' });
+  }
+}
+```
+
+
+> 📄 **`frontend/src/app/core/ui/paper-preview.ts`** — 121 سطر
+
+```ts
+import { Component, DestroyRef, effect, inject, input, signal, untracked } from '@angular/core';
+import { MatButtonModule } from '@angular/material/button';
+import { MatIconModule } from '@angular/material/icon';
+import { MatProgressBarModule } from '@angular/material/progress-bar';
+import { DomSanitizer, SafeResourceUrl } from '@angular/platform-browser';
+import { Observable, firstValueFrom } from 'rxjs';
+import { errorMessage } from '../http/error-message';
+import { saveBlob } from './save-blob';
+
+// A file the API keeps, such as an employee's ID card, fetched with the sign-in (a plain link
+// would carry none) and shown in the page: a photo as it is, a PDF in the browser's own viewer.
+// Given how to fetch it.
+@Component({
+  selector: 'app-paper-preview',
+  imports: [MatButtonModule, MatIconModule, MatProgressBarModule],
+  template: `
+    @if (error()) {
+      <p class="error">{{ error() }}</p>
+    } @else if (image(); as src) {
+      <img [src]="src" [alt]="fileName()" />
+    } @else if (document(); as src) {
+      <iframe [src]="src" [title]="fileName()"></iframe>
+    } @else {
+      <mat-progress-bar mode="indeterminate" />
+    }
+    <div class="actions">
+      <span class="name">{{ fileName() }}</span>
+      <button mat-button (click)="download()" [disabled]="!blob()"><mat-icon>download</mat-icon> Download</button>
+    </div>
+  `,
+  styles: `
+    :host {
+      display: block;
+    }
+    /* As tall as where it is shown lets it: --paper-height, 70vh unless said. */
+    img {
+      display: block;
+      max-width: 100%;
+      max-height: var(--paper-height, 70vh);
+      margin: 0 auto;
+    }
+    iframe {
+      display: block;
+      width: 100%;
+      min-width: var(--paper-min-width, min(80vw, 640px));
+      height: var(--paper-height, 70vh);
+      border: 0;
+    }
+    .actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 4px;
+    }
+    .name {
+      flex: 1;
+      color: var(--mat-sys-on-surface-variant);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .error {
+      color: var(--mat-sys-error);
+    }
+  `,
+})
+export class PaperPreview {
+  private readonly sanitizer = inject(DomSanitizer);
+
+  readonly fetch = input.required<() => Observable<Blob>>();
+  readonly fileName = input.required<string>();
+
+  protected readonly image = signal<string | null>(null);
+  protected readonly document = signal<SafeResourceUrl | null>(null);
+  protected readonly error = signal<string | null>(null);
+  protected readonly blob = signal<Blob | null>(null);
+  private url: string | null = null;
+
+  constructor() {
+    effect(() => {
+      const fetch = this.fetch();
+      untracked(() => void this.load(fetch));
+    });
+    inject(DestroyRef).onDestroy(() => this.release());
+  }
+
+  protected download(): void {
+    const blob = this.blob();
+    if (blob) {
+      saveBlob(blob, this.fileName());
+    }
+  }
+
+  private async load(fetch: () => Observable<Blob>): Promise<void> {
+    this.release();
+    this.image.set(null);
+    this.document.set(null);
+    this.error.set(null);
+    try {
+      const blob = await firstValueFrom(fetch());
+      this.blob.set(blob);
+      this.url = URL.createObjectURL(blob);
+      if (blob.type.startsWith('image/')) {
+        this.image.set(this.url);
+      } else {
+        // A PDF, in the browser's own viewer. The URL is one made here, of a file the API checked
+        // was a PDF by its first bytes when it was uploaded.
+        this.document.set(this.sanitizer.bypassSecurityTrustResourceUrl(this.url));
+      }
+    } catch (error) {
+      this.error.set(errorMessage(error, 'The file could not be loaded.'));
+    }
+  }
+
+  private release(): void {
+    if (this.url) {
+      URL.revokeObjectURL(this.url);
+      this.url = null;
+    }
+  }
+}
+```
+
+
+> 📄 **`frontend/src/app/core/ui/save-blob.ts`** — 9 سطر
+
+```ts
+// Hands a file fetched with the sign-in to the browser to save.
+export function saveBlob(blob: Blob, fileName: string): void {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = fileName;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+```
+
+
+> 📄 **`frontend/src/app/core/ui/western-digits.ts`** — 89 سطر
+
+```ts
+import { DOCUMENT } from '@angular/common';
+import { DestroyRef, Injectable, inject } from '@angular/core';
+
+// Digits typed on an Arabic keyboard (٠١٢٣٤٥٦٧٨٩, or the Persian ۰۱۲۳۴۵۶۷۸۹) and the Arabic decimal
+// mark (٫): the Western digits and the dot they stand for. Everything else as it is.
+const EASTERN = /[٠-٩۰-۹٫]/g;
+
+export function westernDigits(text: string): string {
+  return text.replace(EASTERN, (c) => (c === '٫' ? '.' : String(c.charCodeAt(0) - (c >= '۰' ? 0x06f0 : 0x0660))));
+}
+
+// The fields that take numbers: prices, quantities and amounts, PINs, phone numbers and table
+// numbers; and any marked data-western-digits, such as a supplier's invoice number, of letters and
+// digits. Names, notes and searches keep what is typed.
+const NUMBER_FIELDS =
+  'input[type=number], input[type=tel], input[inputmode=numeric], input[inputmode=decimal], input[inputmode=tel], input[data-western-digits]';
+
+// So that nobody has to switch keyboards between an Arabic name and an amount: an Arabic digit
+// typed or pasted into a field that takes numbers goes in as the Western one, wherever the field
+// is in the app. Installed once, at startup, for the whole page.
+//
+// A number field drops an Arabic digit before any input event, so the key is caught as it goes
+// down, and the Western digit typed in its place. Typed by the browser's own insert, at the cursor:
+// the field's input event follows, so ngModel and form controls take the value, and undo works.
+@Injectable({ providedIn: 'root' })
+export class WesternDigits {
+  private readonly document = inject(DOCUMENT);
+  private readonly destroyRef = inject(DestroyRef);
+  private installed = false;
+
+  install(): void {
+    if (this.installed) return;
+    this.installed = true;
+    const listeners: [string, (event: Event) => void][] = [
+      ['keydown', (event) => this.keydown(event as KeyboardEvent)],
+      ['beforeinput', (event) => this.beforeInput(event as InputEvent)],
+      ['paste', (event) => this.paste(event as ClipboardEvent)],
+    ];
+    for (const [type, listener] of listeners) this.document.addEventListener(type, listener, true);
+    this.destroyRef.onDestroy(() => {
+      for (const [type, listener] of listeners) this.document.removeEventListener(type, listener, true);
+    });
+  }
+
+  // A key that types an Arabic digit. Shortcuts (Ctrl, Cmd) are left alone.
+  private keydown(event: KeyboardEvent): void {
+    if (event.ctrlKey || event.metaKey || event.isComposing || event.key?.length !== 1) return;
+    this.replace(event, event.key);
+  }
+
+  // Typed some other way into a text field that lets it in: an on-screen keyboard, a suggestion.
+  private beforeInput(event: InputEvent): void {
+    if (event.inputType === 'insertText' || event.inputType === 'insertReplacementText') this.replace(event, event.data);
+  }
+
+  private paste(event: ClipboardEvent): void {
+    this.replace(event, event.clipboardData?.getData('text/plain'));
+  }
+
+  private replace(event: Event, text: string | null | undefined): void {
+    const field = numberField(event.target);
+    if (!field || !text || !event.cancelable) return;
+    const western = westernDigits(text);
+    if (western === text) return;
+    event.preventDefault();
+    insert(field, western);
+  }
+}
+
+function numberField(target: EventTarget | null): HTMLInputElement | null {
+  return target instanceof HTMLInputElement && !target.readOnly && !target.disabled && target.matches(NUMBER_FIELDS) ? target : null;
+}
+
+// At the cursor, as the browser types; or, where it cannot, there by hand (at the end of a number
+// field, which keeps no cursor), and the input event raised for it.
+function insert(field: HTMLInputElement, text: string): void {
+  const document = field.ownerDocument;
+  try {
+    if (document.activeElement === field && document.execCommand('insertText', false, text)) return;
+  } catch {
+    // An older browser: by hand, below.
+  }
+  try {
+    field.setRangeText(text, field.selectionStart ?? field.value.length, field.selectionEnd ?? field.value.length, 'end');
+  } catch {
+    field.value += text;
+  }
+  field.dispatchEvent(new Event('input', { bubbles: true }));
+}
+```
+
+
+### 4.3 عقود الـ API
+
+`costing.api.ts`: أكبر ملف: كل الأنواع والنداءات لـ `api/costing` و `api/inventory` و `api/financials` (الخامات، التكاليف، الوصفات، المصنعات، الإنتاج، المشتريات، الجرد، الهالك، الخزنة، التقارير، الموافقات…). الأنواع تطابق DTOs الـ API، والـ enums كـ union types، وقواميس التسميات ثنائية اللغة (`Record<Kind, { en; ar }>`) تجبر TypeScript على تسمية كل حالة.
+
+> 📄 **`frontend/src/app/core/costing/costing.api.ts`** — 2356 سطر
+
+```ts
+import { HttpClient, HttpErrorResponse } from '@angular/common/http';
+import { Injectable, inject } from '@angular/core';
+import { Observable, catchError, of, throwError } from 'rxjs';
+
+// The manager's costing, as the till server's api/costing and api/inventory speak it.
+
+export type UnitOfMeasure = 'Gram' | 'Millilitre' | 'Piece';
+export type RecipeTargetKind = 'MenuItem' | 'AddOn';
+export type CostStatus = 'WithinTarget' | 'AboveTarget' | 'NoRecipe' | 'MissingPrices' | 'NoPrice';
+// Bought from a supplier, or made in the kitchen (a prep item: dough, a house sauce).
+export type MaterialKind = 'Purchased' | 'Prep';
+
+// A raw material with its costs. Quantities are in its unit (grams, millilitres, pieces); costs
+// are per purchase unit (a kg, a carton), as prices are written.
+export interface MaterialCost {
+  id: string;
+  code: string | null;
+  name: string;
+  // Its purchase category's name, and the category.
+  category: string | null;
+  categoryId: string;
+  unit: UnitOfMeasure;
+  purchaseUnit: string;
+  purchaseUnitSize: number;
+  costPerPurchaseUnit: number | null;
+  defaultYieldPercent: number;
+  quantityOnHand: number;
+  reorderLevel: number;
+  stockValue: number | null;
+  lastPurchaseCostPerPurchaseUnit: number | null;
+  lastPurchasedAtUtc: string | null;
+  // Per gram, millilitre or piece, unrounded: what recipe costs are worked out from.
+  costPerUnit: number | null;
+  kind: MaterialKind;
+  // In a general expenses category: filed there before the kinds were kept apart.
+  misplaced?: boolean;
+  // What a recipe is costed from, per unit, unrounded: costPerUnit, or for a prep item never made
+  // yet its cost by its own recipe today (costedByRecipe), with what has no price inside it.
+  recipeCostPerUnit?: number | null;
+  costedByRecipe?: boolean;
+  recipeCostMissing?: string[];
+}
+
+// What a recipe line is costed from, per unit: the material's average, or for a prep item never
+// made yet its own recipe's cost today.
+export function recipeCostOf(material: MaterialCost): number | null {
+  return material.recipeCostPerUnit === undefined ? material.costPerUnit : material.recipeCostPerUnit;
+}
+
+// One invoice line that bought a material, as its paper has it: quantity in the unit billed (5 kg),
+// baseQuantity in the material's own (5,000 g), unitPrice per unit billed. A voided one no longer
+// stands; replacedBy names the invoice that corrected it, revisionOf the one it corrected.
+export interface MaterialPurchase {
+  invoiceId: string;
+  date: string;
+  supplier: string | null;
+  invoiceNumber: string | null;
+  quantity: number;
+  unit: string;
+  baseQuantity: number;
+  unitPrice: number | null;
+  total: number | null;
+  voided: boolean;
+  replacedBy: string | null;
+  revisionOf: string | null;
+}
+
+// A material's purchase history card (كارت الصنف), newest first. The totals are the standing
+// invoices' only; the average is per purchase unit, over the priced lines.
+export interface MaterialPurchaseHistory {
+  materialId: string;
+  material: string;
+  unit: UnitOfMeasure;
+  purchaseUnit: string;
+  purchaseUnitSize: number;
+  lines: MaterialPurchase[];
+  baseQuantity: number;
+  total: number;
+  averagePerPurchaseUnit: number | null;
+  unpricedLines: number;
+}
+
+export interface RecipeCostLine {
+  rawMaterialId: string;
+  code: string | null;
+  ingredient: string;
+  quantity: number;
+  unit: UnitOfMeasure;
+  purchaseUnit: string;
+  purchaseUnitSize: number;
+  apsPerUnit: number | null;
+  yieldPercent: number;
+  epsPerUnit: number | null;
+  recipeCost: number | null;
+  // A prep item never made yet, costed by its own recipe today.
+  costedByRecipe?: boolean;
+}
+
+// The Recipe Costing Template for one dish, size or add-on.
+// One recipe's costing card, or a menu item's by the recipe it sells by. recipe is the name it
+// goes by (its own, or its menu item's); menuPrice what it is costed against (the menu's, or an
+// off-menu recipe's planned price). No target: an off-menu (R&D) recipe.
+export interface RecipeCostCard {
+  targetKind: RecipeTargetKind | null;
+  catalogItemId: number | null;
+  variantId: number | null;
+  itemCode: string;
+  recipe: string;
+  recipeAr: string | null;
+  category: string | null;
+  hasRecipe: boolean;
+  portions: number;
+  menuPrice: number | null;
+  foodCostTargetPercent: number;
+  lines: RecipeCostLine[];
+  costPerRecipe: number;
+  ingredientCostPerPortion: number;
+  sharedCostPerPortion: number;
+  costPerPortion: number;
+  marginPerPortion: number | null;
+  foodCostPercentActual: number | null;
+  idealSellingPrice: number;
+  missingPrices: string[];
+  status: CostStatus;
+  recipeId: string | null;
+  // Its own name, when it has one.
+  recipeName: string | null;
+  // The menu item it is linked to, by name.
+  linkedTo: string | null;
+  isStandalone: boolean;
+  plannedPrice: number | null;
+  // A size with no recipe of its own, costed by the dish's.
+  usesBaseRecipe: boolean;
+  isDeleted: boolean;
+  deletedAtUtc: string | null;
+  deletedBy: string | null;
+  // The kitchen's own category for it, apart from the menu's; null until it is sorted.
+  recipeCategoryId: string | null;
+  recipeCategory: string | null;
+  recipeCategoryAr: string | null;
+}
+
+// The kitchen's own grouping of its recipes: Sauces, Staff meals, Catering orders.
+export interface RecipeCategory {
+  id: string;
+  name: string;
+  nameAr: string | null;
+  // Active recipes in it, and prep items still in use.
+  recipes: number;
+  prepItems: number;
+}
+
+// A recipe as written: name and link optional on the menu, the name required off it; the
+// category always.
+export interface SaveRecipe {
+  name: string | null;
+  recipeCategoryId: string | null;
+  plannedPrice: number | null;
+  targetKind: RecipeTargetKind | null;
+  catalogItemId: number | null;
+  variantId: number | null;
+  portions: number;
+  ingredients: RecipeLine[];
+}
+
+export interface TheoreticalCostRow {
+  itemCode: string;
+  menuItemId: number;
+  variantId: number | null;
+  menuItem: string;
+  menuItemAr: string | null;
+  category: string;
+  quantitySold: number;
+  netSales: number;
+  recipeCostPerUnit: number;
+  theoreticalCost: number;
+  sharedCost: number;
+  foodCostPercent: number | null;
+  status: CostStatus;
+  // Sold before the dish had a recipe: costed by today's recipe at today's prices.
+  quantityCostedNow: number;
+  // Entered by hand: a prep item's unit (kg, L), its quantity being in it rather than portions;
+  // and which recipe or prep item the row is, for one off the menu (menuItemId 0).
+  unit?: string | null;
+  recipeId?: string | null;
+  prepItemId?: string | null;
+}
+
+export interface TheoreticalCostReport {
+  year: number;
+  month: number;
+  from: string;
+  to: string;
+  foodCostTargetPercent: number;
+  rows: TheoreticalCostRow[];
+  quantitySold: number;
+  netSales: number;
+  theoreticalCost: number;
+  foodCostPercent: number | null;
+  // Pos: the till's sales. Manual: the quantities typed in for the month, by whom and when.
+  source: TheoreticalSource;
+  enteredBy: string | null;
+  enteredAtUtc: string | null;
+}
+
+export type TheoreticalSource = 'Pos' | 'Manual';
+
+export type ManualSalesItemKind = 'Recipe' | 'PrepItem';
+
+// A row of the month's sales sheet: an active recipe, in portions, or a prep item, in its unit.
+// costPerUnit is null when it cannot be costed; price is null off the menu with no planned price,
+// and for prep items. quantity is what was saved for the month.
+export interface ManualSalesItem {
+  kind: ManualSalesItemKind;
+  itemId: string;
+  code: string | null;
+  name: string;
+  nameAr: string | null;
+  group: string;
+  unit: string;
+  costPerUnit: number | null;
+  price: number | null;
+  quantity: number | null;
+}
+
+export interface ManualSalesSheet {
+  year: number;
+  month: number;
+  items: ManualSalesItem[];
+  enteredBy: string | null;
+  enteredAtUtc: string | null;
+}
+
+export interface ManualSalesLine {
+  kind: ManualSalesItemKind;
+  itemId: string;
+  quantity: number;
+}
+
+export interface CostingSettings {
+  foodCostTargetPercent: number;
+  // Left out of a save, these stay as they are.
+  varianceTolerancePercent?: number | null;
+  // Menu categories that are drinks: the beverage cost %. None, everything is food.
+  beverageCategories?: string[] | null;
+}
+
+export type KpiKey =
+  | 'FoodCost'
+  | 'BeverageCost'
+  | 'LabourCost'
+  | 'AverageCheck'
+  | 'SalesPerLabourHour'
+  | 'GrossProfitMargin'
+  | 'NetProfitMargin';
+
+export type KpiStatus = 'Healthy' | 'Above' | 'Below' | 'NoRange' | 'Missing';
+
+// Value is a % for the ratios, money for the average check and sales per labour hour. Missing
+// says what is needed when there is no value.
+export interface Kpi {
+  key: KpiKey;
+  value: number | null;
+  healthyFrom: number | null;
+  healthyTo: number | null;
+  highIsBad: boolean;
+  status: KpiStatus;
+  missing: string | null;
+}
+
+// The month as an income statement: revenue before VAT, after promo discounts.
+export interface MonthStatement {
+  foodSales: number;
+  beverageSales: number;
+  deliveryFees: number;
+  revenue: number;
+  paidOrders: number;
+  foodRecipeCost: number;
+  beverageRecipeCost: number;
+  kitchenWaste: number;
+  spoilage: number;
+  countDifferences: number;
+  costOfSales: number;
+  grossProfit: number;
+  wagesAndBenefits: number | null;
+  otherControllableCosts: number | null;
+  occupationCost: number | null;
+  interest: number | null;
+  depreciation: number | null;
+  netProfit: number | null;
+  // Expense items on the month's posted purchase invoices, on each category's line, on top of
+  // what is entered by hand; and each category's part. totalExpenses: every overhead together.
+  loggedControllableCosts: number;
+  loggedOccupationCost: number;
+  loggedOtherFixedCosts: number;
+  loggedExpenses: LoggedExpense[] | null;
+  // Wages paid as expenses (vouchers, invoices under a Wages category), added to the wages entered.
+  loggedWages: number;
+  totalExpenses: number;
+  // The month's takings, as each day's Z report gave them: cash and card, their total, the tax
+  // collected in it (owed, not revenue: revenue is the total less it), the voids, and how many
+  // days' takings are in. salesAtMenuPrices: the month's sales summaries at the menu's prices.
+  cashTakings?: number;
+  cardTakings?: number;
+  grossTakings?: number;
+  taxCollected?: number;
+  voids?: number;
+  takingsDays?: number;
+  salesAtMenuPrices?: number;
+}
+
+export interface LoggedExpense {
+  categoryId: string;
+  category: string;
+  categoryAr: string | null;
+  expenseLine: ExpenseLine;
+  amount: number;
+}
+
+// What a month cost beyond its ingredients, as entered; null is not known yet.
+export interface MonthlyExpenses {
+  wagesAndBenefits: number | null;
+  labourHours: number | null;
+  otherControllableCosts: number | null;
+  occupationCost: number | null;
+  interest: number | null;
+  depreciation: number | null;
+  updatedAtUtc?: string | null;
+  updatedBy?: string | null;
+}
+
+export interface ItemProfit {
+  itemCode: string;
+  menuItem: string;
+  menuItemAr: string | null;
+  category: string;
+  beverage: boolean;
+  quantitySold: number;
+  netSales: number;
+  cost: number | null;
+  profit: number | null;
+  profitPerUnit: number | null;
+  marginPercent: number | null;
+}
+
+// The break-even worksheet's Income Statement column: the chosen months at a year's pace.
+export interface BreakEvenWorksheet {
+  from: string;
+  to: string;
+  days: number;
+  weeklySales: number;
+  grossSales: number;
+  costOfSales: number;
+  costOfSalesRatio: number;
+  grossProfit: number;
+  controllableCosts: number;
+  occupationCost: number;
+  interest: number;
+  depreciation: number;
+  // Logged expenses whose category counts them as other fixed costs.
+  otherFixedCosts: number;
+  totalFixedCosts: number;
+  restaurantProfit: number;
+  breakEvenYearlySales: number | null;
+  breakEvenWeeklySales: number | null;
+  monthsWithoutCosts: string[];
+  scenarios: number[];
+  // Of controllableCosts and occupationCost, what came from expense invoices rather than typed in.
+  controllableFromInvoices: number;
+  occupationFromInvoices: number;
+}
+
+// One column of the worksheet: weekly sales tried against the year's costs.
+export interface BreakEvenColumn {
+  weeklySales: number;
+  grossSales: number;
+  costOfSales: number;
+  grossProfit: number;
+  profitMarginPercent: number | null;
+  controllableCosts: number;
+  occupationCost: number;
+  interest: number;
+  depreciation: number;
+  otherFixedCosts: number;
+  totalFixedCosts: number;
+  restaurantProfit: number;
+}
+
+// The template's arithmetic for an option: gross sales = weekly × 52, cost of sales at the
+// income statement's ratio, the same fixed costs.
+export function breakEvenColumn(sheet: BreakEvenWorksheet, weeklySales: number): BreakEvenColumn {
+  const grossSales = weeklySales * 52;
+  const costOfSales = grossSales * sheet.costOfSalesRatio;
+  const grossProfit = grossSales - costOfSales;
+  return {
+    weeklySales,
+    grossSales,
+    costOfSales,
+    grossProfit,
+    profitMarginPercent: grossSales > 0 ? (grossProfit / grossSales) * 100 : null,
+    controllableCosts: sheet.controllableCosts,
+    occupationCost: sheet.occupationCost,
+    interest: sheet.interest,
+    depreciation: sheet.depreciation,
+    otherFixedCosts: sheet.otherFixedCosts,
+    totalFixedCosts: sheet.totalFixedCosts,
+    restaurantProfit: grossProfit - sheet.totalFixedCosts,
+  };
+}
+
+export interface KpiReport {
+  year: number;
+  month: number;
+  from: string;
+  to: string;
+  beverageCategories: string[];
+  statement: MonthStatement;
+  expenses: MonthlyExpenses;
+  kpis: Kpi[];
+  items: ItemProfit[];
+  itemsWithoutRecipe: number;
+  salesWithoutRecipe: number;
+}
+
+// Voided: posted, then deleted with a manager's approval, its adjustments reversed.
+export type StockCountStatus = 'Draft' | 'Posted' | 'Voided';
+
+// Periodic (جرد دوري): what is found against the records is a shortage or a surplus. Opening
+// (جرد افتتاحي): where each material's stock begins when costing starts, valued at its cost, with
+// no shortage or surplus and nothing in the profit. A material is opened once.
+export type StockCountKind = 'Periodic' | 'Opening';
+
+export const countKindLabels: Record<StockCountKind, { en: string; ar: string }> = {
+  Periodic: { en: 'Periodic count', ar: 'جرد دوري' },
+  Opening: { en: 'Opening stock', ar: 'جرد افتتاحي' },
+};
+
+export interface StockCountSummary {
+  id: string;
+  status: StockCountStatus;
+  startedAtUtc: string;
+  startedBy: string;
+  postedAtUtc: string | null;
+  postedBy: string | null;
+  materials: number;
+  voidedAtUtc?: string | null;
+  voidedBy?: string | null;
+  kind: StockCountKind;
+}
+
+// Quantities in the material's unit (grams, millilitres, pieces). Book quantity and cost are
+// filled in when the count is posted; a draft has neither.
+export interface StockCountLine {
+  rawMaterialId: string;
+  countedQuantity: number;
+  bookQuantity: number | null;
+  unitCost: number | null;
+}
+
+export interface StockCount {
+  id: string;
+  status: StockCountStatus;
+  startedAtUtc: string;
+  startedBy: string;
+  postedAtUtc: string | null;
+  postedBy: string | null;
+  lines: StockCountLine[];
+  voidedAtUtc?: string | null;
+  voidedBy?: string | null;
+  kind: StockCountKind;
+}
+
+export interface SpoilageLine {
+  rawMaterialId: string;
+  quantity: number;
+  reason: string;
+}
+
+export interface SpoilageEntry {
+  spoilageId: string;
+  recordedAtUtc: string;
+  recordedBy: string | null;
+  lines: {
+    rawMaterialId: string;
+    material: string;
+    unit: UnitOfMeasure;
+    purchaseUnitSize: number;
+    quantity: number;
+    reason: string | null;
+    value: number | null;
+  }[];
+  value: number | null;
+}
+
+export type VarianceEvaluation = 'WithinLimit' | 'Unfavourable' | 'Favourable' | 'SharedCost';
+
+// One material between two counts, in its unit. Variance = actual − standard: above zero, more
+// left the stores than the recipes account for.
+export interface VarianceRow {
+  rawMaterialId: string;
+  code: string | null;
+  material: string;
+  category: string | null;
+  unit: UnitOfMeasure;
+  purchaseUnitSize: number;
+  opening: number;
+  received: number;
+  rawWaste: number;
+  productWaste: number;
+  standardUsage: number;
+  expectedClosing: number;
+  closing: number;
+  actualUsage: number;
+  varianceQuantity: number;
+  variancePercent: number | null;
+  unexplainedQuantity: number;
+  unitCost: number | null;
+  varianceValue: number | null;
+  unexplainedValue: number | null;
+  evaluation: VarianceEvaluation;
+}
+
+export interface VarianceReport {
+  // From may be the opening stock; to is always a periodic count.
+  from: { id: string; postedAtUtc: string; postedBy: string | null; opening?: boolean };
+  to: { id: string; postedAtUtc: string; postedBy: string | null; opening?: boolean };
+  tolerancePercent: number;
+  rows: VarianceRow[];
+  unfavourableCount: number;
+  netVarianceValue: number;
+  recordedWasteValue: number;
+  unexplainedValue: number;
+  largestRelativeMaterial: string | null;
+  largestRelativePercent: number | null;
+  notInBothCounts: string[];
+  soldWithoutStock: { itemCode: string; menuItem: string; quantity: number }[];
+  missingPrices: string[];
+}
+
+export interface SharedCost {
+  id: string;
+  name: string;
+  rawMaterialId: string | null;
+  rawMaterialName: string | null;
+  monthlyAmount: number | null;
+  category: string | null;
+}
+
+export interface SaveSharedCost {
+  name: string;
+  rawMaterialId: string | null;
+  monthlyAmount: number | null;
+  category: string | null;
+}
+
+// Creating or changing a material. The unit is set once, when it is created: every recipe and
+// ledger entry for it is in that unit.
+export interface SaveMaterial {
+  name: string;
+  unit?: UnitOfMeasure;
+  reorderLevel: number;
+  code: string | null;
+  // None: General.
+  categoryId: string | null;
+  purchaseUnit: string;
+  purchaseUnitSize: number;
+  defaultYieldPercent: number;
+  costPerPurchaseUnit: number | null;
+}
+
+// What records a material, in the unit it is counted in: a change of that unit restates them all,
+// and needs the conversion to. pendingRequests: requests waiting for a manager that name it.
+export interface MaterialUsage {
+  stockMovements: number;
+  invoiceLines: number;
+  recipes: number;
+  prepRecipes: number;
+  counts: number;
+  batches: number;
+  pendingRequests: number;
+  inUse: boolean;
+}
+
+// A material counted in another unit (عدّ بـ). oneNewIsOld: how many of the old unit one of the new
+// is, needed once anything records it, when its stock and cost are restated by it; the cost and
+// reorder level are only given while nothing does. requestId is made here: a retry asks once.
+export interface MaterialUnitChangeInput {
+  requestId: string;
+  unit: UnitOfMeasure;
+  oneNewIsOld: number | null;
+  purchaseUnit: string;
+  purchaseUnitSize: number;
+  costPerPurchaseUnit: number | null;
+  reorderLevel: number | null;
+  reason: string | null;
+}
+
+// Applied, or Requested of a manager (the request); a change made at once by a manager is kept
+// with the decisions too.
+export interface MaterialUnitChangeResult {
+  outcome: ApprovalOutcome;
+  request: ApprovalRequest | null;
+}
+
+export interface RecipeLine {
+  rawMaterialId: string;
+  quantity: number;
+  yieldPercent: number | null;
+}
+
+// Voided: posted, then deleted with a manager's approval, its goods taken back out of stock.
+export type PurchaseInvoiceStatus = 'Draft' | 'Posted' | 'Voided';
+
+export type PurchaseItemType = 'Inventory' | 'Expense';
+
+// A line as written on the invoice (5, in kg of 1000 g) and what it comes to in the material's
+// own unit (5,000 g). An expense line names its expense item instead, has no unit of stock, and
+// is only its cost. material: the line's name, the material's or the expense's.
+export interface PurchaseInvoiceLine {
+  rawMaterialId: string | null;
+  material: string;
+  unit: UnitOfMeasure | null;
+  enteredQuantity: number;
+  unitLabel: string;
+  unitSize: number;
+  quantity: number;
+  // After every discount: what the line really cost. As written (lineTotal), less its own
+  // discount and its share of the invoice's.
+  cost: number | null;
+  itemType: PurchaseItemType;
+  expenseItemId: string | null;
+  categoryId: string | null;
+  category: string | null;
+  categoryAr: string | null;
+  lineTotal?: number | null;
+  discount?: number;
+  discountShare?: number;
+}
+
+export interface PurchaseAttachment {
+  fileName: string;
+  contentType: string;
+  bytes: number;
+  attachedAtUtc: string;
+  attachedBy: string | null;
+}
+
+export interface PurchaseInvoice {
+  id: string;
+  status: PurchaseInvoiceStatus;
+  supplierId: string | null;
+  // The supplier's name now, archived or not.
+  supplierName: string | null;
+  supplierInvoiceNumber: string | null;
+  invoiceDate: string | null;
+  createdAtUtc: string;
+  createdBy: string;
+  postedAtUtc: string | null;
+  postedBy: string | null;
+  total: number;
+  attachment: PurchaseAttachment | null;
+  lines: PurchaseInvoiceLine[];
+  // total, split: what went into stock, and what was expenses.
+  inventoryTotal: number;
+  expenseTotal: number;
+  voidedAtUtc?: string | null;
+  voidedBy?: string | null;
+  paymentMethod: PurchasePaymentMethod | null;
+  revenueDate: string | null;
+  paymentStatus: InvoicePaymentStatus;
+  // A correction (تعديل فاتورة): the invoice it corrects; and on that one, the invoice that corrected it.
+  revisionOf?: string | null;
+  replacedBy?: string | null;
+  // total is what is paid (الصافي المستحق): the lines as written (subtotal), less their own
+  // discounts (lineDiscounts) and the invoice's (discount).
+  subtotal?: number;
+  lineDiscounts?: number;
+  discount?: number;
+}
+
+// A posted invoice as it should have been: a new invoice (newInvoiceId, made here) that replaces
+// it. requestId is made here too: a retry finds what was done.
+export interface InvoiceCorrectionInput {
+  requestId: string;
+  newInvoiceId: string;
+  supplierId: string | null;
+  supplierInvoiceNumber: string | null;
+  invoiceDate: string | null;
+  lines: SavePurchaseLine[];
+  paymentMethod: PurchasePaymentMethod | null;
+  revenueDate: string | null;
+  reason: string | null;
+  discount: number;
+}
+
+// What a correction would change, line by line: what the manager sees on the request.
+export interface InvoiceCorrectionPreview {
+  summary: string;
+  changes: ApprovalChange[];
+}
+
+export interface PurchaseInvoiceSummary {
+  id: string;
+  status: PurchaseInvoiceStatus;
+  supplierId: string | null;
+  // The supplier's name now, archived or not.
+  supplierName: string | null;
+  supplierInvoiceNumber: string | null;
+  invoiceDate: string | null;
+  createdAtUtc: string;
+  createdBy: string;
+  postedAtUtc: string | null;
+  postedBy: string | null;
+  total: number;
+  lines: number;
+  // Null while no paper is attached.
+  attachmentFileName: string | null;
+  inventoryTotal: number;
+  expenseTotal: number;
+  voidedAtUtc?: string | null;
+  voidedBy?: string | null;
+  paymentMethod: PurchasePaymentMethod | null;
+  revenueDate: string | null;
+  paymentStatus: InvoicePaymentStatus;
+}
+
+// Maker-checker: what a manager decides. Deletions in every costing module; new and changed prep
+// items and production orders too.
+export type ApprovalModule =
+  | 'Recipe'
+  | 'PurchaseInvoice'
+  | 'Waste'
+  | 'StockCount'
+  | 'RawMaterial'
+  | 'PrepItem'
+  | 'ProductionOrder'
+  | 'Treasury'
+  | 'PurchaseCategory'
+  | 'Sale'
+  | 'Breakage';
+export type ApprovalAction = 'Create' | 'Update' | 'Delete';
+export type ApprovalStatus = 'Pending' | 'Approved' | 'Rejected';
+export type ApprovalOutcome = 'Requested' | 'Applied';
+
+export const moduleLabels: Record<ApprovalModule, { en: string; ar: string }> = {
+  Recipe: { en: 'Recipe', ar: 'الوصفات' },
+  PurchaseInvoice: { en: 'Purchases', ar: 'المشتريات' },
+  Waste: { en: 'Waste', ar: 'الهالك' },
+  StockCount: { en: 'Stock count', ar: 'الجرد' },
+  RawMaterial: { en: 'Raw material', ar: 'الخامات' },
+  PrepItem: { en: 'Prep item', ar: 'الأصناف نصف المصنعة' },
+  ProductionOrder: { en: 'Production', ar: 'أذونات التصنيع' },
+  Treasury: { en: 'Safe', ar: 'الخزنة' },
+  PurchaseCategory: { en: 'Purchase category', ar: 'أقسام المشتريات' },
+  Sale: { en: 'Sale', ar: 'المبيعات' },
+  Breakage: { en: 'Breakage', ar: 'الكسر' },
+};
+
+export const actionLabels: Record<ApprovalAction, { en: string; ar: string }> = {
+  Create: { en: 'New', ar: 'جديد' },
+  Update: { en: 'Change', ar: 'تعديل' },
+  Delete: { en: 'Delete', ar: 'حذف' },
+};
+
+// One line of what a request changes: "Quantity to produce: 10 kg → 12 kg". before is null for
+// something new, after for something taken away.
+export interface ApprovalChange {
+  label: string;
+  before: string | null;
+  after: string | null;
+}
+
+// summary: the record as it was when asked about (for a new one, what it would be). recordId:
+// the record's, or for a new one the id it is given when approved. decidedBy, decidedAtUtc and
+// decisionNote are set once a manager has decided.
+export interface ApprovalRequest {
+  id: string;
+  module: ApprovalModule;
+  action: ApprovalAction;
+  recordId: string;
+  summary: string;
+  changes: ApprovalChange[];
+  reason: string | null;
+  requestedBy: string;
+  requestedAtUtc: string;
+  status: ApprovalStatus;
+  decidedBy: string | null;
+  decidedAtUtc: string | null;
+  decisionNote: string | null;
+}
+
+export interface ApprovalRequests {
+  pending: ApprovalRequest[];
+  decided: ApprovalRequest[];
+}
+
+export interface ApprovalResult {
+  outcome: ApprovalOutcome;
+  request: ApprovalRequest;
+}
+
+// What approving a batch would do now: the batch made at today's averages, and for a correction
+// the batch it replaces, whose entries go back first.
+export interface ApprovalPreview {
+  batch: ProductionPreview;
+  replaces: ProductionOrder | null;
+}
+
+// A save answered with a request (someone who may not approve) rather than the record itself.
+export function isRequested<T extends object>(result: T | ApprovalResult): result is ApprovalResult {
+  return 'outcome' in result && 'request' in result;
+}
+
+// One ingredient of a prep item's batch, costed at its average now: what it adds to a batch, and
+// its share of the batch's cost.
+export interface PrepIngredientCost {
+  rawMaterialId: string;
+  code: string | null;
+  name: string;
+  isPrepItem: boolean;
+  unit: UnitOfMeasure;
+  purchaseUnit: string;
+  purchaseUnitSize: number;
+  // The Edible Portion for one batch, in the ingredient's unit; and what that takes off stock.
+  quantity: number;
+  yieldPercent: number;
+  asPurchasedQuantity: number;
+  costPerPurchaseUnit: number | null;
+  batchCost: number | null;
+  sharePercent: number | null;
+  // A prep item never made yet, costed by its own recipe today.
+  costedByRecipe?: boolean;
+}
+
+// A prep item: made from a recipe for one batch, kept in stock. Quantities in its unit (grams,
+// millilitres); costs per its display unit (a kg, a litre). The standard cost is the recipe's at
+// today's prices; the average is what the batches on the shelf cost.
+export interface PrepItem {
+  id: string;
+  code: string | null;
+  name: string;
+  category: string | null;
+  categoryId: string;
+  unit: UnitOfMeasure;
+  displayUnit: string;
+  displayUnitSize: number;
+  reorderLevel: number;
+  batchQuantity: number;
+  ingredients: PrepIngredientCost[];
+  standardBatchCost: number | null;
+  standardCostPerDisplayUnit: number | null;
+  missingPrices: string[];
+  quantityOnHand: number;
+  averageCostPerDisplayUnit: number | null;
+  stockValue: number | null;
+  lastProducedAtUtc: string | null;
+  lastBatchCostPerDisplayUnit: number | null;
+  recent: ProductionOrder[];
+  // The kitchen's recipe category it is sorted under, as dishes are; null for none.
+  recipeCategoryId: string | null;
+}
+
+export interface SavePrepItem {
+  name: string;
+  unit: UnitOfMeasure;
+  batchQuantity: number;
+  ingredients: { rawMaterialId: string; quantity: number; yieldPercent: number | null }[];
+  code: string | null;
+  categoryId: string | null;
+  recipeCategoryId: string | null;
+  displayUnit: string;
+  displayUnitSize: number;
+  reorderLevel: number;
+  // For a request: made here, so a retry is recorded once; and why, for the manager.
+  requestId?: string;
+  reason?: string | null;
+}
+
+// An ingredient of a batch. onHand and short on a preview only.
+export interface ProductionLine {
+  rawMaterialId: string;
+  code: string | null;
+  material: string;
+  isPrepItem: boolean;
+  unit: UnitOfMeasure;
+  purchaseUnit: string;
+  purchaseUnitSize: number;
+  quantity: number;
+  onHand: number | null;
+  short: number | null;
+  costPerPurchaseUnit: number | null;
+  cost: number | null;
+}
+
+// A batch made: planned (which set the ingredients), produced (what came out), and what it cost.
+export interface ProductionOrder {
+  id: string;
+  prepItemId: string;
+  prepItem: string;
+  unit: UnitOfMeasure;
+  displayUnit: string;
+  displayUnitSize: number;
+  plannedQuantity: number;
+  producedQuantity: number;
+  yieldPercent: number;
+  totalCost: number;
+  unitCostPerDisplayUnit: number;
+  producedAtUtc: string;
+  producedBy: string;
+  notes: string | null;
+  lines: ProductionLine[];
+  // Voided: its entries reversed, deleted or corrected. A correction names the batch it replaced
+  // (revisionOf), and the replaced one names it (replacedBy).
+  status: 'Made' | 'Voided';
+  voidedAtUtc: string | null;
+  voidedBy: string | null;
+  revisionOf: string | null;
+  replacedBy: string | null;
+  // The manager who approved it, when it was asked of one.
+  approvedBy: string | null;
+}
+
+// A batch as it would be made now: the review before posting.
+export interface ProductionPreview {
+  prepItemId: string;
+  prepItem: string;
+  unit: UnitOfMeasure;
+  displayUnit: string;
+  displayUnitSize: number;
+  plannedQuantity: number;
+  producedQuantity: number;
+  lines: ProductionLine[];
+  totalCost: number | null;
+  unitCostPerDisplayUnit: number | null;
+  missingPrices: string[];
+  shortages: string[];
+}
+
+export interface MakeProductionOrder {
+  prepItemId: string;
+  plannedQuantity: number;
+  producedQuantity: number;
+  notes: string | null;
+  requestId?: string;
+  reason?: string | null;
+}
+
+// A batch corrected: made again as newOrderId with these quantities, the old one reversed.
+export interface ReviseProductionOrder {
+  requestId: string;
+  newOrderId: string;
+  plannedQuantity: number;
+  producedQuantity: number;
+  notes: string | null;
+  reason: string | null;
+}
+
+// Who the restaurant buys from. Invoices, drafts included, decide what deleting it does: on
+// none it goes, on any it is archived.
+export interface Supplier {
+  id: string;
+  name: string;
+  contactPerson: string | null;
+  phone: string | null;
+  email: string | null;
+  notes: string | null;
+  isArchived: boolean;
+  invoices: number;
+  postedTotal: number;
+  lastPostedAtUtc: string | null;
+}
+
+export interface SaveSupplier {
+  name: string;
+  contactPerson: string | null;
+  phone: string | null;
+  email: string | null;
+  notes: string | null;
+}
+
+export type SupplierRemoval = 'Deleted' | 'Archived';
+
+export interface SavePurchaseInvoice {
+  supplierId: string | null;
+  supplierInvoiceNumber: string | null;
+  invoiceDate: string | null;
+  lines: SavePurchaseLine[];
+  // Required to post: from the safe, from a day's takings (revenueDate), or on credit (a supplier).
+  paymentMethod: PurchasePaymentMethod | null;
+  revenueDate: string | null;
+  // The invoice's own discount (خصم الفاتورة), off what the lines come to after theirs.
+  discount: number;
+}
+
+// A stock line names its material; an expense line its expense item, in units of 1, with its cost.
+// A day's purchases entered together (يومية المشتريات المجمعة): the date and how they were paid,
+// chosen once, and an invoice for each supplier, each its own invoice. InvoiceId is made here.
+// A day's purchases sent together: an invoice for each supplier, suppliers paid against what they
+// are owed (سداد مورد), no invoice and no stock, and employees' advances (سلفة). A payment's or an
+// advance's transactionId is made here, once.
+export interface PurchaseBatch {
+  invoiceDate: string;
+  paymentMethod: PurchasePaymentMethod;
+  revenueDate: string | null;
+  // An invoice on credit in a batch paid in cash (onCredit); one handed in at the end of the day names it.
+  invoices: {
+    invoiceId: string;
+    supplierId: string | null;
+    supplierInvoiceNumber: string | null;
+    lines: SavePurchaseLine[];
+    discount: number;
+    onCredit?: boolean;
+    endOfDayInvoiceId?: string | null;
+  }[];
+  payments: { transactionId: string; supplierId: string; amount: number; notes: string | null }[];
+  // No employee: advances handed out with no one named, shared among the staff.
+  advances?: { transactionId: string; employeeId: string | null; amount: number; notes: string | null }[];
+}
+
+// A supplier paid in a batch: at once (Applied), or asked of a manager (Requested).
+export interface BatchPaymentMade {
+  transactionId: string;
+  supplierId: string;
+  supplier: string;
+  amount: number;
+  notes: string | null;
+  outcome: ApprovalOutcome;
+}
+
+// An employee's advance paid in a batch: at once (Applied), or asked of a manager (Requested).
+export interface BatchAdvanceMade {
+  transactionId: string;
+  employeeId: string | null;
+  employee: string;
+  amount: number;
+  notes: string | null;
+  outcome: ApprovalOutcome;
+}
+
+export interface PurchaseBatchResult {
+  invoices: PurchaseInvoice[];
+  payments: BatchPaymentMade[];
+  advances?: BatchAdvanceMade[];
+}
+
+export interface SavePurchaseLine {
+  itemType: PurchaseItemType;
+  rawMaterialId: string | null;
+  expenseItemId: string | null;
+  enteredQuantity: number;
+  unitLabel: string | null;
+  unitSize: number;
+  // As written, and what was taken off it (الخصم).
+  cost: number | null;
+  discount: number;
+}
+
+// Where an expense filed under a category counts in the profit and loss.
+export type ExpenseLine = 'Controllable' | 'Occupation' | 'OtherFixed' | 'Wages';
+
+export const expenseLineLabels: Record<ExpenseLine, { en: string; ar: string; hint: string }> = {
+  Controllable: { en: 'Controllable costs', ar: 'تكاليف قابلة للتحكم', hint: 'Utilities, cleaning, maintenance, marketing' },
+  Occupation: { en: 'Occupation (rent)', ar: 'الإشغال (الإيجار)', hint: 'Rent and what comes with the premises' },
+  OtherFixed: { en: 'Other fixed costs', ar: 'تكاليف ثابتة أخرى', hint: 'Insurance, licences, subscriptions' },
+  Wages: { en: 'Wages and benefits', ar: 'الأجور والمزايا', hint: 'Salaries paid by voucher: added to the month’s wages' },
+};
+
+// What the restaurant buys, grouped: raw materials and expense items are each in one. General is
+// always there and cannot be deleted.
+// What a category files: raw materials (stock) or general expenses. A raw material goes in one of
+// the first, an expense item in one of the second.
+export type CategoryKind = 'RawMaterials' | 'Expenses';
+
+export const categoryKindLabels: Record<CategoryKind, { en: string; ar: string }> = {
+  RawMaterials: { en: 'Raw materials', ar: 'خامات ومشتريات' },
+  Expenses: { en: 'General expenses', ar: 'مصروفات عمومية' },
+};
+
+// isGeneral: the General of its kind, where anything not yet sorted goes. misplaced: items in use
+// of the other kind, filed there before the kinds were kept apart.
+export interface PurchaseCategory {
+  id: string;
+  name: string;
+  nameAr: string | null;
+  expenseLine: ExpenseLine;
+  isGeneral: boolean;
+  materials: number;
+  expenseItems: number;
+  kind: CategoryKind;
+  misplaced: number;
+}
+
+export interface StockUnit {
+  expenseItemId: string;
+  unit: UnitOfMeasure;
+  purchaseUnit: string;
+  purchaseUnitSize: number;
+}
+
+// Where its raw materials go, and where its expense items go: to a category of the other kind,
+// they are converted on the way (raw materials made expense items, their past purchases restated
+// as expenses; expense items made raw materials, each counted and bought as units says).
+// requestId is made here: a retry asks once.
+export interface DeleteCategoryInput {
+  requestId: string;
+  materialsTo: string | null;
+  expenseItemsTo: string | null;
+  units: StockUnit[];
+  reason: string | null;
+}
+
+// What a deletion would do, line by line as the manager reads it; converts: a manager's to decide.
+export interface CategoryDeletionPreview {
+  summary: string;
+  changes: ApprovalChange[];
+  converts: boolean;
+}
+
+export interface CategoryDeletionResult {
+  outcome: ApprovalOutcome;
+  request: ApprovalRequest | null;
+}
+
+export interface SavePurchaseCategory {
+  name: string;
+  nameAr: string | null;
+  expenseLine: ExpenseLine;
+  kind: CategoryKind;
+}
+
+// Bought but never stock: only a cost, under its category.
+export interface ExpenseItem {
+  id: string;
+  name: string;
+  nameAr: string | null;
+  categoryId: string;
+  category: string;
+  categoryAr: string | null;
+  unit: string | null;
+  isArchived: boolean;
+  invoices: number;
+  postedTotal: number;
+  lastPostedAtUtc: string | null;
+  // In a raw materials category: filed there before the kinds were kept apart.
+  misplaced?: boolean;
+}
+
+export interface SaveExpenseItem {
+  name: string;
+  nameAr: string | null;
+  categoryId: string | null;
+  unit: string | null;
+}
+
+export type ExpenseItemRemoval = 'Deleted' | 'Archived';
+
+export interface ItemSpending {
+  itemType: PurchaseItemType;
+  itemId: string;
+  name: string;
+  quantity: number;
+  unit: string;
+  total: number;
+  lines: number;
+}
+
+export interface CategorySpending {
+  categoryId: string;
+  category: string;
+  categoryAr: string | null;
+  expenseLine: ExpenseLine;
+  inventory: number;
+  expenses: number;
+  total: number;
+  sharePercent: number | null;
+  items: ItemSpending[];
+}
+
+// Purchases by category over a period, from the posted invoices, each on its invoice date.
+export interface SpendingReport {
+  from: string;
+  to: string;
+  total: number;
+  inventory: number;
+  expenses: number;
+  invoices: number;
+  unpricedLines: number;
+  categories: CategorySpending[];
+}
+
+@Injectable({ providedIn: 'root' })
+export class CostingApi {
+  private readonly http = inject(HttpClient);
+
+  materials(): Observable<MaterialCost[]> {
+    return this.http.get<MaterialCost[]>('/api/costing/materials');
+  }
+
+  recipeCategories(): Observable<RecipeCategory[]> {
+    return this.http.get<RecipeCategory[]>('/api/inventory/recipe-categories');
+  }
+
+  // Adds it on the first save, under the id made here; renames it after.
+  saveRecipeCategory(id: string, category: { name: string; nameAr: string | null }): Observable<RecipeCategory> {
+    return this.http.put<RecipeCategory>(`/api/inventory/recipe-categories/${id}`, category);
+  }
+
+  // moveTo: where its recipes go; required while it has any.
+  deleteRecipeCategory(id: string, moveTo: string | null): Observable<void> {
+    return this.http.delete<void>(`/api/inventory/recipe-categories/${id}`, { params: moveTo ? { moveTo } : {} });
+  }
+
+  // Every recipe, on the menu or off it; the deleted ones too when asked for.
+  recipes(includeDeleted = false): Observable<RecipeCostCard[]> {
+    return this.http.get<RecipeCostCard[]>('/api/costing/recipes', { params: { includeDeleted } });
+  }
+
+  recipeCardById(recipeId: string): Observable<RecipeCostCard> {
+    return this.http.get<RecipeCostCard>(`/api/costing/recipes/${recipeId}`);
+  }
+
+  // Adds it without an id, changes it with one.
+  writeRecipe(recipeId: string | null, recipe: SaveRecipe): Observable<{ id: string }> {
+    return recipeId
+      ? this.http.put<{ id: string }>(`/api/inventory/recipes/${recipeId}`, recipe)
+      : this.http.post<{ id: string }>('/api/inventory/recipes', recipe);
+  }
+
+  // Marked deleted, kept for the record.
+  deleteRecipe(recipeId: string): Observable<void> {
+    return this.http.delete<void>(`/api/inventory/recipes/${recipeId}`);
+  }
+
+  // Deleted at once for someone who may approve; asked of a manager otherwise. The
+  // id is made here: a retry after a lost answer is recorded once.
+  requestDeletion(requestId: string, module: ApprovalModule, recordId: string, reason: string | null): Observable<ApprovalResult> {
+    return this.http.post<ApprovalResult>('/api/inventory/deletion-requests', { requestId, module, recordId, reason });
+  }
+
+  // What waits for a manager; with decided, the last decisions too (for whoever decides them).
+  approvalRequests(decided = 0): Observable<ApprovalRequests> {
+    return this.http.get<ApprovalRequests>('/api/inventory/approval-requests', { params: { decided } });
+  }
+
+  approveRequest(requestId: string): Observable<ApprovalRequest> {
+    return this.http.post<ApprovalRequest>(`/api/inventory/approval-requests/${requestId}/approve`, {});
+  }
+
+  rejectRequest(requestId: string, note: string | null): Observable<ApprovalRequest> {
+    return this.http.post<ApprovalRequest>(`/api/inventory/approval-requests/${requestId}/reject`, { note });
+  }
+
+  // What approving a batch waiting for it would move now, at today's averages; for a correction,
+  // with the batch it replaces.
+  approvalPreview(requestId: string): Observable<ApprovalPreview> {
+    return this.http.get<ApprovalPreview>(`/api/inventory/approval-requests/${requestId}/preview`);
+  }
+
+  // name: what to call it if it comes back off the menu, its menu item having another recipe now.
+  restoreRecipe(recipeId: string, name: string | null): Observable<{ id: string; catalogItemId: number | null }> {
+    return this.http.post<{ id: string; catalogItemId: number | null }>(`/api/inventory/recipes/${recipeId}/restore`, { name });
+  }
+
+  menu(): Observable<RecipeCostCard[]> {
+    return this.http.get<RecipeCostCard[]>('/api/costing/menu');
+  }
+
+  recipeCard(kind: RecipeTargetKind, catalogItemId: number, variantId: number | null): Observable<RecipeCostCard> {
+    return this.http.get<RecipeCostCard>('/api/costing/recipe-card', { params: this.target(kind, catalogItemId, variantId) });
+  }
+
+  theoretical(year: number, month: number, source: TheoreticalSource = 'Pos'): Observable<TheoreticalCostReport> {
+    return this.http.get<TheoreticalCostReport>('/api/costing/theoretical', { params: { year, month, source } });
+  }
+
+  manualSales(year: number, month: number): Observable<ManualSalesSheet> {
+    return this.http.get<ManualSalesSheet>(`/api/costing/manual-sales/${year}/${month}`);
+  }
+
+  // The whole sheet: what is left out is cleared. Answers with the report from it.
+  saveManualSales(year: number, month: number, lines: ManualSalesLine[]): Observable<TheoreticalCostReport> {
+    return this.http.put<TheoreticalCostReport>(`/api/costing/manual-sales/${year}/${month}`, { lines });
+  }
+
+  settings(): Observable<CostingSettings> {
+    return this.http.get<CostingSettings>('/api/costing/settings');
+  }
+
+  saveSettings(settings: CostingSettings): Observable<CostingSettings> {
+    return this.http.put<CostingSettings>('/api/costing/settings', settings);
+  }
+
+  sharedCosts(): Observable<SharedCost[]> {
+    return this.http.get<SharedCost[]>('/api/costing/shared-costs');
+  }
+
+  saveSharedCost(id: string | null, cost: SaveSharedCost): Observable<SharedCost> {
+    return id
+      ? this.http.put<SharedCost>(`/api/costing/shared-costs/${id}`, cost)
+      : this.http.post<SharedCost>('/api/costing/shared-costs', cost);
+  }
+
+  deleteSharedCost(id: string): Observable<void> {
+    return this.http.delete<void>(`/api/costing/shared-costs/${id}`);
+  }
+
+  purchaseCategories(): Observable<PurchaseCategory[]> {
+    return this.http.get<PurchaseCategory[]>('/api/inventory/purchase-categories');
+  }
+
+  // Adds it on the first save, under the id made here; changes it after.
+  savePurchaseCategory(id: string, category: SavePurchaseCategory): Observable<PurchaseCategory> {
+    return this.http.put<PurchaseCategory>(`/api/inventory/purchase-categories/${id}`, category);
+  }
+
+  previewCategoryDeletion(id: string, deletion: DeleteCategoryInput): Observable<CategoryDeletionPreview> {
+    return this.http.post<CategoryDeletionPreview>(`/api/inventory/purchase-categories/${id}/delete/preview`, deletion);
+  }
+
+  // Each kind moved as it is, deleted at once (Applied); converting any, at once for a manager
+  // (Applied) and asked of one for anyone else (Requested).
+  deletePurchaseCategory(id: string, deletion: DeleteCategoryInput): Observable<CategoryDeletionResult> {
+    return this.http.post<CategoryDeletionResult>(`/api/inventory/purchase-categories/${id}/delete`, deletion);
+  }
+
+  expenseItems(includeArchived = false): Observable<ExpenseItem[]> {
+    return this.http.get<ExpenseItem[]>('/api/inventory/expense-items', { params: { includeArchived } });
+  }
+
+  saveExpenseItem(id: string, item: SaveExpenseItem): Observable<ExpenseItem> {
+    return this.http.put<ExpenseItem>(`/api/inventory/expense-items/${id}`, item);
+  }
+
+  // Deleted if it is on no invoice, archived if it is.
+  deleteExpenseItem(id: string): Observable<{ outcome: ExpenseItemRemoval }> {
+    return this.http.delete<{ outcome: ExpenseItemRemoval }>(`/api/inventory/expense-items/${id}`);
+  }
+
+  restoreExpenseItem(id: string): Observable<ExpenseItem> {
+    return this.http.post<ExpenseItem>(`/api/inventory/expense-items/${id}/restore`, {});
+  }
+
+  // Both days included, as yyyy-mm-dd.
+  spending(from: string, to: string): Observable<SpendingReport> {
+    return this.http.get<SpendingReport>('/api/costing/purchases/spending', { params: { from, to } });
+  }
+
+  // The safe's analysis between two days, both included, as yyyy-mm-dd.
+  treasuryAnalytics(from: string, to: string): Observable<TreasuryAnalytics> {
+    return this.http.get<TreasuryAnalytics>('/api/costing/treasury', { params: { from, to } });
+  }
+
+  // The Excel template to fill in: the columns, and the unit and category lists.
+  rawMaterialsTemplate(): Observable<Blob> {
+    return this.http.get('/api/inventory/raw-materials/template', { responseType: 'blob' });
+  }
+
+  importRawMaterials(file: File): Observable<RawMaterialImportResult> {
+    const form = new FormData();
+    form.append('file', file, file.name);
+    return this.http.post<RawMaterialImportResult>('/api/inventory/raw-materials/import', form);
+  }
+
+  // The raw materials as they are, under the template's columns: imported back as they are.
+  exportRawMaterials(): Observable<Blob> {
+    return this.http.get('/api/inventory/raw-materials/export', { responseType: 'blob' });
+  }
+
+  expenseItemsTemplate(): Observable<Blob> {
+    return this.http.get('/api/inventory/expense-items/template', { responseType: 'blob' });
+  }
+
+  exportExpenseItems(): Observable<Blob> {
+    return this.http.get('/api/inventory/expense-items/export', { responseType: 'blob' });
+  }
+
+  importExpenseItems(file: File): Observable<ExpenseItemImportResult> {
+    const form = new FormData();
+    form.append('file', file, file.name);
+    return this.http.post<ExpenseItemImportResult>('/api/inventory/expense-items/import', form);
+  }
+
+  materialPurchases(id: string): Observable<MaterialPurchaseHistory> {
+    return this.http.get<MaterialPurchaseHistory>(`/api/costing/materials/${id}/purchases`);
+  }
+
+  materialUsage(id: string): Observable<MaterialUsage> {
+    return this.http.get<MaterialUsage>(`/api/inventory/raw-materials/${id}/usage`);
+  }
+
+  // At once while nothing records it, or for a manager; asked of one for anyone else.
+  changeMaterialUnit(id: string, change: MaterialUnitChangeInput): Observable<MaterialUnitChangeResult> {
+    return this.http.post<MaterialUnitChangeResult>(`/api/inventory/raw-materials/${id}/unit`, change);
+  }
+
+  saveMaterial(id: string | null, material: SaveMaterial): Observable<unknown> {
+    return id
+      ? this.http.put(`/api/inventory/raw-materials/${id}`, material)
+      : this.http.post('/api/inventory/raw-materials', material);
+  }
+
+  kpis(year: number, month: number): Observable<KpiReport> {
+    return this.http.get<KpiReport>('/api/costing/kpis', { params: { year, month } });
+  }
+
+  // The whole month each time: a figure left empty is not known yet.
+  saveExpenses(year: number, month: number, expenses: MonthlyExpenses): Observable<MonthlyExpenses> {
+    return this.http.put<MonthlyExpenses>(`/api/costing/expenses/${year}/${month}`, expenses);
+  }
+
+  // A run of months, inclusive; one month is from = to. Months are 'YYYY-MM'.
+  breakEven(from: string, to: string): Observable<BreakEvenWorksheet> {
+    const [fromYear, fromMonth] = from.split('-').map(Number);
+    const [toYear, toMonth] = to.split('-').map(Number);
+    return this.http.get<BreakEvenWorksheet>('/api/costing/break-even', { params: { fromYear, fromMonth, toYear, toMonth } });
+  }
+
+  saveBreakEvenScenarios(scenarios: number[]): Observable<number[]> {
+    return this.http.put<number[]>('/api/costing/break-even/scenarios', scenarios);
+  }
+
+  stockCounts(): Observable<StockCountSummary[]> {
+    return this.http.get<StockCountSummary[]>('/api/inventory/stock-counts');
+  }
+
+  // Posted invoices for the history, newest first, or the drafts.
+  purchaseInvoices(status: PurchaseInvoiceStatus): Observable<PurchaseInvoiceSummary[]> {
+    return this.http.get<PurchaseInvoiceSummary[]>('/api/inventory/purchase-invoices', { params: { status } });
+  }
+
+  // Null for an invoice not saved yet (404, and only 404).
+  previewInvoiceCorrection(id: string, correction: InvoiceCorrectionInput): Observable<InvoiceCorrectionPreview> {
+    return this.http.post<InvoiceCorrectionPreview>(`/api/inventory/purchase-invoices/${id}/correct/preview`, correction);
+  }
+
+  // Done at once for a manager (Applied); asked of one for anyone else (Requested).
+  correctPurchaseInvoice(id: string, correction: InvoiceCorrectionInput): Observable<ApprovalResult> {
+    return this.http.post<ApprovalResult>(`/api/inventory/purchase-invoices/${id}/correct`, correction);
+  }
+
+  purchaseInvoice(id: string): Observable<PurchaseInvoice | null> {
+    return this.http.get<PurchaseInvoice>(`/api/inventory/purchase-invoices/${id}`).pipe(
+      catchError((error: unknown) => (error instanceof HttpErrorResponse && error.status === 404 ? of(null) : throwError(() => error))),
+    );
+  }
+
+  // Step one: kept as a draft. The id is made here, once per invoice.
+  // A day's purchases entered together: each invoice made, posted and paid as chosen, or none.
+  postPurchaseBatch(batch: PurchaseBatch): Observable<PurchaseBatchResult> {
+    return this.http.post<PurchaseBatchResult>('/api/inventory/purchase-invoices/batch', batch);
+  }
+
+  savePurchaseInvoice(id: string, invoice: SavePurchaseInvoice): Observable<PurchaseInvoice> {
+    return this.http.put<PurchaseInvoice>(`/api/inventory/purchase-invoices/${id}`, invoice);
+  }
+
+  // Step two, after the review: the stock goes in, and it is paid as chosen. paymentStatus says
+  // whether a cash payment waits for a manager.
+  postPurchaseInvoice(id: string): Observable<PurchaseInvoice> {
+    return this.http.post<PurchaseInvoice>(`/api/inventory/purchase-invoices/${id}/post`, {});
+  }
+
+  // Pays a posted cash invoice that is not paid (its payment rejected or voided), or puts it on credit.
+  payPurchaseInvoice(id: string, requestId: string, method: PurchasePaymentMethod, revenueDate: string | null): Observable<{ paymentStatus: InvoicePaymentStatus }> {
+    return this.http.post<{ paymentStatus: InvoicePaymentStatus }>(`/api/inventory/purchase-invoices/${id}/pay`, { requestId, method, revenueDate });
+  }
+
+  // ---- Financials (الماليات): the safe and what is owed to suppliers ----
+
+  // The till's business day (2026-10-12): after midnight, yesterday's until the day starts.
+  businessToday(): Observable<{ today: string }> {
+    return this.http.get<{ today: string }>('/api/financials/today');
+  }
+
+  safe(year: number, month: number): Observable<SafeMonth> {
+    return this.http.get<SafeMonth>('/api/financials/safe', { params: { year, month } });
+  }
+
+  funding(from: string, to: string): Observable<FundingReport> {
+    return this.http.get<FundingReport>('/api/financials/funding', { params: { from, to } });
+  }
+
+  dayRevenue(from: string, to: string): Observable<DayRevenueReport> {
+    return this.http.get<DayRevenueReport>('/api/financials/revenue', { params: { from, to } });
+  }
+
+  // The tax held in the safe: collected, paid over, still owed.
+  taxPosition(): Observable<TaxPosition> {
+    return this.http.get<TaxPosition>('/api/financials/tax');
+  }
+
+  takingsPreview(day: string): Observable<TakingsPreview> {
+    return this.http.get<TakingsPreview>('/api/financials/takings', { params: { day } });
+  }
+
+  reconciliation(from: string, to: string): Observable<ReconciliationReport> {
+    return this.http.get<ReconciliationReport>('/api/financials/reconciliation', { params: { from, to } });
+  }
+
+  dailyCash(from: string, to: string): Observable<DailyCashReport> {
+    return this.http.get<DailyCashReport>('/api/financials/daily-cash', { params: { from, to } });
+  }
+
+  financialSettings(): Observable<FinancialSettings> {
+    return this.http.get<FinancialSettings>('/api/financials/settings');
+  }
+
+  // A manager's only. The tax rate left out stays as it is.
+  saveFinancialSettings(servicePercent: number, taxPercent?: number | null): Observable<FinancialSettings> {
+    return this.http.put<FinancialSettings>('/api/financials/settings', taxPercent === undefined ? { servicePercent } : { servicePercent, taxPercent });
+  }
+
+  expenseVouchers(from: string, to: string): Observable<ExpenseVoucherReport> {
+    return this.http.get<ExpenseVoucherReport>('/api/financials/expense-vouchers', { params: { from, to } });
+  }
+
+  supplierBalances(): Observable<SupplierBalance[]> {
+    return this.http.get<SupplierBalance[]>('/api/financials/suppliers');
+  }
+
+  supplierStatement(supplierId: string): Observable<SupplierStatement> {
+    return this.http.get<SupplierStatement>(`/api/financials/suppliers/${supplierId}`);
+  }
+
+  supplierPayments(from: string, to: string): Observable<SupplierPaymentRow[]> {
+    return this.http.get<SupplierPaymentRow[]>('/api/financials/supplier-payments', { params: { from, to } });
+  }
+
+  // Employees' advances paid in a period: for whoever works Financials, as it shows who is paid what.
+  advances(from: string, to: string): Observable<AdvanceRow[]> {
+    return this.http.get<AdvanceRow[]>('/api/financials/advances', { params: { from, to } });
+  }
+
+  // What a supplier was owed before the treasury: no cash moves, so it is entered at once.
+  supplierOpeningBalance(supplierId: string, entryId: string, owed: number, date: string | null): Observable<void> {
+    return this.http.post<void>(`/api/financials/suppliers/${supplierId}/opening-balance`, { entryId, owed, date });
+  }
+
+  // A safe entry: made at once for a manager; a request for anyone else.
+  recordVoucher(voucher: SafeVoucherInput): Observable<SafeTransaction | ApprovalResult> {
+    return this.http.post<SafeTransaction | ApprovalResult>('/api/financials/vouchers', voucher);
+  }
+
+  discardPurchaseInvoice(id: string): Observable<void> {
+    return this.http.delete<void>(`/api/inventory/purchase-invoices/${id}`);
+  }
+
+  attachPurchaseInvoiceFile(id: string, file: File): Observable<PurchaseInvoice> {
+    const form = new FormData();
+    form.append('file', file, file.name);
+    return this.http.put<PurchaseInvoice>(`/api/inventory/purchase-invoices/${id}/attachment`, form);
+  }
+
+  // The paper itself, fetched with the manager's sign-in, to show or save.
+  purchaseInvoiceFile(id: string): Observable<Blob> {
+    return this.http.get(`/api/inventory/purchase-invoices/${id}/attachment`, { responseType: 'blob' });
+  }
+
+  importPrepItems(file: File): Observable<PrepImportResult> {
+    const form = new FormData();
+    form.append('file', file, file.name);
+    return this.http.post<PrepImportResult>('/api/inventory/prep-items/import', form);
+  }
+
+  // Recipes and prep items to and from their smart sheets: a row per ingredient, chosen from a
+  // dropdown of the materials and prep items with their units. The template is the export, empty.
+  recipesTemplate(): Observable<Blob> {
+    return this.http.get('/api/inventory/recipes/sheet/template', { responseType: 'blob' });
+  }
+
+  exportRecipes(): Observable<Blob> {
+    return this.http.get('/api/inventory/recipes/sheet/export', { responseType: 'blob' });
+  }
+
+  importRecipes(file: File): Observable<RecipeImportResult> {
+    const form = new FormData();
+    form.append('file', file, file.name);
+    return this.http.post<RecipeImportResult>('/api/inventory/recipes/sheet/import', form);
+  }
+
+  prepItemsTemplate(): Observable<Blob> {
+    return this.http.get('/api/inventory/prep-items/sheet/template', { responseType: 'blob' });
+  }
+
+  exportPrepItems(): Observable<Blob> {
+    return this.http.get('/api/inventory/prep-items/sheet/export', { responseType: 'blob' });
+  }
+
+  importPrepItemsSheet(file: File): Observable<RecipeImportResult> {
+    const form = new FormData();
+    form.append('file', file, file.name);
+    return this.http.post<RecipeImportResult>('/api/inventory/prep-items/sheet/import', form);
+  }
+
+  prepItems(): Observable<PrepItem[]> {
+    return this.http.get<PrepItem[]>('/api/inventory/prep-items');
+  }
+
+  // Null for one that is not there (404, and only 404).
+  prepItem(id: string): Observable<PrepItem | null> {
+    return this.http.get<PrepItem>(`/api/inventory/prep-items/${id}`).pipe(
+      catchError((error: unknown) => (error instanceof HttpErrorResponse && error.status === 404 ? of(null) : throwError(() => error))),
+    );
+  }
+
+  // Adds it without an id; changes it with one. A request, for someone who may not approve.
+  savePrepItem(id: string | null, item: SavePrepItem): Observable<PrepItem | ApprovalResult> {
+    return id
+      ? this.http.put<PrepItem | ApprovalResult>(`/api/inventory/prep-items/${id}`, item)
+      : this.http.post<PrepItem | ApprovalResult>('/api/inventory/prep-items', item);
+  }
+
+  previewProduction(prepItemId: string, planned: number, produced: number): Observable<ProductionPreview> {
+    return this.http.get<ProductionPreview>('/api/inventory/production-orders/preview', { params: { prepItemId, planned, produced } });
+  }
+
+  productionOrders(prepItemId?: string): Observable<ProductionOrder[]> {
+    return this.http.get<ProductionOrder[]>('/api/inventory/production-orders', { params: prepItemId ? { prepItemId } : {} });
+  }
+
+  productionOrder(id: string): Observable<ProductionOrder | null> {
+    return this.http.get<ProductionOrder>(`/api/inventory/production-orders/${id}`).pipe(
+      catchError((error: unknown) => (error instanceof HttpErrorResponse && error.status === 404 ? of(null) : throwError(() => error))),
+    );
+  }
+
+  // Makes the batch under the id made here: a retry after a lost answer makes it once. A
+  // request, moving nothing yet, for someone who may not approve.
+  makeProductionOrder(id: string, order: MakeProductionOrder): Observable<ProductionOrder | ApprovalResult> {
+    return this.http.put<ProductionOrder | ApprovalResult>(`/api/inventory/production-orders/${id}`, order);
+  }
+
+  reviseProductionOrder(id: string, revision: ReviseProductionOrder): Observable<ApprovalResult> {
+    return this.http.post<ApprovalResult>(`/api/inventory/production-orders/${id}/revision`, revision);
+  }
+
+  suppliers(includeArchived = false): Observable<Supplier[]> {
+    return this.http.get<Supplier[]>('/api/inventory/suppliers', { params: { includeArchived } });
+  }
+
+  // Adds it on the first save, under the id made here; changes it after.
+  saveSupplier(id: string, supplier: SaveSupplier): Observable<Supplier> {
+    return this.http.put<Supplier>(`/api/inventory/suppliers/${id}`, supplier);
+  }
+
+  deleteSupplier(id: string): Observable<{ outcome: SupplierRemoval }> {
+    return this.http.delete<{ outcome: SupplierRemoval }>(`/api/inventory/suppliers/${id}`);
+  }
+
+  restoreSupplier(id: string): Observable<Supplier> {
+    return this.http.post<Supplier>(`/api/inventory/suppliers/${id}/restore`, {});
+  }
+
+  // Null for a count not saved yet (404, and only 404).
+  stockCount(id: string): Observable<StockCount | null> {
+    return this.http.get<StockCount>(`/api/inventory/stock-counts/${id}`).pipe(
+      catchError((error: unknown) => (error instanceof HttpErrorResponse && error.status === 404 ? of(null) : throwError(() => error))),
+    );
+  }
+
+  // The whole list each time: a material left out is not counted.
+  // Kind: periodic or opening stock, as it starts or changed while a draft.
+  saveStockCount(id: string, lines: { rawMaterialId: string; countedQuantity: number }[], kind?: StockCountKind): Observable<StockCount> {
+    return this.http.put<StockCount>(`/api/inventory/stock-counts/${id}`, kind ? { lines, kind } : { lines });
+  }
+
+  postStockCount(id: string): Observable<StockCount> {
+    return this.http.post<StockCount>(`/api/inventory/stock-counts/${id}/post`, {});
+  }
+
+  discardStockCount(id: string): Observable<void> {
+    return this.http.delete<void>(`/api/inventory/stock-counts/${id}`);
+  }
+
+  // spoilageId is made here, once per entry, as purchaseId is.
+  recordSpoilage(spoilageId: string, lines: SpoilageLine[]): Observable<unknown> {
+    return this.http.post('/api/inventory/spoilage', { spoilageId, lines });
+  }
+
+  spoilage(days = 30): Observable<SpoilageEntry[]> {
+    return this.http.get<SpoilageEntry[]>('/api/costing/spoilage', { params: { days } });
+  }
+
+  // No ids: the last two posted counts.
+  variance(fromCountId: string | null, toCountId: string | null): Observable<VarianceReport> {
+    const params: Record<string, string> = {};
+    if (fromCountId) {
+      params['fromCountId'] = fromCountId;
+    }
+    if (toCountId) {
+      params['toCountId'] = toCountId;
+    }
+    return this.http.get<VarianceReport>('/api/costing/variance', { params });
+  }
+
+  private target(kind: RecipeTargetKind, catalogItemId: number, variantId: number | null): Record<string, string | number> {
+    return variantId === null ? { targetKind: kind, catalogItemId } : { targetKind: kind, catalogItemId, variantId };
+  }
+}
+
+// Labels, in English and Arabic, as the reports carry both.
+export const statusLabels: Record<CostStatus, { en: string; ar: string }> = {
+  WithinTarget: { en: 'Within target', ar: 'ضمن الهدف' },
+  AboveTarget: { en: 'Above target', ar: 'فوق الهدف' },
+  NoRecipe: { en: 'No recipe', ar: 'لا توجد وصفة' },
+  MissingPrices: { en: 'Missing prices', ar: 'أسعار ناقصة' },
+  NoPrice: { en: 'No price', ar: 'بلا سعر' },
+};
+
+export const unitLabels: Record<UnitOfMeasure, string> = { Gram: 'g', Millilitre: 'ml', Piece: 'pc' };
+
+// Raw materials brought in from the Excel template: each made a purchased stock item, or skipped
+// and said why, by its row on the sheet; and the categories added for them.
+export interface ImportedRawMaterial {
+  row: number;
+  id: string;
+  name: string;
+  category: string;
+  unit: UnitOfMeasure;
+  purchaseUnit: string;
+  costPerPurchaseUnit: number | null;
+}
+
+// A row left out, and why; in Arabic too where the import says it.
+export interface SkippedSheetRow {
+  row: number;
+  name: string | null;
+  reason: string;
+  reasonAr?: string | null;
+}
+
+// One already there, changed by its row: what changed, by the sheet's column.
+export type SheetChange =
+  | 'Name'
+  | 'Code'
+  | 'Category'
+  | 'PurchaseUnit'
+  | 'Cost'
+  | 'ReorderLevel'
+  | 'Yield'
+  | 'NameAr'
+  | 'Unit'
+  | 'Ingredients'
+  | 'Portions'
+  | 'Batch';
+
+export interface UpdatedSheetItem {
+  row: number;
+  id: string;
+  name: string;
+  changes: SheetChange[];
+}
+
+// What importing a sheet of raw materials or expense items did: those added, those changed, how
+// many were as the sheet has them already, the rows skipped and why, and the categories added.
+export interface SheetImportResult {
+  created: { row: number; id: string; name: string }[];
+  updated: UpdatedSheetItem[];
+  unchanged: number;
+  skipped: SkippedSheetRow[];
+  categoriesAdded: string[];
+  // Recipes and prep items: what each imported costs now, by its ingredients' prices.
+  costed?: CostedSheetItem[];
+  // Prep items asked of a manager rather than saved: nothing changes until approved.
+  requested?: number;
+}
+
+// A recipe or a prep item imported, costed: its whole recipe or batch, and one portion or one
+// kg, litre or piece of it (per: "portion", "Kg"). An ingredient with no price yet is named;
+// notes say what to check, such as a quantity that reads as grams written as kilos.
+export interface CostedSheetItem {
+  row: number;
+  name: string;
+  ingredients: number;
+  cost: number | null;
+  costPer: number | null;
+  per: string;
+  missingPrices: string[];
+  notes: string[];
+  requested: boolean;
+}
+
+export interface RecipeImportResult extends SheetImportResult {
+  costed: CostedSheetItem[];
+  requested: number;
+}
+
+export interface RawMaterialImportResult extends SheetImportResult {
+  created: ImportedRawMaterial[];
+}
+
+export interface ExpenseItemImportResult extends SheetImportResult {
+  created: { row: number; id: string; name: string; category: string }[];
+}
+
+// Prep items brought in from a sheet of batch recipes (المصنعات): each made, or asked of a manager
+// (requested), its batch in grams and what to check on it; the rows skipped and why; the raw
+// materials added for the recipes, and the category added for the prep items.
+export interface ImportedPrepItem {
+  row: number;
+  id: string;
+  name: string;
+  batchQuantity: number;
+  ingredients: number;
+  requested: boolean;
+  notes: string[];
+}
+
+export interface PrepImportResult {
+  imported: ImportedPrepItem[];
+  skipped: SkippedSheetRow[];
+  materialsAdded: { id: string; name: string; unit: UnitOfMeasure }[];
+  categoryAdded: string | null;
+}
+
+// Stock is counted and reported in kg, litres and pieces, whatever it is bought in: a count of
+// 3.25 kg of cheese, not 0.13 of a 25 kg sack. What is bought by the gram or millilitre, such as
+// saffron, is counted so. The ledger keeps grams, millilitres and pieces.
+export function countUnit(unit: UnitOfMeasure, purchaseUnitSize: number): { label: string; size: number } {
+  switch (unit) {
+    case 'Gram':
+      return purchaseUnitSize < 1000 ? { label: 'g', size: 1 } : { label: 'kg', size: 1000 };
+    case 'Millilitre':
+      return purchaseUnitSize < 1000 ? { label: 'ml', size: 1 } : { label: 'L', size: 1000 };
+    default:
+      return { label: 'pc', size: 1 };
+  }
+}
+
+// The units a delivery of this material can be entered in, each with how many of its own units
+// (grams, millilitres, pieces) one holds: what it is bought by first, then the kilogram or litre,
+// then the gram, millilitre or piece itself. 5 kg is 5,000 g whichever is chosen.
+export function purchaseUnits(material: MaterialCost): { label: string; size: number }[] {
+  const units = [
+    { label: material.purchaseUnit, size: material.purchaseUnitSize },
+    ...(material.unit === 'Gram' ? [{ label: 'kg', size: 1000 }, { label: 'g', size: 1 }] : []),
+    ...(material.unit === 'Millilitre' ? [{ label: 'L', size: 1000 }, { label: 'ml', size: 1 }] : []),
+    ...(material.unit === 'Piece' ? [{ label: 'pc', size: 1 }] : []),
+  ];
+  return units.filter((u, i) => units.findIndex((other) => other.size === u.size) === i);
+}
+
+export const evaluationLabels: Record<VarianceEvaluation, { en: string; ar: string }> = {
+  Unfavourable: { en: 'Unfavourable', ar: 'غير مواتٍ' },
+  Favourable: { en: 'Favourable', ar: 'مواتٍ' },
+  WithinLimit: { en: 'Within limit', ar: 'ضمن الحد' },
+  SharedCost: { en: 'Shared cost', ar: 'تكلفة مشتركة' },
+};
+
+// The template's indicators: name, formula and purpose in English and Arabic, as it writes them.
+export const kpiLabels: Record<KpiKey, { en: string; ar: string; formula: string; formulaAr: string; purpose: string; money: boolean }> = {
+  FoodCost: {
+    en: 'Food cost %',
+    ar: 'نسبة تكلفة الطعام',
+    formula: 'Cost of raw materials consumed ÷ food sales × 100',
+    formulaAr: '(تكلفة المواد الخام المستهلكة ÷ إجمالي مبيعات الطعام) × 100',
+    purpose: 'How well food is bought and prepared',
+    money: false,
+  },
+  BeverageCost: {
+    en: 'Beverage cost %',
+    ar: 'نسبة تكلفة المشروبات',
+    formula: 'Cost of beverages sold ÷ beverage revenue × 100',
+    formulaAr: '(تكلفة المشروبات المباعة ÷ إيرادات المشروبات) × 100',
+    purpose: 'How well drinks are managed',
+    money: false,
+  },
+  LabourCost: {
+    en: 'Labour cost %',
+    ar: 'نسبة تكلفة العمالة',
+    formula: 'Wages and benefits ÷ revenue × 100',
+    formulaAr: '(إجمالي الرواتب والمزايا ÷ إجمالي الإيرادات) × 100',
+    purpose: 'Staffing against revenue',
+    money: false,
+  },
+  AverageCheck: {
+    en: 'Average check',
+    ar: 'متوسط قيمة الفاتورة',
+    formula: 'Revenue ÷ paid orders',
+    formulaAr: 'إجمالي الإيرادات ÷ عدد الفواتير',
+    purpose: 'What a customer spends on average',
+    money: true,
+  },
+  SalesPerLabourHour: {
+    en: 'Sales per labour hour',
+    ar: 'الإيراد لكل ساعة عمل',
+    formula: 'Revenue ÷ labour hours',
+    formulaAr: 'إجمالي المبيعات ÷ إجمالي ساعات العمل',
+    purpose: 'How productive the staff are',
+    money: true,
+  },
+  GrossProfitMargin: {
+    en: 'Gross profit margin',
+    ar: 'هامش الربح الإجمالي',
+    formula: 'Gross profit ÷ revenue × 100',
+    formulaAr: '(إجمالي الربح ÷ إجمالي الإيرادات) × 100',
+    purpose: 'Profit after the cost of sales',
+    money: false,
+  },
+  NetProfitMargin: {
+    en: 'Net profit margin',
+    ar: 'هامش الربح الصافي',
+    formula: 'Net profit ÷ revenue × 100',
+    formulaAr: '(صافي الربح ÷ إجمالي الإيرادات) × 100',
+    purpose: 'Profit after everything',
+    money: false,
+  },
+};
+
+// ---- Financials (الماليات) ----
+
+// How an invoice is paid: from the safe, from one day's cash takings, or on credit (owed to its
+// supplier). BeforeTreasury: posted before the treasury was kept.
+export type PurchasePaymentMethod = 'Safe' | 'DayRevenue' | 'Credit' | 'BeforeTreasury';
+export type InvoicePaymentStatus = 'NotPosted' | 'Paid' | 'Pending' | 'Unpaid' | 'OnCredit' | 'BeforeTreasury';
+
+export const paymentMethodLabels: Record<PurchasePaymentMethod, { en: string; ar: string }> = {
+  Safe: { en: 'Paid from the safe', ar: 'خصم من الخزنة' },
+  DayRevenue: { en: 'Paid from a day’s takings', ar: 'خصم من إيراد يوم' },
+  Credit: { en: 'On credit', ar: 'آجل' },
+  BeforeTreasury: { en: 'Before the treasury', ar: 'قبل الخزنة' },
+};
+
+export const paymentStatusLabels: Record<InvoicePaymentStatus, { en: string; ar: string }> = {
+  NotPosted: { en: 'Draft', ar: 'مسودة' },
+  Paid: { en: 'Paid', ar: 'مدفوعة' },
+  Pending: { en: 'Payment waiting for approval', ar: 'الدفع بانتظار الموافقة' },
+  Unpaid: { en: 'Unpaid', ar: 'غير مدفوعة' },
+  OnCredit: { en: 'On credit', ar: 'آجل' },
+  BeforeTreasury: { en: 'Before the treasury', ar: 'قبل الخزنة' },
+};
+
+export type SafeTransactionKind =
+  | 'OpeningBalance'
+  | 'Funding'
+  | 'RevenueTransfer'
+  | 'ExpenseVoucher'
+  | 'SupplierPayment'
+  | 'InvoicePayment'
+  | 'EmployeeAdvance'
+  | 'SalaryPayment'
+  // The tax collected paid over to the tax authority (سداد ضرائب): out of the safe, not an expense.
+  | 'TaxPayment'
+  // A month's payroll approved on HR, paid out of the safe (صرف مسير رواتب): its net cash, once.
+  | 'PayrollPayment';
+export type CashFund = 'Safe' | 'DayRevenue';
+// Where money put into the safe came from (مصدر التمويل).
+export type FundingSource = 'CarriedOver' | 'OwnerFinancing' | 'Other';
+
+export const fundingSourceLabels: Record<FundingSource, { en: string; ar: string }> = {
+  CarriedOver: { en: 'Carried over', ar: 'رصيد مرحل' },
+  OwnerFinancing: { en: 'Owners’ financing', ar: 'تمويل جاري / جاري الشركاء' },
+  Other: { en: 'Other source', ar: 'مصدر آخر' },
+};
+
+export const safeKindLabels: Record<SafeTransactionKind, { en: string; ar: string }> = {
+  OpeningBalance: { en: 'Opening balance', ar: 'رصيد افتتاحي' },
+  Funding: { en: 'Funding', ar: 'تمويل' },
+  RevenueTransfer: { en: 'Takings in', ar: 'توريد إيراد' },
+  ExpenseVoucher: { en: 'Expense voucher', ar: 'إذن صرف مصروفات' },
+  SupplierPayment: { en: 'Supplier payment', ar: 'إذن صرف لمورد' },
+  InvoicePayment: { en: 'Invoice paid', ar: 'سداد فاتورة' },
+  EmployeeAdvance: { en: 'Employee advance', ar: 'سلفة موظف' },
+  SalaryPayment: { en: 'Salary paid', ar: 'صرف راتب' },
+  TaxPayment: { en: 'Tax payment', ar: 'سداد ضرائب' },
+  PayrollPayment: { en: 'Payroll paid', ar: 'صرف مسير رواتب' },
+};
+
+// One line of the safe's ledger: in or out, and the balance after it (null where not running).
+// A reversal names what it undid (reversalOf); what it undid is marked voided.
+export interface SafeEntry {
+  id: string;
+  kind: SafeTransactionKind;
+  fund: CashFund;
+  date: string;
+  description: string;
+  in: number;
+  out: number;
+  balance: number | null;
+  source: FundingSource | null;
+  revenueDate: string | null;
+  supplierId: string | null;
+  purchaseInvoiceId: string | null;
+  expenseItemId: string | null;
+  notes: string | null;
+  recordedBy: string;
+  recordedAtUtc: string;
+  approvedBy: string | null;
+  reversalOf: string | null;
+  voidedAtUtc: string | null;
+  voidedBy: string | null;
+  // A day's takings: the tax collected on them (signed as in and out are), and the till's rate when
+  // it was worked out at it.
+  includesTax: boolean;
+  taxPercent: number | null;
+  tax: number;
+  // A day's takings: their cash and card sales before tax, as entered (in is what of all of it,
+  // tax too, reached the safe); and the day's voids and refunds.
+  gross: number | null;
+  card?: number;
+  voids?: number;
+}
+
+// How a month's opening balance came about: carried over from the month before, the treasury's
+// own opening entry made this month, or none yet.
+export type SafeOpening = 'None' | 'CarriedOver' | 'OpeningEntry';
+
+export interface SafeMonth {
+  year: number;
+  month: number;
+  from: string;
+  to: string;
+  openingBalance: number;
+  openingKind: SafeOpening;
+  openingSource: FundingSource | null;
+  // What stands: an entry voided this month, and its void, are in neither.
+  in: number;
+  out: number;
+  // The entries voided this month, left out of in and out with their voids.
+  voidedIn: number;
+  voidedOut: number;
+  closingBalance: number;
+  balanceNow: number;
+  hasOpeningBalance: boolean;
+  entries: SafeEntry[];
+  // The summary strip, in order: the month's cash, Visa and tax taken (and the net sales, cash and
+  // Visa); all that came in (totalIn), the balance it opened with and the funding put in (fundingIn)
+  // too; all that went out (totalOut), what the takings paid straight out of them too. closingBalance
+  // is totalIn − totalOut. taxOwedNow: the tax held in the safe for the tax authority now.
+  cashTakings?: number;
+  cardTakings?: number;
+  taxCollected?: number;
+  netSales?: number;
+  fundingIn?: number;
+  totalIn?: number;
+  totalOut?: number;
+  taxOwedNow?: number;
+}
+
+// The tax the takings collected and what was paid over: what is still owed, held in the safe.
+export interface TaxPosition {
+  collected: number;
+  paid: number;
+  owed: number;
+}
+
+// One line of the safe's analysis: where money came from or went, its share of all of it, and what
+// it is made of (the expense vouchers by category, say).
+export interface TreasuryFlowLine {
+  key: string;
+  en: string;
+  ar: string | null;
+  amount: number;
+  sharePercent: number | null;
+  items: TreasuryFlowLine[];
+}
+
+// One business day of the safe: in, out, the net, the balance it ended with, and its voids with why.
+export interface TreasuryDay {
+  date: string;
+  in: number;
+  out: number;
+  net: number;
+  balance: number;
+  voids: number;
+  voidReasons: string[];
+}
+
+// The safe over a period (تحليل الخزنة والتدفقات النقدية): totalIn has the balance it opened with;
+// netFlow is what came in during it less what went out; the tax collected and paid over in it, and
+// still owed to its last day.
+export interface TreasuryAnalytics {
+  from: string;
+  to: string;
+  openingBalance: number;
+  totalIn: number;
+  totalOut: number;
+  netFlow: number;
+  closingBalance: number;
+  inflows: TreasuryFlowLine[];
+  outflows: TreasuryFlowLine[];
+  taxCollected: number;
+  taxPaid: number;
+  taxToDate: TaxPosition;
+  voids: number;
+  days: TreasuryDay[];
+}
+
+export interface FundingReport {
+  from: string;
+  to: string;
+  carriedOver: number;
+  ownerFinancing: number;
+  other: number;
+  revenue: number;
+  total: number;
+  entries: SafeEntry[];
+}
+
+// One business day's takings as its Z report gave them: cash and card before tax, the tax collected
+// on them, the net sales (cash + card), the voids; what was paid straight out of them, and what of
+// them is in the safe. entered: the takings are; hasSales: the day's sales are.
+export interface DayRevenue {
+  date: string;
+  cash: number;
+  card: number;
+  tax: number;
+  netSales: number;
+  voids: number;
+  paidOut: number;
+  transferred: number;
+  entered: boolean;
+  hasSales: boolean;
+}
+
+export interface DayRevenueReport {
+  from: string;
+  to: string;
+  cash: number;
+  card: number;
+  tax: number;
+  netSales: number;
+  voids: number;
+  paidOut: number;
+  transferred: number;
+  days: DayRevenue[];
+}
+
+// A day's takings before they are entered: the gross already entered (null when not), and what was
+// paid straight out of them, which entering them takes off.
+export interface TakingsPreview {
+  date: string;
+  entered: number | null;
+  paidOut: number;
+  invoices: number;
+  supplierPayments: number;
+  // Employees' advances and salaries.
+  employeePayments?: number;
+}
+
+// A tax payment (isTaxPayment) is listed with the vouchers, with no expense item: not an expense.
+export interface ExpenseVoucherRow {
+  id: string;
+  date: string;
+  expenseItemId: string | null;
+  expenseItem: string;
+  category: string | null;
+  amount: number;
+  notes: string | null;
+  recordedBy: string;
+  approvedBy: string | null;
+  voidedAtUtc: string | null;
+  voidedBy: string | null;
+  isTaxPayment?: boolean;
+}
+
+// total: the expenses; taxPaid: the tax paid over, apart.
+export interface ExpenseVoucherReport {
+  from: string;
+  to: string;
+  total: number;
+  vouchers: ExpenseVoucherRow[];
+  taxPaid?: number;
+}
+
+// What is owed to one supplier, and how it came about.
+export interface SupplierBalance {
+  supplierId: string;
+  supplier: string;
+  isArchived: boolean;
+  openingDebt: number;
+  creditPurchases: number;
+  payments: number;
+  balance: number;
+  lastPaidOn: string | null;
+  openInvoices: number;
+}
+
+export type SupplierLedgerKind = 'OpeningBalance' | 'CreditInvoice' | 'Payment';
+
+// A line of a supplier's statement (كشف حساب): owed adds to the debt, paid takes from it.
+export interface SupplierStatementLine {
+  id: string;
+  date: string;
+  kind: SupplierLedgerKind;
+  description: string;
+  owed: number;
+  paid: number;
+  balance: number;
+  sourceId: string;
+  isReversal: boolean;
+}
+
+// A credit invoice not fully paid: payments go to the opening debt first, then the oldest invoice.
+export interface OpenInvoice {
+  invoiceId: string;
+  supplierInvoiceNumber: string | null;
+  date: string;
+  total: number;
+  paid: number;
+  remaining: number;
+  status: 'Unpaid' | 'PartlyPaid';
+}
+
+export interface SupplierStatement {
+  supplierId: string;
+  supplier: string;
+  openingDebt: number;
+  creditPurchases: number;
+  payments: number;
+  balance: number;
+  lines: SupplierStatementLine[];
+  openInvoices: OpenInvoice[];
+}
+
+export interface SupplierPaymentRow {
+  id: string;
+  date: string;
+  supplierId: string;
+  supplier: string;
+  amount: number;
+  notes: string | null;
+  recordedBy: string;
+  approvedBy: string | null;
+  voidedAtUtc: string | null;
+  voidedBy: string | null;
+  // Paid straight out of that day's takings, not the safe.
+  fromTakingsOf: string | null;
+}
+
+// An employee's advance (سلفة): when and from where it was paid, and the payroll month whose slip
+// deducts it (its first day).
+// No employee and no payroll month: advances handed out with no one named, shared among the staff
+// and deducted from no one's pay.
+export interface AdvanceRow {
+  id: string;
+  date: string;
+  employeeId: string | null;
+  employee: string;
+  amount: number;
+  payrollMonth: string | null;
+  fromTakingsOf: string | null;
+  notes: string | null;
+  recordedBy: string;
+  approvedBy: string | null;
+  voidedAtUtc: string | null;
+  voidedBy: string | null;
+}
+
+// A safe entry as entered. requestId and transactionId are made here, once per entry.
+export interface SafeVoucherInput {
+  requestId: string;
+  transactionId: string;
+  kind: SafeTransactionKind;
+  amount: number;
+  date: string | null;
+  source: FundingSource | null;
+  revenueDate: string | null;
+  supplierId: string | null;
+  expenseItemId: string | null;
+  notes: string | null;
+  reason: string | null;
+  // A day's takings with the tax in them: the server takes it off at the till's rate.
+  includesTax: boolean;
+  // An advance's or a salary's employee; a salary's payroll month (its first day).
+  employeeId?: string | null;
+  payrollMonth?: string | null;
+  // A day's takings from its Z report: amount is the cash; these, the card takings, the tax
+  // collected in both, and the day's voids and refunds (why, in the notes).
+  cardAmount?: number | null;
+  taxAmount?: number | null;
+  voidsAmount?: number | null;
+}
+
+export interface SafeTransaction {
+  id: string;
+  kind: SafeTransactionKind;
+  fund: CashFund;
+  amount: number;
+  businessDate: string;
+  recordedBy: string;
+  approvedBy: string | null;
+  includesTax: boolean;
+  taxPercent: number | null;
+  taxAmount: number;
+  grossAmount: number | null;
+  cardAmount?: number;
+  voidsAmount?: number;
+  // A day's takings: cash + card − tax.
+  netAmount?: number;
+}
+
+// Tax and service (إعدادات الضريبة والخدمة): the till's tax rate, as the delivery system set it
+// (null until it has synced), and the service charge, a manager's to set.
+export interface FinancialSettings {
+  taxPercent: number | null;
+  servicePercent: number;
+  updatedBy: string | null;
+  updatedAtUtc: string | null;
+}
+
+// One business day of the reconciliation (مطابقة الإيرادات), or the period's total (date null). Its
+// net sales (A): the takings, cash and card, less the tax collected in them; against its sales at
+// the menu's prices, before tax (B). Difference: A less B; below zero the takings fall short of
+// what was sold (discounts, staff meals, cash missing), above it money came in for items not entered.
+export interface ReconciliationDay {
+  date: string | null;
+  cash: number;
+  card: number;
+  tax: number;
+  netSales: number;
+  voids: number;
+  itemSales: number;
+  difference: number;
+}
+
+export interface ReconciliationReport {
+  from: string;
+  to: string;
+  taxPercent: number | null;
+  total: ReconciliationDay;
+  days: ReconciliationDay[];
+}
+
+// Each day's takings as they were spent (يومية الإيراد): the gross entered for them, the invoices
+// paid straight out of them (deductions), and what is left of them in the safe (netToSafe). A line
+// is one invoice paid, with what it bought, the dearest first; or the takings entered, at their gross.
+export interface DailyCashLine {
+  id: string;
+  kind: SafeTransactionKind;
+  date: string;
+  description: string;
+  amount: number;
+  purchaseInvoiceId: string | null;
+  items: string[];
+  recordedBy: string;
+  approvedBy: string | null;
+}
+
+export interface DailyCashDay {
+  date: string;
+  gross: number;
+  deductions: number;
+  netToSafe: number;
+  paid: DailyCashLine[];
+  entered: DailyCashLine[];
+}
+
+export interface DailyCashReport {
+  from: string;
+  to: string;
+  gross: number;
+  deductions: number;
+  netToSafe: number;
+  days: DailyCashDay[];
+}
+```
+
+
+> 📄 **`frontend/src/app/core/costing/end-of-day.api.ts`** — 295 سطر
+
+```ts
+import { HttpClient } from '@angular/common/http';
+import { Injectable, inject } from '@angular/core';
+import { Observable } from 'rxjs';
+
+// The end of the day (تقفيل اليوم), as the API keeps it: a day's invoices handed in with their
+// photos, cash and on credit; the cash paid out of the till to suppliers and as advances to
+// employees, each with its receipt; and its sales report with the float the drawer opened with. A
+// draft until it is submitted; then each payment and advance goes to the safe (or is asked of a
+// manager).
+export type EndOfDayStatus = 'Draft' | 'Submitted';
+export type EndOfDayInvoiceKind = 'Cash' | 'Credit';
+export type EndOfDayPayoutKind = 'SupplierPayment' | 'EmployeeAdvance';
+// Where a payment's safe entry is: none yet, asked of a manager, in the safe, or refused.
+export type EndOfDayVoucherState = 'None' | 'Requested' | 'InSafe' | 'Refused';
+
+export interface EndOfDayPhoto {
+  fileName: string;
+  contentType: string;
+  bytes: number;
+}
+
+export interface EndOfDayInvoice {
+  id: string;
+  kind: EndOfDayInvoiceKind;
+  supplierId: string;
+  supplier: string;
+  reportedTotal: number;
+  note: string | null;
+  photo: EndOfDayPhoto;
+  addedAtUtc: string;
+  // The purchase invoice it was posted as on the daily batch.
+  purchaseInvoiceId: string | null;
+  postedAtUtc: string | null;
+}
+
+// Cash paid out of the till: to a supplier (إذن صرف مورد) or an employee as an advance (سلفة).
+export interface EndOfDayPayout {
+  id: string;
+  kind: EndOfDayPayoutKind;
+  supplierId: string | null;
+  employeeId: string | null;
+  // The supplier's or the employee's name.
+  payee: string;
+  amount: number;
+  note: string | null;
+  receipt: EndOfDayPhoto;
+  addedAtUtc: string;
+  voucher: EndOfDayVoucherState;
+  voucheredAtUtc: string | null;
+}
+
+export interface EndOfDay {
+  id: string;
+  date: string;
+  status: EndOfDayStatus;
+  cashAmount: number | null;
+  cardAmount: number | null;
+  taxAmount: number | null;
+  voidsAmount: number | null;
+  notes: string | null;
+  salesPhoto: EndOfDayPhoto | null;
+  invoices: EndOfDayInvoice[];
+  cashInvoices: number;
+  cashInvoicesTotal: number;
+  creditInvoices: number;
+  creditInvoicesTotal: number;
+  // Cash and Visa before tax; with the tax; the cash once the cash invoices were paid out of it;
+  // and what should reach the safe, everything less the cash invoices.
+  netSales: number;
+  totalRevenue: number;
+  cashAfterInvoices: number;
+  expectedIntoSafe: number;
+  // How many of its invoices are posted on the daily batch.
+  posted: number;
+  // The day's takings as entered on Financials, if they are.
+  takingsEntered: number | null;
+  createdBy: string;
+  createdAtUtc: string;
+  updatedBy: string;
+  updatedAtUtc: string;
+  submittedBy: string | null;
+  submittedAtUtc: string | null;
+  reopenedBy: string | null;
+  reopenedAtUtc: string | null;
+  // The float the drawer opened with; the cash paid out to suppliers and as advances.
+  openingFloat: number | null;
+  payouts: EndOfDayPayout[];
+  supplierPayments: number;
+  supplierPaymentsTotal: number;
+  advances: number;
+  advancesTotal: number;
+  // The tax on the cash sales (their share of the day's tax), the cash the sales put in the drawer,
+  // all paid out of it, and what should be left in it (الصافي الفعلي المتبقي في الكاش).
+  cashTax: number;
+  cashSalesCollected: number;
+  cashPaidOut: number;
+  netCashInTill: number;
+}
+
+export interface EndOfDaySales {
+  cashAmount: number | null;
+  cardAmount: number | null;
+  taxAmount: number | null;
+  voidsAmount: number | null;
+  notes: string | null;
+  openingFloat: number | null;
+}
+
+// A payment as it is entered: the supplier paid or the employee advanced (payeeId), how much, a note.
+export interface EndOfDayPayoutEntry {
+  payeeId: string;
+  amount: number;
+  note: string | null;
+}
+
+export const payoutKindLabels: Record<EndOfDayPayoutKind, { en: string; ar: string; payee: string; route: string }> = {
+  SupplierPayment: { en: 'Supplier payment', ar: 'إذن صرف مورد', payee: 'supplierId', route: 'supplier-payments' },
+  EmployeeAdvance: { en: 'Employee advance', ar: 'سلفة موظف', payee: 'employeeId', route: 'advances' },
+};
+
+export const voucherLabels: Record<EndOfDayVoucherState, { en: string; ar: string; tone: string } | null> = {
+  None: null,
+  Requested: { en: 'Waiting for a manager', ar: 'بانتظار موافقة المدير', tone: 'warn' },
+  InSafe: { en: 'In the safe', ar: 'مسجل في الخزنة', tone: 'ok' },
+  Refused: { en: 'Refused by a manager', ar: 'رفضه المدير', tone: 'bad' },
+};
+
+// The cash that should be left in the drawer, as the API works it out: the float, and the cash
+// sales with their share of the tax collected, less all that was paid out of it (the cash invoices,
+// the suppliers paid, the advances). The Visa never reaches the drawer.
+export function netCash(sales: Pick<EndOfDaySales, 'cashAmount' | 'cardAmount' | 'taxAmount' | 'openingFloat'>, paidOut: number) {
+  const [cash, card, tax, float] = [Number(sales.cashAmount) || 0, Number(sales.cardAmount) || 0, Number(sales.taxAmount) || 0, Number(sales.openingFloat) || 0];
+  const cashTax = cash + card > 0 ? Math.round(((tax * cash) / (cash + card)) * 100) / 100 : 0;
+  const collected = Math.round((cash + cashTax) * 100) / 100;
+  return { float, cashTax, collected, paidOut, net: Math.round((float + collected - paidOut) * 100) / 100 };
+}
+
+export interface EndOfDayInvoiceEntry {
+  kind: EndOfDayInvoiceKind;
+  supplierId: string;
+  reportedTotal: number;
+  note: string | null;
+}
+
+export const invoiceKindLabels: Record<EndOfDayInvoiceKind, { en: string; ar: string }> = {
+  Cash: { en: 'Cash', ar: 'نقدي' },
+  Credit: { en: 'On credit', ar: 'آجل' },
+};
+
+export const endOfDayStatusLabels: Record<EndOfDayStatus, { en: string; ar: string }> = {
+  Draft: { en: 'Draft', ar: 'مسودة' },
+  Submitted: { en: 'Submitted', ar: 'تم الإرسال' },
+};
+
+// What a photo handed in can be, as an invoice's paper is.
+export const photoTypes = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'];
+export const photoMaxBytes = 10 * 1024 * 1024;
+
+@Injectable({ providedIn: 'root' })
+export class EndOfDayApi {
+  private readonly http = inject(HttpClient);
+
+  // The day, or null before anything is handed in for it.
+  day(date: string): Observable<EndOfDay | null> {
+    return this.http.get<EndOfDay | null>(`/api/end-of-day/${date}`);
+  }
+
+  days(from: string, to: string): Observable<EndOfDay[]> {
+    return this.http.get<EndOfDay[]>('/api/end-of-day', { params: { from, to } });
+  }
+
+  saveSales(date: string, sales: EndOfDaySales): Observable<EndOfDay> {
+    return this.http.put<EndOfDay>(`/api/end-of-day/${date}/sales`, sales);
+  }
+
+  // The id is made here, once per invoice: sent again, it is not added twice.
+  addInvoice(date: string, id: string, entry: EndOfDayInvoiceEntry, file: File): Observable<EndOfDay> {
+    const form = new FormData();
+    form.append('invoiceId', id);
+    form.append('kind', entry.kind);
+    form.append('supplierId', entry.supplierId);
+    form.append('reportedTotal', String(entry.reportedTotal));
+    if (entry.note) {
+      form.append('note', entry.note);
+    }
+    form.append('file', file, file.name);
+    return this.http.post<EndOfDay>(`/api/end-of-day/${date}/invoices`, form);
+  }
+
+  changeInvoice(date: string, id: string, entry: EndOfDayInvoiceEntry): Observable<EndOfDay> {
+    return this.http.put<EndOfDay>(`/api/end-of-day/${date}/invoices/${id}`, entry);
+  }
+
+  replaceInvoicePhoto(date: string, id: string, file: File): Observable<EndOfDay> {
+    const form = new FormData();
+    form.append('file', file, file.name);
+    return this.http.put<EndOfDay>(`/api/end-of-day/${date}/invoices/${id}/photo`, form);
+  }
+
+  removeInvoice(date: string, id: string): Observable<EndOfDay> {
+    return this.http.delete<EndOfDay>(`/api/end-of-day/${date}/invoices/${id}`);
+  }
+
+  attachSalesPhoto(date: string, file: File): Observable<EndOfDay> {
+    const form = new FormData();
+    form.append('file', file, file.name);
+    return this.http.put<EndOfDay>(`/api/end-of-day/${date}/sales-photo`, form);
+  }
+
+  removeSalesPhoto(date: string): Observable<EndOfDay> {
+    return this.http.delete<EndOfDay>(`/api/end-of-day/${date}/sales-photo`);
+  }
+
+  submit(date: string): Observable<EndOfDay> {
+    return this.http.post<EndOfDay>(`/api/end-of-day/${date}/submit`, null);
+  }
+
+  reopen(date: string): Observable<EndOfDay> {
+    return this.http.post<EndOfDay>(`/api/end-of-day/${date}/reopen`, null);
+  }
+
+  // Cash paid out of the till, with its receipt; the id made here once, so it is not added twice.
+  addPayout(date: string, kind: EndOfDayPayoutKind, id: string, entry: EndOfDayPayoutEntry, file: File): Observable<EndOfDay> {
+    const form = new FormData();
+    form.append('id', id);
+    form.append(payoutKindLabels[kind].payee, entry.payeeId);
+    form.append('amount', String(entry.amount));
+    if (entry.note) {
+      form.append('note', entry.note);
+    }
+    form.append('file', file, file.name);
+    return this.http.post<EndOfDay>(`/api/end-of-day/${date}/${payoutKindLabels[kind].route}`, form);
+  }
+
+  changePayout(date: string, kind: EndOfDayPayoutKind, id: string, entry: EndOfDayPayoutEntry): Observable<EndOfDay> {
+    return this.http.put<EndOfDay>(`/api/end-of-day/${date}/${payoutKindLabels[kind].route}/${id}`, {
+      [payoutKindLabels[kind].payee]: entry.payeeId,
+      amount: entry.amount,
+      note: entry.note,
+    });
+  }
+
+  replacePayoutReceipt(date: string, kind: EndOfDayPayoutKind, id: string, file: File): Observable<EndOfDay> {
+    const form = new FormData();
+    form.append('file', file, file.name);
+    return this.http.put<EndOfDay>(`/api/end-of-day/${date}/${payoutKindLabels[kind].route}/${id}/receipt`, form);
+  }
+
+  removePayout(date: string, kind: EndOfDayPayoutKind, id: string): Observable<EndOfDay> {
+    return this.http.delete<EndOfDay>(`/api/end-of-day/${date}/${payoutKindLabels[kind].route}/${id}`);
+  }
+
+  // A photo of the day: an invoice's or a payment's receipt by its id, the sales report's by the day's.
+  photo(date: string, photoId: string): Observable<Blob> {
+    return this.http.get(`/api/end-of-day/${date}/photos/${photoId}`, { responseType: 'blob' });
+  }
+}
+
+// A phone's photo made lighter to send: no side over 2,000 pixels, as a JPEG, upright as it was
+// taken. A PDF, a small picture, or a browser that cannot draw it, sent as it is.
+export async function shrinkPhoto(file: File, maxSide = 2000, quality = 0.85): Promise<File> {
+  if (!/^image\/(jpeg|png|webp)$/.test(file.type) || file.size < 700 * 1024 || typeof createImageBitmap !== 'function') {
+    return file;
+  }
+  try {
+    const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
+    const scale = Math.min(1, maxSide / Math.max(bitmap.width, bitmap.height));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(bitmap.width * scale);
+    canvas.height = Math.round(bitmap.height * scale);
+    const context = canvas.getContext('2d');
+    if (!context) {
+      return file;
+    }
+    context.fillStyle = '#fff';
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    bitmap.close();
+    const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/jpeg', quality));
+    if (!blob || blob.size >= file.size) {
+      return file;
+    }
+    return new File([blob], `${file.name.replace(/\.[^.]+$/, '') || 'photo'}.jpg`, { type: 'image/jpeg' });
+  } catch {
+    return file;
+  }
+}
+
+// What stops a file being handed in, or null.
+export function photoProblem(file: File): string | null {
+  if (!photoTypes.includes(file.type)) {
+    return 'Attach a photo (JPEG, PNG or WebP) or a PDF. · أرفق صورة أو ملف PDF.';
+  }
+  return file.size > photoMaxBytes ? 'The file must be under 10 MB. · الملف أقل من 10 ميجا.' : null;
+}
+```
+
+
+> 📄 **`frontend/src/app/core/costing/menu-sales.api.ts`** — 327 سطر
+
+```ts
+import { HttpClient } from '@angular/common/http';
+import { Injectable, inject } from '@angular/core';
+import { Observable } from 'rxjs';
+import { UserRole } from '../api/models';
+import { CostingTab } from './costing-tabs';
+import { Employee } from './staff';
+
+// The menu (قائمة الطعام) the recipes sell by: categories, items numbered as their codes, their
+// sizes, and the add-ons. Kept here, or imported from a sheet.
+export interface MenuCategory {
+  id: number;
+  name: string;
+  nameAr: string | null;
+  displayOrder: number;
+  // Items in it, deleted ones left out.
+  items: number;
+}
+
+export interface MenuSize {
+  id: number;
+  name: string;
+  nameAr: string | null;
+  price: number;
+}
+
+export interface MenuItem {
+  id: number;
+  name: string;
+  nameAr: string | null;
+  category: string;
+  price: number;
+  isPriceBasedOnAddons: boolean;
+  isAvailable: boolean;
+  isDeleted: boolean;
+  sizes: MenuSize[];
+  addOnIds: number[];
+}
+
+export interface MenuAddOn {
+  id: number;
+  name: string;
+  nameAr: string | null;
+  price: number;
+  isDeleted: boolean;
+}
+
+export interface Menu {
+  categories: MenuCategory[];
+  items: MenuItem[];
+  addOns: MenuAddOn[];
+}
+
+export interface MenuItemInput {
+  // A new item's code: left out, the next one after the highest.
+  number?: number | null;
+  name: string;
+  nameAr: string | null;
+  category: string;
+  price: number;
+  isPriceBasedOnAddons: boolean;
+  isAvailable: boolean;
+  sizes: { name: string; nameAr: string | null; price: number }[];
+  addOnIds: number[];
+}
+
+// A row of a sheet left out, and why.
+export interface SkippedRow {
+  row: number;
+  name: string | null;
+  reason: string;
+  reasonAr?: string | null;
+}
+
+export interface MenuImportResult {
+  added: number;
+  updated: number;
+  categoriesAdded: number;
+  skipped: SkippedRow[];
+}
+
+// Recipes off the menu put on it: each a menu item of its name, at the price and in the category
+// given, linked to it; one of a name on the menu already linked to that item as it is.
+export interface RecipeToMenuInput {
+  recipeId: string;
+  category: string | null;
+  price: number | null;
+  nameAr?: string | null;
+}
+
+export interface RecipesToMenuResult {
+  linked: { recipeId: string; recipe: string; menuItemId: number; category: string; price: number; created: boolean }[];
+  skipped: { recipeId: string; recipe: string | null; reason: string; reasonAr: string }[];
+  categoriesAdded: string[];
+}
+
+// Sales (المبيعات): each day's sales summary, an item and how many sold, each taking its stock by
+// its recipe. A bill entered as printed (from before, or by a script) reads the same way.
+export type SalesChannel = 'DineIn' | 'Takeaway' | 'Delivery' | 'Online';
+export type PaymentMethod = 'Cash' | 'Visa' | 'Instapay';
+export type SalesSource = 'Entered' | 'Imported' | 'DailySummary';
+// A line taken off the bill, and when: before the kitchen (no stock), after it (waste), or after
+// payment (refunded, its stock back).
+export type LineVoid = 'None' | 'BeforeKitchen' | 'AfterKitchen' | 'AfterPayment';
+
+export interface SalesLine {
+  publicId: string;
+  menuItemId: number;
+  variantId: number | null;
+  menuItemName: string;
+  variantName: string | null;
+  quantity: number;
+  lineTotal: number;
+  addOnIds: number[];
+  onBill: boolean;
+  voided: LineVoid;
+}
+
+export interface SalesReceipt {
+  id: string;
+  reference: string | null;
+  soldAtUtc: string;
+  businessDate: string;
+  channel: SalesChannel;
+  paymentMethod: PaymentMethod;
+  lines: SalesLine[];
+  subtotal: number;
+  discountAmount: number;
+  deliveryFee: number;
+  taxAmount: number;
+  pointsAmount: number;
+  totalAmount: number;
+  refundedAmount: number;
+  notes: string | null;
+  source: SalesSource;
+  enteredBy: string;
+  enteredAtUtc: string;
+  voidedAtUtc: string | null;
+  voidedBy: string | null;
+}
+
+export interface SalesTotals {
+  receipts: number;
+  items: number;
+  subtotal: number;
+  discounts: number;
+  deliveryFees: number;
+  tax: number;
+  points: number;
+  total: number;
+  refunded: number;
+  byPayment: Record<PaymentMethod, number>;
+}
+
+export interface SalesReport {
+  from: string;
+  to: string;
+  receipts: SalesReceipt[];
+  totals: SalesTotals;
+}
+
+// A line of a day's sales summary: an item, a size of one sold by size, and how many sold.
+export interface DailySaleLine {
+  menuItemId: number;
+  variantId: number | null;
+  quantity: number;
+}
+
+// The day's sheet imported: the summary recorded (none when no row could be read), what it holds
+// at the menu's prices, and each row left out and why.
+export interface DailySalesImportResult {
+  date: string;
+  saleId: string | null;
+  items: number;
+  quantity: number;
+  value: number;
+  skipped: SkippedRow[];
+}
+
+// Breakage (كسر) entered on Waste.
+export interface BreakageEntry {
+  id: string;
+  businessDate: string;
+  assetItemId: string | null;
+  assetTransactionId: string | null;
+  description: string;
+  quantity: number;
+  unitCost: number | null;
+  cost: number;
+  employeeId: string | null;
+  employeeName: string | null;
+  notes: string | null;
+  recordedBy: string;
+  recordedAtUtc: string;
+  isVoided: boolean;
+}
+
+export interface BreakageInput {
+  id: string;
+  date: string;
+  description: string;
+  quantity: number;
+  unitCost: number | null;
+  employeeId: string | null;
+  notes: string | null;
+}
+
+// Who works which section (الصلاحيات): every user but the managers, their role's until ticked.
+export interface UserTabs {
+  id: string;
+  name: string;
+  role: UserRole;
+  restricted: boolean;
+  tabs: CostingTab[];
+  setBy: string | null;
+  setAtUtc: string | null;
+}
+
+@Injectable({ providedIn: 'root' })
+export class MenuSalesApi {
+  private readonly http = inject(HttpClient);
+
+  menu(): Observable<Menu> {
+    return this.http.get<Menu>('/api/menu');
+  }
+
+  addCategory(name: string, nameAr: string | null): Observable<Menu> {
+    return this.http.post<Menu>('/api/menu/categories', { name, nameAr });
+  }
+
+  saveCategory(id: number, name: string, nameAr: string | null, displayOrder: number | null): Observable<Menu> {
+    return this.http.put<Menu>(`/api/menu/categories/${id}`, { name, nameAr, displayOrder });
+  }
+
+  deleteCategory(id: number): Observable<Menu> {
+    return this.http.delete<Menu>(`/api/menu/categories/${id}`);
+  }
+
+  addItem(item: MenuItemInput): Observable<MenuItem> {
+    return this.http.post<MenuItem>('/api/menu/items', item);
+  }
+
+  saveItem(id: number, item: MenuItemInput): Observable<MenuItem> {
+    return this.http.put<MenuItem>(`/api/menu/items/${id}`, item);
+  }
+
+  deleteItem(id: number): Observable<MenuItem> {
+    return this.http.delete<MenuItem>(`/api/menu/items/${id}`);
+  }
+
+  restoreItem(id: number): Observable<MenuItem> {
+    return this.http.post<MenuItem>(`/api/menu/items/${id}/restore`, {});
+  }
+
+  addAddOn(name: string, nameAr: string | null, price: number): Observable<MenuAddOn> {
+    return this.http.post<MenuAddOn>('/api/menu/add-ons', { name, nameAr, price });
+  }
+
+  saveAddOn(id: number, name: string, nameAr: string | null, price: number): Observable<MenuAddOn> {
+    return this.http.put<MenuAddOn>(`/api/menu/add-ons/${id}`, { name, nameAr, price });
+  }
+
+  deleteAddOn(id: number): Observable<MenuAddOn> {
+    return this.http.delete<MenuAddOn>(`/api/menu/add-ons/${id}`);
+  }
+
+  restoreAddOn(id: number): Observable<MenuAddOn> {
+    return this.http.post<MenuAddOn>(`/api/menu/add-ons/${id}/restore`, {});
+  }
+
+  addRecipesToMenu(recipes: RecipeToMenuInput[]): Observable<RecipesToMenuResult> {
+    return this.http.post<RecipesToMenuResult>('/api/menu/from-recipes', { recipes });
+  }
+
+  menuTemplate(): Observable<Blob> {
+    return this.http.get('/api/menu/template', { responseType: 'blob' });
+  }
+
+  importMenu(file: File): Observable<MenuImportResult> {
+    const form = new FormData();
+    form.append('file', file, file.name);
+    return this.http.post<MenuImportResult>('/api/menu/import', form);
+  }
+
+  sales(from: string, to: string): Observable<SalesReport> {
+    return this.http.get<SalesReport>('/api/sales', { params: { from, to } });
+  }
+
+  // One a day: a day entered already is refused, naming it.
+  recordDailySales(id: string, date: string, lines: DailySaleLine[]): Observable<SalesReceipt> {
+    return this.http.post<SalesReceipt>('/api/sales/daily', { id, date, lines });
+  }
+
+  dailySalesTemplate(): Observable<Blob> {
+    return this.http.get('/api/sales/daily/template', { responseType: 'blob' });
+  }
+
+  importDailySales(date: string, file: File): Observable<DailySalesImportResult> {
+    const form = new FormData();
+    form.append('file', file);
+    return this.http.post<DailySalesImportResult>('/api/sales/daily/import', form, { params: { date } });
+  }
+
+  staff(): Observable<Employee[]> {
+    return this.http.get<Employee[]>('/api/staff');
+  }
+
+  saveStaff(id: string, name: string, jobTitle: string | null, isActive: boolean): Observable<Employee> {
+    return this.http.put<Employee>(`/api/staff/${id}`, { name, jobTitle, isActive });
+  }
+
+  breakage(days: number): Observable<BreakageEntry[]> {
+    return this.http.get<BreakageEntry[]>('/api/costing/breakage', { params: { days } });
+  }
+
+  recordBreakage(entry: BreakageInput): Observable<BreakageEntry> {
+    return this.http.post<BreakageEntry>('/api/costing/breakage', entry);
+  }
+
+  access(): Observable<UserTabs[]> {
+    return this.http.get<UserTabs[]>('/api/access');
+  }
+
+  // Null: back to the role's own.
+  setTabs(userId: string, tabs: CostingTab[] | null): Observable<UserTabs> {
+    return this.http.put<UserTabs>(`/api/access/${userId}`, { tabs });
+  }
+}
+```
+
+
+> 📄 **`frontend/src/app/core/costing/staff.ts`** — 14 سطر
+
+```ts
+// Someone the safe pays advances and salaries to (الموظفين): a name and a job here. While HR is
+// linked, they come from HR (hrEmployeeId), with HR's code (the number they punch in with) and
+// department; otherwise they are kept here alone. Kept when they leave, as the safe's entries name
+// them.
+export interface Employee {
+  id: string;
+  name: string;
+  jobTitle: string | null;
+  isActive: boolean;
+  hrEmployeeId?: string | null;
+  code?: string | null;
+  department?: string | null;
+  branch?: string | null;
+}
+```
+
+
+`EmployeePicker`: اختيار موظف بالاسم أو الوظيفة أو القسم أو **كود HR**.
+
+> 📄 **`frontend/src/app/core/costing/employee-picker.ts`** — 128 سطر
+
+```ts
+import { Component, computed, input, model, signal } from '@angular/core';
+import { FormsModule } from '@angular/forms';
+import { MatAutocompleteModule, MatAutocompleteSelectedEvent } from '@angular/material/autocomplete';
+import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatInputModule } from '@angular/material/input';
+import { Employee } from './staff';
+
+// A name as two spellings of it are compared: capitals aside, without the stretching tatweel, and
+// the Arabic letters written more than one way (أ إ آ ا, ة ه, ى ي) as one. "منى" finds "مني".
+export function searchKey(text: string): string {
+  return text
+    .replace(/[أإآ]/g, 'ا')
+    .replace(/ة/g, 'ه')
+    .replace(/ى/g, 'ي')
+    .replace(/ـ/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+// An employee chosen by typing part of their name, job or department, or their HR code: the list
+// narrows as it is typed. With `none`, no one is a choice too (null): its label says what that
+// means where it is used.
+@Component({
+  selector: 'app-employee-picker',
+  imports: [FormsModule, MatAutocompleteModule, MatFormFieldModule, MatInputModule],
+  template: `
+    <mat-form-field subscriptSizing="dynamic" class="picker" [class.fill]="fill()">
+      <mat-label>{{ label() }}</mat-label>
+      <input matInput [ngModel]="text()" (ngModelChange)="typed($event)" [matAutocomplete]="list" [disabled]="disabled()"
+        [placeholder]="none() ? noneLabel() : 'Type a name'" [attr.aria-label]="ariaLabel()" />
+      <mat-autocomplete #list="matAutocomplete" [displayWith]="display" (optionSelected)="chose($event)" (closed)="settle()">
+        @if (none()) {
+          <mat-option [value]="null" class="none">{{ noneLabel() }}</mat-option>
+        }
+        @for (e of shown(); track e.id) {
+          <mat-option [value]="e.id">
+            {{ e.name }}
+            @if (e.code) {<span class="code">#{{ e.code }}</span>}
+            @if (e.department ?? e.jobTitle; as about) {<span class="job">· {{ about }}</span>}
+          </mat-option>
+        } @empty {
+          <mat-option disabled>{{ employees().length ? 'No one by that name' : emptyLabel() }}</mat-option>
+        }
+      </mat-autocomplete>
+      @if (hint(); as h) {
+        <mat-hint>{{ h }}</mat-hint>
+      }
+    </mat-form-field>
+  `,
+  styles: `
+    :host {
+      display: contents;
+    }
+    .picker {
+      min-width: 240px;
+    }
+    .fill {
+      width: 100%;
+    }
+    .job,
+    .none,
+    .code {
+      color: var(--mat-sys-on-surface-variant);
+    }
+    .code {
+      margin-left: 4px;
+      font-variant-numeric: tabular-nums;
+    }
+  `,
+})
+export class EmployeePicker {
+  readonly employees = input.required<Employee[]>();
+  readonly value = model<string | null>(null);
+  readonly label = input('Employee · الموظف');
+  readonly ariaLabel = input('Employee');
+  readonly none = input(false);
+  readonly noneLabel = input('No one yet · لم يُحدد بعد');
+  readonly hint = input<string | null>(null);
+  // Said when there is no one to choose at all.
+  readonly emptyLabel = input('No staff yet: add them under Financials → Staff');
+  readonly disabled = input(false);
+  // As wide as where it is put, as a form's own fields are.
+  readonly fill = input(false);
+
+  // What is typed to narrow the list; empty while the box shows the one chosen.
+  private readonly filter = signal<string | null>(null);
+
+  // The box: what is typed, or the one chosen (shown by its name).
+  protected readonly text = computed(() => this.filter() ?? this.value());
+
+  protected readonly shown = computed(() => {
+    const key = searchKey(this.filter() ?? '');
+    return this.employees().filter(
+      (e) =>
+        !key ||
+        searchKey(e.name).includes(key) ||
+        searchKey(e.jobTitle ?? '').includes(key) ||
+        searchKey(e.department ?? '').includes(key) ||
+        (e.code ?? '').toLowerCase() === key.replace(/^#/, ''),
+    );
+  });
+
+  // An id shown as its employee's name; what is being typed, as typed.
+  protected readonly display = (value: string | null): string =>
+    value === null ? '' : (this.employees().find((e) => e.id === value)?.name ?? value);
+
+  protected typed(text: string | null): void {
+    // The autocomplete writes the chosen option's value too: that is chose()'s.
+    if (text !== null && this.employees().some((e) => e.id === text)) {
+      return;
+    }
+    this.filter.set(text ?? '');
+    if (this.none() && !(text ?? '').trim()) {
+      this.value.set(null);
+    }
+  }
+
+  protected chose(event: MatAutocompleteSelectedEvent): void {
+    this.value.set(event.option.value as string | null);
+    this.filter.set(null);
+  }
+
+  // The list closed without a choice: the box shows the one chosen again.
+  protected settle(): void {
+    this.filter.set(null);
+  }
+}
+```
+
+
+## 5. الأدوات المشتركة: البحث الذكي والترتيب والتنقل بـ Enter
+
+### 5.1 البحث الذكي العربي (`smart-search.ts`): سطرًا سطرًا
+
+`searchable(text)` يحوّل النص لشكل "قابل للمقارنة":
+
+1. `normalize('NFKD')` ثم حذف علامات التشكيل اللاتينية (é ⇐ e).
+2. الأرقام العربية/الفارسية ⇐ غربية: `(charCode & 0xf) % 10` (حيلة: آخر 4 بتات من كود ٠-٩ و ۰-۹ هي الرقم نفسه).
+3. حذف التشكيل العربي والتطويل (ـ).
+4. توحيد الألفات (أ إ آ ٱ ⇐ ا)، والتاء المربوطة ⇐ هاء، والألف المقصورة ⇐ ياء.
+5. حروف صغيرة، ومسافات موحدة.
+
+`smartMatch(needle, ...fields)`: **كل كلمة مكتوبة** موجودة في أحد الحقول، **بأي ترتيب**: "chick 12" تجد "Chicken breast" بكود ING-12، و "دقيق" تجد "Flour · دقيق". و `compareValues` / `sortItems`: ترتيب بلغة القارئ (العربية أيضًا)، والأرقام بالحجم، **والقيم الناقصة آخرًا دائمًا** (صنف بلا تكلفة بعد المسعّر سواء رتبت تصاعديًا أو تنازليًا).
+
+> 📄 **`frontend/src/app/features/shared/smart-search.ts`** — 88 سطر
+
+```ts
+// How every list in the app is searched and sorted: one way, so a name found on one page is found
+// the same way on the next.
+
+const arabicDigits = /[٠-٩۰-۹]/g;
+// Tashkeel (the short vowels and their marks) and tatweel (the stretching line): not letters.
+const marks = /[ً-ٰٟـ]/g;
+
+// Text as a search compares it: lower case, without accents; Arabic with its alefs as one (أ إ آ
+// ٱ → ا), taa marbuta as haa, alef maqsura as yaa, no tashkeel or tatweel; Arabic-Indic digits as
+// Western ones; runs of space as one.
+export function searchable(text: string | number | null | undefined): string {
+  if (text === null || text === undefined) {
+    return '';
+  }
+  return `${text}`
+    .normalize('NFKD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(arabicDigits, (d) => `${(d.charCodeAt(0) & 0xf) % 10}`)
+    .replace(marks, '')
+    .replace(/[أإآٱ]/g, 'ا')
+    .replace(/ة/g, 'ه')
+    .replace(/ى/g, 'ي')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// Whether every word typed is in one of the fields, in any order: "chick 12" finds "Chicken breast"
+// coded ING-12, and "دقيق" finds "Flour · دقيق". Nothing typed finds everything.
+export function smartMatch(needle: string, ...fields: (string | number | null | undefined)[]): boolean {
+  const words = searchable(needle).split(' ').filter(Boolean);
+  if (words.length === 0) {
+    return true;
+  }
+  const haystack = fields.map(searchable).join(' ');
+  return words.every((word) => haystack.includes(word));
+}
+
+// How a list is sorted: by which of its options, and which way (1 ascending, -1 descending).
+export interface SortState<K extends string = string> {
+  key: K;
+  direction: 1 | -1;
+}
+
+// One way a list can be sorted, named in both languages. Descending: the way it starts when chosen
+// (the dearest first, the newest first), when ascending is not the natural first look.
+export interface SortOption<K extends string = string> {
+  key: K;
+  en: string;
+  ar: string;
+  descending?: boolean;
+}
+
+// Two values in order: text by the reader's language (Arabic too), numbers by size. Nothing (null,
+// undefined, NaN) sorts last either way: a list sorted by cost shows the items with no cost after
+// those with one, whether dearest or cheapest first.
+export function compareValues(a: string | number | boolean | null | undefined, b: string | number | boolean | null | undefined): number {
+  const missing = (v: unknown) => v === null || v === undefined || (typeof v === 'number' && Number.isNaN(v)) || v === '';
+  if (missing(a) || missing(b)) {
+    return missing(a) === missing(b) ? 0 : Number.NaN;
+  }
+  if (typeof a === 'number' && typeof b === 'number') {
+    return a - b;
+  }
+  if (typeof a === 'boolean' && typeof b === 'boolean') {
+    return Number(a) - Number(b);
+  }
+  return `${a}`.localeCompare(`${b}`, undefined, { numeric: true, sensitivity: 'base' });
+}
+
+// A list sorted as asked: by what value() reads for the key, then by tiebreak() ascending, which is
+// usually the name. Items with no value for the key come last, whichever way. The list is copied.
+export function sortItems<T, K extends string>(
+  items: readonly T[],
+  sort: SortState<K>,
+  value: (item: T, key: K) => string | number | boolean | null | undefined,
+  tiebreak: (item: T) => string = () => '',
+): T[] {
+  return [...items].sort((a, b) => {
+    const compared = compareValues(value(a, sort.key), value(b, sort.key));
+    if (Number.isNaN(compared)) {
+      // One of the two has no value: it goes last.
+      const aMissing = compareValues(value(a, sort.key), 0);
+      return Number.isNaN(aMissing) ? 1 : -1;
+    }
+    return sort.direction * compared || compareValues(tiebreak(a), tiebreak(b)) || 0;
+  });
+}
+```
+
+
+> 📄 **`frontend/src/app/features/shared/search-field.ts`** — 104 سطر
+
+```ts
+import { Component, input, model } from '@angular/core';
+import { FormsModule } from '@angular/forms';
+import { MatIconModule } from '@angular/material/icon';
+
+// A list's instant search, as a pill at the start of its toolbar: what is typed filters the list as
+// it is typed (by name, Arabic name or code, as the page says), Escape or the cross clears it.
+@Component({
+  selector: 'app-search-field',
+  imports: [FormsModule, MatIconModule],
+  template: `
+    <label class="search-field" [class.set]="!!value()">
+      <mat-icon class="lead">search</mat-icon>
+      <input type="search" [ngModel]="value()" (ngModelChange)="value.set($event ?? '')" (keydown.escape)="value.set('')"
+        [placeholder]="placeholder()" [attr.aria-label]="label()" autocomplete="off" spellcheck="false" />
+      @if (value()) {
+        <button type="button" class="clear" (click)="value.set('')" aria-label="Clear the search"><mat-icon>close</mat-icon></button>
+      }
+    </label>
+  `,
+  styles: `
+    :host {
+      display: inline-block;
+      flex: 1 1 260px;
+      max-width: 420px;
+      min-width: 200px;
+    }
+    .search-field {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      height: 40px;
+      padding-inline: 12px 6px;
+      box-sizing: border-box;
+      border-radius: 999px;
+      border: 1px solid var(--app-line-strong);
+      background: var(--mat-sys-surface-container-lowest);
+      box-shadow: 0 1px 2px rgb(15 23 42 / 5%);
+      cursor: text;
+      transition:
+        border-color 140ms ease,
+        box-shadow 140ms ease;
+
+      &:hover {
+        border-color: var(--mat-sys-outline);
+      }
+      &:focus-within {
+        border-color: var(--app-indigo-500, #6366f1);
+        box-shadow: 0 0 0 3px rgb(99 102 241 / 18%);
+      }
+    }
+    input {
+      flex: 1;
+      min-width: 0;
+      height: 100%;
+      border: 0;
+      outline: 0;
+      background: none;
+      color: var(--mat-sys-on-surface);
+      font: var(--mat-sys-body-large);
+      font-size: 15px;
+
+      &::-webkit-search-cancel-button {
+        display: none;
+      }
+      &::placeholder {
+        color: var(--app-slate-400, #94a3b8);
+      }
+    }
+    mat-icon {
+      width: 20px;
+      height: 20px;
+      font-size: 20px;
+      color: var(--mat-sys-on-surface-variant);
+    }
+    .clear {
+      display: inline-flex;
+      padding: 4px;
+      border: 0;
+      border-radius: 50%;
+      background: none;
+      cursor: pointer;
+
+      &:hover {
+        background: var(--app-slate-100, #f1f5f9);
+      }
+      mat-icon {
+        width: 18px;
+        height: 18px;
+        font-size: 18px;
+      }
+    }
+    @media (max-width: 599.98px) {
+      :host {
+        max-width: none;
+        flex-basis: 100%;
+      }
+    }
+  `,
+})
+export class SearchField {
+  readonly value = model('');
+  readonly placeholder = input('Name, Arabic name or code · الاسم أو الكود');
+  readonly label = input('Search');
+}
+```
+
+
+> 📄 **`frontend/src/app/features/shared/sort-control.ts`** — 125 سطر
+
+```ts
+import { Component, computed, input, model } from '@angular/core';
+import { MatIconModule } from '@angular/material/icon';
+import { MatMenuModule } from '@angular/material/menu';
+import { MatTooltipModule } from '@angular/material/tooltip';
+import { SortOption, SortState } from './smart-search';
+
+// How a list is sorted, as a pill beside its filters: what it is sorted by, from a menu of what this
+// list can be sorted by, and an arrow that turns it the other way. [(sort)] the state; choosing an
+// option starts it the way that option reads best (the dearest first, A to Z).
+@Component({
+  selector: 'app-sort-control',
+  imports: [MatIconModule, MatMenuModule, MatTooltipModule],
+  template: `
+    <span class="sort-control">
+      <button type="button" class="by" [matMenuTriggerFor]="menu" [attr.aria-label]="'Sort by: ' + current().en">
+        <mat-icon class="lead">sort</mat-icon>
+        <span class="what">Sort</span>
+        <span class="value">{{ current().en }}</span>
+        <span class="value-ar" lang="ar">{{ current().ar }}</span>
+        <mat-icon class="chevron">expand_more</mat-icon>
+      </button>
+      <button type="button" class="direction" (click)="flip()" [matTooltip]="sort().direction === 1 ? 'Ascending · تصاعدي' : 'Descending · تنازلي'"
+        [attr.aria-label]="sort().direction === 1 ? 'Ascending: turn to descending' : 'Descending: turn to ascending'">
+        <mat-icon>{{ sort().direction === 1 ? 'arrow_upward' : 'arrow_downward' }}</mat-icon>
+      </button>
+    </span>
+    <mat-menu #menu="matMenu" class="sort-control-menu">
+      @for (option of options(); track option.key) {
+        <button mat-menu-item role="menuitemradio" [attr.aria-checked]="option.key === sort().key" (click)="choose(option)">
+          <mat-icon>{{ option.key === sort().key ? 'check' : '' }}</mat-icon>
+          <span>{{ option.en }}</span>
+          <span class="option-ar" lang="ar">{{ option.ar }}</span>
+        </button>
+      }
+    </mat-menu>
+  `,
+  styles: `
+    :host {
+      display: inline-block;
+    }
+    .sort-control {
+      display: inline-flex;
+      align-items: stretch;
+      height: 40px;
+      border-radius: 999px;
+      border: 1px solid var(--app-line-strong);
+      background: var(--mat-sys-surface-container-lowest);
+      box-shadow: 0 1px 2px rgb(15 23 42 / 5%);
+      overflow: hidden;
+    }
+    button {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      border: 0;
+      background: none;
+      color: var(--mat-sys-on-surface);
+      font: var(--mat-sys-label-large);
+      cursor: pointer;
+
+      &:hover {
+        background: var(--app-slate-100, #f1f5f9);
+      }
+      &:focus-visible {
+        outline: 2px solid var(--mat-sys-primary);
+        outline-offset: -2px;
+      }
+    }
+    .by {
+      padding-inline: 12px 6px;
+    }
+    .direction {
+      padding-inline: 8px 10px;
+      border-inline-start: 1px solid var(--app-line-strong);
+
+      mat-icon {
+        color: var(--app-indigo-600, #4f46e5);
+      }
+    }
+    mat-icon {
+      width: 20px;
+      height: 20px;
+      font-size: 20px;
+      color: var(--mat-sys-on-surface-variant);
+    }
+    .what {
+      color: var(--mat-sys-on-surface-variant);
+      font-weight: 500;
+    }
+    .value {
+      font-weight: 650;
+    }
+    .value-ar,
+    .option-ar {
+      unicode-bidi: isolate;
+      opacity: 0.7;
+      font: var(--mat-sys-body-small);
+    }
+    .option-ar {
+      margin-inline-start: 12px;
+    }
+    @media (max-width: 599.98px) {
+      .value-ar {
+        display: none;
+      }
+    }
+  `,
+})
+export class SortControl {
+  readonly options = input.required<readonly SortOption[]>();
+  readonly sort = model.required<SortState>();
+
+  protected readonly current = computed(() => this.options().find((o) => o.key === this.sort().key) ?? this.options()[0]);
+
+  // A new option starts its own way; the one chosen again keeps the way it is.
+  protected choose(option: SortOption): void {
+    if (option.key !== this.sort().key) {
+      this.sort.set({ key: option.key, direction: option.descending ? -1 : 1 });
+    }
+  }
+
+  protected flip(): void {
+    this.sort.update((s) => ({ ...s, direction: s.direction === 1 ? -1 : 1 }));
+  }
+}
+```
+
+
+> 📄 **`frontend/src/app/features/shared/filter-select.ts`** — 115 سطر
+
+```ts
+import { Component, computed, input, model } from '@angular/core';
+import { MatIconModule } from '@angular/material/icon';
+import { MatMenuModule } from '@angular/material/menu';
+
+// One of a filter's choices: its value ('' for all), its name, and how many it shows.
+export interface FilterOption {
+  value: string;
+  label: string;
+  count?: number;
+}
+
+// A filter as a pill: what it filters, the choice made and how many it shows, a tick by it in
+// the menu it opens. [(value)] the choice's value; '' is the first option's, all of them.
+@Component({
+  selector: 'app-filter-select',
+  imports: [MatIconModule, MatMenuModule],
+  template: `
+    <button type="button" class="filter-select" [class.set]="value() !== ''" [matMenuTriggerFor]="menu" [attr.aria-label]="label() + ': ' + current().label">
+      <mat-icon class="lead">{{ icon() }}</mat-icon>
+      <span class="what">{{ label() }}</span>
+      <span class="value" dir="auto">{{ current().label }}</span>
+      @if (current().count !== undefined) {
+        <span class="n">{{ current().count }}</span>
+      }
+      <mat-icon class="chevron">expand_more</mat-icon>
+    </button>
+    <mat-menu #menu="matMenu" class="filter-select-menu">
+      @for (option of options(); track option.value) {
+        <button mat-menu-item role="menuitemradio" [attr.aria-checked]="option.value === value()" (click)="value.set(option.value)">
+          <mat-icon>{{ option.value === value() ? 'check' : '' }}</mat-icon>
+          <span class="option" dir="auto">{{ option.label }}</span>
+          @if (option.count !== undefined) {
+            <span class="option-n">{{ option.count }}</span>
+          }
+        </button>
+      }
+    </mat-menu>
+  `,
+  styles: `
+    :host {
+      display: inline-block;
+    }
+    .filter-select {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      height: 40px;
+      padding-inline: 12px 8px;
+      border-radius: 999px;
+      border: 1px solid var(--app-line-strong);
+      background: var(--mat-sys-surface-container-lowest);
+      color: var(--mat-sys-on-surface);
+      font: var(--mat-sys-label-large);
+      cursor: pointer;
+      box-shadow: 0 1px 2px rgb(15 23 42 / 5%);
+      transition:
+        border-color 140ms ease,
+        box-shadow 140ms ease;
+
+      &:hover {
+        border-color: var(--mat-sys-outline);
+      }
+      &:focus-visible {
+        outline: 2px solid var(--mat-sys-primary);
+        outline-offset: 2px;
+      }
+      &.set {
+        border-color: color-mix(in srgb, var(--mat-sys-primary) 55%, transparent);
+        background: color-mix(in srgb, var(--mat-sys-primary) 6%, var(--mat-sys-surface-container-lowest));
+      }
+      mat-icon {
+        width: 20px;
+        height: 20px;
+        font-size: 20px;
+        color: var(--mat-sys-on-surface-variant);
+      }
+      .what {
+        color: var(--mat-sys-on-surface-variant);
+        font-weight: 500;
+      }
+      .value {
+        font-weight: 650;
+      }
+      .n {
+        min-width: 22px;
+        padding: 0 7px;
+        border-radius: 999px;
+        background: var(--mat-sys-surface-container);
+        font: var(--mat-sys-label-small);
+        font-weight: 700;
+        line-height: 20px;
+        text-align: center;
+      }
+    }
+    // Each in its own direction: an Arabic name never runs into the number beside it.
+    .option,
+    .value {
+      unicode-bidi: isolate;
+    }
+    .option-n {
+      display: inline-block;
+      margin-inline-start: 16px;
+      color: var(--mat-sys-on-surface-variant);
+      font: var(--mat-sys-label-medium);
+    }
+  `,
+})
+export class FilterSelect {
+  readonly label = input.required<string>();
+  readonly icon = input('filter_list');
+  readonly options = input.required<FilterOption[]>();
+  readonly value = model('');
+
+  protected readonly current = computed(() => this.options().find((o) => o.value === this.value()) ?? this.options()[0] ?? { value: '', label: '' });
+}
+```
+
+
+### 5.2 التنقل بـ Enter داخل الجداول (`GridKeys`)
+
+إدخال فاتورة بلوحة المفاتيح وحدها: `Enter` في حقل ⇐ الحقل التالي في نفس الصف (الصنف ⇐ الكمية ⇐ السعر)؛ `Enter` في آخر حقل من آخر صف ⇐ يضيف صفًا (`appGridKeysAppend`) ويذهب لأول حقوله. والـ autocomplete الذي يأخذ `Enter` لاختيار خياره: ينتقل بعد أن يستقر الاختيار. وحقول التذييل (خصم الفاتورة) تحتفظ بـ `Enter` لنفسها.
+
+> 📄 **`frontend/src/app/features/shared/grid-keys.ts`** — 88 سطر
+
+```ts
+import { Directive, ElementRef, Injector, afterNextRender, inject, output } from '@angular/core';
+
+// The fields Enter moves between: what is typed into, not a checkbox nor a hidden one.
+function fieldsOf(row: Element): HTMLInputElement[] {
+  return [...row.querySelectorAll<HTMLInputElement>('input, textarea')].filter(
+    (f) => !f.disabled && !f.readOnly && !['checkbox', 'radio', 'file', 'hidden', 'button', 'submit'].includes(f.type) && !f.closest('[hidden]'),
+  );
+}
+
+function focus(field: HTMLInputElement | undefined): void {
+  if (!field) {
+    return;
+  }
+  field.focus();
+  // Typed over, not added to.
+  if (field.type !== 'number') {
+    field.select?.();
+  } else {
+    try {
+      field.select();
+    } catch {
+      // A number field cannot always be selected; focused is enough.
+    }
+  }
+}
+
+// Entry by keyboard alone in a grid of lines (an invoice's, a recipe's, a day's sales): Enter in a
+// field moves to the next field of its row (the item, then its quantity, then its price); Enter in
+// the last field of a row goes to the next row, or, on the last row, asks for a new one
+// (appGridKeysAppend) and goes to its first field. An item chosen from an autocomplete with Enter
+// moves on once it is chosen.
+@Directive({
+  selector: '[appGridKeys]',
+  host: { '(keydown.enter)': 'enter($event)' },
+})
+export class GridKeys {
+  // The page adds a line: the grid then goes to its first field.
+  readonly append = output<void>({ alias: 'appGridKeysAppend' });
+
+  private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
+  private readonly injector = inject(Injector);
+
+  protected enter(event: Event): void {
+    const field = event.target;
+    if (!(field instanceof HTMLInputElement) || (event as KeyboardEvent).shiftKey || (event as KeyboardEvent).isComposing) {
+      return;
+    }
+    // The lines only: a field in the footer (an invoice's discount) keeps its Enter.
+    const row = field.closest('tbody tr');
+    if (!row || !this.host.nativeElement.contains(row)) {
+      return;
+    }
+    // An autocomplete took this Enter to choose its option: move on once the choice is in.
+    const chose = event.defaultPrevented;
+    event.preventDefault();
+    if (chose) {
+      setTimeout(() => this.next(row, field));
+    } else {
+      this.next(row, field);
+    }
+  }
+
+  private next(row: Element, from: HTMLInputElement): void {
+    const fields = fieldsOf(row);
+    const at = fields.indexOf(from);
+    if (at >= 0 && at < fields.length - 1) {
+      focus(fields[at + 1]);
+      return;
+    }
+    const rows = [...this.host.nativeElement.querySelectorAll('tbody tr')].filter((r) => fieldsOf(r).length > 0);
+    const after = rows[rows.indexOf(row as HTMLTableRowElement) + 1];
+    if (after) {
+      focus(fieldsOf(after)[0]);
+      return;
+    }
+    const before = rows.length;
+    this.append.emit();
+    afterNextRender(
+      () => {
+        const now = [...this.host.nativeElement.querySelectorAll('tbody tr')].filter((r) => fieldsOf(r).length > 0);
+        if (now.length > before) {
+          focus(fieldsOf(now[now.length - 1])[0]);
+        }
+      },
+      { injector: this.injector },
+    );
+  }
+}
+```
+
+
+### 5.3 اختيار الأصناف والتخطيط
+
+`ItemPicker`: autocomplete يعرض أول مطابقات ويطلب كتابة المزيد بعدها، و `PickRow` صف اختيار بشارة نوعه. `SideLayout`: الأقسام كشريط جانبي (Drawer على الموبايل) بمجموعات. `SubNav`: تبويبات فرعية كحبوب. و `pages.scss` الأنماط المشتركة (`.ar`, `.inline-ar`, `.toolbar.smart`, `.pills`…).
+
+> 📄 **`frontend/src/app/features/shared/item-picker.ts`** — 151 سطر
+
+```ts
+import { Component, computed, effect, input, model, output, signal, untracked } from '@angular/core';
+import { FormsModule } from '@angular/forms';
+import { MatAutocompleteModule } from '@angular/material/autocomplete';
+import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatIconModule } from '@angular/material/icon';
+import { MatInputModule } from '@angular/material/input';
+import { PickKind, PickRow } from './pick-row';
+import { searchable, smartMatch } from './smart-search';
+
+// How many matches the dropdown lists before asking for more to be typed.
+const shownMatches = 40;
+
+// One thing a picker offers: its id, its name and code, what it is, the unit it is kept or bought
+// in, a detail (its category), what it costs now (formatted), and other words it is found by (its
+// Arabic name).
+export interface PickItem {
+  id: string;
+  name: string;
+  code?: string | number | null;
+  kind: PickKind;
+  unit?: string | null;
+  detail?: string | null;
+  cost?: string | null;
+  keywords?: readonly (string | null | undefined)[];
+}
+
+// The items matching what is typed, the closest first: its code exactly, then a name that starts
+// with it, then the rest by name.
+export function pickMatches<T extends PickItem>(items: readonly T[], text: string): T[] {
+  const typed = searchable(text);
+  const rank = (i: T) => (!typed ? 2 : searchable(i.code) === typed ? 0 : searchable(i.name).startsWith(typed) ? 1 : 2);
+  return items
+    .filter((i) => smartMatch(text, i.name, i.code, i.detail, ...(i.keywords ?? [])))
+    .sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
+}
+
+// One thing chosen by typing: its first letters or its code find it, the dropdown shows each as a
+// rich row (PickRow), and arrows and Enter choose without the mouse. [(value)] the chosen one's id.
+// canCreate: offers to add one of the name typed when none is called that (create, with the name;
+// the page sets value to it once it is added).
+@Component({
+  selector: 'app-item-picker',
+  imports: [FormsModule, MatAutocompleteModule, MatFormFieldModule, MatIconModule, MatInputModule, PickRow],
+  template: `
+    <mat-form-field subscriptSizing="dynamic" class="picker">
+      <mat-icon matPrefix class="lead">search</mat-icon>
+      <input matInput [matAutocomplete]="auto" [ngModel]="text()" (ngModelChange)="typed($event)" (focus)="selectAll($event)" (blur)="settle()"
+        [disabled]="disabled()"
+        [placeholder]="placeholder()" [attr.aria-label]="label()" autocomplete="off" />
+      <mat-autocomplete #auto="matAutocomplete" panelClass="pick-panel" [panelWidth]="460" [autoActiveFirstOption]="true" (optionSelected)="chosen($event.option.value)">
+        @for (i of matches().shown; track i.id) {
+          <mat-option [value]="i.id">
+            <app-pick-row [name]="i.name" [code]="i.code ?? null" [kind]="i.kind" [unit]="i.unit ?? null" [detail]="i.detail ?? null" [cost]="i.cost ?? null" />
+          </mat-option>
+        }
+        @if (matches().more) {
+          <mat-option disabled class="more">{{ matches().more }} more: keep typing · اكتب للمزيد</mat-option>
+        }
+        @if (newName(); as name) {
+          <mat-option [value]="createValue" class="add-new">
+            <mat-icon>add</mat-icon> {{ createLabel() }}: “{{ name }}”
+          </mat-option>
+        } @else if (!matches().shown.length) {
+          <mat-option disabled>No match · لا نتائج</mat-option>
+        }
+      </mat-autocomplete>
+    </mat-form-field>
+  `,
+  styles: `
+    :host {
+      display: block;
+    }
+    .picker {
+      width: 100%;
+    }
+    .lead {
+      color: var(--app-slate-400, #94a3b8);
+    }
+  `,
+})
+export class ItemPicker {
+  readonly items = input.required<readonly PickItem[]>();
+  readonly value = model<string | null>(null);
+  readonly label = input('Item');
+  readonly placeholder = input('Type a name or code · اكتب الاسم أو الكود');
+  readonly canCreate = input(false);
+  readonly createLabel = input('Add new');
+  readonly disabled = input(false);
+  readonly create = output<string>();
+
+  protected readonly createValue = '+new';
+  protected readonly text = signal('');
+
+  protected readonly matches = computed(() => {
+    // The one chosen shows as itself: everything is offered until something else is typed.
+    const found = pickMatches(this.items(), this.text() === this.labelOf(this.value()) ? '' : this.text());
+    return { shown: found.slice(0, shownMatches), more: Math.max(0, found.length - shownMatches) };
+  });
+
+  // The name typed, when nothing is called that: it can be added.
+  protected readonly newName = computed(() => {
+    const name = this.text().trim();
+    if (!this.canCreate() || !name || name === this.labelOf(this.value())) {
+      return null;
+    }
+    const key = searchable(name);
+    return this.items().some((i) => searchable(i.name) === key) ? null : name;
+  });
+
+  constructor() {
+    // The one chosen, named in the field: when it is chosen here, or set from outside.
+    effect(() => {
+      const label = this.labelOf(this.value());
+      untracked(() => this.text.set(label));
+    });
+  }
+
+  // Focused, the name chosen is selected: typing looks for another from scratch.
+  protected selectAll(event: FocusEvent): void {
+    (event.target as HTMLInputElement).select();
+  }
+
+  protected typed(text: string | null): void {
+    this.text.set(text ?? '');
+  }
+
+  protected chosen(id: string): void {
+    if (id === this.createValue) {
+      const name = this.text().trim();
+      this.text.set(this.labelOf(this.value()));
+      this.create.emit(name);
+      return;
+    }
+    this.value.set(id);
+    this.text.set(this.labelOf(id));
+  }
+
+  // Left without choosing: back to the one chosen, so what shows is always what counts.
+  protected settle(): void {
+    setTimeout(() => {
+      if (this.text() !== this.labelOf(this.value())) {
+        this.text.set(this.labelOf(this.value()));
+      }
+    }, 200);
+  }
+
+  private labelOf(id: string | null): string {
+    const item = id ? this.items().find((i) => i.id === id) : undefined;
+    return item ? (item.code !== null && item.code !== undefined && item.code !== '' ? `${item.code} · ${item.name}` : item.name) : '';
+  }
+}
+```
+
+
+> 📄 **`frontend/src/app/features/shared/pick-row.ts`** — 131 سطر
+
+```ts
+import { Component, computed, input } from '@angular/core';
+
+// What a picked thing is, as its badge says it.
+export type PickKind = 'material' | 'prep' | 'expense' | 'supplier' | 'menu';
+
+const kinds: Record<PickKind, { en: string; ar: string; tone: string }> = {
+  material: { en: 'Raw material', ar: 'خامة', tone: 'info' },
+  prep: { en: 'Prep item', ar: 'مُصنّع', tone: 'teal' },
+  expense: { en: 'Expense', ar: 'مصروف', tone: 'warn' },
+  supplier: { en: 'Supplier', ar: 'مورد', tone: 'accent' },
+  menu: { en: 'Menu item', ar: 'صنف منيو', tone: 'ok' },
+};
+
+// One choice in a picker's dropdown, rich enough to choose by sight: its name and code, a badge of
+// what it is, the unit it is kept or bought in, a detail (its category), and what it costs now at
+// the end. The cost comes formatted ("L.E 30.00 / kg").
+@Component({
+  selector: 'app-pick-row',
+  template: `
+    <span class="pick-row">
+      <span class="top">
+        <span class="name" dir="auto">{{ name() }}</span>
+        @if (code()) {
+          <span class="code">{{ code() }}</span>
+        }
+      </span>
+      @if (cost() || priced()) {
+        <span class="cost" [class.none]="!cost()">{{ cost() || 'No price' }}</span>
+      }
+      <span class="meta">
+        <span class="tag" [class]="badge().tone">{{ badge().en }}<span class="ar" lang="ar">{{ badge().ar }}</span></span>
+        @if (unit()) {
+          <span class="unit">{{ unit() }}</span>
+        }
+        @if (detail()) {
+          <span class="detail" dir="auto">{{ detail() }}</span>
+        }
+      </span>
+    </span>
+  `,
+  styles: `
+    :host {
+      display: block;
+      width: 100%;
+    }
+    .pick-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      grid-template-areas:
+        'top cost'
+        'meta meta';
+      gap: 2px 12px;
+      padding: 6px 0;
+      line-height: 1.3;
+    }
+    .top {
+      grid-area: top;
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      min-width: 0;
+    }
+    .name {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-weight: 600;
+      color: var(--mat-sys-on-surface);
+    }
+    .code {
+      flex: none;
+      color: var(--app-slate-500, #64748b);
+      font: var(--mat-sys-label-small);
+      font-variant-numeric: tabular-nums;
+    }
+    .cost {
+      grid-area: cost;
+      align-self: center;
+      color: var(--app-slate-700, #334155);
+      font: var(--mat-sys-label-large);
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+
+      &.none {
+        color: var(--app-slate-400, #94a3b8);
+      }
+    }
+    .meta {
+      grid-area: meta;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 4px 8px;
+      color: var(--app-slate-500, #64748b);
+      font: var(--mat-sys-body-small);
+    }
+    .tag {
+      padding: 0 8px;
+      font-size: 11px;
+      line-height: 18px;
+
+      &::before {
+        display: none;
+      }
+    }
+    .unit {
+      padding: 0 6px;
+      border-radius: 6px;
+      background: var(--app-slate-100, #f1f5f9);
+      color: var(--app-slate-600, #475569);
+      font-weight: 600;
+    }
+    .detail {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+  `,
+})
+export class PickRow {
+  readonly name = input.required<string>();
+  readonly code = input<string | number | null>(null);
+  readonly kind = input<PickKind>('material');
+  readonly unit = input<string | null>(null);
+  readonly detail = input<string | null>(null);
+  readonly cost = input<string | null>(null);
+
+  protected readonly badge = computed(() => kinds[this.kind()]);
+  // Stock has a price to show, or the want of one: a supplier or an expense has none to miss.
+  protected readonly priced = computed(() => this.kind() === 'material' || this.kind() === 'prep');
+}
+```
+
+
+> 📄 **`frontend/src/app/features/shared/side-layout.ts`** — 493 سطر
+
+```ts
+import { A11yModule } from '@angular/cdk/a11y';
+import { BreakpointObserver } from '@angular/cdk/layout';
+import { Component, ElementRef, Injector, afterNextRender, computed, effect, inject, input, signal, untracked, viewChild } from '@angular/core';
+import { toSignal } from '@angular/core/rxjs-interop';
+import { MatButtonModule } from '@angular/material/button';
+import { MatIconModule } from '@angular/material/icon';
+import { ActivatedRoute, NavigationEnd, Router, RouterLink, RouterLinkActive } from '@angular/router';
+import { filter, map } from 'rxjs';
+
+// Narrower than this, the sections are a drawer behind a menu button, above the page (as the
+// styles' own media query says).
+const Compact = '(max-width: 959.98px)';
+
+// A group of a module's sections, shown above its first: its key, and its names.
+export interface SideGroup {
+  key: string;
+  en: string;
+  ar: string;
+}
+
+// A section of a module: its address (relative to the module's), its names, its icon, the group it
+// is listed under, and what waits there (count, said by countLabel to a screen reader).
+export interface SideSection {
+  path: string;
+  en: string;
+  ar: string;
+  icon: string;
+  group?: SideGroup;
+  count?: number;
+  countLabel?: string;
+}
+
+// A module's sections in a sidebar at the start of the page, the page (projected) beside it: on the
+// left, or on the right for right-to-left (its sides are logical, start and end). It stays in view
+// under the shell's bar as the page scrolls. On a phone they are a drawer, opened from a bar above
+// the page that names the section open, with a dot when something waits in one; picking one,
+// Escape or the backdrop closes it, and Tab stays in it while open. Costing & Financials'.
+@Component({
+  selector: 'app-side-layout',
+  imports: [A11yModule, MatButtonModule, MatIconModule, RouterLink, RouterLinkActive],
+  template: `
+    <div class="side-layout">
+      <div class="mobile-bar no-print">
+        <button
+          #menuButton
+          mat-icon-button
+          class="menu"
+          (click)="openMenu()"
+          aria-controls="side-sections"
+          [attr.aria-expanded]="menuOpen()"
+          [attr.aria-label]="titleEn() + ' sections'"
+        >
+          <mat-icon>menu</mat-icon>
+          @if (waiting()) {
+            <span class="dot" aria-hidden="true"></span>
+          }
+        </button>
+        @if (current(); as section) {
+          <mat-icon class="current-icon">{{ section.icon }}</mat-icon>
+          <span class="current">{{ section.en }}<span class="inline-ar">{{ section.ar }}</span></span>
+        } @else {
+          <span class="current">{{ titleEn() }}<span class="inline-ar">{{ titleAr() }}</span></span>
+        }
+      </div>
+
+      @if (menuOpen()) {
+        <div class="backdrop no-print" (click)="closeMenu(true)" aria-hidden="true"></div>
+      }
+
+      <aside
+        #side
+        id="side-sections"
+        class="side no-print"
+        [class.open]="menuOpen()"
+        [cdkTrapFocus]="menuOpen()"
+        [attr.role]="menuOpen() ? 'dialog' : null"
+        [attr.aria-modal]="menuOpen() || null"
+        aria-labelledby="side-sections-title"
+        (keydown.escape)="closeMenu(true)"
+      >
+        <header class="side-head">
+          <h1 id="side-sections-title">{{ titleEn() }} <span class="sub">{{ titleAr() }}</span></h1>
+          <button mat-icon-button class="close" (click)="closeMenu(true)" aria-label="Close the sections"><mat-icon>close</mat-icon></button>
+        </header>
+        <nav [attr.aria-label]="titleEn() + ' sections'">
+          @for (section of sections(); track section.path; let i = $index) {
+            @if (section.group && section.group.key !== sections()[i - 1]?.group?.key) {
+              <p class="group" [class.first]="i === 0">
+                <span>{{ section.group.en }}</span><span class="group-ar" lang="ar">{{ section.group.ar }}</span>
+              </p>
+            }
+            <a class="side-link" [routerLink]="section.path" routerLinkActive="active" ariaCurrentWhenActive="page">
+              <mat-icon>{{ section.icon }}</mat-icon>
+              <span class="label"><span class="en">{{ section.en }}</span><span class="sub" lang="ar">{{ section.ar }}</span></span>
+              @if (section.count) {
+                <span class="count" [attr.aria-label]="section.countLabel ?? null">{{ section.count }}</span>
+              }
+            </a>
+          }
+        </nav>
+      </aside>
+
+      <div class="body"><ng-content /></div>
+    </div>
+  `,
+  styles: `
+    // The shell's sticky bar above this (--app-sticky-top): the sidebar and the
+    // phone's bar stay in view under it.
+    .side-layout {
+      display: grid;
+      grid-template-columns: 272px minmax(0, 1fr);
+      gap: 20px;
+      align-items: start;
+    }
+    .body {
+      min-width: 0;
+    }
+    .mobile-bar,
+    .close {
+      display: none;
+    }
+
+    .side {
+      position: sticky;
+      top: calc(var(--app-sticky-top, 0px) + 16px);
+      max-height: calc(100dvh - var(--app-sticky-top, 0px) - 32px);
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      padding: 10px;
+      box-sizing: border-box;
+      border-radius: 18px;
+      background: var(--mat-sys-surface-container-lowest);
+      border: 1px solid color-mix(in srgb, var(--mat-sys-outline-variant) 70%, transparent);
+      box-shadow:
+        0 1px 2px rgb(15 23 42 / 4%),
+        0 10px 28px -14px rgb(15 23 42 / 18%);
+    }
+    .side-head {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      padding: 4px 8px 10px;
+      margin-bottom: 2px;
+      border-bottom: 1px solid color-mix(in srgb, var(--mat-sys-outline-variant) 70%, transparent);
+
+      h1 {
+        display: grid;
+        gap: 2px;
+        margin: 0;
+        font: var(--mat-sys-title-medium);
+        font-weight: 650;
+        letter-spacing: -0.01em;
+      }
+    }
+    nav {
+      display: grid;
+      gap: 1px;
+    }
+
+    // A group's name above its first section, a hairline over it from the second group on.
+    .group {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 8px;
+      margin: 8px 0 2px;
+      padding: 8px 10px 2px;
+      border-top: 1px solid var(--app-slate-200, #e2e8f0);
+      color: var(--app-slate-400, #94a3b8);
+      font: var(--mat-sys-label-small);
+      font-size: 10.5px;
+      font-weight: 650;
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+      white-space: nowrap;
+
+      > span {
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      &.first {
+        margin-top: 0;
+        border-top: 0;
+        padding-top: 4px;
+      }
+      .group-ar {
+        unicode-bidi: isolate;
+        letter-spacing: 0;
+        font-weight: 500;
+        text-transform: none;
+      }
+    }
+
+    // A section on one line: its icon, its name, its Arabic quietly at the end, and what waits
+    // there. The one open is tinted indigo, with a bar on its start side; the rest are slate.
+    .side-link {
+      position: relative;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-height: 36px;
+      padding: 4px 10px;
+      border-radius: 10px;
+      color: var(--app-slate-600, #475569);
+      text-decoration: none;
+      transition:
+        background-color 150ms ease,
+        color 150ms ease;
+
+      mat-icon {
+        flex: none;
+        width: 20px;
+        height: 20px;
+        font-size: 20px;
+        color: var(--app-slate-500, #64748b);
+        transition:
+          transform 150ms ease,
+          color 150ms ease;
+      }
+      &:hover {
+        background: var(--app-slate-100, #f1f5f9);
+        color: var(--app-slate-900, #0f172a);
+
+        mat-icon {
+          transform: scale(1.06);
+          color: var(--app-slate-700, #334155);
+        }
+      }
+      &:focus-visible {
+        outline: 2px solid var(--app-indigo-500, #6366f1);
+        outline-offset: 1px;
+      }
+      &.active {
+        background: var(--app-indigo-50, #eef2ff);
+        color: var(--app-indigo-700, #4338ca);
+
+        mat-icon {
+          color: var(--app-indigo-600, #4f46e5);
+        }
+        .en {
+          font-weight: 650;
+        }
+        &::before {
+          content: '';
+          position: absolute;
+          inset-inline-start: 0;
+          inset-block: 8px;
+          width: 3px;
+          border-start-end-radius: 3px;
+          border-end-end-radius: 3px;
+          background: var(--app-indigo-600, #4f46e5);
+        }
+      }
+    }
+    .label {
+      display: flex;
+      flex: 1;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 8px;
+      min-width: 0;
+      line-height: 1.25;
+
+      // The English whole; the Arabic gives way to it, cut short when the two do not fit.
+      .en {
+        flex: none;
+        white-space: nowrap;
+        font: var(--mat-sys-label-large);
+        font-size: 14px;
+      }
+    }
+    // The Arabic at the end of the line, isolated so it never reorders the words around it.
+    .sub {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      unicode-bidi: isolate;
+      font: var(--mat-sys-body-small);
+      font-size: 12px;
+      opacity: 0.7;
+    }
+    .side-head .sub {
+      white-space: normal;
+    }
+    .count {
+      margin-inline-start: auto;
+      min-width: 22px;
+      padding: 0 7px;
+      box-sizing: border-box;
+      border-radius: 999px;
+      font: var(--mat-sys-label-small);
+      font-weight: 700;
+      line-height: 22px;
+      text-align: center;
+      background: var(--app-warn);
+      color: #000;
+    }
+
+    @media (max-width: 959.98px) {
+      .side-layout {
+        display: block;
+      }
+
+      // The tab open, under the shell's bar; the menu button opens the rest.
+      .mobile-bar {
+        position: sticky;
+        top: var(--app-sticky-top, 0px);
+        z-index: 5;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 0 0 12px;
+        padding-block: 4px;
+        padding-inline: 4px 14px;
+        border-radius: 16px;
+        background: color-mix(in srgb, var(--mat-sys-surface-container-lowest) 90%, transparent);
+        backdrop-filter: blur(10px);
+        border: 1px solid color-mix(in srgb, var(--mat-sys-outline-variant) 70%, transparent);
+        box-shadow: 0 6px 18px -12px rgb(15 23 42 / 25%);
+      }
+      .menu {
+        position: relative;
+      }
+      .dot {
+        position: absolute;
+        top: 9px;
+        inset-inline-end: 9px;
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        background: var(--app-warn);
+        box-shadow: 0 0 0 2px var(--mat-sys-surface-container-lowest);
+      }
+      .current-icon {
+        color: var(--mat-sys-primary);
+      }
+      .current {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font: var(--mat-sys-title-small);
+      }
+
+      .backdrop {
+        position: fixed;
+        inset: 0;
+        z-index: 40;
+        background: rgb(15 23 42 / 42%);
+        animation: hr-fade 200ms ease;
+      }
+
+      // A drawer from the start side, over everything; hidden, it is not reached by Tab either.
+      .side {
+        position: fixed;
+        top: 0;
+        bottom: 0;
+        inset-inline-start: calc(-1 * min(304px, 86vw) - 24px);
+        z-index: 41;
+        width: min(304px, 86vw);
+        max-height: none;
+        border-radius: 0;
+        border-start-end-radius: 24px;
+        border-end-end-radius: 24px;
+        box-shadow: 0 24px 48px -12px rgb(15 23 42 / 35%);
+        visibility: hidden;
+        transition:
+          inset-inline-start 240ms cubic-bezier(0.2, 0.8, 0.2, 1),
+          visibility 0s linear 240ms;
+
+        &.open {
+          inset-inline-start: 0;
+          visibility: visible;
+          transition: inset-inline-start 240ms cubic-bezier(0.2, 0.8, 0.2, 1);
+        }
+      }
+      .close {
+        display: inline-flex;
+        margin-block: -6px;
+        margin-inline: auto -6px;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .side,
+      .side.open,
+      .side-link,
+      .side-link mat-icon,
+      .backdrop {
+        transition: none;
+        animation: none;
+      }
+    }
+
+    @keyframes hr-fade {
+      from {
+        opacity: 0;
+      }
+    }
+
+    @media print {
+      .side-layout {
+        display: block;
+      }
+    }
+
+    // Beside English, isolated so it never reorders the words around it.
+    .inline-ar {
+      direction: rtl;
+      unicode-bidi: isolate;
+      opacity: 0.75;
+      margin-left: 6px;
+    }
+    @media print {
+      .no-print {
+        display: none !important;
+      }
+    }
+`,
+})
+export class SideLayout {
+  readonly titleEn = input.required<string>();
+  readonly titleAr = input.required<string>();
+  readonly sections = input.required<SideSection[]>();
+
+  private readonly router = inject(Router);
+  private readonly route = inject(ActivatedRoute);
+  private readonly injector = inject(Injector);
+
+  protected readonly menuOpen = signal(false);
+  protected readonly waiting = computed(() => this.sections().some((s) => (s.count ?? 0) > 0));
+  private readonly compact = toSignal(
+    inject(BreakpointObserver)
+      .observe(Compact)
+      .pipe(map((state) => state.matches)),
+    { initialValue: false },
+  );
+  private readonly url = toSignal(
+    this.router.events.pipe(
+      filter((event) => event instanceof NavigationEnd),
+      map(() => this.router.url),
+    ),
+    { initialValue: this.router.url },
+  );
+  // The section open, named on the phone's bar.
+  protected readonly current = computed(() => {
+    this.url();
+    return this.sections().find((section) =>
+      this.router.isActive(this.router.createUrlTree([section.path], { relativeTo: this.route }), {
+        paths: 'subset',
+        queryParams: 'ignored',
+        fragment: 'ignored',
+        matrixParams: 'ignored',
+      }),
+    );
+  });
+
+  private readonly side = viewChild.required<ElementRef<HTMLElement>>('side');
+  private readonly menuButton = viewChild.required<unknown, ElementRef<HTMLElement>>('menuButton', { read: ElementRef });
+
+  constructor() {
+    // A section picked, or the screen grown wide enough for the sidebar: the drawer closes.
+    effect(() => {
+      this.url();
+      this.compact();
+      untracked(() => this.menuOpen.set(false));
+    });
+  }
+
+  // Open, the section open has the focus (or the first), and Tab stays in the drawer.
+  protected openMenu(): void {
+    this.menuOpen.set(true);
+    afterNextRender(
+      () => {
+        const side = this.side().nativeElement;
+        (side.querySelector<HTMLElement>('a.active') ?? side.querySelector<HTMLElement>('a'))?.focus();
+      },
+      { injector: this.injector },
+    );
+  }
+
+  protected closeMenu(returnFocus = false): void {
+    if (!this.menuOpen()) {
+      return;
+    }
+    this.menuOpen.set(false);
+    if (returnFocus) {
+      this.menuButton().nativeElement.focus();
+    }
+  }
+}
+```
+
+
+> 📄 **`frontend/src/app/features/shared/sub-nav.ts`** — 174 سطر
+
+```ts
+import { Component, computed, input, signal } from '@angular/core';
+import { MatIconModule } from '@angular/material/icon';
+import { RouterLink, RouterLinkActive } from '@angular/router';
+
+// One page of a section: its address (relative to the section's), its icon and its names.
+// Fallback: the section's own page, open whenever none of the others is (Recipes' dishes, whose
+// cards are under it too).
+export interface SubNavTab {
+  path: string;
+  icon: string;
+  en: string;
+  ar: string;
+  fallback?: boolean;
+}
+
+// A section's pages as one segmented bar of pills in a soft grey tray: the page open stands out as
+// a white card lifted off it, the rest quiet slate. Wraps onto a second row on a wide screen when
+// it must, and scrolls sideways on a phone rather than wrapping. Whatever is projected (a button
+// for the section, such as New advance) sits at its end.
+@Component({
+  selector: 'app-sub-nav',
+  imports: [MatIconModule, RouterLink, RouterLinkActive],
+  template: `
+    <nav class="sub-nav no-print" [attr.aria-label]="label()">
+      <div class="tray">
+        @for (tab of tabs(); track tab.path) {
+          @if (tab.fallback) {
+            <a class="pill" [routerLink]="tab.path" [class.active]="!othersActive()" [attr.aria-current]="othersActive() ? null : 'page'">
+              <mat-icon>{{ tab.icon }}</mat-icon>
+              <span class="en">{{ tab.en }}</span>
+              <span class="ar" lang="ar">{{ tab.ar }}</span>
+            </a>
+          } @else {
+            <a class="pill" [routerLink]="tab.path" routerLinkActive="active" ariaCurrentWhenActive="page" (isActiveChange)="activeChanged(tab.path, $event)">
+              <mat-icon>{{ tab.icon }}</mat-icon>
+              <span class="en">{{ tab.en }}</span>
+              <span class="ar" lang="ar">{{ tab.ar }}</span>
+            </a>
+          }
+        }
+      </div>
+      <div class="end"><ng-content /></div>
+    </nav>
+  `,
+  styles: `
+    .sub-nav {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px 12px;
+      margin-bottom: 16px;
+    }
+    .end:empty {
+      display: none;
+    }
+    .end {
+      margin-inline-start: auto;
+    }
+    .tray {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      padding: 4px;
+      border-radius: 14px;
+      background: var(--app-slate-100, #f1f5f9);
+      box-shadow: inset 0 0 0 1px rgb(15 23 42 / 4%);
+    }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 34px;
+      padding: 0 12px;
+      border-radius: 10px;
+      color: var(--app-slate-600, #475569);
+      font: var(--mat-sys-label-large);
+      text-decoration: none;
+      white-space: nowrap;
+      transition:
+        background-color 140ms ease,
+        color 140ms ease,
+        box-shadow 140ms ease;
+
+      mat-icon {
+        width: 18px;
+        height: 18px;
+        font-size: 18px;
+        color: var(--app-slate-500, #64748b);
+        transition: color 140ms ease;
+      }
+      .ar {
+        unicode-bidi: isolate;
+        font: var(--mat-sys-body-small);
+        opacity: 0.8;
+      }
+      &:hover {
+        color: var(--app-slate-900, #0f172a);
+        background: rgb(255 255 255 / 55%);
+      }
+      &:focus-visible {
+        outline: 2px solid var(--app-indigo-500, #6366f1);
+        outline-offset: 1px;
+      }
+      &.active {
+        background: #fff;
+        color: var(--app-slate-900, #0f172a);
+        font-weight: 600;
+        box-shadow:
+          0 1px 2px rgb(15 23 42 / 8%),
+          0 1px 3px rgb(15 23 42 / 6%);
+
+        mat-icon {
+          color: var(--app-indigo-600, #4f46e5);
+        }
+      }
+    }
+
+    // On a phone, one row that scrolls: the pills keep their size.
+    @media (max-width: 599.98px) {
+      .sub-nav {
+        flex-wrap: nowrap;
+        flex-direction: column;
+        align-items: stretch;
+      }
+      .tray {
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        scrollbar-width: none;
+        scroll-snap-type: x proximity;
+
+        &::-webkit-scrollbar {
+          display: none;
+        }
+      }
+      .pill {
+        scroll-snap-align: start;
+      }
+      .end {
+        margin-inline-start: 0;
+      }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .pill,
+      .pill mat-icon {
+        transition: none;
+      }
+    }
+    @media print {
+      .no-print {
+        display: none !important;
+      }
+    }
+  `,
+})
+export class SubNav {
+  readonly label = input.required<string>();
+  readonly tabs = input.required<readonly SubNavTab[]>();
+
+  // The pages other than a fallback that are open now.
+  private readonly active = signal(new Set<string>());
+  protected readonly othersActive = computed(() => this.active().size > 0);
+
+  protected activeChanged(path: string, isActive: boolean): void {
+    this.active.update((active) => {
+      const next = new Set(active);
+      if (isActive) {
+        next.add(path);
+      } else {
+        next.delete(path);
+      }
+      return next;
+    });
+  }
+}
+```
+
+
+> 📄 **`frontend/src/app/features/shared/pages.scss`** — 359 سطر
+
+```scss
+// Shared by the system's screens. Labels carry English and Arabic, as the templates do.
+
+:host {
+  display: block;
+}
+
+// Under the English, on the same side: start and end would flip inside right-to-left text.
+.ar {
+  display: block;
+  direction: rtl;
+  text-align: left;
+  font-size: 0.85em;
+  opacity: 0.75;
+}
+
+.num .ar {
+  text-align: right;
+}
+
+// Beside English: the gap is on the left whatever the span's own direction.
+.inline-ar {
+  direction: rtl;
+  unicode-bidi: isolate;
+  opacity: 0.75;
+  margin-left: 6px;
+}
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  margin-bottom: 12px;
+
+  .spacer {
+    flex: 1;
+  }
+}
+
+// An explanation: a soft box, its Arabic first (right to left, as Arabic reads) and its English
+// under it.
+.note {
+  margin: 16px 0 12px;
+  padding: 12px 16px;
+  border-radius: 14px;
+  border: 1px solid var(--app-line);
+  background: var(--mat-sys-surface-container-low);
+  color: var(--mat-sys-on-surface-variant);
+  font: var(--mat-sys-body-medium);
+  line-height: 1.6;
+
+  .note-ar {
+    padding-bottom: 8px;
+    margin-bottom: 8px;
+    border-bottom: 1px dashed var(--app-line);
+  }
+}
+
+// A note's Arabic, a block of its own above its English: the page's own words in Arabic.
+.note-ar {
+  display: block;
+  direction: rtl;
+  text-align: right;
+  font-size: 1.04em;
+  line-height: 1.8;
+  color: var(--mat-sys-on-surface);
+}
+
+// In a toolbar's line, a hint has no box.
+.toolbar .note {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+
+  .note-ar {
+    padding: 0;
+    margin: 0 0 2px;
+    border: 0;
+  }
+}
+
+// A table with nothing in it: an icon, and what to do, in Arabic and English, in the middle.
+td.empty {
+  padding: 36px 16px;
+  text-align: center;
+  color: var(--mat-sys-on-surface-variant);
+
+  mat-icon {
+    display: block;
+    margin: 0 auto 10px;
+    width: 36px;
+    height: 36px;
+    font-size: 36px;
+    opacity: 0.55;
+  }
+  .note-ar {
+    text-align: center;
+    margin-bottom: 4px;
+  }
+}
+
+// For screen readers only: a column's name where the column is plain to see, such as its buttons.
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+}
+
+.error {
+  color: var(--mat-sys-error);
+}
+
+
+// A status of the old kind, its Arabic under it; a tag (styles.scss) is one line.
+.status:not(.tag) {
+  display: inline-flex;
+  flex-direction: column;
+  padding: 2px 8px;
+  border-radius: 8px;
+  font: var(--mat-sys-label-small);
+  white-space: nowrap;
+
+  &.WithinTarget {
+    background: color-mix(in srgb, var(--app-ok) 18%, transparent);
+  }
+
+  &.AboveTarget,
+  &.MissingPrices {
+    background: color-mix(in srgb, var(--mat-sys-error) 16%, transparent);
+    color: var(--mat-sys-error);
+  }
+
+  &.NoRecipe,
+  &.NoPrice {
+    background: var(--mat-sys-surface-container-high);
+  }
+}
+
+.muted {
+  color: var(--mat-sys-on-surface-variant);
+}
+
+// Variance: red for a shortfall (more left the stores than it should), blue for a surplus.
+// Blue rather than green: a surplus needs looking into too.
+:host {
+  --variance-deficit: var(--mat-sys-error);
+  --variance-surplus: #1565c0;
+}
+
+tr.deficit td,
+.box.deficit {
+  background: color-mix(in srgb, var(--variance-deficit) 9%, var(--mat-sys-surface));
+}
+
+tr.surplus td,
+.box.surplus {
+  background: color-mix(in srgb, var(--variance-surplus) 9%, var(--mat-sys-surface));
+}
+
+tr.deficit td.strong,
+.box.deficit strong {
+  color: var(--variance-deficit);
+}
+
+tr.surplus td.strong,
+.box.surplus strong {
+  color: var(--variance-surplus);
+}
+
+.eval {
+  display: inline-flex;
+  flex-direction: column;
+  padding: 2px 8px;
+  border-radius: 8px;
+  font: var(--mat-sys-label-small);
+  white-space: nowrap;
+  background: var(--mat-sys-surface-container-high);
+
+  &.Unfavourable {
+    background: var(--variance-deficit);
+    color: var(--mat-sys-on-error);
+  }
+
+  &.Favourable {
+    background: var(--variance-surplus);
+    color: #fff;
+  }
+}
+
+@media print {
+  tr.deficit td,
+  tr.surplus td {
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+}
+
+@media print {
+  .toolbar,
+  .no-print {
+    display: none !important;
+  }
+}
+
+// A tag's Arabic beside its English, on one line (here too: a page's .ar is a block).
+.tag .ar {
+  display: inline;
+  margin-left: 4px;
+  font-weight: 500;
+}
+
+// A small tag beside a name: a prep item, an archived supplier.
+.badge {
+  margin-left: 6px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font: var(--mat-sys-label-small);
+  background: var(--mat-sys-tertiary-container);
+  color: var(--mat-sys-on-tertiary-container);
+  white-space: nowrap;
+}
+
+// A record whose change waits for a manager: as it was until then, marked, and locked.
+tr.pending-deletion td {
+  background: color-mix(in srgb, var(--app-warn) 12%, var(--mat-sys-surface));
+}
+
+.pending-badge,
+.voided-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font: var(--mat-sys-label-medium);
+  font-weight: 600;
+  white-space: nowrap;
+
+  .ar {
+    display: inline;
+    margin-left: 0;
+    font-weight: 500;
+  }
+}
+
+// Waiting for a manager: an amber tag.
+.pending-badge {
+  background: var(--tag-warn-bg);
+  color: var(--tag-warn-fg);
+
+  &::before {
+    content: '';
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+  }
+}
+
+// Posted, then deleted with a manager's approval: kept, its stock reversed.
+.voided-badge {
+  background: var(--mat-sys-surface-container-highest);
+  color: var(--mat-sys-on-surface-variant);
+  text-decoration: none;
+}
+
+.locked {
+  color: var(--app-warn);
+  vertical-align: middle;
+}
+
+// A record a manager has been asked about: what was asked, and that it waits.
+.pending-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--app-warn) 16%, var(--mat-sys-surface));
+  color: var(--mat-sys-on-surface);
+
+  > mat-icon {
+    flex: none;
+    color: var(--app-warn);
+  }
+}
+
+// Figures at a glance, a tile each: the treasury's screens.
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.tile {
+  display: grid;
+  gap: 2px;
+  padding: 14px 16px;
+  border-radius: 16px;
+  border: 1px solid var(--app-line);
+  background: var(--mat-sys-surface-container-lowest);
+  box-shadow: var(--app-card-shadow);
+
+  .label {
+    font: var(--mat-sys-label-medium);
+    color: var(--mat-sys-on-surface-variant);
+  }
+  strong {
+    font: var(--mat-sys-headline-small);
+  }
+  &.key {
+    background: var(--mat-sys-secondary-container);
+    color: var(--mat-sys-on-secondary-container);
+    border-color: transparent;
+  }
+}
+
+// What a safe entry is: opening balance, funding, takings, a voucher, a payment.
+.kind {
+  display: inline-block;
+  margin-right: 4px;
+  padding: 0 6px;
+  border-radius: 6px;
+  font: var(--mat-sys-label-small);
+  background: var(--mat-sys-surface-container-high);
+  white-space: nowrap;
+}
+
+// Where an invoice's payment stands: paid, waiting for approval, unpaid, on credit.
+.pay,
+.pay-status {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font: var(--mat-sys-label-small);
+  white-space: nowrap;
+  background: var(--mat-sys-surface-container-high);
+
+  &.Paid {
+    background: color-mix(in srgb, var(--app-ok) 18%, transparent);
+  }
+  &.Pending {
+    background: color-mix(in srgb, var(--app-warn) 22%, transparent);
+    color: var(--app-warn);
+  }
+  &.Unpaid {
+    background: color-mix(in srgb, var(--mat-sys-error) 14%, transparent);
+    color: var(--mat-sys-error);
+  }
+  &.OnCredit {
+    background: var(--mat-sys-secondary-container);
+    color: var(--mat-sys-on-secondary-container);
+  }
+}
+```
+
+
+### 5.4 الثيم والهيكل
+
+`styles.scss`: Material 3 بألوان Slate & Indigo (لون واحد عميق لما يُختار ويُنفَّذ، ورماديات لكل ما هو ساكن)، وخط النظام بدل خط ويب (يعمل بلا إنترنت).
+
+> 📄 **`frontend/src/styles.scss`** — 359 سطر
+
+```scss
+@use '@angular/material' as mat;
+
+// Material 3 in Slate & Indigo: a deep indigo for what is chosen and acted on, slate greys for
+// everything at rest, so the eye goes to what matters and nothing glares. The system font stack
+// rather than a web font: the app must look right with no internet, and the icon font is bundled
+// with the build for the same reason.
+html {
+  color-scheme: light;
+  @include mat.theme((
+    color: (
+      primary: mat.$violet-palette,
+      tertiary: mat.$rose-palette,
+    ),
+    typography: (
+      plain-family: (system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif),
+      brand-family: (system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif),
+    ),
+    density: 0,
+  ));
+
+  // The palette itself, over the theme's: indigo for the active and the primary, slate for text,
+  // icons and lines at rest.
+  --app-indigo-50: #eef2ff;
+  --app-indigo-100: #e0e7ff;
+  --app-indigo-200: #c7d2fe;
+  --app-indigo-500: #6366f1;
+  --app-indigo-600: #4f46e5;
+  --app-indigo-700: #4338ca;
+  --app-indigo-900: #312e81;
+  --app-slate-50: #f8fafc;
+  --app-slate-100: #f1f5f9;
+  --app-slate-200: #e2e8f0;
+  --app-slate-300: #cbd5e1;
+  --app-slate-400: #94a3b8;
+  --app-slate-500: #64748b;
+  --app-slate-600: #475569;
+  --app-slate-700: #334155;
+  --app-slate-900: #0f172a;
+
+  --mat-sys-primary: var(--app-indigo-600);
+  --mat-sys-on-primary: #ffffff;
+  --mat-sys-primary-container: var(--app-indigo-100);
+  --mat-sys-on-primary-container: var(--app-indigo-900);
+  --mat-sys-inverse-primary: var(--app-indigo-200);
+  --mat-sys-surface-tint: var(--app-indigo-600);
+  --mat-sys-secondary-container: var(--app-indigo-50);
+  --mat-sys-on-secondary-container: var(--app-indigo-700);
+  --mat-sys-on-surface: var(--app-slate-900);
+  --mat-sys-on-surface-variant: var(--app-slate-600);
+  --mat-sys-outline: var(--app-slate-400);
+  --mat-sys-outline-variant: var(--app-slate-300);
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--mat-sys-surface-container-lowest);
+  color: var(--mat-sys-on-surface);
+  font: var(--mat-sys-body-large);
+}
+
+// Status colours used across the till.
+:root {
+  --app-ok: #2e7d32;
+  --app-warn: #b26a00;
+  --app-danger: var(--mat-sys-error);
+
+  // Tags (a status, a state): a soft background and its text in a deeper shade of the same colour.
+  --tag-ok-bg: #e6f4ea;
+  --tag-ok-fg: #1e6b34;
+  --tag-info-bg: #eef2ff;
+  --tag-info-fg: #4338ca;
+  --tag-warn-bg: #fff3d6;
+  --tag-warn-fg: #8a5300;
+  --tag-bad-bg: #fde7e7;
+  --tag-bad-fg: #b3261e;
+  --tag-accent-bg: #f1e9fe;
+  --tag-accent-fg: #6b2fbf;
+  --tag-teal-bg: #e0f4f3;
+  --tag-teal-fg: #0b6b66;
+  --tag-neutral-bg: #f1f5f9;
+  --tag-neutral-fg: #475569;
+
+  // Surfaces of tables and cards: their borders, hairlines and shadows.
+  --app-line: color-mix(in srgb, var(--mat-sys-outline-variant) 60%, transparent);
+  --app-line-strong: var(--mat-sys-outline-variant);
+  --app-card-shadow: 0 1px 2px rgb(15 23 42 / 4%), 0 6px 20px -10px rgb(15 23 42 / 12%);
+}
+
+// A shift's colour on the roster (ShiftTone): a soft background and its text, from the tones above.
+.tone-Sky {
+  --tone-bg: var(--tag-info-bg);
+  --tone-fg: var(--tag-info-fg);
+}
+.tone-Amber {
+  --tone-bg: var(--tag-warn-bg);
+  --tone-fg: var(--tag-warn-fg);
+}
+.tone-Violet {
+  --tone-bg: var(--tag-accent-bg);
+  --tone-fg: var(--tag-accent-fg);
+}
+.tone-Teal {
+  --tone-bg: var(--tag-teal-bg);
+  --tone-fg: var(--tag-teal-fg);
+}
+.tone-Rose {
+  --tone-bg: #fde8ef;
+  --tone-fg: #b0285b;
+}
+.tone-Slate {
+  --tone-bg: var(--tag-neutral-bg);
+  --tone-fg: var(--tag-neutral-fg);
+}
+
+// The roster's menu of what a day is put on (RosterPage), in the overlay: whose day it is, each
+// shift's colour as a dot, and its hours beside its name.
+.roster-menu {
+  .menu-head {
+    padding: 10px 16px 6px;
+    color: var(--mat-sys-on-surface-variant);
+    font: var(--mat-sys-label-medium);
+    font-weight: 600;
+  }
+  .menu-dot {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    margin-inline-end: 12px;
+    border-radius: 50%;
+    background: var(--tone-fg);
+    box-shadow: 0 0 0 3px var(--tone-bg);
+    vertical-align: middle;
+  }
+  .menu-hours {
+    margin-inline-start: 8px;
+    color: var(--mat-sys-on-surface-variant);
+    font: var(--mat-sys-label-small);
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+// A tag: a pill of one of the tones above, a dot of its colour before its words.
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font: var(--mat-sys-label-medium);
+  font-weight: 600;
+  line-height: 18px;
+  white-space: nowrap;
+  background: var(--tag-bg, var(--tag-neutral-bg));
+  color: var(--tag-fg, var(--tag-neutral-fg));
+
+  &::before {
+    content: '';
+    flex: none;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+    opacity: 0.85;
+  }
+
+  &.ok {
+    --tag-bg: var(--tag-ok-bg);
+    --tag-fg: var(--tag-ok-fg);
+  }
+  &.info {
+    --tag-bg: var(--tag-info-bg);
+    --tag-fg: var(--tag-info-fg);
+  }
+  &.warn {
+    --tag-bg: var(--tag-warn-bg);
+    --tag-fg: var(--tag-warn-fg);
+  }
+  &.bad {
+    --tag-bg: var(--tag-bad-bg);
+    --tag-fg: var(--tag-bad-fg);
+  }
+  &.accent {
+    --tag-bg: var(--tag-accent-bg);
+    --tag-fg: var(--tag-accent-fg);
+  }
+  &.teal {
+    --tag-bg: var(--tag-teal-bg);
+    --tag-fg: var(--tag-teal-fg);
+  }
+  &.faint {
+    opacity: 0.7;
+  }
+}
+
+.snack-error {
+  --mat-snack-bar-container-color: var(--mat-sys-error-container);
+  --mat-snack-bar-supporting-text-color: var(--mat-sys-on-error-container);
+  --mat-snack-bar-button-color: var(--mat-sys-on-error-container);
+}
+
+.snack-attention {
+  --mat-snack-bar-container-color: var(--mat-sys-tertiary-container);
+  --mat-snack-bar-supporting-text-color: var(--mat-sys-on-tertiary-container);
+  --mat-snack-bar-button-color: var(--mat-sys-on-tertiary-container);
+}
+
+// Money lines up.
+.amount {
+  font-variant-numeric: tabular-nums;
+  text-align: end;
+  white-space: nowrap;
+}
+
+.spacer {
+  flex: 1 1 auto;
+}
+
+// Every table (the pages' .table-wrap and table.grid): a rounded card, soft grey headings, hairlines between its rows, and a row lit
+// under the pointer.
+.table-wrap {
+  // Its own box for anything positioned inside (a hidden column label): clipped with the table,
+  // not widening the page.
+  position: relative;
+  overflow-x: auto;
+  border-radius: 16px;
+  border: 1px solid var(--app-line);
+  background: var(--mat-sys-surface-container-lowest);
+  box-shadow: var(--app-card-shadow);
+}
+
+table.grid {
+  width: 100%;
+  border-collapse: collapse;
+  font: var(--mat-sys-body-medium);
+
+  th,
+  td {
+    padding: 12px;
+    border-bottom: 1px solid var(--app-line);
+    text-align: start;
+    vertical-align: middle;
+  }
+
+  // Many columns (the payroll's): closer together.
+  &.dense th,
+  &.dense td {
+    padding-inline: 8px;
+  }
+
+  // A name that opens something: the text's colour, the brand's under the pointer.
+  td a:not(.mat-mdc-button-base) {
+    color: inherit;
+    text-decoration: none;
+
+    &:hover,
+    &:focus-visible {
+      color: var(--mat-sys-primary);
+      text-decoration: underline;
+    }
+  }
+
+  thead th {
+    padding-block: 10px;
+    font: var(--mat-sys-label-medium);
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    color: var(--mat-sys-on-surface-variant);
+    background: var(--mat-sys-surface-container-low);
+    border-bottom-color: var(--app-line-strong);
+
+    .ar {
+      font-weight: 500;
+    }
+  }
+
+  tbody tr {
+    transition: background-color 120ms ease;
+  }
+
+  tbody tr:hover > td {
+    background-color: color-mix(in srgb, var(--mat-sys-primary) 4%, transparent);
+  }
+
+  // The last row's line would double the card's own edge.
+  > tbody:last-child > tr:last-child > td {
+    border-bottom: 0;
+  }
+
+  td strong {
+    font-weight: 600;
+    color: var(--mat-sys-on-surface);
+  }
+
+  .num,
+  .code {
+    white-space: nowrap;
+  }
+
+  .num {
+    text-align: end;
+    font-variant-numeric: tabular-nums;
+  }
+
+  tr.clickable {
+    cursor: pointer;
+  }
+
+  tfoot td {
+    font-weight: 600;
+    color: var(--mat-sys-on-surface);
+    background: var(--mat-sys-surface-container-low);
+    border-top: 1px solid var(--app-line-strong);
+    border-bottom: 0;
+  }
+}
+
+// A tag's Arabic beside its English, on one line.
+.tag .ar {
+  display: inline;
+  margin-left: 4px;
+  font-weight: 500;
+}
+
+// The analytics' period toggles on a phone: three side by side, each named in both languages.
+@media (max-width: 600px) {
+  .periods .mat-button-toggle-label-content {
+    padding: 0 6px;
+  }
+}
+
+// The pickers' dropdowns (PickRow): each choice as tall as its two lines, across the whole width;
+// "Add new" in indigo, "more" quiet.
+.pick-panel {
+  .mat-mdc-option {
+    min-height: 52px;
+    padding-block: 2px;
+  }
+  .mat-mdc-option .mdc-list-item__primary-text {
+    width: 100%;
+  }
+  .mat-mdc-option.add-new {
+    color: var(--app-indigo-600);
+    font-weight: 600;
+
+    mat-icon {
+      color: var(--app-indigo-600);
+    }
+  }
+  .mat-mdc-option.more {
+    min-height: 36px;
+    color: var(--app-slate-500);
+    font: var(--mat-sys-body-small);
+  }
+}
+```
+
+
+`Shell`: الشريط العلوي بالأقسام وحالة الاتصال وشريط "الخادم غير متاح".
+
+> 📄 **`frontend/src/app/features/shell/shell.ts`** — 61 سطر
+
+```ts
+import { BreakpointObserver } from '@angular/cdk/layout';
+import { Component, OnInit, computed, inject } from '@angular/core';
+import { toSignal } from '@angular/core/rxjs-interop';
+import { MatButtonModule } from '@angular/material/button';
+import { MatIconModule } from '@angular/material/icon';
+import { MatMenuModule } from '@angular/material/menu';
+import { MatToolbarModule } from '@angular/material/toolbar';
+import { MatTooltipModule } from '@angular/material/tooltip';
+import { RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
+import { map } from 'rxjs';
+import { AuthService } from '../../core/auth/auth.service';
+import { CanDirective } from '../../core/auth/can.directive';
+import { Permissions } from '../../core/auth/permissions';
+import { ConnectivityService } from '../../core/connectivity/connectivity.service';
+import { Company } from '../../core/settings/company';
+import { roleLabels } from '../../core/users/users.api';
+import { Approvals } from '../costing/approvals';
+
+// Everything after sign-in: the toolbar with its sections and the connection's state, and the
+// banner while the server cannot be reached.
+@Component({
+  selector: 'app-shell',
+  imports: [CanDirective, MatButtonModule, MatIconModule, MatMenuModule, MatToolbarModule, MatTooltipModule, RouterLink, RouterLinkActive, RouterOutlet],
+  templateUrl: './shell.html',
+  styleUrl: './shell.scss',
+})
+export class Shell implements OnInit {
+  protected readonly auth = inject(AuthService);
+  protected readonly connectivity = inject(ConnectivityService);
+  // What waits for a manager, counted beside Costing & Financials.
+  protected readonly approvals = inject(Approvals);
+  protected readonly Permissions = Permissions;
+  protected readonly roleLabels = roleLabels;
+  // The company's name and logo, beside the sections.
+  protected readonly company = inject(Company);
+  // The signed-in user's first letters, in the avatar on their menu.
+  protected readonly initials = computed(() =>
+    (this.auth.me()?.fullName ?? '')
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((word) => word[0].toUpperCase())
+      .join(''),
+  );
+
+  // Narrower than this, the nav shows its icons only (shell.scss), and tooltips name them.
+  protected readonly compactNav = toSignal(
+    inject(BreakpointObserver)
+      .observe('(max-width: 999.98px)')
+      .pipe(map((state) => state.matches)),
+    { initialValue: false },
+  );
+
+  ngOnInit(): void {
+    void this.approvals.refresh();
+  }
+
+  protected signOut(): void {
+    this.auth.signOut();
+  }
+}
+```
+
+
+> 📄 **`frontend/src/app/features/shell/shell.html`** — 74 سطر
+
+```html
+<mat-toolbar class="toolbar">
+  <a class="brand" routerLink="/costing" [attr.aria-label]="company.name() + ': home'">
+    @if (company.logoUrl(); as logo) {
+      <img class="logo" [src]="logo" alt="" />
+    } @else {
+      <span class="mark"><mat-icon>calculate</mat-icon></span>
+    }
+    <span class="brand-text">{{ company.name() }}</span>
+  </a>
+
+  <nav>
+    <a mat-button routerLink="/costing" routerLinkActive="active" aria-label="Costing & Financials" matTooltip="Costing & Financials · التكاليف والماليات" [matTooltipDisabled]="!compactNav()">
+      <mat-icon>calculate</mat-icon>
+      <span class="nav-text">Costing &amp; Financials</span>
+      @if (approvals.canApprove() && approvals.pending().length) {
+        <span class="count" [attr.aria-label]="approvals.pending().length + ' waiting'">{{ approvals.pending().length }}</span>
+      }
+    </a>
+    <a *appCan="Permissions.UsersManage" mat-button routerLink="/users" routerLinkActive="active" aria-label="Users" matTooltip="Users · المستخدمون" [matTooltipDisabled]="!compactNav()">
+      <mat-icon>manage_accounts</mat-icon>
+      <span class="nav-text">Users</span>
+    </a>
+    <a *appCan="Permissions.SettingsManage" mat-button routerLink="/settings" routerLinkActive="active" aria-label="Settings" matTooltip="Company settings · إعدادات الشركة" [matTooltipDisabled]="!compactNav()">
+      <mat-icon>settings</mat-icon>
+      <span class="nav-text">Settings</span>
+    </a>
+  </nav>
+
+  <span class="spacer"></span>
+
+  <span class="links" role="status" aria-live="polite">
+    @if (!connectivity.online()) {
+      <span class="link down" matTooltip="Reconnecting to the server…">
+        <mat-icon>cloud_off</mat-icon>
+        <span class="link-text">Reconnecting…</span>
+      </span>
+    }
+  </span>
+
+  <button mat-button [matMenuTriggerFor]="userMenu" class="user">
+    <span class="avatar" aria-hidden="true">{{ initials() }}</span>
+    <span class="user-name">{{ auth.me()?.fullName }}</span>
+    <mat-icon class="chevron" iconPositionEnd>expand_more</mat-icon>
+  </button>
+  <mat-menu #userMenu="matMenu">
+    <!-- The menu item wraps its content in an inline span of its own, so the name and the
+         role are stacked by a span inside it. -->
+    <div mat-menu-item disabled>
+      <span class="who">
+        <span>{{ auth.me()?.fullName }}</span>
+        <small>@if (auth.me(); as me) {{{ roleLabels[me.role].en }} · {{ me.email }}}</small>
+      </span>
+    </div>
+    <a mat-menu-item routerLink="/account">
+      <mat-icon>key</mat-icon>
+      Account &amp; password
+    </a>
+    <button mat-menu-item (click)="signOut()">
+      <mat-icon>logout</mat-icon>
+      Sign out
+    </button>
+  </mat-menu>
+</mat-toolbar>
+
+@if (!connectivity.online()) {
+  <div class="banner danger" role="alert">
+    <mat-icon>cloud_off</mat-icon>
+    The server cannot be reached. What is on screen stays; changes wait until it reconnects.
+  </div>
+}
+
+<main class="content">
+  <router-outlet />
+</main>
+```
+
+
+> 📄 **`frontend/src/app/features/shell/shell.scss`** — 270 سطر
+
+```scss
+:host {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  // The toolbar's height: what sticks under it stays clear of it (the sidebar, its phone bar).
+  --app-sticky-top: 64px;
+}
+
+@media (max-width: 599.98px) {
+  :host {
+    --app-sticky-top: 56px;
+  }
+}
+
+// A light bar, frosted over the page as it scrolls under it: the company at the start, the
+// sections as pills in a track, the user's menu at the end.
+.toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  gap: 8px;
+  padding-inline: 16px;
+  background: color-mix(in srgb, var(--mat-sys-surface-container-lowest) 86%, transparent);
+  backdrop-filter: saturate(1.4) blur(12px);
+  color: var(--mat-sys-on-surface);
+  border-bottom: 1px solid var(--app-line);
+  box-shadow: 0 1px 2px rgb(15 23 42 / 4%);
+
+  --mat-button-text-label-text-color: var(--mat-sys-on-surface-variant);
+  --mat-button-text-container-shape: 999px;
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  margin-inline-end: 8px;
+  padding: 4px 8px 4px 4px;
+  border-radius: 12px;
+  color: var(--mat-sys-on-surface);
+  font: var(--mat-sys-title-medium);
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  text-decoration: none;
+
+  &:focus-visible {
+    outline: 2px solid var(--mat-sys-primary);
+    outline-offset: 2px;
+  }
+}
+
+// The company's mark without a logo: its icon in a tile of the brand's colours.
+.mark {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 11px;
+  background: linear-gradient(135deg, var(--mat-sys-primary), color-mix(in srgb, var(--mat-sys-primary) 70%, var(--mat-sys-tertiary)));
+  color: var(--mat-sys-on-primary);
+  box-shadow: 0 6px 14px -6px color-mix(in srgb, var(--mat-sys-primary) 60%, transparent);
+
+  mat-icon {
+    width: 20px;
+    height: 20px;
+    font-size: 20px;
+  }
+}
+
+// The company's logo, as tall as the mark would be.
+.logo {
+  height: 32px;
+  max-width: 104px;
+  object-fit: contain;
+}
+
+// The sections: pills in a soft track, the one open raised in white.
+nav {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px;
+  border-radius: 999px;
+  background: var(--mat-sys-surface-container-low);
+  border: 1px solid var(--app-line);
+
+  .mat-mdc-button {
+    height: 36px;
+    padding-inline: 14px;
+    font: var(--mat-sys-label-large);
+    font-weight: 600;
+  }
+
+  .active {
+    background: var(--mat-sys-surface-container-lowest);
+    color: var(--mat-sys-primary);
+    box-shadow:
+      0 1px 2px rgb(15 23 42 / 10%),
+      0 1px 1px rgb(15 23 42 / 6%);
+
+    --mat-button-text-label-text-color: var(--mat-sys-primary);
+  }
+}
+
+// Out of room even so, the badge is cut off at its own edge, never drawn over the name.
+.links {
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+// Shown only while the server cannot be reached: it gives way when the bar is full, its words
+// cut short (its tooltip has them all) rather than run under the name beside it.
+.link {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: 16px;
+  font: var(--mat-sys-label-large);
+  background: var(--mat-sys-surface-container);
+
+  mat-icon {
+    flex: none;
+  }
+
+  &.down {
+    flex: 0 1 auto;
+    min-width: 0;
+    background: var(--mat-sys-error);
+    color: var(--mat-sys-on-error);
+  }
+}
+
+.link-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+// What waits for a manager, beside Approvals.
+.count {
+  margin-left: 6px;
+  min-width: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  font: var(--mat-sys-label-small);
+  line-height: 20px;
+  text-align: center;
+  background: var(--app-warn);
+  color: #000;
+}
+
+// A long name is cut short at 16 characters' width; the menu below it has it in full.
+.user {
+  flex: none;
+  height: 44px;
+  padding-inline: 4px 10px;
+  border: 1px solid var(--app-line);
+
+  --mat-button-text-label-text-color: var(--mat-sys-on-surface);
+
+  .chevron {
+    margin: 0;
+    color: var(--mat-sys-on-surface-variant);
+  }
+}
+
+// Their initials in a circle of the brand's colour.
+.avatar {
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  margin-inline-end: 8px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--mat-sys-primary) 14%, transparent);
+  color: var(--mat-sys-primary);
+  font: var(--mat-sys-label-large);
+  font-weight: 700;
+  vertical-align: middle;
+}
+
+.user-name {
+  display: inline-block;
+  max-width: 16ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+
+.who {
+  display: grid;
+
+  small {
+    color: var(--mat-sys-on-surface-variant);
+  }
+}
+
+.banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  font: var(--mat-sys-body-medium);
+
+  &.danger {
+    background: var(--mat-sys-error-container);
+    color: var(--mat-sys-on-error-container);
+  }
+}
+
+.content {
+  flex: 1;
+  padding: 16px;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 1600px;
+  margin: 0 auto;
+}
+
+// Below this the brand keeps its icon, still the way home.
+@media (max-width: 1199.98px) {
+  .brand-text {
+    display: none;
+  }
+}
+
+// A manager has four sections: below this their names would crowd the bar. Icons only by now:
+// without Material's 64px minimum a manager's buttons leave the rest room.
+@media (max-width: 999.98px) {
+  .nav-text {
+    display: none;
+  }
+
+  nav .mat-mdc-button {
+    min-width: 0;
+    padding: 0 10px;
+  }
+}
+
+// A phone keeps the icons only: the banner below says when the connection is lost.
+@media (max-width: 720px) {
+  .link-text,
+  .user-name,
+  .user .chevron {
+    display: none;
+  }
+
+  .toolbar {
+    gap: 4px;
+    padding-inline: 8px;
+  }
+
+  .user {
+    padding-inline: 4px;
+
+    .avatar {
+      margin: 0;
+    }
+  }
+
+  .content {
+    padding: 8px;
+  }
+}
+```
+
+
+`CostingShell`: الأقسام الجانبية **من الصلاحيات** (`computed`)، بمجموعاتها. و `costing.scss` أنماط شاشات التكاليف، و `FormChecks` نسخة شاشات التكاليف (تشير لـ "الفاتورة 2، البند 3: أدخل الكمية")، و `PeriodBar` شريط الفترة: فترات جاهزة كأزرار، أو من/إلى بتاريخين (من لا يتجاوز إلى).
+
+> 📄 **`frontend/src/app/features/costing/costing-shell.ts`** — 50 سطر
+
+```ts
+import { Component, computed, inject } from '@angular/core';
+import { RouterOutlet } from '@angular/router';
+import { AuthService } from '../../core/auth/auth.service';
+import { Permissions } from '../../core/auth/permissions';
+import { CostingAccess, costingGroups, costingTabs } from '../../core/costing/costing-tabs';
+import { SideLayout, SideSection } from '../shared/side-layout';
+import { Approvals } from './approvals';
+
+// Costing & Financials (التكاليف والماليات): the raw materials and their stock, recipes and prep
+// items and their production, the menu and its sales, purchases and expense items, counts and
+// waste, the safe, the cost reports and their settings. Each section for whoever works it: a
+// manager every one, and Permissions, where they give them; anyone else their role's, or those a
+// manager ticked. Pending approvals count what waits for a manager.
+//
+// The sections are a sidebar beside the page, a drawer on a phone (SideLayout); a section with
+// pages of its own (Purchases, Financials, Recipes, Reports) has its own bar of them above the page.
+@Component({
+  selector: 'app-costing-shell',
+  imports: [RouterOutlet, SideLayout],
+  template: `
+    <app-side-layout titleEn="Costing & Financials" titleAr="التكاليف والماليات" [sections]="sections()">
+      <router-outlet />
+    </app-side-layout>
+  `,
+})
+export class CostingShell {
+  private readonly access = inject(CostingAccess);
+  private readonly auth = inject(AuthService);
+  private readonly approvals = inject(Approvals);
+
+  protected readonly sections = computed<SideSection[]>(() => {
+    const waiting = this.approvals.pending().length;
+    return [
+      ...costingTabs.filter((t) => this.access.has(t.tab)),
+      ...(this.auth.can(Permissions.InventoryManage)
+        ? [{
+            path: 'approvals', en: 'Approvals', ar: 'طلبات معلقة', icon: 'pending_actions', group: costingGroups.finance,
+            ...(waiting ? { count: waiting, countLabel: `${waiting} waiting` } : {}),
+          }]
+        : []),
+      ...(this.auth.can(Permissions.UsersManage)
+        ? [{ path: 'permissions', en: 'Permissions', ar: 'الصلاحيات', icon: 'admin_panel_settings', group: costingGroups.finance }]
+        : []),
+    ];
+  });
+
+  constructor() {
+    void this.approvals.refresh();
+  }
+}
+```
+
+
+> 📄 **`frontend/src/app/features/costing/costing.scss`** — 400 سطر
+
+```scss
+// The Costing & Financials screens' own: the shared page styles (../shared/pages.scss), as every page of the app has them.
+
+:host {
+  display: block;
+}
+
+// Under the English, on the same side: start and end would flip inside right-to-left text.
+.ar {
+  display: block;
+  direction: rtl;
+  text-align: left;
+  font-size: 0.85em;
+  opacity: 0.75;
+}
+
+.num .ar {
+  text-align: right;
+}
+
+// Beside English: the gap is on the left whatever the span's own direction.
+.inline-ar {
+  direction: rtl;
+  unicode-bidi: isolate;
+  opacity: 0.75;
+  margin-left: 6px;
+}
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  margin-bottom: 12px;
+
+  .spacer {
+    flex: 1;
+  }
+}
+
+// A list's smart toolbar: its search, its filters and how it is sorted, side by side as pills of one
+// height. On a phone the search takes the whole first line and the pills one row under it, scrolled
+// sideways rather than stacked.
+.toolbar.smart {
+  gap: 8px;
+  margin-bottom: 8px;
+
+  .pills {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+  }
+}
+@media (max-width: 599.98px) {
+  .toolbar.smart .pills {
+    flex-wrap: nowrap;
+    width: 100%;
+    overflow-x: auto;
+    padding-bottom: 2px;
+    scrollbar-width: none;
+
+    &::-webkit-scrollbar {
+      display: none;
+    }
+    > * {
+      flex: none;
+    }
+  }
+}
+
+// How many of the list are shown, beside the list's own buttons.
+.shown-count {
+  font: var(--mat-sys-body-small);
+}
+
+// An explanation: a soft box, its Arabic first (right to left, as Arabic reads) and its English
+// under it.
+.note {
+  margin: 16px 0 12px;
+  padding: 12px 16px;
+  border-radius: 14px;
+  border: 1px solid var(--app-line);
+  background: var(--mat-sys-surface-container-low);
+  color: var(--mat-sys-on-surface-variant);
+  font: var(--mat-sys-body-medium);
+  line-height: 1.6;
+
+  .note-ar {
+    padding-bottom: 8px;
+    margin-bottom: 8px;
+    border-bottom: 1px dashed var(--app-line);
+  }
+}
+
+// A note's Arabic, a block of its own above its English: the page's own words in Arabic.
+.note-ar {
+  display: block;
+  direction: rtl;
+  text-align: right;
+  font-size: 1.04em;
+  line-height: 1.8;
+  color: var(--mat-sys-on-surface);
+}
+
+// In a toolbar's line, a hint has no box.
+.toolbar .note {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+
+  .note-ar {
+    padding: 0;
+    margin: 0 0 2px;
+    border: 0;
+  }
+}
+
+// A table with nothing in it: an icon, and what to do, in Arabic and English, in the middle.
+td.empty {
+  padding: 36px 16px;
+  text-align: center;
+  color: var(--mat-sys-on-surface-variant);
+
+  mat-icon {
+    display: block;
+    margin: 0 auto 10px;
+    width: 36px;
+    height: 36px;
+    font-size: 36px;
+    opacity: 0.55;
+  }
+  .note-ar {
+    text-align: center;
+    margin-bottom: 4px;
+  }
+}
+
+// For screen readers only: a column's name where the column is plain to see, such as its buttons.
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+}
+
+.error {
+  color: var(--mat-sys-error);
+}
+
+
+// A status of the old kind, its Arabic under it; a tag (styles.scss) is one line.
+.status:not(.tag) {
+  display: inline-flex;
+  flex-direction: column;
+  padding: 2px 8px;
+  border-radius: 8px;
+  font: var(--mat-sys-label-small);
+  white-space: nowrap;
+
+  &.WithinTarget {
+    background: color-mix(in srgb, var(--app-ok) 18%, transparent);
+  }
+
+  &.AboveTarget,
+  &.MissingPrices {
+    background: color-mix(in srgb, var(--mat-sys-error) 16%, transparent);
+    color: var(--mat-sys-error);
+  }
+
+  &.NoRecipe,
+  &.NoPrice {
+    background: var(--mat-sys-surface-container-high);
+  }
+}
+
+.muted {
+  color: var(--mat-sys-on-surface-variant);
+}
+
+// Variance: red for a shortfall (more left the stores than it should), blue for a surplus.
+// Blue rather than green: a surplus needs looking into too.
+:host {
+  --variance-deficit: var(--mat-sys-error);
+  --variance-surplus: #1565c0;
+}
+
+tr.deficit td,
+.box.deficit {
+  background: color-mix(in srgb, var(--variance-deficit) 9%, var(--mat-sys-surface));
+}
+
+tr.surplus td,
+.box.surplus {
+  background: color-mix(in srgb, var(--variance-surplus) 9%, var(--mat-sys-surface));
+}
+
+tr.deficit td.strong,
+.box.deficit strong {
+  color: var(--variance-deficit);
+}
+
+tr.surplus td.strong,
+.box.surplus strong {
+  color: var(--variance-surplus);
+}
+
+.eval {
+  display: inline-flex;
+  flex-direction: column;
+  padding: 2px 8px;
+  border-radius: 8px;
+  font: var(--mat-sys-label-small);
+  white-space: nowrap;
+  background: var(--mat-sys-surface-container-high);
+
+  &.Unfavourable {
+    background: var(--variance-deficit);
+    color: var(--mat-sys-on-error);
+  }
+
+  &.Favourable {
+    background: var(--variance-surplus);
+    color: #fff;
+  }
+}
+
+@media print {
+  tr.deficit td,
+  tr.surplus td {
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+}
+
+@media print {
+  .toolbar,
+  .no-print {
+    display: none !important;
+  }
+}
+
+// A tag's Arabic beside its English, on one line (here too: a page's .ar is a block).
+.tag .ar {
+  display: inline;
+  margin-left: 4px;
+  font-weight: 500;
+}
+
+// A small tag beside a name: a prep item, an archived supplier.
+.badge {
+  margin-left: 6px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font: var(--mat-sys-label-small);
+  background: var(--mat-sys-tertiary-container);
+  color: var(--mat-sys-on-tertiary-container);
+  white-space: nowrap;
+}
+
+// A record whose change waits for a manager: as it was until then, marked, and locked.
+tr.pending-deletion td {
+  background: color-mix(in srgb, var(--app-warn) 12%, var(--mat-sys-surface));
+}
+
+.pending-badge,
+.voided-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font: var(--mat-sys-label-medium);
+  font-weight: 600;
+  white-space: nowrap;
+
+  .ar {
+    display: inline;
+    margin-left: 0;
+    font-weight: 500;
+  }
+}
+
+// Waiting for a manager: an amber tag.
+.pending-badge {
+  background: var(--tag-warn-bg);
+  color: var(--tag-warn-fg);
+
+  &::before {
+    content: '';
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+  }
+}
+
+// Posted, then deleted with a manager's approval: kept, its stock reversed.
+.voided-badge {
+  background: var(--mat-sys-surface-container-highest);
+  color: var(--mat-sys-on-surface-variant);
+  text-decoration: none;
+}
+
+.locked {
+  color: var(--app-warn);
+  vertical-align: middle;
+}
+
+// A record a manager has been asked about: what was asked, and that it waits.
+.pending-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--app-warn) 16%, var(--mat-sys-surface));
+  color: var(--mat-sys-on-surface);
+
+  > mat-icon {
+    flex: none;
+    color: var(--app-warn);
+  }
+}
+
+// Figures at a glance, a tile each: the treasury's screens.
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.tile {
+  display: grid;
+  gap: 2px;
+  padding: 14px 16px;
+  border-radius: 16px;
+  border: 1px solid var(--app-line);
+  background: var(--mat-sys-surface-container-lowest);
+  box-shadow: var(--app-card-shadow);
+
+  .label {
+    font: var(--mat-sys-label-medium);
+    color: var(--mat-sys-on-surface-variant);
+  }
+  strong {
+    font: var(--mat-sys-headline-small);
+  }
+  &.key {
+    background: var(--mat-sys-secondary-container);
+    color: var(--mat-sys-on-secondary-container);
+    border-color: transparent;
+  }
+}
+
+// What a safe entry is: opening balance, funding, takings, a voucher, a payment.
+.kind {
+  display: inline-block;
+  margin-right: 4px;
+  padding: 0 6px;
+  border-radius: 6px;
+  font: var(--mat-sys-label-small);
+  background: var(--mat-sys-surface-container-high);
+  white-space: nowrap;
+}
+
+// Where an invoice's payment stands: paid, waiting for approval, unpaid, on credit.
+.pay,
+.pay-status {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font: var(--mat-sys-label-small);
+  white-space: nowrap;
+  background: var(--mat-sys-surface-container-high);
+
+  &.Paid {
+    background: color-mix(in srgb, var(--app-ok) 18%, transparent);
+  }
+  &.Pending {
+    background: color-mix(in srgb, var(--app-warn) 22%, transparent);
+    color: var(--app-warn);
+  }
+  &.Unpaid {
+    background: color-mix(in srgb, var(--mat-sys-error) 14%, transparent);
+    color: var(--mat-sys-error);
+  }
+  &.OnCredit {
+    background: var(--mat-sys-secondary-container);
+    color: var(--mat-sys-on-secondary-container);
+  }
+}
+
+// A code (a material's, an item's) on one line, beside the figures.
+table.grid .code {
+  white-space: nowrap;
+}
+```
+
+
+> 📄 **`frontend/src/app/features/costing/form-checks.ts`** — 61 سطر
+
+```ts
+import { signal } from '@angular/core';
+import { ErrorStateMatcher } from '@angular/material/core';
+import { NotifyService } from '../../core/ui/notify.service';
+
+// What stops a form being sent, said where it is and pointing at its field: "Invoice 2, line 3:
+// enter the quantity", the field the one whose accessible name is "Invoice 2, Quantity, line 3".
+export interface FormProblem {
+  where: string;
+  what: string;
+  field: string;
+}
+
+// A send button that is never greyed out: clicked with something missing, nothing is sent, every
+// field that holds it up turns red with what it needs under it, the message says what is missing,
+// and the first of them is focused. A field stays marked until it is put right; clear() unmarks
+// them all, for a form started again.
+export class FormChecks {
+  // Set once a send is refused for what is missing.
+  readonly shown = signal(false);
+  private readonly matchers = new Map<string, ErrorStateMatcher>();
+
+  constructor(private readonly problems: () => FormProblem[]) {}
+
+  // How the field named so shows an error: while shown and something is wrong with it.
+  field(name: string): ErrorStateMatcher {
+    let matcher = this.matchers.get(name);
+    if (!matcher) {
+      matcher = { isErrorState: () => this.shown() && this.problems().some((p) => p.field === name) };
+      this.matchers.set(name, matcher);
+    }
+    return matcher;
+  }
+
+  // What is wrong with the field named so, said under it: "Enter the quantity".
+  message(name: string): string {
+    const what = this.problems().find((p) => p.field === name)?.what ?? '';
+    return what.charAt(0).toUpperCase() + what.slice(1);
+  }
+
+  // True when there is nothing missing. Otherwise the fields are marked, the first one is focused
+  // (within host), and the message names the first few problems.
+  passed(notify: NotifyService, host: HTMLElement): boolean {
+    const problems = this.problems();
+    if (!problems.length) {
+      return true;
+    }
+    this.shown.set(true);
+    const told = problems.slice(0, 3).map((p) => `${p.where}: ${p.what}.`);
+    const more = problems.length - told.length;
+    notify.error(null, `Cannot submit. ${told.join(' ')}${more ? ` And ${more} more, marked in red.` : ''}`);
+    const first = problems.find((p) => p.field)?.field;
+    const element = first ? host.querySelector<HTMLElement>(`[aria-label="${first.replace(/["\\]/g, '\\$&')}"]`) : null;
+    element?.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
+    element?.focus({ preventScroll: true });
+    return false;
+  }
+
+  clear(): void {
+    this.shown.set(false);
+  }
+}
+```
+
+
+> 📄 **`frontend/src/app/features/costing/period-bar.ts`** — 82 سطر
+
+```ts
+import { Component, model, signal } from '@angular/core';
+import { FormsModule } from '@angular/forms';
+import { MatButtonToggleModule } from '@angular/material/button-toggle';
+import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatInputModule } from '@angular/material/input';
+import { isoDay } from './financials';
+
+export type Period = 'month' | 'last-month' | 'quarter' | 'year' | 'custom';
+
+// A period's first and last days, as the API takes them, counted from `today`.
+export function periodDays(period: Exclude<Period, 'custom'>, today = new Date()): { from: string; to: string } {
+  const first = new Date(today.getFullYear(), today.getMonth(), 1);
+  const [from, to] =
+    period === 'last-month'
+      ? [new Date(first.getFullYear(), first.getMonth() - 1, 1), new Date(first.getFullYear(), first.getMonth(), 0)]
+      : period === 'quarter'
+        ? [new Date(first.getFullYear(), first.getMonth() - 2, 1), today]
+        : period === 'year'
+          ? [new Date(today.getFullYear(), 0, 1), today]
+          : [first, today];
+  return { from: isoDay(from), to: isoDay(to) };
+}
+
+// The period a report covers: this month, last month, three months, this year, or any two days.
+// [(from)] and [(to)] as yyyy-mm-dd.
+@Component({
+  selector: 'app-period-bar',
+  imports: [FormsModule, MatButtonToggleModule, MatFormFieldModule, MatInputModule],
+  template: `
+    <mat-button-toggle-group [value]="period()" (change)="choose($event.value)" aria-label="Period" class="periods">
+      <mat-button-toggle value="month">This month <span class="ar">الشهر</span></mat-button-toggle>
+      <mat-button-toggle value="last-month">Last month <span class="ar">الشهر السابق</span></mat-button-toggle>
+      <mat-button-toggle value="quarter">3 months <span class="ar">٣ شهور</span></mat-button-toggle>
+      <mat-button-toggle value="year">This year <span class="ar">السنة</span></mat-button-toggle>
+    </mat-button-toggle-group>
+    <mat-form-field subscriptSizing="dynamic" class="day">
+      <mat-label>From · من</mat-label>
+      <input matInput type="date" [ngModel]="from()" (ngModelChange)="custom('from', $event)" [max]="to()" aria-label="From" />
+    </mat-form-field>
+    <mat-form-field subscriptSizing="dynamic" class="day">
+      <mat-label>To · إلى</mat-label>
+      <input matInput type="date" [ngModel]="to()" (ngModelChange)="custom('to', $event)" [min]="from()" aria-label="To" />
+    </mat-form-field>
+  `,
+  styles: `
+    :host {
+      display: contents;
+    }
+    .periods {
+      flex-wrap: wrap;
+    }
+    .ar {
+      margin-inline-start: 4px;
+      font-size: 0.8em;
+      opacity: 0.75;
+    }
+    .day {
+      width: 160px;
+    }
+  `,
+})
+export class PeriodBar {
+  readonly from = model.required<string>();
+  readonly to = model.required<string>();
+  protected readonly period = signal<Period>('month');
+
+  protected choose(period: Exclude<Period, 'custom'>): void {
+    const days = periodDays(period);
+    this.period.set(period);
+    this.from.set(days.from);
+    this.to.set(days.to);
+  }
+
+  // Days typed in: the period is whatever they say. Cleared or half typed, it stays as it was.
+  protected custom(end: 'from' | 'to', value: string): void {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(value ?? '')) {
+      return;
+    }
+    this.period.set('custom');
+    (end === 'from' ? this.from : this.to).set(value);
+  }
+}
+```
+
+
+---
+
+## 6. شاشات الخامات
+
+**`MaterialsPage`:** الخامات بتكاليفها: AP$ لكل وحدة شراء (المتوسط)، Yield الافتراضي، EP$، الرصيد وقيمته، وحد الطلب. بحث ذكي، فلتر الفئة والنوع، ترتيب، تصدير واستيراد. و `MaterialDialog`: الإنشاء والتعديل وتغيير وحدة العد (مع شرح ما سيُعاد صياغته). و `MaterialHistoryDialog`: **كارت الصنف** (كل بند فاتورة اشترى الخامة، الأحدث أولًا، والملغى مشطوب) لمطابقة الورق عند جرد مريب. و `MaterialPicker` و `QuickMaterialDialog` لإضافة خامة سريعًا من سطر فاتورة.
+
+> 📄 **`frontend/src/app/features/costing/materials-page.ts`** — 384 سطر
+
+```ts
+import { DatePipe, DecimalPipe } from '@angular/common';
+import { Component, computed, inject, signal } from '@angular/core';
+import { FormsModule } from '@angular/forms';
+import { MatButtonModule } from '@angular/material/button';
+import { MatDialog } from '@angular/material/dialog';
+import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatIconModule } from '@angular/material/icon';
+import { MatInputModule } from '@angular/material/input';
+import { MatProgressBarModule } from '@angular/material/progress-bar';
+import { MatSelectModule } from '@angular/material/select';
+import { MatTooltipModule } from '@angular/material/tooltip';
+import { firstValueFrom } from 'rxjs';
+import { CostingApi, ApprovalRequest, MaterialCost, UnitOfMeasure, unitLabels } from '../../core/costing/costing.api';
+import { errorMessage } from '../../core/http/error-message';
+import { MoneyPipe } from '../../core/ui/money.pipe';
+import { NotifyService } from '../../core/ui/notify.service';
+import { Approvals, pendingLabel } from './approvals';
+import { saveBlob } from '../../core/ui/save-blob';
+import { MaterialDialog, MaterialDialogResult } from './material-dialog';
+import { MaterialHistoryDialog } from './material-history-dialog';
+import { SheetImportData, SheetImportDialog } from './sheet-import-dialog';
+import { todayIso } from './financials';
+import { FilterOption, FilterSelect } from '../shared/filter-select';
+import { SearchField } from '../shared/search-field';
+import { SortOption, SortState, smartMatch, sortItems } from '../shared/smart-search';
+import { SortControl } from '../shared/sort-control';
+
+type MaterialSort = 'name' | 'category' | 'cost' | 'stock' | 'value' | 'reorder';
+
+const materialSorts: SortOption<MaterialSort>[] = [
+  { key: 'name', en: 'Name', ar: 'الاسم' },
+  { key: 'category', en: 'Category', ar: 'القسم' },
+  { key: 'cost', en: 'Cost per unit', ar: 'تكلفة الوحدة', descending: true },
+  { key: 'stock', en: 'Stock on hand', ar: 'الرصيد', descending: true },
+  { key: 'value', en: 'Stock value', ar: 'قيمة المخزون', descending: true },
+  { key: 'reorder', en: 'Reorder status', ar: 'حالة إعادة الطلب' },
+];
+
+const unitGroups: Record<UnitOfMeasure, string> = { Gram: 'Weight · وزن', Millilitre: 'Volume · حجم', Piece: 'Pieces · قطع' };
+
+// Raw materials and what they cost: AP$ per purchase unit (the weighted average of what was paid),
+// the default yield, and EP$ after it. Stock on hand and its value too. To and from Excel: the list
+// exported, and a sheet imported (the template filled in, or an export edited or brought from
+// another installation), each row a material added or changed. Shown one stock category at a time
+// when the list is long.
+@Component({
+  selector: 'app-materials-page',
+  imports: [
+    DatePipe,
+    DecimalPipe,
+    FilterSelect,
+    FormsModule,
+    MatButtonModule,
+    MatFormFieldModule,
+    MatIconModule,
+    MatInputModule,
+    MatProgressBarModule,
+    MatSelectModule,
+    MatTooltipModule,
+    MoneyPipe,
+    SearchField,
+    SortControl,
+  ],
+  template: `
+    <div class="toolbar smart">
+      <app-search-field [(value)]="search" />
+      <div class="pills">
+        <app-filter-select label="Category · القسم" icon="category" [options]="categoryFilters()" [(value)]="category" />
+        <app-filter-select label="Unit · الوحدة" icon="straighten" [options]="unitFilters()" [(value)]="unitFilter" />
+        <app-sort-control [options]="sorts" [(sort)]="sort" />
+      </div>
+    </div>
+    <div class="toolbar">
+      <span class="muted shown-count">Showing {{ shown().length }} of {{ materials().length }}<span class="inline-ar">المعروض</span></span>
+      <span class="spacer"></span>
+      <span class="muted">Stock value · قيمة المخزون: <strong>{{ stockValue() | money }}</strong></span>
+      <button mat-stroked-button (click)="exportExcel()" [disabled]="busy()">
+        <mat-icon>download</mat-icon> Export Excel<span class="inline-ar">تصدير إلى إكسل</span>
+      </button>
+      <button mat-stroked-button (click)="importExcel()" [disabled]="busy()">
+        <mat-icon>upload_file</mat-icon> Import Excel<span class="inline-ar">استيراد من إكسل</span>
+      </button>
+      <button mat-flat-button (click)="edit(null)"><mat-icon>add</mat-icon> New material</button>
+    </div>
+    @if (busy()) {
+      <mat-progress-bar mode="indeterminate" />
+    }
+    @if (loading()) {
+      <mat-progress-bar mode="indeterminate" />
+    } @else if (error()) {
+      <p class="error">{{ error() }}</p>
+    } @else if (materials().length === 0) {
+      <p class="note">No raw materials yet. Add each ingredient you buy, with its price, then give the dishes their recipes.</p>
+    } @else {
+      <div class="table-wrap">
+        <table class="grid">
+          <thead>
+            <tr>
+              <th>Code<span class="ar">الكود</span></th>
+              <th>Material<span class="ar">الخامة</span></th>
+              <th>Category<span class="ar">الفئة</span></th>
+              <th>Bought by<span class="ar">وحدة الشراء</span></th>
+              <th class="num">AP$ / unit<span class="ar">تكلفة الشراء</span></th>
+              <th class="num">Yield %<span class="ar">نسبة الصافي</span></th>
+              <th class="num">EP$ / unit<span class="ar">تكلفة الصافي</span></th>
+              <th class="num">On hand<span class="ar">الرصيد</span></th>
+              <th class="num">Stock value<span class="ar">قيمة المخزون</span></th>
+              <th class="num">Last price paid<span class="ar">آخر سعر</span></th>
+              <th class="num"><span class="visually-hidden">Actions</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            @for (m of shown(); track m.id) {
+              <tr class="clickable" [class.pending-deletion]="!!pendingOf(m)" (click)="edit(m)">
+                <td class="code">{{ m.code ?? '' }}</td>
+                <td>
+                  {{ m.name }}
+                  @if (m.kind === 'Prep') {
+                    <span class="badge" title="Made in the kitchen: its cost comes from its batches">Prep · نصف مصنع</span>
+                  }
+                  @if (pendingOf(m); as p) {
+                    <div><span class="pending-badge">{{ pendingLabel(p).en }}<span class="ar">{{ pendingLabel(p).ar }}</span></span>
+                      <span class="muted small"> by {{ p.requestedBy }}, {{ p.requestedAtUtc | date: 'd MMM' }}</span></div>
+                  }
+                </td>
+                <td>
+                  {{ m.category ?? '' }}
+                  @if (m.misplaced) {
+                    <div class="misplaced" title="Filed in a general expenses category before the kinds were kept apart">In an expenses category: move it</div>
+                  }
+                </td>
+                <td>{{ m.purchaseUnit }} <span class="muted">({{ m.purchaseUnitSize | number: '1.0-3' }} {{ unit(m) }})</span></td>
+                <td class="num">
+                  @if (m.costPerPurchaseUnit !== null) {
+                    {{ m.costPerPurchaseUnit | money }}
+                  } @else {
+                    <span class="error">No price</span>
+                  }
+                </td>
+                <td class="num">{{ m.defaultYieldPercent | number: '1.0-2' }}%</td>
+                <td class="num">{{ m.costPerPurchaseUnit === null ? '' : (ep(m) | money) }}</td>
+                <td class="num" [class.error]="m.quantityOnHand < 0">
+                  {{ m.quantityOnHand / m.purchaseUnitSize | number: '1.0-3' }} {{ m.purchaseUnit }}
+                </td>
+                <td class="num">{{ m.stockValue === null ? '' : (m.stockValue | money) }}</td>
+                <td class="num">{{ m.lastPurchaseCostPerPurchaseUnit === null ? '' : (m.lastPurchaseCostPerPurchaseUnit | money) }}</td>
+                <td class="num actions" (click)="$event.stopPropagation()">
+                  @if (m.kind !== 'Prep') {
+                    <button mat-icon-button (click)="history(m)" matTooltip="Purchase history · كارت الصنف" [attr.aria-label]="'Purchase history of ' + m.name">
+                      <mat-icon>history</mat-icon>
+                    </button>
+                  }
+                  @if (pendingOf(m)) {
+                    <mat-icon class="locked" matTooltip="Waiting for a manager's approval: locked until decided" aria-label="Locked: waiting for a manager">lock_clock</mat-icon>
+                  } @else {
+                    <button mat-icon-button class="danger" (click)="remove(m)" matTooltip="Delete" [attr.aria-label]="'Delete ' + m.name">
+                      <mat-icon>delete</mat-icon>
+                    </button>
+                  }
+                </td>
+              </tr>
+            }
+          </tbody>
+        </table>
+      </div>
+    }
+  `,
+  styleUrl: './costing.scss',
+  styles: `
+    .danger {
+      color: var(--mat-sys-error);
+    }
+    .small {
+      font-size: 0.85em;
+    }
+    .actions {
+      white-space: nowrap;
+    }
+    .misplaced {
+      font-size: 0.85em;
+      color: var(--mat-sys-error);
+    }
+    .visually-hidden {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip: rect(0 0 0 0);
+    }
+  `,
+})
+export class MaterialsPage {
+  protected readonly pendingLabel = pendingLabel;
+  private readonly api = inject(CostingApi);
+  private readonly dialog = inject(MatDialog);
+  private readonly notify = inject(NotifyService);
+  private readonly approvals = inject(Approvals);
+
+  protected readonly materials = signal<MaterialCost[]>([]);
+  protected readonly loading = signal(true);
+  protected readonly error = signal<string | null>(null);
+  protected readonly search = signal('');
+  protected readonly busy = signal(false);
+
+  // The stock categories the materials are in, by name, with how many each holds; the one shown
+  // ('': all). The units they are counted in, the same way.
+  protected readonly category = signal('');
+  protected readonly unitFilter = signal('');
+  protected readonly sorts = materialSorts;
+  protected readonly sort = signal<SortState<MaterialSort>>({ key: 'name', direction: 1 });
+  protected readonly categories = computed(() => {
+    const byId = new Map<string, { id: string; name: string; count: number }>();
+    for (const m of this.materials()) {
+      const entry = byId.get(m.categoryId) ?? { id: m.categoryId, name: m.category ?? 'General', count: 0 };
+      entry.count++;
+      byId.set(m.categoryId, entry);
+    }
+    return [...byId.values()].sort((a, b) => a.name.localeCompare(b.name));
+  });
+
+  protected readonly categoryFilters = computed<FilterOption[]>(() => [
+    { value: '', label: 'All · الكل', count: this.materials().length },
+    ...this.categories().map((c) => ({ value: c.id, label: c.name, count: c.count })),
+  ]);
+
+  protected readonly unitFilters = computed<FilterOption[]>(() => [
+    { value: '', label: 'All · الكل', count: this.materials().length },
+    ...(Object.keys(unitGroups) as UnitOfMeasure[])
+      .map((u) => ({ value: u, label: unitGroups[u], count: this.materials().filter((m) => m.unit === u).length }))
+      .filter((o) => o.count > 0),
+  ]);
+
+  protected readonly shown = computed(() => {
+    const category = this.category();
+    const unit = this.unitFilter();
+    const found = this.materials().filter(
+      (m) =>
+        (!category || m.categoryId === category) &&
+        (!unit || m.unit === unit) &&
+        smartMatch(this.search(), m.name, m.code, m.category),
+    );
+    return sortItems(found, this.sort(), (m, key) => {
+      switch (key) {
+        case 'category':
+          return m.category ?? 'General';
+        case 'cost':
+          return m.costPerPurchaseUnit;
+        case 'stock':
+          return m.quantityOnHand;
+        case 'value':
+          return m.stockValue;
+        // Those to order first: at or under their reorder level.
+        case 'reorder':
+          return m.quantityOnHand <= m.reorderLevel ? 0 : 1;
+        default:
+          return m.name;
+      }
+    }, (m) => m.name);
+  });
+
+  protected readonly stockValue = computed(() => this.materials().reduce((sum, m) => sum + (m.stockValue ?? 0), 0));
+
+  constructor() {
+    void this.load();
+  }
+
+  protected unit(m: MaterialCost): string {
+    return unitLabels[m.unit];
+  }
+
+  // EP$: what a usable purchase unit costs once trimming is lost.
+  protected ep(m: MaterialCost): number {
+    return ((m.costPerPurchaseUnit ?? 0) * 100) / m.defaultYieldPercent;
+  }
+
+  protected pendingOf(material: MaterialCost): ApprovalRequest | undefined {
+    return this.approvals.pendingFor(material.id);
+  }
+
+  // Every invoice line that bought it, to hold against the paper invoices.
+  protected history(material: MaterialCost): void {
+    this.dialog.open<MaterialHistoryDialog, MaterialCost>(MaterialHistoryDialog, { data: material, width: '960px', maxWidth: '95vw' });
+  }
+
+  // Archived for a manager; asked of one for anyone else. Only one in no recipe and with nothing
+  // on the shelf can go: the till says why otherwise.
+  protected async remove(material: MaterialCost): Promise<void> {
+    if ((await this.approvals.delete('RawMaterial', material.id, material.name)) === 'Applied') {
+      await this.load();
+    }
+  }
+
+  // Saved, then its unit changed when it was: at once, or asked of a manager. Its other changes
+  // stay saved when the unit cannot be.
+  protected async edit(material: MaterialCost | null): Promise<void> {
+    // Locked while a request about it waits for a manager.
+    const pending = material && this.pendingOf(material);
+    if (pending) {
+      this.notify.info(`${material.name}: ${pendingLabel(pending).en.toLowerCase()}, waiting for a manager. It can be changed once that is decided.`);
+      return;
+    }
+    const saved = await firstValueFrom(
+      this.dialog
+        .open<MaterialDialog, MaterialCost | null, MaterialDialogResult>(MaterialDialog, { data: material, width: '640px', maxWidth: '95vw' })
+        .afterClosed(),
+    );
+    if (!saved) {
+      return;
+    }
+    const { material: details, unitChange } = saved;
+    try {
+      await firstValueFrom(this.api.saveMaterial(material?.id ?? null, details));
+    } catch (error) {
+      this.notify.error(error, 'The material could not be saved.');
+      return;
+    }
+    if (material && unitChange) {
+      try {
+        const result = await firstValueFrom(this.api.changeMaterialUnit(material.id, unitChange));
+        if (result.outcome === 'Requested' && result.request) {
+          await this.approvals.requested({ outcome: result.outcome, request: result.request });
+        } else {
+          this.notify.info(`${details.name} saved, counted in ${{ Gram: 'grams', Millilitre: 'millilitres', Piece: 'pieces' }[unitChange.unit]} now.`);
+        }
+      } catch (error) {
+        this.notify.error(null, `${details.name} was saved, but its unit was not changed: ${errorMessage(error, 'please try again.')}`);
+      }
+    } else {
+      this.notify.info(`${details.name} saved.`);
+    }
+    await this.load();
+  }
+
+  // The list as it is, under the template's columns: edited and imported back, or imported into
+  // another installation.
+  protected async exportExcel(): Promise<void> {
+    this.busy.set(true);
+    try {
+      saveBlob(await firstValueFrom(this.api.exportRawMaterials()), `raw-materials-${todayIso()}.xlsx`);
+      this.notify.info('Raw materials exported to Excel. · تم تصدير الخامات إلى إكسل.');
+    } catch (error) {
+      this.notify.error(error, 'The raw materials could not be exported. · تعذّر تصدير الخامات.');
+    } finally {
+      this.busy.set(false);
+    }
+  }
+
+  // A sheet imported in the dialog, which says what it did; the list read again when it changed it.
+  protected async importExcel(): Promise<void> {
+    const data: SheetImportData = {
+      title: { en: 'Import raw materials from Excel', ar: 'استيراد الخامات من إكسل' },
+      noun: { one: 'material', many: 'materials', ar: 'الخامة' },
+      rules: [
+        {
+          en: 'A row is the material of its code, else of its name: it is changed as the row says. A new name adds a material.',
+          ar: 'الصف يخص الخامة صاحبة الكود، وإلا صاحبة الاسم، فتُعدّل كما في الصف. والاسم الجديد يضيف خامة.',
+        },
+        { en: 'A blank cell leaves that detail as it is. A unit is Kg, Liter or Piece.', ar: 'الخلية الفارغة تترك البيان كما هو. الوحدة: كيلو أو لتر أو قطعة.' },
+        { en: 'Stock on hand is not imported: it comes by purchases and stock counts.', ar: 'الرصيد لا يُستورد: يأتي من المشتريات والجرد.' },
+      ],
+      templateName: 'raw-materials-template.xlsx',
+      template: () => this.api.rawMaterialsTemplate(),
+      upload: (file) => this.api.importRawMaterials(file),
+    };
+    const changed = await firstValueFrom(
+      this.dialog.open<SheetImportDialog, SheetImportData, boolean>(SheetImportDialog, { data, width: '760px', maxWidth: '96vw' }).afterClosed(),
+    );
+    if (changed) {
+      await this.load();
+    }
+  }
+
+  private async load(): Promise<void> {
+    this.error.set(null);
+    void this.approvals.refresh();
+    try {
+      this.materials.set(await firstValueFrom(this.api.materials()));
+    } catch (error) {
+      this.error.set(errorMessage(error, 'The raw materials could not be loaded.'));
+    } finally {
+      this.loading.set(false);
+    }
+  }
+}
+```
+
+
+> 📄 **`frontend/src/app/features/costing/material-dialog.ts`** — 387 سطر
+
+```ts
+import { DecimalPipe } from '@angular/common';
+import { Component, computed, inject, signal } from '@angular/core';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
+import { MatButtonModule } from '@angular/material/button';
+import { MAT_DIALOG_DATA, MatDialogModule, MatDialogRef } from '@angular/material/dialog';
+import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatInputModule } from '@angular/material/input';
+import { MatSelectModule } from '@angular/material/select';
+import { firstValueFrom, merge } from 'rxjs';
+import { CostingApi, MaterialCost, MaterialUnitChangeInput, MaterialUsage, SaveMaterial, UnitOfMeasure, unitLabels } from '../../core/costing/costing.api';
+import { errorMessage } from '../../core/http/error-message';
+import { Company } from '../../core/settings/company';
+import { Approvals } from './approvals';
+import { PurchaseCategoryField } from './purchase-category-field';
+
+// What the dialog closes with: the material, and the unit it is counted in changed, when it was.
+// The material's purchase unit, cost and reorder level stay as they were in it then: the unit
+// change carries the new ones.
+export interface MaterialDialogResult {
+  material: SaveMaterial;
+  unitChange: MaterialUnitChangeInput | null;
+}
+
+const one: Record<UnitOfMeasure, string> = { Gram: 'g', Millilitre: 'ml', Piece: 'piece' };
+const many: Record<UnitOfMeasure, string> = { Gram: 'g', Millilitre: 'ml', Piece: 'pieces' };
+
+// A raw material, new or to change. Cost and reorder level are entered per purchase unit (a kg, a
+// carton), as they are bought. The unit it is counted in (عدّ بـ) can be changed: while nothing
+// records it, it simply starts again in the new unit; once something does (stock, an invoice, a
+// recipe, a count, a batch), the conversion is asked, as a kitchen says it ("1 piece is 60 g"), and
+// everything recorded is restated by it, on a manager's say. A prep item keeps its unit.
+@Component({
+  selector: 'app-material-dialog',
+  imports: [DecimalPipe, MatButtonModule, MatDialogModule, MatFormFieldModule, MatInputModule, MatSelectModule, PurchaseCategoryField, ReactiveFormsModule],
+  template: `
+    <h2 mat-dialog-title>{{ data ? 'Change ' + data.name : 'New raw material' }}</h2>
+    <mat-dialog-content>
+      <form [formGroup]="form" (ngSubmit)="save()" id="material-form" class="form">
+        <mat-form-field class="wide">
+          <mat-label>Name · الاسم</mat-label>
+          <input matInput formControlName="name" cdkFocusInitial />
+        </mat-form-field>
+        <mat-form-field>
+          <mat-label>Code · الكود</mat-label>
+          <input matInput formControlName="code" placeholder="ING-001" />
+        </mat-form-field>
+        <app-purchase-category-field formControlName="categoryId" kind="RawMaterials" />
+        <mat-form-field>
+          <mat-label>Counted in · وحدة العد</mat-label>
+          <mat-select formControlName="unit" (selectionChange)="unitChanged($event.value)">
+            <mat-option value="Gram">Grams (g)</mat-option>
+            <mat-option value="Millilitre">Millilitres (ml)</mat-option>
+            <mat-option value="Piece">Pieces (pc)</mat-option>
+          </mat-select>
+          @if (data?.kind === 'Prep') {
+            <mat-hint>A prep item keeps its unit</mat-hint>
+          } @else if (changingUnit()) {
+            <mat-hint>Was {{ many[data!.unit] }}</mat-hint>
+          }
+        </mat-form-field>
+        @if (changingUnit()) {
+          <div class="wide unit-change" role="group" aria-label="Changing the unit">
+            @if (usageError(); as e) {
+              <p class="error">{{ e }}</p>
+            } @else if (usage(); as u) {
+              @if (u.pendingRequests) {
+                <p class="error">A request waiting for a manager names {{ data!.name }}: its unit can be changed once that is decided.</p>
+              } @else if (!u.inUse) {
+                <p>Nothing records {{ data!.name }} yet: it is counted in {{ many[unit()] }} from now. Enter its price and reorder level for the new unit.</p>
+              } @else {
+                <p>
+                  {{ data!.name }} is already recorded in {{ many[data!.unit] }}: {{ recorded(u) }}. Everything is restated in
+                  {{ many[unit()] }} by the conversion, every amount of money as it was.
+                </p>
+                <mat-form-field class="conversion">
+                  <mat-label>1 {{ one[big()] }} is how many {{ many[small()] }}? · التحويل</mat-label>
+                  <input matInput type="number" min="0" step="any" formControlName="conversion" />
+                  <span matTextSuffix>&nbsp;{{ many[small()] }}</span>
+                </mat-form-field>
+                @if (oneNewIsOld(); as r) {
+                  <p class="restated">
+                    On hand {{ data!.quantityOnHand | number: '1.0-3' }} {{ many[data!.unit] }} →
+                    {{ data!.quantityOnHand / r | number: '1.0-3' }} {{ many[unit()] }}
+                    @if (data!.costPerUnit !== null) {
+                      · average cost {{ company.money(data!.costPerUnit, 2, 4) }} a {{ one[data!.unit] }} →
+                      {{ company.money(data!.costPerUnit * r, 2, 4) }} a {{ one[unit()] }}
+                    }
+                  </p>
+                } @else {
+                  <p class="error">
+                    Without the conversion it cannot be changed. If it cannot be said, archive {{ data!.name }} and create a new material
+                    counted in {{ many[unit()] }}.
+                  </p>
+                }
+                @if (!approvals.canApprove()) {
+                  <mat-form-field class="reason" subscriptSizing="dynamic">
+                    <mat-label>Reason · السبب</mat-label>
+                    <textarea matInput formControlName="reason" maxlength="500" rows="2" placeholder="Optional: tells the manager why"></textarea>
+                  </mat-form-field>
+                }
+              }
+            } @else {
+              <p class="muted">Checking what records {{ data!.name }}…</p>
+            }
+          </div>
+        }
+        <mat-form-field>
+          <mat-label>Bought by · وحدة الشراء</mat-label>
+          <input matInput formControlName="purchaseUnit" placeholder="kg, carton" />
+        </mat-form-field>
+        <mat-form-field>
+          <mat-label>{{ unitLabel() }} in one {{ form.value.purchaseUnit || 'unit' }}</mat-label>
+          <input matInput type="number" min="0" step="any" formControlName="purchaseUnitSize" />
+        </mat-form-field>
+        <mat-form-field>
+          <mat-label>{{ company.currency() || 'Cost' }} per {{ form.value.purchaseUnit || 'unit' }} (AP$) · تكلفة الشراء</mat-label>
+          <input matInput type="number" min="0" step="any" formControlName="cost" />
+          <mat-hint>{{ restating() ? 'Restated by the conversion' : data ? 'Replaces the average cost' : 'Priced purchases update it' }}</mat-hint>
+        </mat-form-field>
+        <mat-form-field>
+          <mat-label>Yield % · نسبة الصافي</mat-label>
+          <input matInput type="number" min="1" max="100" step="any" formControlName="yield" />
+          <mat-hint>Usable after trimming</mat-hint>
+        </mat-form-field>
+        <mat-form-field>
+          <mat-label>Reorder at ({{ form.value.purchaseUnit || 'units' }}) · حد الطلب</mat-label>
+          <input matInput type="number" min="0" step="any" formControlName="reorderAt" />
+          @if (restating()) {
+            <mat-hint>Restated by the conversion</mat-hint>
+          }
+        </mat-form-field>
+      </form>
+    </mat-dialog-content>
+    <mat-dialog-actions align="end">
+      <button mat-button mat-dialog-close>Cancel</button>
+      <button mat-flat-button type="submit" form="material-form" [disabled]="form.invalid || blocked()">
+        {{ restating() && !approvals.canApprove() ? 'Send for approval' : 'Save' }}
+      </button>
+    </mat-dialog-actions>
+  `,
+  styles: `
+    .form {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(200px, 1fr));
+      gap: 8px 12px;
+      padding-top: 4px;
+    }
+    .wide {
+      grid-column: 1 / -1;
+    }
+    .unit-change {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding: 8px 12px;
+      border-inline-start: 3px solid var(--mat-sys-primary);
+      background: var(--mat-sys-surface-container-low);
+      border-radius: 4px;
+    }
+    .unit-change p {
+      margin: 0;
+    }
+    .conversion {
+      max-width: 320px;
+    }
+    .restated {
+      font-weight: 500;
+    }
+    .error {
+      color: var(--mat-sys-error);
+    }
+    .muted {
+      color: var(--mat-sys-on-surface-variant);
+    }
+    @media (max-width: 560px) {
+      .form {
+        grid-template-columns: 1fr;
+      }
+    }
+  `,
+})
+export class MaterialDialog {
+  protected readonly company = inject(Company);
+  protected readonly data = inject<MaterialCost | null>(MAT_DIALOG_DATA);
+  private readonly ref = inject(MatDialogRef<MaterialDialog, MaterialDialogResult>);
+  private readonly api = inject(CostingApi);
+  protected readonly approvals = inject(Approvals);
+  protected readonly one = one;
+  protected readonly many = many;
+
+  private readonly defaults: Record<UnitOfMeasure, [string, number]> = { Gram: ['kg', 1000], Millilitre: ['L', 1000], Piece: ['piece', 1] };
+
+  protected readonly form = new FormGroup({
+    name: new FormControl(this.data?.name ?? '', { nonNullable: true, validators: [Validators.required] }),
+    code: new FormControl(this.data?.code ?? '', { nonNullable: true }),
+    categoryId: new FormControl<string | null>(this.data?.categoryId ?? null),
+    unit: new FormControl<UnitOfMeasure>({ value: this.data?.unit ?? 'Gram', disabled: this.data?.kind === 'Prep' }, { nonNullable: true }),
+    purchaseUnit: new FormControl(this.data?.purchaseUnit ?? 'kg', { nonNullable: true, validators: [Validators.required] }),
+    purchaseUnitSize: new FormControl(this.data?.purchaseUnitSize ?? 1000, {
+      nonNullable: true,
+      validators: [Validators.required, Validators.min(0.001)],
+    }),
+    cost: new FormControl<number | null>(this.data?.costPerPurchaseUnit ?? null, { validators: [Validators.min(0)] }),
+    yield: new FormControl(this.data?.defaultYieldPercent ?? 100, {
+      nonNullable: true,
+      validators: [Validators.required, Validators.min(0.01), Validators.max(100)],
+    }),
+    reorderAt: new FormControl(this.data ? this.data.reorderLevel / this.data.purchaseUnitSize : 0, {
+      nonNullable: true,
+      validators: [Validators.min(0)],
+    }),
+    // How many of the smaller unit one of the larger is: asked once something records it.
+    conversion: new FormControl<number | null>(null),
+    reason: new FormControl('', { nonNullable: true }),
+  });
+
+  protected readonly unit = signal<UnitOfMeasure>(this.data?.unit ?? 'Gram');
+  protected readonly changingUnit = computed(() => !!this.data && this.unit() !== this.data.unit);
+  protected readonly usage = signal<MaterialUsage | null>(null);
+  protected readonly usageError = signal<string | null>(null);
+  // Changed with everything recorded restated: the cost and reorder level follow the conversion.
+  protected readonly restating = computed(() => this.changingUnit() && !!this.usage()?.inUse);
+  // Not to be sent: what records it is not known yet, or a request waiting for a manager names it.
+  protected readonly blocked = computed(
+    () => this.changingUnit() && (!!this.usageError() || !this.usage() || !!this.usage()!.pendingRequests),
+  );
+
+  // The conversion is said of the larger unit: a piece against grams or millilitres, a millilitre
+  // against grams.
+  protected readonly big = computed<UnitOfMeasure>(() => (this.data?.unit === 'Piece' || this.unit() === 'Piece' ? 'Piece' : 'Millilitre'));
+  protected readonly small = computed<UnitOfMeasure>(() => (this.big() === this.unit() ? this.data!.unit : this.unit()));
+
+  constructor() {
+    const { conversion, purchaseUnitSize } = this.form.controls;
+    merge(conversion.valueChanges, purchaseUnitSize.valueChanges)
+      .pipe(takeUntilDestroyed())
+      .subscribe(() => this.restate());
+  }
+
+  protected unitLabel(): string {
+    return unitLabels[this.form.getRawValue().unit];
+  }
+
+  // How many of the old unit one of the new is, from the conversion as it was said; null until it is.
+  protected oneNewIsOld(): number | null {
+    const said = this.form.controls.conversion.value;
+    if (!said || said <= 0) {
+      return null;
+    }
+    return this.unit() === this.big() ? said : 1 / said;
+  }
+
+  protected recorded(usage: MaterialUsage): string {
+    const count = (n: number, what: string, plural = what + 's') => (n === 0 ? null : `${n} ${n === 1 ? what : plural}`);
+    return [
+      count(usage.stockMovements, 'stock movement'),
+      count(usage.invoiceLines, 'invoice line'),
+      count(usage.recipes, 'recipe'),
+      count(usage.prepRecipes, 'prep recipe'),
+      count(usage.counts, 'stock count'),
+      count(usage.batches, 'batch', 'batches'),
+    ]
+      .filter((s) => s !== null)
+      .join(', ');
+  }
+
+  protected async unitChanged(unit: UnitOfMeasure): Promise<void> {
+    this.unit.set(unit);
+    const [name, size] = this.defaults[unit];
+    const d = this.data;
+    if (!d) {
+      this.form.patchValue({ purchaseUnit: name, purchaseUnitSize: size });
+      return;
+    }
+    if (unit === d.unit) {
+      // Back to the unit it has: as it was.
+      this.restated(false);
+      this.form.patchValue(
+        { purchaseUnit: d.purchaseUnit, purchaseUnitSize: d.purchaseUnitSize, cost: d.costPerPurchaseUnit, reorderAt: d.reorderLevel / d.purchaseUnitSize, conversion: null },
+        { emitEvent: false },
+      );
+      return;
+    }
+    this.form.patchValue({ purchaseUnit: name, purchaseUnitSize: size }, { emitEvent: false });
+    const usage = this.usage() ?? (await this.loadUsage(d.id));
+    if (!usage || this.unit() !== unit) {
+      return;
+    }
+    this.restated(usage.inUse);
+    if (usage.inUse) {
+      this.restate();
+    } else {
+      // Its price and reorder level were in the old unit: given again for the new one.
+      this.form.patchValue({ cost: null, reorderAt: 0 });
+    }
+  }
+
+  protected save(): void {
+    if (this.form.invalid || this.blocked()) {
+      return;
+    }
+    const v = this.form.getRawValue();
+    const d = this.data;
+    const details = {
+      name: v.name.trim(),
+      code: v.code.trim() || null,
+      categoryId: v.categoryId,
+      defaultYieldPercent: v.yield,
+    };
+    if (d && v.unit !== d.unit) {
+      const restating = this.restating();
+      this.ref.close({
+        // As it is in the unit it has now; the unit change carries the rest.
+        material: { ...details, purchaseUnit: d.purchaseUnit, purchaseUnitSize: d.purchaseUnitSize, costPerPurchaseUnit: null, reorderLevel: d.reorderLevel },
+        unitChange: {
+          requestId: crypto.randomUUID(),
+          unit: v.unit,
+          oneNewIsOld: restating ? this.oneNewIsOld() : null,
+          purchaseUnit: v.purchaseUnit.trim(),
+          purchaseUnitSize: v.purchaseUnitSize,
+          costPerPurchaseUnit: restating ? null : v.cost,
+          reorderLevel: restating ? null : v.reorderAt * v.purchaseUnitSize,
+          reason: v.reason.trim() || null,
+        },
+      });
+      return;
+    }
+    // An unchanged cost is not sent: sending it would reset the average to the rounded figure shown.
+    const costChanged = !d || v.cost !== d.costPerPurchaseUnit;
+    this.ref.close({
+      material: {
+        ...details,
+        unit: d ? undefined : v.unit,
+        purchaseUnit: v.purchaseUnit.trim(),
+        purchaseUnitSize: v.purchaseUnitSize,
+        costPerPurchaseUnit: costChanged ? v.cost : null,
+        reorderLevel: v.reorderAt * v.purchaseUnitSize,
+      },
+      unitChange: null,
+    });
+  }
+
+  private async loadUsage(id: string): Promise<MaterialUsage | null> {
+    try {
+      const usage = await firstValueFrom(this.api.materialUsage(id));
+      this.usage.set(usage);
+      return usage;
+    } catch (error) {
+      this.usageError.set(errorMessage(error, 'What records it could not be read, so its unit cannot be changed now.'));
+      return null;
+    }
+  }
+
+  // Restated by the conversion, the cost and reorder level are worked out, not entered; and the
+  // conversion is needed.
+  private restated(on: boolean): void {
+    const { cost, reorderAt, conversion } = this.form.controls;
+    if (on) {
+      cost.disable({ emitEvent: false });
+      reorderAt.disable({ emitEvent: false });
+      conversion.setValidators([Validators.required, Validators.min(0.000001)]);
+    } else {
+      cost.enable({ emitEvent: false });
+      reorderAt.enable({ emitEvent: false });
+      conversion.clearValidators();
+    }
+    conversion.updateValueAndValidity({ emitEvent: false });
+  }
+
+  // The cost of one new purchase unit and the reorder level in them, as the conversion makes them.
+  private restate(): void {
+    const d = this.data;
+    if (!d || !this.restating()) {
+      return;
+    }
+    const r = this.oneNewIsOld();
+    const size = this.form.controls.purchaseUnitSize.value;
+    this.form.patchValue(
+      {
+        cost: r && d.costPerUnit !== null ? Math.round(d.costPerUnit * r * size * 100) / 100 : null,
+        reorderAt: r && size ? Math.round((d.reorderLevel / r / size) * 1000) / 1000 : 0,
+      },
+      { emitEvent: false },
+    );
+  }
+}
+```
+
+
+> 📄 **`frontend/src/app/features/costing/material-history-dialog.ts`** — 188 سطر
+
+```ts
+import { DatePipe, DecimalPipe } from '@angular/common';
+import { Component, inject, signal } from '@angular/core';
+import { MatButtonModule } from '@angular/material/button';
+import { MAT_DIALOG_DATA, MatDialogModule, MatDialogRef } from '@angular/material/dialog';
+import { MatIconModule } from '@angular/material/icon';
+import { MatProgressBarModule } from '@angular/material/progress-bar';
+import { Router } from '@angular/router';
+import { firstValueFrom } from 'rxjs';
+import { CostingApi, MaterialCost, MaterialPurchase, MaterialPurchaseHistory, unitLabels } from '../../core/costing/costing.api';
+import { errorMessage } from '../../core/http/error-message';
+import { Company } from '../../core/settings/company';
+import { MoneyPipe } from '../../core/ui/money.pipe';
+
+// A material's purchase history card (كارت الصنف): every invoice line that bought it, newest first,
+// as its paper has it, to hold against the paper invoices when a count looks wrong. A voided
+// invoice is shown, struck through and left out of the totals, with the one that corrected it.
+// A row opens its invoice in the archive.
+@Component({
+  selector: 'app-material-history-dialog',
+  imports: [DatePipe, DecimalPipe, MatButtonModule, MatDialogModule, MatIconModule, MatProgressBarModule, MoneyPipe],
+  template: `
+    <h2 mat-dialog-title>{{ data.name }} · Purchase history <span class="inline-ar">كارت الصنف</span></h2>
+    <mat-dialog-content>
+      @if (loading()) {
+        <mat-progress-bar mode="indeterminate" />
+      } @else if (error(); as e) {
+        <p class="error" role="alert">{{ e }}</p>
+      } @else if (history(); as h) {
+        @if (!h.lines.length) {
+          <p class="muted">No invoice has bought {{ h.material }} yet.</p>
+        } @else {
+          <div class="table-wrap">
+            <table class="grid">
+              <thead>
+                <tr>
+                  <th>Date<span class="ar">تاريخ الفاتورة</span></th>
+                  <th>Supplier<span class="ar">المورد</span></th>
+                  <th>Invoice no.<span class="ar">رقم الفاتورة</span></th>
+                  <th class="num">Quantity bought<span class="ar">الكمية المشتراة</span></th>
+                  <th class="num">Unit price<span class="ar">سعر الوحدة</span></th>
+                  <th class="num">Line total<span class="ar">إجمالي السطر</span></th>
+                  <th><span class="cdk-visually-hidden">Invoice</span></th>
+                </tr>
+              </thead>
+              <tbody>
+                @for (l of h.lines; track $index) {
+                  <tr class="clickable" [class.voided]="l.voided" (click)="open(l.invoiceId)">
+                    <td class="date">{{ l.date | date: 'd MMM y' }}</td>
+                    <td>{{ l.supplier ?? '—' }}</td>
+                    <td>
+                      {{ l.invoiceNumber ?? '—' }}
+                      @if (l.voided) {
+                        <span class="badge void">Voided · ملغاة</span>
+                        @if (l.replacedBy; as next) {
+                          <button mat-button class="link" (click)="open(next); $event.stopPropagation()">Corrected by a new invoice</button>
+                        }
+                      } @else if (l.revisionOf) {
+                        <span class="badge">Correction · تعديل</span>
+                      }
+                    </td>
+                    <td class="num">
+                      <span class="amount">{{ l.quantity | number: '1.0-3' }} {{ l.unit }}</span>
+                      @if (l.baseQuantity !== l.quantity) {
+                        <small class="muted">{{ l.baseQuantity | number: '1.0-3' }} {{ base(h) }}</small>
+                      }
+                    </td>
+                    <td class="num amount">{{ l.unitPrice === null ? '' : company.money(l.unitPrice, 2, 4) + ' / ' + l.unit }}</td>
+                    <td class="num amount">
+                      @if (l.total === null) {
+                        <span class="muted">No price</span>
+                      } @else {
+                        {{ l.total | money }}
+                      }
+                    </td>
+                    <td>
+                      <button mat-icon-button (click)="open(l.invoiceId); $event.stopPropagation()" [attr.aria-label]="'View invoice ' + (l.invoiceNumber ?? '') + ' of ' + (l.date | date: 'd MMM y')">
+                        <mat-icon>open_in_new</mat-icon>
+                      </button>
+                    </td>
+                  </tr>
+                }
+              </tbody>
+              <tfoot>
+                <tr>
+                  <td colspan="3">Standing invoices · الفواتير السارية</td>
+                  <td class="num">
+                    {{ h.baseQuantity / h.purchaseUnitSize | number: '1.0-3' }} {{ h.purchaseUnit }}
+                    @if (h.purchaseUnitSize !== 1) {
+                      <small class="muted">{{ h.baseQuantity | number: '1.0-3' }} {{ base(h) }}</small>
+                    }
+                  </td>
+                  <td class="num">
+                    @if (h.averagePerPurchaseUnit !== null) {
+                      Average {{ h.averagePerPurchaseUnit | money }} / {{ h.purchaseUnit }}
+                    }
+                  </td>
+                  <td class="num">{{ h.total | money }}</td>
+                  <td></td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+          @if (notes(h); as n) {
+            <p class="muted small">{{ n }}</p>
+          }
+        }
+      }
+    </mat-dialog-content>
+    <mat-dialog-actions align="end">
+      <button mat-button mat-dialog-close>Close</button>
+    </mat-dialog-actions>
+  `,
+  styleUrl: './costing.scss',
+  styles: `
+    .date {
+      white-space: nowrap;
+    }
+    td.num small {
+      display: block;
+    }
+    tr.voided .amount {
+      text-decoration: line-through;
+      color: var(--mat-sys-on-surface-variant);
+    }
+    .badge {
+      margin-inline-start: 6px;
+    }
+    .badge.void {
+      background: color-mix(in srgb, var(--mat-sys-error) 14%, transparent);
+      color: var(--mat-sys-error);
+    }
+    .link {
+      display: block;
+      margin-top: 2px;
+      padding: 0;
+      min-width: 0;
+      height: auto;
+    }
+    tfoot td {
+      font-weight: 500;
+    }
+  `,
+})
+export class MaterialHistoryDialog {
+  protected readonly company = inject(Company);
+  protected readonly data = inject<MaterialCost>(MAT_DIALOG_DATA);
+  private readonly api = inject(CostingApi);
+  private readonly ref = inject(MatDialogRef<MaterialHistoryDialog>);
+  private readonly router = inject(Router);
+
+  protected readonly loading = signal(true);
+  protected readonly error = signal<string | null>(null);
+  protected readonly history = signal<MaterialPurchaseHistory | null>(null);
+
+  constructor() {
+    void this.load();
+  }
+
+  protected base(history: MaterialPurchaseHistory): string {
+    return unitLabels[history.unit];
+  }
+
+  // What the totals leave out: lines with no price yet, and voided invoices.
+  protected notes(history: MaterialPurchaseHistory): string | null {
+    const voided = history.lines.filter((l: MaterialPurchase) => l.voided).length;
+    const parts = [
+      history.unpricedLines ? `${history.unpricedLines === 1 ? '1 line has' : `${history.unpricedLines} lines have`} no price, so the average leaves it out` : '',
+      voided ? `${voided === 1 ? '1 voided invoice is' : `${voided} voided invoices are`} shown for the paper, and not counted` : '',
+    ].filter(Boolean);
+    return parts.length ? `${parts.join('. ')}.` : null;
+  }
+
+  // The invoice in the archive, as it was entered and paid.
+  protected open(invoiceId: string): void {
+    this.ref.close();
+    void this.router.navigate(['/costing/purchases/invoices', invoiceId]);
+  }
+
+  private async load(): Promise<void> {
+    try {
+      this.history.set(await firstValueFrom(this.api.materialPurchases(this.data.id)));
+    } catch (error) {
+      this.error.set(errorMessage(error, 'The purchase history could not be loaded.'));
+    } finally {
+      this.loading.set(false);
+    }
+  }
+}
+```
+
+
+> 📄 **`frontend/src/app/features/costing/material-picker.ts`** — 58 سطر
+
+```ts
+import { Component, computed, inject, input, model, output } from '@angular/core';
+import { MaterialCost, recipeCostOf } from '../../core/costing/costing.api';
+import { Company } from '../../core/settings/company';
+import { ItemPicker, PickItem } from '../shared/item-picker';
+
+// What a material costs now, per the unit it is bought in, as a pick row says it: its average, or
+// for a prep item never made its recipe's ("L.E 18.00 / kg · by recipe").
+export function materialCostText(material: MaterialCost, money: (n: number) => string): string | null {
+  const perUnit = recipeCostOf(material);
+  if (perUnit === null) {
+    return null;
+  }
+  return `${money(perUnit * material.purchaseUnitSize)} / ${material.purchaseUnit}${material.costedByRecipe ? ' · by recipe' : ''}`;
+}
+
+// A raw material or prep item as a picker offers it: what it is, the unit it is bought in, its
+// category, and what it costs now.
+export function materialPickItem(material: MaterialCost, money: (n: number) => string): PickItem {
+  return {
+    id: material.id,
+    name: material.name,
+    code: material.code,
+    kind: material.kind === 'Prep' ? 'prep' : 'material',
+    unit: material.purchaseUnit,
+    detail: material.category,
+    cost: materialCostText(material, money),
+  };
+}
+
+// A raw material or prep item chosen by typing (المكوّن): the first letters or its code find it, and
+// the dropdown shows each with its code, what it is, the unit it is bought in and what it costs now.
+// [(value)] the chosen one's id. canCreate: offers to add a material of the name typed (create).
+@Component({
+  selector: 'app-material-picker',
+  imports: [ItemPicker],
+  template: `
+    <app-item-picker [items]="items()" [(value)]="value" [label]="label()" [placeholder]="placeholder()" [canCreate]="canCreate()"
+      createLabel="Add new material · إضافة خامة" [disabled]="disabled()" (create)="create.emit($event)" />
+  `,
+  styles: `
+    :host {
+      display: block;
+    }
+  `,
+})
+export class MaterialPicker {
+  private readonly company = inject(Company);
+
+  readonly materials = input.required<readonly MaterialCost[]>();
+  readonly value = model<string | null>(null);
+  readonly label = input('Material');
+  readonly placeholder = input('Type a name or code · اكتب الاسم أو الكود');
+  readonly canCreate = input(false);
+  readonly disabled = input(false);
+  readonly create = output<string>();
+
+  protected readonly items = computed(() => this.materials().map((m) => materialPickItem(m, (n) => this.company.money(n))));
+}
+```
+
+
+> 📄 **`frontend/src/app/features/costing/quick-material-dialog.ts`** — 158 سطر
+
+```ts
+import { Component, inject, signal } from '@angular/core';
+import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
+import { MatButtonModule } from '@angular/material/button';
+import { MAT_DIALOG_DATA, MatDialogModule, MatDialogRef } from '@angular/material/dialog';
+import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatInputModule } from '@angular/material/input';
+import { MatSelectModule } from '@angular/material/select';
+import { firstValueFrom } from 'rxjs';
+import { CostingApi, UnitOfMeasure } from '../../core/costing/costing.api';
+import { errorMessage } from '../../core/http/error-message';
+import { PurchaseCategoryField } from './purchase-category-field';
+
+export interface QuickMaterialData {
+  // What was typed in the invoice line.
+  name: string;
+}
+
+// The new material, as the till saved it: its id goes on the invoice line.
+export interface QuickMaterialResult {
+  id: string;
+  name: string;
+}
+
+// A raw material missing from the list, added from the invoice without leaving it: only what a
+// delivery needs (name, category, units, yield). Its price is the invoice line's own. The code,
+// reorder level and the rest can be filled in later on the Raw materials tab.
+@Component({
+  selector: 'app-quick-material-dialog',
+  imports: [MatButtonModule, MatDialogModule, MatFormFieldModule, MatInputModule, MatSelectModule, PurchaseCategoryField, ReactiveFormsModule],
+  template: `
+    <h2 mat-dialog-title>Add a raw material <span class="ar">إضافة خامة</span></h2>
+    <mat-dialog-content>
+      <p class="hint">Added now, it goes on this line of the invoice. Its price comes from the line.</p>
+      <form [formGroup]="form" (ngSubmit)="save()" id="quick-material" class="form">
+        <mat-form-field class="wide">
+          <mat-label>Name · الاسم</mat-label>
+          <input matInput formControlName="name" cdkFocusInitial />
+        </mat-form-field>
+        <app-purchase-category-field class="wide" formControlName="categoryId" kind="RawMaterials" />
+        <mat-form-field>
+          <mat-label>Counted in · وحدة العد</mat-label>
+          <mat-select formControlName="unit" (selectionChange)="unitChanged($event.value)">
+            <mat-option value="Gram">Grams (g)</mat-option>
+            <mat-option value="Millilitre">Millilitres (ml)</mat-option>
+            <mat-option value="Piece">Pieces (pc)</mat-option>
+          </mat-select>
+        </mat-form-field>
+        <mat-form-field>
+          <mat-label>Yield % · نسبة الصافي</mat-label>
+          <input matInput type="number" min="1" max="100" step="any" formControlName="yield" />
+        </mat-form-field>
+        <mat-form-field>
+          <mat-label>Bought by · وحدة الشراء</mat-label>
+          <input matInput formControlName="purchaseUnit" placeholder="kg, carton" />
+        </mat-form-field>
+        <mat-form-field>
+          <mat-label>{{ baseLabel() }} in one {{ form.value.purchaseUnit || 'unit' }}</mat-label>
+          <input matInput type="number" min="0" step="any" formControlName="purchaseUnitSize" />
+        </mat-form-field>
+      </form>
+      @if (problem(); as p) {
+        <p class="error">{{ p }}</p>
+      }
+    </mat-dialog-content>
+    <mat-dialog-actions align="end">
+      <button mat-button mat-dialog-close [disabled]="saving()">Cancel</button>
+      <button mat-flat-button type="submit" form="quick-material" [disabled]="form.invalid || saving()">Add and use it</button>
+    </mat-dialog-actions>
+  `,
+  styles: `
+    .form {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(180px, 1fr));
+      gap: 8px 12px;
+    }
+    .wide {
+      grid-column: 1 / -1;
+    }
+    .ar {
+      direction: rtl;
+      unicode-bidi: isolate;
+      margin-left: 6px;
+      opacity: 0.75;
+      font-size: 0.8em;
+    }
+    .hint {
+      margin: 0 0 12px;
+      color: var(--mat-sys-on-surface-variant);
+    }
+    .error {
+      color: var(--mat-sys-error);
+    }
+    @media (max-width: 560px) {
+      .form {
+        grid-template-columns: 1fr;
+      }
+    }
+  `,
+})
+export class QuickMaterialDialog {
+  private readonly api = inject(CostingApi);
+  private readonly ref = inject(MatDialogRef<QuickMaterialDialog, QuickMaterialResult>);
+  protected readonly data = inject<QuickMaterialData>(MAT_DIALOG_DATA);
+
+  private readonly defaults: Record<UnitOfMeasure, [string, number]> = { Gram: ['kg', 1000], Millilitre: ['L', 1000], Piece: ['piece', 1] };
+  private readonly baseLabels: Record<UnitOfMeasure, string> = { Gram: 'g', Millilitre: 'ml', Piece: 'pc' };
+
+  protected readonly saving = signal(false);
+  protected readonly problem = signal<string | null>(null);
+
+  protected readonly form = new FormGroup({
+    name: new FormControl(this.data.name.trim(), { nonNullable: true, validators: [Validators.required] }),
+    categoryId: new FormControl<string | null>(null),
+    unit: new FormControl<UnitOfMeasure>('Gram', { nonNullable: true }),
+    purchaseUnit: new FormControl('kg', { nonNullable: true, validators: [Validators.required] }),
+    purchaseUnitSize: new FormControl(1000, { nonNullable: true, validators: [Validators.required, Validators.min(0.001)] }),
+    yield: new FormControl(100, { nonNullable: true, validators: [Validators.required, Validators.min(0.01), Validators.max(100)] }),
+  });
+
+  protected baseLabel(): string {
+    return this.baseLabels[this.form.getRawValue().unit];
+  }
+
+  protected unitChanged(unit: UnitOfMeasure): void {
+    const [name, size] = this.defaults[unit];
+    this.form.patchValue({ purchaseUnit: name, purchaseUnitSize: size });
+  }
+
+  // Saved here, so a refusal is shown with the dialog still open and nothing typed lost.
+  protected async save(): Promise<void> {
+    if (this.form.invalid || this.saving()) {
+      return;
+    }
+    const v = this.form.getRawValue();
+    this.saving.set(true);
+    this.problem.set(null);
+    try {
+      const created = (await firstValueFrom(
+        this.api.saveMaterial(null, {
+          name: v.name.trim(),
+          unit: v.unit,
+          reorderLevel: 0,
+          code: null,
+          categoryId: v.categoryId,
+          purchaseUnit: v.purchaseUnit.trim(),
+          purchaseUnitSize: v.purchaseUnitSize,
+          defaultYieldPercent: v.yield,
+          costPerPurchaseUnit: null,
+        }),
+      )) as { id: string; name: string };
+      this.ref.close({ id: created.id, name: created.name });
+    } catch (error) {
+      this.problem.set(errorMessage(error, 'The material could not be added.'));
+    } finally {
+      this.saving.set(false);
+    }
+  }
+}
+```
+
+
+## 7. شاشات الوصفات والمصنعات
+
+`RecipesShell` ثم `RecipesPage`: الوصفات (الكل، على المنيو، خارجه)، **أصناف المنيو بلا وصفة**، والمحذوفة؛ و "أضف للمنيو" لوصفات خارج المنيو.
+
+> 📄 **`frontend/src/app/features/costing/recipes-shell.ts`** — 24 سطر
+
+```ts
+import { Component } from '@angular/core';
+import { RouterOutlet } from '@angular/router';
+import { SubNav, SubNavTab } from '../shared/sub-nav';
+
+// Recipes: the dishes' recipe cards, the prep items made in the kitchen from their own recipes,
+// and the recipe categories. The production orders that make the prep items are a section of
+// their own (Production).
+@Component({
+  selector: 'app-recipes-shell',
+  imports: [RouterOutlet, SubNav],
+  template: `
+    <app-sub-nav label="Recipes" [tabs]="tabs" />
+    <router-outlet />
+  `,
+  styleUrl: './costing.scss',
+})
+export class RecipesShell {
+  // The dishes are everything under Recipes that is not the other tabs: their cards too.
+  protected readonly tabs: SubNavTab[] = [
+    { path: '.', icon: 'restaurant_menu', en: 'Dishes', ar: 'الأطباق', fallback: true },
+    { path: 'prep', icon: 'blender', en: 'Prep items', ar: 'الأصناف نصف المصنعة' },
+    { path: 'categories', icon: 'category', en: 'Categories', ar: 'أقسام الوصفات' },
+  ];
+}
+```
+
+
+> 📄 **`frontend/src/app/features/costing/recipes-page.ts`** — 579 سطر
+
+```ts
+import { DatePipe, DecimalPipe } from '@angular/common';
+import { Component, computed, effect, inject, input, signal, untracked } from '@angular/core';
+import { FormsModule } from '@angular/forms';
+import { MatButtonModule } from '@angular/material/button';
+import { MatDialog } from '@angular/material/dialog';
+import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatIconModule } from '@angular/material/icon';
+import { MatInputModule } from '@angular/material/input';
+import { MatProgressBarModule } from '@angular/material/progress-bar';
+import { MatSelectModule } from '@angular/material/select';
+import { MatTooltipModule } from '@angular/material/tooltip';
+import { Router, RouterLink } from '@angular/router';
+import { firstValueFrom } from 'rxjs';
+import { AuthService } from '../../core/auth/auth.service';
+import { Permissions } from '../../core/auth/permissions';
+import { CostStatus, CostingApi, ApprovalRequest, RecipeCategory, RecipeCostCard, statusLabels } from '../../core/costing/costing.api';
+import { CostingAccess } from '../../core/costing/costing-tabs';
+import { errorMessage } from '../../core/http/error-message';
+import { MoneyPipe } from '../../core/ui/money.pipe';
+import { NotifyService } from '../../core/ui/notify.service';
+import { saveBlob } from '../../core/ui/save-blob';
+import { AddToMenuData, AddToMenuDialog } from './add-to-menu-dialog';
+import { Approvals, pendingLabel } from './approvals';
+import { todayIso } from './financials';
+import { recipeSheetRules } from './recipe-sheet-rules';
+import { SheetImportData, SheetImportDialog } from './sheet-import-dialog';
+import { FilterOption, FilterSelect } from '../shared/filter-select';
+import { SearchField } from '../shared/search-field';
+import { SortOption, SortState, smartMatch } from '../shared/smart-search';
+import { SortControl } from '../shared/sort-control';
+
+// What the table shows: the recipes (all, on the menu, off it), the menu items still without
+// one, or the deleted ones.
+export type RecipesView = 'active' | 'linked' | 'standalone' | 'unrecipied' | 'deleted';
+
+// The columns the table sorts by, and what else the sort menu offers.
+export type RecipeSort = 'recipe' | 'category' | 'cost' | 'foodCost' | 'price' | 'margin';
+
+const recipeSorts: SortOption<RecipeSort>[] = [
+  { key: 'recipe', en: 'Name', ar: 'الاسم' },
+  { key: 'category', en: 'Category', ar: 'القسم' },
+  { key: 'cost', en: 'Cost per portion', ar: 'تكلفة الحصة', descending: true },
+  { key: 'price', en: 'Selling price', ar: 'سعر البيع', descending: true },
+  { key: 'foodCost', en: 'Food cost %', ar: 'نسبة التكلفة', descending: true },
+  { key: 'margin', en: 'Profit margin', ar: 'هامش الربح', descending: true },
+];
+
+// The recipes: each with what it is linked to on the menu (or that it is off the menu), what a
+// portion costs against its price, and View, Edit and Delete. Deleting marks it deleted: it stays
+// for the record and can be restored. A menu item with no recipe yet is a click from one. To and
+// from Excel: every recipe a row per ingredient, the ingredient chosen from a dropdown that says
+// its unit; a sheet imported replaces the recipes it names, and says what each costs now. A recipe
+// off the menu is put on it from here (Add to menu · إضافة للمنيو), one or all those shown: a menu
+// item of its name, linked to it, so selling it on Sales takes its stock by the recipe.
+@Component({
+  selector: 'app-recipes-page',
+  imports: [
+    DatePipe,
+    DecimalPipe,
+    FilterSelect,
+    FormsModule,
+    MatButtonModule,
+    MatFormFieldModule,
+    MatIconModule,
+    MatInputModule,
+    MatProgressBarModule,
+    MatSelectModule,
+    MatTooltipModule,
+    MoneyPipe,
+    RouterLink,
+    SearchField,
+    SortControl,
+  ],
+  template: `
+    <div class="toolbar smart">
+      <app-search-field [(value)]="search" placeholder="Name, Arabic name, category or menu item · الاسم أو القسم" />
+      <div class="pills">
+        <app-filter-select label="Show · عرض" icon="link" [options]="viewFilters()" [value]="view()" (valueChange)="view.set($any($event))" />
+        @if (view() !== 'unrecipied') {
+          <app-filter-select label="Category · القسم" icon="category" [options]="categoryFilters()" [(value)]="category" />
+        }
+        @if (view() !== 'unrecipied' && view() !== 'deleted') {
+          <app-filter-select label="Cost · التكلفة" icon="monitoring" [options]="statusFilters" [value]="status()" (valueChange)="status.set($any($event))" />
+          <app-sort-control [options]="sorts" [(sort)]="sort" />
+        }
+      </div>
+    </div>
+    <div class="toolbar">
+      <span class="spacer"></span>
+      @if (canAddToMenu() && toMenu().length) {
+        <button mat-stroked-button class="to-menu" (click)="addToMenu(toMenu())" [disabled]="busy()"
+          matTooltip="Each standalone recipe shown becomes a menu item, sold on Sales by its recipe">
+          <mat-icon>restaurant_menu</mat-icon> Add {{ toMenu().length }} to menu <span class="inline-ar">إضافة للمنيو</span>
+        </button>
+      }
+      <button mat-stroked-button (click)="exportExcel()" [disabled]="busy()">
+        <mat-icon>download</mat-icon> Export Excel <span class="inline-ar">تصدير إلى إكسل</span>
+      </button>
+      <button mat-stroked-button (click)="importExcel()" [disabled]="busy()">
+        <mat-icon>upload_file</mat-icon> Import Excel <span class="inline-ar">استيراد من إكسل</span>
+      </button>
+      <a mat-flat-button class="create" routerLink="new"><mat-icon>add</mat-icon> Create New Recipe</a>
+    </div>
+    @if (busy()) {
+      <mat-progress-bar mode="indeterminate" />
+    }
+    @if (!loading() && !error()) {
+      <p class="muted counts">
+        {{ counts().recipes }} {{ counts().recipes === 1 ? 'recipe' : 'recipes' }}: {{ counts().linked }} linked to the menu,
+        {{ counts().standalone }} off it.
+        @if (counts().unrecipied) {
+          <a href="" (click)="$event.preventDefault(); view.set('unrecipied')">{{ counts().unrecipied }} menu {{ counts().unrecipied === 1 ? 'item has' : 'items have' }} no recipe.</a>
+        }
+      </p>
+    }
+    @if (loading()) {
+      <mat-progress-bar mode="indeterminate" />
+    } @else if (error()) {
+      <p class="error">{{ error() }}</p>
+    } @else if (view() === 'unrecipied') {
+      <div class="table-wrap">
+        <table class="grid">
+          <thead>
+            <tr>
+              <th>Item code<span class="ar">كود الصنف</span></th>
+              <th>Menu item<span class="ar">صنف المنيو</span></th>
+              <th>Category<span class="ar">الفئة</span></th>
+              <th class="num">Menu price<span class="ar">سعر البيع</span></th>
+              <th class="num"><span class="visually-hidden">Actions</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            @for (c of unrecipied(); track c.itemCode) {
+              <tr>
+                <td class="code">{{ c.itemCode }}</td>
+                <td>{{ c.linkedTo ?? c.recipe }}</td>
+                <td>{{ c.targetKind === 'AddOn' ? 'Add-on' : (c.category ?? '') }}</td>
+                <td class="num">{{ c.menuPrice === null ? '—' : (c.menuPrice | money) }}</td>
+                <td class="num">
+                  <button mat-stroked-button (click)="createFor(c)"><mat-icon>add</mat-icon> Create recipe</button>
+                </td>
+              </tr>
+            } @empty {
+              <tr><td colspan="5" class="muted">Every menu item has a recipe.</td></tr>
+            }
+          </tbody>
+        </table>
+      </div>
+    } @else {
+      <div class="table-wrap">
+        <table class="grid">
+          <thead>
+            <tr>
+              <th [attr.aria-sort]="ariaSort('recipe')">
+                <button class="sort" (click)="sortBy('recipe')">Recipe {{ arrow('recipe') }}</button><span class="ar">الوصفة</span>
+              </th>
+              <th [attr.aria-sort]="ariaSort('category')">
+                <button class="sort" (click)="sortBy('category')">Category {{ arrow('category') }}</button><span class="ar">القسم</span>
+              </th>
+              <th>Link<span class="ar">الارتباط</span></th>
+              <th class="num">Portions<span class="ar">الحصص</span></th>
+              <th class="num">Price<span class="ar">السعر</span></th>
+              <th class="num" [attr.aria-sort]="ariaSort('cost')">
+                <button class="sort" (click)="sortBy('cost')">Cost per portion {{ arrow('cost') }}</button><span class="ar">تكلفة الحصة</span>
+              </th>
+              <th class="num" [attr.aria-sort]="ariaSort('foodCost')">
+                <button class="sort" (click)="sortBy('foodCost')">Food cost % {{ arrow('foodCost') }}</button><span class="ar">نسبة التكلفة</span>
+              </th>
+              <th>Status<span class="ar">الحالة</span></th>
+              <th class="num"><span class="visually-hidden">Actions</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            @for (c of shown(); track c.recipeId) {
+              <tr class="clickable" [class.deleted]="c.isDeleted" [class.pending-deletion]="!!pendingOf(c)" (click)="viewRecipe(c)">
+                <td>{{ c.recipe }}</td>
+                <td>
+                  @if (c.recipeCategory) {
+                    {{ c.recipeCategory }}
+                    @if (c.recipeCategoryAr) {
+                      <span class="ar">{{ c.recipeCategoryAr }}</span>
+                    }
+                  } @else {
+                    <span class="unsorted">Uncategorized</span>
+                  }
+                </td>
+                <td>
+                  @if (c.isStandalone) {
+                    <span class="link standalone">Standalone / Off-menu<span class="ar">مستقلة</span></span>
+                  } @else {
+                    <span class="link linked">Linked to menu: {{ c.linkedTo }}<span class="ar">مرتبطة بالمنيو</span></span>
+                  }
+                </td>
+                <td class="num">{{ c.portions }}</td>
+                <td class="num">
+                  {{ c.menuPrice === null ? '—' : (c.menuPrice | money) }}
+                  @if (c.isStandalone && c.menuPrice !== null) {
+                    <div class="muted small">planned</div>
+                  }
+                </td>
+                <td class="num">{{ c.costPerPortion | money }}</td>
+                <td class="num">{{ c.foodCostPercentActual === null ? '—' : (c.foodCostPercentActual | number: '1.1-1') + '%' }}</td>
+                <td>
+                  @if (c.isDeleted) {
+                    <span class="muted">Deleted {{ c.deletedAtUtc | date: 'd MMM y' }}{{ c.deletedBy ? ' by ' + c.deletedBy : '' }}</span>
+                  } @else if (pendingOf(c); as p) {
+                    <span class="pending-badge">{{ pendingLabel(p).en }}<span class="ar">{{ pendingLabel(p).ar }}</span></span>
+                    <div class="muted small">by {{ p.requestedBy }}, {{ p.requestedAtUtc | date: 'd MMM' }}</div>
+                  } @else {
+                    <span class="status" [class]="c.status">
+                      {{ statusLabels[c.status].en }}<span class="ar">{{ statusLabels[c.status].ar }}</span>
+                    </span>
+                  }
+                </td>
+                <td class="num actions" (click)="$event.stopPropagation()">
+                  <button mat-icon-button (click)="viewRecipe(c)" matTooltip="View" [attr.aria-label]="'View ' + c.recipe"><mat-icon>visibility</mat-icon></button>
+                  @if (c.isDeleted) {
+                    <button mat-button (click)="restore(c)" [disabled]="saving()"><mat-icon>restore_from_trash</mat-icon> Restore</button>
+                  } @else if (pendingOf(c)) {
+                    <mat-icon class="locked" matTooltip="Waiting for a manager's approval: locked until decided" aria-label="Locked: deletion requested">lock_clock</mat-icon>
+                  } @else {
+                    @if (c.isStandalone && canAddToMenu()) {
+                      <button mat-icon-button class="to-menu" (click)="addToMenu([c])" matTooltip="Add to menu · إضافة للمنيو"
+                        [attr.aria-label]="'Add ' + c.recipe + ' to the menu'"><mat-icon>restaurant_menu</mat-icon></button>
+                    }
+                    <button mat-icon-button (click)="edit(c)" matTooltip="Edit" [attr.aria-label]="'Edit ' + c.recipe"><mat-icon>edit</mat-icon></button>
+                    <button mat-icon-button class="danger" (click)="remove(c)" [disabled]="saving()"
+                      matTooltip="Delete" [attr.aria-label]="'Delete ' + c.recipe">
+                      <mat-icon>delete</mat-icon>
+                    </button>
+                  }
+                </td>
+              </tr>
+            } @empty {
+              <tr>
+                <td colspan="9" class="muted">
+                  @if (view() === 'deleted') {
+                    No deleted recipes.
+                  } @else if (recipes().length === 0) {
+                    No recipes yet. Create one, on the menu or off it.
+                  } @else {
+                    Nothing matches.
+                  }
+                </td>
+              </tr>
+            }
+          </tbody>
+        </table>
+      </div>
+    }
+  `,
+  styleUrl: './costing.scss',
+  styles: `
+    .counts {
+      margin: 0 0 8px;
+    }
+    .sort {
+      padding: 0;
+      border: 0;
+      background: none;
+      font: inherit;
+      color: inherit;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .unsorted {
+      color: var(--mat-sys-error);
+    }
+    .create {
+      white-space: nowrap;
+    }
+    .small {
+      font-size: 0.85em;
+    }
+    .link {
+      display: inline-block;
+      padding: 2px 10px;
+      border-radius: 12px;
+      font: var(--mat-sys-label-medium);
+
+      .ar {
+        display: inline;
+        margin-left: 6px;
+      }
+    }
+    .linked {
+      background: var(--mat-sys-primary-container);
+      color: var(--mat-sys-on-primary-container);
+    }
+    .standalone {
+      background: var(--mat-sys-tertiary-container);
+      color: var(--mat-sys-on-tertiary-container);
+    }
+    tr.deleted td {
+      color: var(--mat-sys-on-surface-variant);
+    }
+    .actions {
+      white-space: nowrap;
+    }
+    .danger {
+      color: var(--mat-sys-error);
+    }
+    .to-menu {
+      color: var(--mat-sys-primary);
+      white-space: nowrap;
+    }
+    .spacer {
+      flex: 1;
+    }
+    .visually-hidden {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip: rect(0 0 0 0);
+    }
+  `,
+})
+export class RecipesPage {
+  protected readonly pendingLabel = pendingLabel;
+  private readonly api = inject(CostingApi);
+  private readonly router = inject(Router);
+  private readonly notify = inject(NotifyService);
+  private readonly dialog = inject(MatDialog);
+  protected readonly approvals = inject(Approvals);
+  private readonly access = inject(CostingAccess);
+  private readonly auth = inject(AuthService);
+
+  protected readonly statusLabels = statusLabels;
+  protected readonly statuses = Object.keys(statusLabels).filter((s) => s !== 'NoRecipe') as CostStatus[];
+
+  // Every recipe, the deleted ones too; and every menu item by the recipe it sells by.
+  protected readonly recipes = signal<RecipeCostCard[]>([]);
+  protected readonly menu = signal<RecipeCostCard[]>([]);
+  protected readonly loading = signal(true);
+  protected readonly saving = signal(false);
+  // An export being written.
+  protected readonly busy = signal(false);
+  protected readonly error = signal<string | null>(null);
+  protected readonly search = signal('');
+  protected readonly view = signal<RecipesView>('active');
+  protected readonly status = signal<CostStatus | ''>('');
+  // The kitchen's own categories; the one shown ('': all), or none for the unsorted ones.
+  protected readonly categories = signal<RecipeCategory[]>([]);
+  protected readonly category = signal('');
+  protected readonly uncategorized = 'none';
+  protected readonly sorts = recipeSorts;
+  protected readonly sort = signal<SortState<RecipeSort>>({ key: 'recipe', direction: 1 });
+
+  protected readonly viewFilters = computed<FilterOption[]>(() => {
+    const counts = this.counts();
+    return [
+      { value: 'active', label: 'All recipes · كل الوصفات', count: counts.recipes },
+      { value: 'linked', label: 'Linked to the menu · مرتبطة بالمنيو', count: counts.linked },
+      { value: 'standalone', label: 'Standalone / off-menu · مستقلة', count: counts.standalone },
+      { value: 'unrecipied', label: 'Menu items without a recipe · أصناف بلا وصفة', count: counts.unrecipied },
+      { value: 'deleted', label: 'Deleted · المحذوفة', count: this.recipes().filter((c) => c.isDeleted).length },
+    ];
+  });
+
+  protected readonly categoryFilters = computed<FilterOption[]>(() => {
+    const live = this.recipes().filter((c) => !c.isDeleted);
+    return [
+      { value: '', label: 'All · الكل', count: live.length },
+      ...this.categories().map((c) => ({
+        value: c.id, label: c.nameAr ? `${c.name} · ${c.nameAr}` : c.name, count: live.filter((r) => r.recipeCategoryId === c.id).length,
+      })),
+      { value: this.uncategorized, label: 'Uncategorized · بدون قسم', count: live.filter((r) => r.recipeCategoryId === null).length },
+    ];
+  });
+
+  protected readonly statusFilters: FilterOption[] = [
+    { value: '', label: 'Any · الكل' },
+    ...(Object.keys(statusLabels).filter((s) => s !== 'NoRecipe') as CostStatus[]).map((s) => ({
+      value: s, label: `${statusLabels[s].en} · ${statusLabels[s].ar}`,
+    })),
+  ];
+
+  // From the query: a category to show, from the categories' counts.
+  readonly categoryParam = input<string | undefined>(undefined, { alias: 'category' });
+
+  protected readonly shown = computed(() => {
+    const view = this.view();
+    const status = this.status();
+    const category = this.category();
+    const { key, direction } = this.sort();
+    return this.recipes()
+      .filter(
+        (c) =>
+          (view === 'deleted' ? c.isDeleted : !c.isDeleted) &&
+          (view !== 'linked' || !c.isStandalone) &&
+          (view !== 'standalone' || c.isStandalone) &&
+          (view === 'deleted' || !status || c.status === status) &&
+          (!category || (category === this.uncategorized ? c.recipeCategoryId === null : c.recipeCategoryId === category)) &&
+          smartMatch(this.search(), c.recipe, c.recipeAr, c.recipeCategory, c.recipeCategoryAr, c.linkedTo, c.itemCode),
+      )
+      .sort((a, b) => direction * RecipesPage.compare(a, b, key) || a.recipe.localeCompare(b.recipe));
+  });
+
+  // Menu items, sizes and add-ons with no recipe to sell by. A size that borrows its dish's has one.
+  protected readonly unrecipied = computed(() =>
+    this.menu().filter((c) => !c.hasRecipe && smartMatch(this.search(), c.itemCode, c.linkedTo, c.recipe, c.recipeAr, c.category)),
+  );
+
+  // Whoever works the menu puts a recipe on it.
+  protected readonly canAddToMenu = computed(() => this.access.has('Menu') && this.auth.can(Permissions.InventoryManage));
+
+  // The standalone ones shown, none waiting for a manager: put on the menu together.
+  protected readonly toMenu = computed(() => this.shown().filter((c) => c.isStandalone && !c.isDeleted && !this.pendingOf(c)));
+
+  protected readonly counts = computed(() => {
+    const active = this.recipes().filter((c) => !c.isDeleted);
+    return {
+      recipes: active.length,
+      linked: active.filter((c) => !c.isStandalone).length,
+      standalone: active.filter((c) => c.isStandalone).length,
+      unrecipied: this.menu().filter((c) => !c.hasRecipe).length,
+    };
+  });
+
+  constructor() {
+    effect(() => {
+      const category = this.categoryParam();
+      untracked(() => this.category.set(category ?? ''));
+    });
+    void this.load();
+  }
+
+  // By the column clicked; again, the other way.
+  protected sortBy(key: RecipeSort): void {
+    this.sort.update((s) => ({ key, direction: s.key === key ? (-s.direction as 1 | -1) : 1 }));
+  }
+
+  protected arrow(key: RecipeSort): string {
+    const sort = this.sort();
+    return sort.key !== key ? '' : sort.direction === 1 ? '↑' : '↓';
+  }
+
+  protected ariaSort(key: RecipeSort): 'ascending' | 'descending' | 'none' {
+    const sort = this.sort();
+    return sort.key !== key ? 'none' : sort.direction === 1 ? 'ascending' : 'descending';
+  }
+
+  // Uncategorized last, and a recipe with no food cost % after those with one, whichever way.
+  private static compare(a: RecipeCostCard, b: RecipeCostCard, by: RecipeSort): number {
+    switch (by) {
+      case 'category':
+        return a.recipeCategory === b.recipeCategory ? 0 : a.recipeCategory === null ? 1 : b.recipeCategory === null ? -1 : a.recipeCategory.localeCompare(b.recipeCategory);
+      case 'cost':
+        return a.costPerPortion - b.costPerPortion;
+      case 'foodCost':
+        return (a.foodCostPercentActual ?? Number.MAX_VALUE) - (b.foodCostPercentActual ?? Number.MAX_VALUE);
+      case 'price':
+        return (a.menuPrice ?? -Number.MAX_VALUE) - (b.menuPrice ?? -Number.MAX_VALUE);
+      case 'margin':
+        return (a.marginPerPortion ?? -Number.MAX_VALUE) - (b.marginPerPortion ?? -Number.MAX_VALUE);
+      default:
+        return a.recipe.localeCompare(b.recipe);
+    }
+  }
+
+  protected viewRecipe(card: RecipeCostCard): void {
+    void this.router.navigate(['/costing/recipes/recipe', card.recipeId]);
+  }
+
+  protected edit(card: RecipeCostCard): void {
+    void this.router.navigate(['/costing/recipes/recipe', card.recipeId, 'edit']);
+  }
+
+  // A recipe for this menu item, linked to it from the start.
+  protected createFor(card: RecipeCostCard): void {
+    void this.router.navigate(['/costing/recipes/new'], {
+      queryParams: { targetKind: card.targetKind, catalogItemId: card.catalogItemId, ...(card.variantId === null ? {} : { variantId: card.variantId }) },
+    });
+  }
+
+  // Deleted for a manager (it can be restored from Deleted); asked of one for anyone else.
+  protected async exportExcel(): Promise<void> {
+    this.busy.set(true);
+    try {
+      saveBlob(await firstValueFrom(this.api.exportRecipes()), `recipes-${todayIso()}.xlsx`);
+      this.notify.info('Recipes exported to Excel. · تم تصدير الوصفات إلى إكسل.');
+    } catch (error) {
+      this.notify.error(error, 'The recipes could not be exported. · تعذّر تصدير الوصفات.');
+    } finally {
+      this.busy.set(false);
+    }
+  }
+
+  // A sheet imported in the dialog, which says what it did and what each recipe costs now; the
+  // list read again when it changed it.
+  protected async importExcel(): Promise<void> {
+    const data: SheetImportData = {
+      title: { en: 'Import recipes from Excel', ar: 'استيراد الوصفات من إكسل' },
+      noun: { one: 'recipe', many: 'recipes', ar: 'الوصفة' },
+      rules: [
+        {
+          en: 'One ingredient a row: the recipe (a menu item, size or add-on from the list, or a recipe of your own), the ingredient from the list, and its quantity.',
+          ar: 'مكوّن في كل صف: الوصفة (صنف أو حجم أو إضافة من القائمة، أو وصفة خاصة)، والمكوّن من القائمة، وكميته.',
+        },
+        ...recipeSheetRules,
+      ],
+      templateName: 'recipes-template.xlsx',
+      template: () => this.api.recipesTemplate(),
+      upload: (file) => this.api.importRecipes(file),
+    };
+    const changed = await firstValueFrom(
+      this.dialog.open<SheetImportDialog, SheetImportData, boolean>(SheetImportDialog, { data, width: '860px', maxWidth: '96vw' }).afterClosed(),
+    );
+    if (changed) {
+      await this.load();
+    }
+  }
+
+  // Each a menu item of its name, at the price and in the category given in the dialog; the list
+  // read again unless none went on (closed by Escape or outside it, it may have done some).
+  protected async addToMenu(recipes: RecipeCostCard[]): Promise<void> {
+    const added = await firstValueFrom(
+      this.dialog
+        .open<AddToMenuDialog, AddToMenuData, boolean>(AddToMenuDialog, { data: { recipes }, width: recipes.length > 1 ? '1000px' : '820px', maxWidth: '96vw' })
+        .afterClosed(),
+    );
+    if (added !== false) {
+      await this.load();
+    }
+  }
+
+  protected async remove(card: RecipeCostCard): Promise<void> {
+    this.saving.set(true);
+    try {
+      const detail = card.isStandalone ? undefined : `Sales of ${card.linkedTo} stop taking stock until another recipe is linked to it.`;
+      if ((await this.approvals.delete('Recipe', card.recipeId!, card.recipe, detail)) === 'Applied') {
+        await this.load();
+      }
+    } finally {
+      this.saving.set(false);
+    }
+  }
+
+  protected pendingOf(card: RecipeCostCard): ApprovalRequest | undefined {
+    return card.recipeId ? this.approvals.pendingFor(card.recipeId) : undefined;
+  }
+
+  // Back, linked again if its menu item has no other recipe since; off the menu if it has.
+  protected async restore(card: RecipeCostCard): Promise<void> {
+    this.saving.set(true);
+    try {
+      const restored = await firstValueFrom(this.api.restoreRecipe(card.recipeId!, card.recipe));
+      this.notify.info(
+        card.isStandalone || restored.catalogItemId !== null
+          ? `${card.recipe} restored.`
+          : `${card.recipe} restored off the menu: ${card.linkedTo} has another recipe now.`,
+      );
+      await this.load();
+    } catch (error) {
+      this.notify.error(error, 'The recipe could not be restored.');
+    } finally {
+      this.saving.set(false);
+    }
+  }
+
+  private async load(): Promise<void> {
+    void this.approvals.refresh();
+    try {
+      const [recipes, menu, categories] = await Promise.all([
+        firstValueFrom(this.api.recipes(true)),
+        firstValueFrom(this.api.menu()),
+        firstValueFrom(this.api.recipeCategories()),
+      ]);
+      this.categories.set(categories);
+      this.recipes.set(recipes);
+      this.menu.set(menu);
+    } catch (error) {
+      this.error.set(errorMessage(error, 'The recipes could not be loaded.'));
+    } finally {
+      this.loading.set(false);
+    }
+  }
+}
+```
+
+
+### 7.1 بطاقة الوصفة (`RecipeCardPage`): الشاشة الأهم محاسبيًا
+
+لكل سطر، كما في القالب الورقي: `EP$/وحدة = AP$/وحدة ÷ Yield`، وتكلفة السطر = كمية EP × EP$ (بوحدات الشراء). ثم تكلفة الحصة، سعر البيع، نسبة التكلفة، والحالة مقابل الهدف. المصنّع بلا دفعات يظهر "حسب وصفته". الربط بصنف/حجم/إضافة من المنيو، والأسطر بـ `GridKeys`.
+
+> 📄 **`frontend/src/app/features/costing/recipe-card-page.ts`** — 899 سطر
+
+```ts
+import { DatePipe, DecimalPipe } from '@angular/common';
+import { Component, computed, effect, inject, input, signal, untracked } from '@angular/core';
+import { FormsModule } from '@angular/forms';
+import { MatButtonModule } from '@angular/material/button';
+import { MatDialog } from '@angular/material/dialog';
+import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatIconModule } from '@angular/material/icon';
+import { MatInputModule } from '@angular/material/input';
+import { MatProgressBarModule } from '@angular/material/progress-bar';
+import { MatSelect, MatSelectModule } from '@angular/material/select';
+import { Router, RouterLink } from '@angular/router';
+import { firstValueFrom } from 'rxjs';
+import { AuthService } from '../../core/auth/auth.service';
+import { Permissions } from '../../core/auth/permissions';
+import {
+  CostStatus,
+  CostingApi,
+  MaterialCost,
+  RecipeCategory,
+  RecipeCostCard,
+  RecipeTargetKind,
+  SaveRecipe,
+  statusLabels,
+  unitLabels,
+  recipeCostOf,
+} from '../../core/costing/costing.api';
+import { errorMessage } from '../../core/http/error-message';
+import { Company } from '../../core/settings/company';
+import { MoneyPipe } from '../../core/ui/money.pipe';
+import { NotifyService } from '../../core/ui/notify.service';
+import { Approvals } from './approvals';
+import { RecipeCategoryDialog, RecipeCategoryDialogData } from './recipe-category-dialog';
+import { GridKeys } from '../shared/grid-keys';
+import { MaterialPicker } from './material-picker';
+
+interface Line {
+  rawMaterialId: string | null;
+  quantity: number | null;
+  yieldPercent: number | null;
+}
+
+// What one line works out to, as the template does it: EP$/unit = AP$/unit ÷ yield, and the
+// line's cost is EP quantity × EP$, in purchase units.
+interface Costed {
+  material: MaterialCost | undefined;
+  aps: number | null;
+  eps: number | null;
+  cost: number | null;
+  // A prep item never made yet, costed by its own recipe today.
+  byRecipe: boolean;
+}
+
+// A menu item a recipe can be linked to, as the link list offers it.
+interface LinkOption {
+  key: string;
+  label: string;
+  card: RecipeCostCard;
+  // Already sells by another recipe.
+  taken: boolean;
+}
+
+// view: the card, read-only. edit and new: the recipe written. menu: an old link to a menu item's
+// card (/costing/recipes/MenuItem/6), sent on to its recipe, or to a new one for it.
+export type RecipeCardMode = 'view' | 'edit' | 'new' | 'menu';
+
+// Rounded as the server rounds (to the cent or the tenth, halves away from zero). The figure is
+// first cut to 15 significant digits, so 228.94 / 4, stored as 57.23499…, rounds to 57.24.
+const roundTo = (value: number, places: number) => {
+  const scaled = Number((Math.abs(value) * 10 ** places).toPrecision(15));
+  return (Math.sign(value) * Math.round(scaled)) / 10 ** places;
+};
+const round = (value: number) => roundTo(value, 2);
+
+const linkKey = (kind: RecipeTargetKind | null, catalogItemId: number | null, variantId: number | null) =>
+  kind && catalogItemId !== null ? `${kind}|${catalogItemId}|${variantId ?? ''}` : null;
+
+// The Recipe Costing Template for one recipe. The recipe is written as the kitchen makes it: the
+// edible portion (EP) of each ingredient for the whole batch, and how many portions the batch
+// gives. Linked to a menu item, that item sells by it; off the menu (R&D), it is costed against
+// a planned price, never sold. Figures follow every change.
+@Component({
+  selector: 'app-recipe-card-page',
+  imports: [
+    DatePipe,
+    DecimalPipe,
+    FormsModule,
+    GridKeys,
+    MatButtonModule,
+    MatFormFieldModule,
+    MatIconModule,
+    MatInputModule,
+    MaterialPicker,
+    MatProgressBarModule,
+    MatSelectModule,
+    MoneyPipe,
+    RouterLink,
+  ],
+  template: `
+    <div class="toolbar no-print">
+      <a mat-button routerLink="/costing/recipes"><mat-icon>arrow_back</mat-icon> All recipes</a>
+      <span class="spacer"></span>
+      @if (mode() === 'view' && card(); as c) {
+        @if (!c.isDeleted && canEdit() && !pending()) {
+          <a mat-button [routerLink]="['/costing/recipes/recipe', c.recipeId, 'edit']"><mat-icon>edit</mat-icon> Edit</a>
+          <button mat-button class="danger-text" (click)="removeRecipe()" [disabled]="saving()"><mat-icon>delete</mat-icon> Delete</button>
+        }
+        <button mat-button (click)="print()"><mat-icon>print</mat-icon> Print</button>
+      }
+    </div>
+    @if (loading()) {
+      <mat-progress-bar mode="indeterminate" />
+    } @else if (error()) {
+      <p class="error">{{ error() }}</p>
+    } @else {
+      <section class="sheet">
+        @if (card()?.isDeleted) {
+          <div class="banner no-print">
+            <span>
+              Deleted {{ card()!.deletedAtUtc | date: 'd MMM y, HH:mm' }}{{ card()!.deletedBy ? ' by ' + card()!.deletedBy : '' }}.
+              Kept for the record; no sale takes stock by it.
+            </span>
+            <span class="spacer"></span>
+            @if (canEdit()) {
+              <button mat-flat-button (click)="restore()" [disabled]="saving()"><mat-icon>restore_from_trash</mat-icon> Restore</button>
+            }
+          </div>
+        }
+        @if (pending(); as p) {
+          <div class="banner pending no-print">
+            <mat-icon>lock_clock</mat-icon>
+            <span>
+              {{ p.requestedBy }} asked to delete this recipe on {{ p.requestedAtUtc | date: 'd MMM y, HH:mm' }}. It stays as it is, and
+              cannot be changed, until a manager decides.
+            </span>
+          </div>
+        }
+
+        <header class="title">
+          <div>
+            <h2>{{ title() }}</h2>
+            @if (card()?.recipeAr && !editing()) {
+              <div class="ar title-ar">{{ card()!.recipeAr }}</div>
+            }
+            <div class="muted subtitle">
+              @if (linkedName(); as menuItem) {
+                <span class="link linked">Linked to menu: {{ menuItem }}<span class="ar">مرتبطة بالمنيو</span></span>
+              } @else {
+                <span class="link standalone">Standalone / Off-menu<span class="ar">وصفة مستقلة</span></span>
+              }
+              @if (card()?.itemCode && !editing()) {
+                · Item code<span class="inline-ar">كود الصنف</span>: <strong>{{ card()!.itemCode }}</strong>
+              }
+              @if (!editing()) {
+                · <span class="category" [class.unsorted]="!card()?.recipeCategory">{{ card()?.recipeCategory ?? 'Uncategorized' }}</span>
+                @if (card()?.recipeCategoryAr) {
+                  <span class="inline-ar">{{ card()!.recipeCategoryAr }}</span>
+                }
+              }
+            </div>
+          </div>
+          <span class="status" [class]="status()">
+            {{ statusLabels[status()].en }}<span class="ar">{{ statusLabels[status()].ar }}</span>
+          </span>
+        </header>
+
+        @if (editing()) {
+          <div class="form no-print">
+            <mat-form-field>
+              <mat-label>Recipe name · اسم الوصفة</mat-label>
+              <input matInput [ngModel]="name()" (ngModelChange)="name.set($event)" maxlength="200" [placeholder]="linked()?.label ?? ''" aria-label="Recipe name" />
+              @if (linked()) {
+                <mat-hint>Blank: it goes by the menu item's name.</mat-hint>
+              }
+            </mat-form-field>
+            <mat-form-field>
+              <mat-label>Recipe category · قسم الوصفة</mat-label>
+              <mat-select #categorySelect [ngModel]="categoryId()" (ngModelChange)="categoryChosen($event, categorySelect)" aria-label="Recipe category" required>
+                @for (c of categories(); track c.id) {
+                  <mat-option [value]="c.id">{{ c.name }}{{ c.nameAr ? ' · ' + c.nameAr : '' }}</mat-option>
+                }
+                <mat-option [value]="newCategory" class="add-new">+ New category…</mat-option>
+              </mat-select>
+              @if (!categoryId()) {
+                <mat-hint>Required: the kitchen's own sorting, not the menu's.</mat-hint>
+              }
+            </mat-form-field>
+            <mat-form-field class="wide">
+              <mat-label>Link to POS menu item · الربط بصنف المنيو</mat-label>
+              <mat-select [ngModel]="link()" (ngModelChange)="link.set($event)" aria-label="Link to POS menu item">
+                <mat-option [value]="null">None: off the menu (R&amp;D) · بدون ربط</mat-option>
+                @for (o of linkOptions(); track o.key) {
+                  <mat-option [value]="o.key" [disabled]="o.taken">{{ o.label }}{{ o.taken ? ' · has a recipe' : '' }}</mat-option>
+                }
+              </mat-select>
+              <mat-hint>{{ linked() ? 'Sales of it take stock by this recipe.' : 'Costed only: no sale takes stock by it.' }}</mat-hint>
+            </mat-form-field>
+            @if (!linked()) {
+              <mat-form-field>
+                <mat-label>Planned price, {{ company.currency() }} · السعر المخطط</mat-label>
+                <input matInput type="number" min="0" step="any" [ngModel]="plannedPrice()" (ngModelChange)="plannedPrice.set($event)" aria-label="Planned price" />
+                <mat-hint>Optional, before VAT: for its food cost %.</mat-hint>
+              </mat-form-field>
+            }
+          </div>
+        }
+
+        <div class="figures">
+          <div class="box key">
+            <span class="label">Cost per recipe<span class="ar">تكلفة الوصفة</span></span>
+            <strong>{{ costPerRecipe() | money }}</strong>
+          </div>
+          <div class="box key">
+            <span class="label">Cost per portion<span class="ar">تكلفة الحصة</span></span>
+            <strong>{{ costPerPortion() | money }}</strong>
+            @if (shared() > 0) {
+              <small class="muted">incl. {{ shared() | money }} shared</small>
+            }
+          </div>
+          <div class="box key">
+            <span class="label">Margin per portion<span class="ar">هامش الحصة</span></span>
+            <strong>{{ price() === null || lines().length === 0 ? '—' : (margin() | money) }}</strong>
+          </div>
+          <div class="box">
+            <span class="label">Portions<span class="ar">عدد الحصص</span></span>
+            @if (editing()) {
+              <mat-form-field subscriptSizing="dynamic" class="portions">
+                <input matInput type="number" min="1" step="1" [ngModel]="portions()" (ngModelChange)="portions.set($event)" aria-label="Portions" />
+              </mat-form-field>
+            } @else {
+              <strong>{{ portions() }}</strong>
+            }
+          </div>
+          <div class="box">
+            <span class="label">{{ linked() ? 'Menu price' : 'Planned price' }}<span class="ar">{{ linked() ? 'سعر البيع' : 'السعر المخطط' }}</span></span>
+            <strong>{{ price() === null ? '—' : (price() | money) }}</strong>
+            <small class="muted">before VAT</small>
+          </div>
+          <div class="box">
+            <span class="label">Food cost % budget<span class="ar">نسبة التكلفة المستهدفة</span></span>
+            <strong>{{ target() | number: '1.0-1' }}%</strong>
+          </div>
+          <div class="box" [class.over]="status() === 'AboveTarget'">
+            <span class="label">Food cost % actual<span class="ar">نسبة التكلفة الفعلية</span></span>
+            <strong>{{ foodCost() === null ? '—' : (foodCost() | number: '1.1-1') + '%' }}</strong>
+          </div>
+          <div class="box">
+            <span class="label">Ideal selling price<span class="ar">سعر البيع المثالي</span></span>
+            <strong>{{ lines().length ? (idealPrice() | money) : '—' }}</strong>
+          </div>
+        </div>
+
+        <div class="table-wrap">
+          <table class="grid" appGridKeys (appGridKeysAppend)="add()">
+            <thead>
+              <tr>
+                <th>Ingredients<span class="ar">المكونات</span></th>
+                <th class="num">Recipe quantity (EP)<span class="ar">كمية الوصفة (صافي)</span></th>
+                <th class="num">AP$ / unit<span class="ar">تكلفة الشراء</span></th>
+                <th>Unit<span class="ar">الوحدة</span></th>
+                <th class="num">Yield %<span class="ar">نسبة الصافي</span></th>
+                <th class="num">EP$ / unit<span class="ar">تكلفة الصافي</span></th>
+                <th class="num">Recipe cost<span class="ar">تكلفة المكون</span></th>
+                @if (editing()) {
+                  <th class="no-print"></th>
+                }
+              </tr>
+            </thead>
+            <tbody>
+              @for (line of lines(); track $index; let i = $index) {
+                @let x = costed()[i];
+                <tr>
+                  <td>
+                    @if (editing()) {
+                      <app-material-picker class="ingredient" [materials]="materials()" [value]="line.rawMaterialId" (valueChange)="choose(i, $event!)"
+                        [label]="'Ingredient, line ' + (i + 1)" />
+                    } @else {
+                      {{ x.material?.name }}
+                    }
+                  </td>
+                  <td class="num">
+                    @if (editing()) {
+                      <mat-form-field subscriptSizing="dynamic" class="small">
+                        <input matInput type="number" min="0" step="any" [ngModel]="line.quantity" (ngModelChange)="change(i, { quantity: $event })" [attr.aria-label]="'Quantity, line ' + (i + 1)" />
+                        <span matTextSuffix>&nbsp;{{ x.material ? unit(x.material) : '' }}</span>
+                      </mat-form-field>
+                    } @else {
+                      {{ line.quantity | number: '1.0-3' }} {{ x.material ? unit(x.material) : '' }}
+                    }
+                  </td>
+                  <td class="num">
+                    @if (x.aps !== null) {
+                      {{ x.aps | money }}
+                      @if (x.byRecipe) {
+                        <div class="by-recipe" title="Not made yet: costed by its own recipe today, until a batch is made">By its recipe · حسب وصفته</div>
+                      }
+                    } @else if (x.material) {
+                      <span class="error">No price</span>
+                    }
+                  </td>
+                  <td>{{ x.material?.purchaseUnit ?? '' }}</td>
+                  <td class="num">
+                    @if (editing()) {
+                      <mat-form-field subscriptSizing="dynamic" class="yield">
+                        <input matInput type="number" min="1" max="100" step="any" [ngModel]="line.yieldPercent" (ngModelChange)="change(i, { yieldPercent: $event })" [attr.aria-label]="'Yield, line ' + (i + 1)" />
+                        <span matTextSuffix>%</span>
+                      </mat-form-field>
+                    } @else {
+                      {{ line.yieldPercent | number: '1.0-2' }}%
+                    }
+                  </td>
+                  <td class="num">{{ x.eps === null ? '' : (x.eps | money) }}</td>
+                  <td class="num">{{ x.cost === null ? '' : (x.cost | money) }}</td>
+                  @if (editing()) {
+                    <td class="no-print">
+                      <button mat-icon-button (click)="remove(i)" aria-label="Remove ingredient"><mat-icon>delete</mat-icon></button>
+                    </td>
+                  }
+                </tr>
+              } @empty {
+                <tr><td [attr.colspan]="editing() ? 8 : 7" class="muted">No ingredients yet.</td></tr>
+              }
+            </tbody>
+            <tfoot>
+              <tr>
+                <td>
+                  @if (editing()) {
+                    <button mat-button class="no-print" (click)="add()" [disabled]="materials().length === 0"><mat-icon>add</mat-icon> Add ingredient</button>
+                  }
+                </td>
+                <td colspan="5" class="num">Total · الإجمالي</td>
+                <td class="num">{{ costPerRecipe() | money }}</td>
+                @if (editing()) {
+                  <td class="no-print"></td>
+                }
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+
+        @if (editing() && materials().length === 0) {
+          <p class="note">Add the raw materials first, on the Raw materials tab, with their prices.</p>
+        }
+        @if (duplicate()) {
+          <p class="error">An ingredient is on two lines: keep one, with the quantities added together.</p>
+        }
+        @if (missing().length) {
+          <p class="error">No price yet for {{ missing().join(', ') }}: the cost shown is short of the truth until they have one.</p>
+        }
+        @if (byRecipe().length) {
+          <p class="note by-recipe-note">
+            {{ byRecipe().join(', ') }} {{ byRecipe().length === 1 ? 'is' : 'are' }} not made yet, so costed by {{ byRecipe().length === 1 ? 'its' : 'their' }} own
+            recipe today; once a batch is made, at what the batches cost.
+            <span class="inline-ar">أصناف مُصنَّعة لم تُصنع بعد: تُحسب تكلفتها من وصفتها اليوم حتى تُصنع أول تشغيلة.</span>
+          </p>
+        }
+
+        @if (editing()) {
+          <div class="toolbar actions no-print">
+            <span class="spacer"></span>
+            <a mat-button [routerLink]="mode() === 'edit' ? ['/costing/recipes/recipe', recipeId()] : ['/costing/recipes']">Cancel</a>
+            <button mat-flat-button (click)="save()" [disabled]="!valid() || (mode() === 'edit' && !dirty()) || saving()">
+              <mat-icon>save</mat-icon> {{ mode() === 'new' ? 'Create recipe' : 'Save recipe' }}
+            </button>
+          </div>
+          @if (problem(); as p) {
+            <p class="error">{{ p }}</p>
+          }
+        }
+      </section>
+    }
+  `,
+  styleUrl: './costing.scss',
+  styles: `
+    .by-recipe {
+      font-size: 0.78em;
+      color: var(--mat-sys-tertiary);
+      white-space: nowrap;
+    }
+    .sheet {
+      display: grid;
+      gap: 16px;
+    }
+    .title {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+
+      h2 {
+        margin: 0;
+        font: var(--mat-sys-headline-small);
+      }
+      .title-ar {
+        font-size: 1.1em;
+        text-align: start;
+      }
+    }
+    .subtitle {
+      margin-top: 4px;
+    }
+    .link {
+      display: inline-block;
+      padding: 2px 10px;
+      border-radius: 999px;
+      font: var(--mat-sys-label-medium);
+
+      .ar {
+        display: inline;
+        margin-left: 6px;
+      }
+    }
+    .category {
+      font-weight: 500;
+
+      &.unsorted {
+        color: var(--mat-sys-error);
+      }
+    }
+    .add-new {
+      color: var(--mat-sys-primary);
+      font-weight: 500;
+    }
+    .linked {
+      background: var(--mat-sys-primary-container);
+      color: var(--mat-sys-on-primary-container);
+    }
+    .standalone {
+      background: var(--mat-sys-tertiary-container);
+      color: var(--mat-sys-on-tertiary-container);
+    }
+    .form {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+      gap: 4px 12px;
+    }
+    .wide {
+      grid-column: span 2;
+    }
+    .banner {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 12px;
+      border-radius: 12px;
+      background: var(--mat-sys-surface-container-high);
+
+      &.pending {
+        background: color-mix(in srgb, var(--app-warn) 16%, var(--mat-sys-surface));
+        color: var(--mat-sys-on-surface);
+
+        mat-icon {
+          color: var(--app-warn);
+        }
+      }
+    }
+    .figures {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+      gap: 8px;
+    }
+    .box {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      padding: 10px 12px;
+      border-radius: 12px;
+      border: 1px solid var(--mat-sys-outline-variant);
+      background: var(--mat-sys-surface);
+
+      .label {
+        font: var(--mat-sys-label-medium);
+        color: var(--mat-sys-on-surface-variant);
+      }
+      strong {
+        font: var(--mat-sys-title-large);
+      }
+      &.key {
+        background: var(--mat-sys-secondary-container);
+        color: var(--mat-sys-on-secondary-container);
+        border-color: transparent;
+      }
+      &.over strong {
+        color: var(--mat-sys-error);
+      }
+    }
+    .portions {
+      width: 110px;
+    }
+    .ingredient {
+      min-width: 220px;
+      width: 100%;
+    }
+    .small {
+      width: 140px;
+    }
+    .yield {
+      width: 110px;
+    }
+    .danger-text {
+      color: var(--mat-sys-error);
+    }
+    .danger-fill:not(:disabled) {
+      background: var(--mat-sys-error);
+      color: var(--mat-sys-on-error);
+    }
+    .spacer {
+      flex: 1;
+    }
+    @media print {
+      .box.key {
+        border: 1px solid #000;
+      }
+    }
+  `,
+})
+export class RecipeCardPage {
+  protected readonly company = inject(Company);
+  private readonly api = inject(CostingApi);
+  private readonly auth = inject(AuthService);
+  private readonly notify = inject(NotifyService);
+  private readonly router = inject(Router);
+  private readonly dialog = inject(MatDialog);
+
+  // From the route: its data (mode), /costing/recipes/recipe/:recipeId, an old
+  // /costing/recipes/:kind/:id?variantId=, and new?targetKind=&catalogItemId=&variantId= to start linked.
+  readonly mode = input<RecipeCardMode>('view');
+  readonly recipeId = input<string>();
+  readonly kind = input<RecipeTargetKind>();
+  readonly id = input<string>();
+  readonly targetKind = input<RecipeTargetKind>();
+  readonly catalogItemId = input<string>();
+  readonly variantId = input<string>();
+
+  protected readonly statusLabels = statusLabels;
+  protected readonly canEdit = computed(() => this.auth.can(Permissions.InventoryManage));
+  protected readonly editing = computed(() => (this.mode() === 'edit' || this.mode() === 'new') && this.canEdit() && !this.pending());
+
+  protected readonly card = signal<RecipeCostCard | null>(null);
+  // Every menu item, size and add-on, by the recipe it sells by: what can be linked.
+  protected readonly menu = signal<RecipeCostCard[]>([]);
+  protected readonly materials = signal<MaterialCost[]>([]);
+  protected readonly loading = signal(true);
+  protected readonly saving = signal(false);
+  protected readonly error = signal<string | null>(null);
+  protected readonly problem = signal<string | null>(null);
+  protected readonly approvals = inject(Approvals);
+  protected readonly pending = computed(() => {
+    const id = this.card()?.recipeId;
+    return id ? this.approvals.pendingFor(id) : undefined;
+  });
+
+  protected readonly name = signal('');
+  // The kitchen's own categories, and the one this recipe is in.
+  protected readonly categories = signal<RecipeCategory[]>([]);
+  protected readonly categoryId = signal<string | null>(null);
+  // The list's last option: add a category without leaving the recipe.
+  protected readonly newCategory = '+new';
+  protected readonly plannedPrice = signal<number | null>(null);
+  protected readonly link = signal<string | null>(null);
+  protected readonly lines = signal<Line[]>([]);
+  protected readonly portions = signal<number | null>(1);
+  // The recipe as saved, to tell a change from none.
+  private readonly saved = signal('');
+
+  protected readonly linkOptions = computed<LinkOption[]>(() =>
+    this.menu().map((c) => ({
+      key: linkKey(c.targetKind, c.catalogItemId, c.variantId)!,
+      label: `${c.itemCode} · ${c.linkedTo ?? c.recipe}`,
+      card: c,
+      // A size borrowing its dish's recipe can be given its own.
+      taken: c.hasRecipe && !c.usesBaseRecipe && c.recipeId !== (this.card()?.recipeId ?? null),
+    })),
+  );
+
+  protected readonly linked = computed(() => this.linkOptions().find((o) => o.key === this.link()) ?? null);
+
+  // The menu item it is linked to, by name: as written while editing, as saved otherwise.
+  protected readonly linkedName = computed(() =>
+    this.editing() ? (this.linked()?.card.linkedTo ?? null) : this.card()?.isStandalone === false ? this.card()!.linkedTo : null,
+  );
+
+  protected readonly title = computed(() => {
+    if (!this.editing()) {
+      return this.card()?.recipe ?? '';
+    }
+    return this.name().trim() || this.linked()?.card.linkedTo || (this.mode() === 'new' ? 'New recipe' : (this.card()?.recipe ?? ''));
+  });
+
+  // What it is costed against: the menu's price when linked, the planned price when not.
+  protected readonly price = computed<number | null>(() => {
+    if (!this.editing()) {
+      return this.card()?.menuPrice ?? null;
+    }
+    const linked = this.linked();
+    if (linked) {
+      return linked.card.menuPrice;
+    }
+    const planned = this.plannedPrice();
+    return planned === null || (planned as unknown) === '' ? null : Number(planned);
+  });
+
+  protected readonly target = computed(() => this.card()?.foodCostTargetPercent ?? this.menu()[0]?.foodCostTargetPercent ?? 30);
+
+  protected readonly costed = computed<Costed[]>(() =>
+    this.lines().map((line) => {
+      const material = this.materials().find((m) => m.id === line.rawMaterialId);
+      // From the exact average, not the rounded price shown: a 10 kg batch would be cents out. A
+      // prep item never made yet has none: by its own recipe's cost today instead.
+      const perUnit = material ? recipeCostOf(material) : null;
+      const aps = perUnit == null || !material ? null : perUnit * material.purchaseUnitSize;
+      const yieldPercent = line.yieldPercent ?? 0;
+      const eps = aps === null || yieldPercent <= 0 ? null : (aps * 100) / yieldPercent;
+      const cost = eps === null || !material ? null : round((eps * (line.quantity ?? 0)) / material.purchaseUnitSize);
+      return { material, aps, eps, cost, byRecipe: aps !== null && !!material?.costedByRecipe };
+    }),
+  );
+
+  protected readonly costPerRecipe = computed(() => round(this.costed().reduce((sum, l) => sum + (l.cost ?? 0), 0)));
+
+  // Shared costs (frying oil and the like) per meal, as last month worked out and the server sent
+  // it for this recipe as saved. A link changed while editing is costed with them once saved.
+  protected readonly shared = computed(() => {
+    const card = this.card();
+    if (!card || this.lines().length === 0) {
+      return 0;
+    }
+    return !this.editing() || this.link() === linkKey(card.targetKind, card.catalogItemId, card.variantId) ? card.sharedCostPerPortion : 0;
+  });
+
+  // Unrounded, as the template works: the figures below come from it, and only what is shown is
+  // rounded, so they match the server's card to the cent.
+  private readonly exactCostPerPortion = computed(() => {
+    const portions = Math.max(1, Math.floor(this.portions() ?? 1));
+    return this.costPerRecipe() / portions + this.shared();
+  });
+
+  protected readonly costPerPortion = computed(() => round(this.exactCostPerPortion()));
+
+  protected readonly margin = computed(() => round((this.price() ?? 0) - this.exactCostPerPortion()));
+
+  protected readonly foodCost = computed(() => {
+    const price = this.price();
+    return price !== null && price > 0 && this.lines().length > 0 ? roundTo((this.exactCostPerPortion() / price) * 100, 1) : null;
+  });
+
+  protected readonly idealPrice = computed(() => round((this.exactCostPerPortion() * 100) / this.target()));
+
+  // What has no price: an ingredient's own, or one inside a prep item costed by its recipe.
+  protected readonly missing = computed(() => [
+    ...new Set(this.costed().flatMap((l) => (!l.material ? [] : l.aps === null ? [l.material.name] : (l.material.recipeCostMissing ?? [])))),
+  ]);
+
+  // The prep items not made yet, costed by their own recipes.
+  protected readonly byRecipe = computed(() => [...new Set(this.costed().filter((l) => l.byRecipe).map((l) => l.material!.name))]);
+
+  protected readonly status = computed<CostStatus>(() => {
+    const foodCost = this.foodCost();
+    if (this.lines().length === 0) {
+      return 'NoRecipe';
+    }
+    if (this.missing().length > 0) {
+      return 'MissingPrices';
+    }
+    if (foodCost === null) {
+      return 'NoPrice';
+    }
+    return foodCost > this.target() ? 'AboveTarget' : 'WithinTarget';
+  });
+
+  protected readonly dirty = computed(() => this.snapshot() !== this.saved());
+
+  // Portions a whole number; each line an ingredient with a quantity and a yield, none twice; a
+  // name when it is off the menu; a planned price not below nothing.
+  protected readonly valid = computed(() => {
+    const portions = this.portions();
+    const lines = this.lines();
+    const price = this.price();
+    return (
+      portions !== null &&
+      Number.isInteger(portions) &&
+      portions >= 1 &&
+      lines.length > 0 &&
+      lines.every((l) => l.rawMaterialId && (l.quantity ?? 0) > 0 && (l.yieldPercent ?? 0) > 0 && (l.yieldPercent ?? 0) <= 100) &&
+      !this.duplicate() &&
+      this.categoryId() !== null &&
+      (this.linked() !== null || this.name().trim() !== '') &&
+      (price === null || price >= 0)
+    );
+  });
+
+  // The same ingredient on two lines: one line, with the quantities added together, is meant.
+  protected readonly duplicate = computed(() => {
+    const ids = this.lines()
+      .map((l) => l.rawMaterialId)
+      .filter((id) => id !== null);
+    return new Set(ids).size !== ids.length;
+  });
+
+  constructor() {
+    effect(() => {
+      const mode = this.mode();
+      const recipeId = this.recipeId();
+      const legacy = { kind: this.kind(), id: this.id() };
+      const start = { kind: this.targetKind(), id: this.catalogItemId(), variant: this.variantId() };
+      untracked(() => void this.load(mode, recipeId, legacy, start));
+    });
+  }
+
+  // A category chosen, or the last option: a new one, added over the recipe and chosen; cancelled,
+  // the recipe keeps the one it had.
+  protected async categoryChosen(value: string | null, select?: MatSelect): Promise<void> {
+    if (value !== this.newCategory) {
+      this.categoryId.set(value);
+      return;
+    }
+    // The list shows the one it had while the new one is added; the recipe's own never changed.
+    if (select) {
+      select.value = this.categoryId();
+    }
+    const created = await firstValueFrom(
+      this.dialog
+        .open<RecipeCategoryDialog, RecipeCategoryDialogData, RecipeCategory>(RecipeCategoryDialog, { data: { fromRecipe: true }, width: '440px' })
+        .afterClosed(),
+    );
+    if (!created) {
+      return;
+    }
+    this.categories.set(await firstValueFrom(this.api.recipeCategories()));
+    this.categoryId.set(created.id);
+    this.notify.info(`${created.name} added, and this recipe is in it.`);
+  }
+
+  protected unit(material: MaterialCost): string {
+    return unitLabels[material.unit];
+  }
+
+  protected choose(index: number, rawMaterialId: string): void {
+    const material = this.materials().find((m) => m.id === rawMaterialId);
+    this.change(index, { rawMaterialId, yieldPercent: material?.defaultYieldPercent ?? 100 });
+  }
+
+  protected change(index: number, patch: Partial<Line>): void {
+    this.problem.set(null);
+    this.lines.update((lines) => lines.map((line, i) => (i === index ? { ...line, ...patch } : line)));
+  }
+
+  protected add(): void {
+    this.lines.update((lines) => [...lines, { rawMaterialId: null, quantity: null, yieldPercent: 100 }]);
+  }
+
+  protected remove(index: number): void {
+    this.lines.update((lines) => lines.filter((_, i) => i !== index));
+  }
+
+  protected print(): void {
+    window.print();
+  }
+
+  protected async save(): Promise<void> {
+    if (!this.valid()) {
+      return;
+    }
+    const linked = this.linked()?.card ?? null;
+    const planned = this.plannedPrice();
+    const recipe: SaveRecipe = {
+      name: this.name().trim() || null,
+      recipeCategoryId: this.categoryId(),
+      // Kept while it is on the menu, for if it comes off it.
+      plannedPrice: planned === null || (planned as unknown) === '' ? null : Number(planned),
+      targetKind: linked?.targetKind ?? null,
+      catalogItemId: linked?.catalogItemId ?? null,
+      variantId: linked?.variantId ?? null,
+      portions: this.portions() ?? 1,
+      ingredients: this.lines().map((l) => ({ rawMaterialId: l.rawMaterialId!, quantity: l.quantity!, yieldPercent: l.yieldPercent })),
+    };
+    this.saving.set(true);
+    this.problem.set(null);
+    try {
+      const written = await firstValueFrom(this.api.writeRecipe(this.mode() === 'edit' ? (this.recipeId() ?? null) : null, recipe));
+      this.notify.info(linked ? `Recipe saved. ${linked.linkedTo} takes stock by it from the next sale.` : 'Recipe saved, off the menu.');
+      this.saved.set(this.snapshot());
+      await this.router.navigate(['/costing/recipes/recipe', written.id]);
+    } catch (error) {
+      this.problem.set(errorMessage(error, 'The recipe could not be saved.'));
+    } finally {
+      this.saving.set(false);
+    }
+  }
+
+  // Deleted for a manager, back to the list; asked of one for anyone else, and it stays here, locked.
+  protected async removeRecipe(): Promise<void> {
+    const card = this.card();
+    if (!card?.recipeId) {
+      return;
+    }
+    this.saving.set(true);
+    try {
+      const detail = card.isStandalone ? undefined : `Sales of ${card.linkedTo} stop taking stock until another recipe is linked to it.`;
+      if ((await this.approvals.delete('Recipe', card.recipeId, card.recipe, detail)) === 'Applied') {
+        await this.router.navigate(['/costing/recipes']);
+      }
+    } finally {
+      this.saving.set(false);
+    }
+  }
+
+  protected async restore(): Promise<void> {
+    const card = this.card();
+    if (!card?.recipeId) {
+      return;
+    }
+    this.saving.set(true);
+    try {
+      const restored = await firstValueFrom(this.api.restoreRecipe(card.recipeId, card.recipe));
+      this.notify.info(
+        card.isStandalone || restored.catalogItemId !== null
+          ? `${card.recipe} restored.`
+          : `${card.recipe} restored off the menu: ${card.linkedTo} has another recipe now.`,
+      );
+      await this.load('view', card.recipeId, {}, {});
+    } catch (error) {
+      this.notify.error(error, 'The recipe could not be restored.');
+    } finally {
+      this.saving.set(false);
+    }
+  }
+
+  private snapshot(): string {
+    return JSON.stringify({
+      name: this.name(),
+      categoryId: this.categoryId(),
+      plannedPrice: this.plannedPrice(),
+      link: this.link(),
+      lines: this.lines(),
+      portions: this.portions(),
+    });
+  }
+
+  private async load(
+    mode: RecipeCardMode,
+    recipeId: string | undefined,
+    legacy: { kind?: RecipeTargetKind; id?: string },
+    start: { kind?: RecipeTargetKind; id?: string; variant?: string },
+  ): Promise<void> {
+    this.loading.set(true);
+    this.error.set(null);
+    void this.approvals.refresh();
+    try {
+      if (mode === 'menu') {
+        await this.forward(legacy.kind!, Number(legacy.id), start.variant ? Number(start.variant) : null);
+        return;
+      }
+      const [card, materials, menu, categories] = await Promise.all([
+        mode === 'new' || !recipeId ? Promise.resolve(null) : firstValueFrom(this.api.recipeCardById(recipeId)),
+        firstValueFrom(this.api.materials()),
+        firstValueFrom(this.api.menu()),
+        firstValueFrom(this.api.recipeCategories()),
+      ]);
+      this.card.set(card);
+      this.materials.set(materials);
+      this.menu.set(menu);
+      this.categories.set(categories);
+      if (card) {
+        this.name.set(card.recipeName ?? '');
+        this.categoryId.set(card.recipeCategoryId);
+        this.plannedPrice.set(card.plannedPrice);
+        this.link.set(card.isStandalone ? null : linkKey(card.targetKind, card.catalogItemId, card.variantId));
+        this.lines.set(card.lines.map((l) => ({ rawMaterialId: l.rawMaterialId, quantity: l.quantity, yieldPercent: l.yieldPercent })));
+        this.portions.set(card.portions);
+      } else {
+        this.name.set('');
+        this.categoryId.set(null);
+        this.plannedPrice.set(null);
+        this.link.set(start.kind && start.id ? linkKey(start.kind, Number(start.id), start.variant ? Number(start.variant) : null) : null);
+        this.lines.set([{ rawMaterialId: null, quantity: null, yieldPercent: 100 }]);
+        this.portions.set(1);
+      }
+      this.saved.set(this.snapshot());
+    } catch (error) {
+      this.error.set(errorMessage(error, 'The recipe could not be loaded.'));
+    } finally {
+      this.loading.set(false);
+    }
+  }
+
+  // An old link to a menu item's card: on to the recipe it sells by, or to a new one for it.
+  private async forward(kind: RecipeTargetKind, catalogItemId: number, variantId: number | null): Promise<void> {
+    const card = await firstValueFrom(this.api.recipeCard(kind, catalogItemId, variantId));
+    if (card.recipeId) {
+      await this.router.navigate(['/costing/recipes/recipe', card.recipeId], { replaceUrl: true });
+    } else {
+      await this.router.navigate(['/costing/recipes/new'], {
+        replaceUrl: true,
+        queryParams: { targetKind: kind, catalogItemId, ...(variantId === null ? {} : { variantId }) },
+      });
+    }
+  }
+}
+```
+
+
+> 📄 **`frontend/src/app/features/costing/recipe-categories-page.ts`** — 237 سطر
+
+```ts
+import { Component, inject, signal } from '@angular/core';
+import { FormsModule } from '@angular/forms';
+import { MatButtonModule } from '@angular/material/button';
+import { MatDialog } from '@angular/material/dialog';
+import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatIconModule } from '@angular/material/icon';
+import { MatProgressBarModule } from '@angular/material/progress-bar';
+import { MatSelectModule } from '@angular/material/select';
+import { RouterLink } from '@angular/router';
+import { firstValueFrom } from 'rxjs';
+import { CostingApi, RecipeCategory } from '../../core/costing/costing.api';
+import { errorMessage } from '../../core/http/error-message';
+import { NotifyService } from '../../core/ui/notify.service';
+import { RecipeCategoryDialog, RecipeCategoryDialogData } from './recipe-category-dialog';
+
+// The kitchen's own recipe categories (أقسام الوصفات), apart from the menu's: the dishes' recipes
+// and the prep items' are sorted under them. Added, renamed, deleted: one holding recipes or prep
+// items is deleted only after choosing where they move, so none is left without one. A count
+// opens the recipes or prep items in it.
+@Component({
+  selector: 'app-recipe-categories-page',
+  imports: [FormsModule, MatButtonModule, MatFormFieldModule, MatIconModule, MatProgressBarModule, MatSelectModule, RouterLink],
+  template: `
+    <p class="note">
+      How the kitchen sorts its recipes (sauces, staff meals, catering orders), whatever the menu's own categories. Every recipe written
+      on the recipe screen is in one.
+      <span class="inline-ar">تصنيف الوصفات الداخلي، مستقل عن أقسام المنيو.</span>
+    </p>
+    @if (loading()) {
+      <mat-progress-bar mode="indeterminate" />
+    } @else if (error()) {
+      <p class="error">{{ error() }}</p>
+    } @else {
+      <div class="toolbar">
+        <span class="spacer"></span>
+        <button mat-flat-button (click)="add()"><mat-icon>add</mat-icon> Add category</button>
+      </div>
+      <div class="table-wrap">
+        <table class="grid">
+          <thead>
+            <tr>
+              <th>Category<span class="ar">القسم</span></th>
+              <th>Arabic name<span class="ar">الاسم بالعربية</span></th>
+              <th class="num">Recipes<span class="ar">الوصفات</span></th>
+              <th class="num">Prep items<span class="ar">المصنعات</span></th>
+              <th class="num"><span class="visually-hidden">Actions</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            @for (c of categories(); track c.id) {
+              <tr>
+                <td>{{ c.name }}</td>
+                <td dir="rtl" class="ar-cell">{{ c.nameAr ?? '—' }}</td>
+                <td class="num">
+                  @if (c.recipes) {
+                    <a [routerLink]="['/costing/recipes']" [queryParams]="{ category: c.id }">{{ c.recipes }}</a>
+                  } @else {
+                    0
+                  }
+                </td>
+                <td class="num">
+                  @if (c.prepItems) {
+                    <a [routerLink]="['/costing/recipes/prep']" [queryParams]="{ category: c.id }">{{ c.prepItems }}</a>
+                  } @else {
+                    0
+                  }
+                </td>
+                <td class="num actions">
+                  <button mat-icon-button (click)="edit(c)" [attr.aria-label]="'Rename ' + c.name"><mat-icon>edit</mat-icon></button>
+                  <button mat-icon-button class="danger" (click)="ask(c)" [disabled]="confirming() === c.id" [attr.aria-label]="'Delete ' + c.name">
+                    <mat-icon>delete</mat-icon>
+                  </button>
+                </td>
+              </tr>
+              @if (confirming() === c.id) {
+                <tr class="confirm-row">
+                  <td colspan="5">
+                    <div class="confirm">
+                      @if (held(c)) {
+                        <span>Delete {{ c.name }}? Its {{ heldText(c) }} to</span>
+                        <mat-form-field subscriptSizing="dynamic" class="move">
+                          <mat-select [(ngModel)]="moveTo" placeholder="Choose a category" aria-label="Move its recipes to">
+                            @for (o of others(c); track o.id) {
+                              <mat-option [value]="o.id">{{ o.name }}</mat-option>
+                            }
+                          </mat-select>
+                        </mat-form-field>
+                      } @else {
+                        <span>Delete {{ c.name }}? It has no recipes.</span>
+                      }
+                      <span class="spacer"></span>
+                      <button mat-button (click)="confirming.set(null)" [disabled]="saving()">Cancel</button>
+                      <button mat-flat-button class="danger-fill" (click)="remove(c)" [disabled]="saving() || (held(c) > 0 && !moveTo)">
+                        {{ held(c) ? 'Move and delete' : 'Delete' }}
+                      </button>
+                    </div>
+                    @if (held(c) && others(c).length === 0) {
+                      <p class="small">Add another category first: its recipes need somewhere to go.</p>
+                    }
+                  </td>
+                </tr>
+              }
+            } @empty {
+              <tr><td colspan="5" class="muted">No categories yet. Add the first, such as Sauces or Staff meals.</td></tr>
+            }
+          </tbody>
+        </table>
+      </div>
+    }
+  `,
+  styleUrl: './costing.scss',
+  styles: `
+    .ar-cell {
+      text-align: start;
+    }
+    .actions {
+      white-space: nowrap;
+    }
+    .danger {
+      color: var(--mat-sys-error);
+    }
+    .danger-fill:not(:disabled) {
+      background: var(--mat-sys-error);
+      color: var(--mat-sys-on-error);
+    }
+    tr.confirm-row td {
+      background: var(--mat-sys-error-container);
+      color: var(--mat-sys-on-error-container);
+    }
+    .confirm {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+    }
+    .move {
+      min-width: 200px;
+    }
+    .spacer {
+      flex: 1;
+    }
+    .small {
+      margin: 6px 0 0;
+      font-size: 0.85em;
+    }
+    .visually-hidden {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip: rect(0 0 0 0);
+    }
+  `,
+})
+export class RecipeCategoriesPage {
+  private readonly api = inject(CostingApi);
+  private readonly dialog = inject(MatDialog);
+  private readonly notify = inject(NotifyService);
+
+  protected readonly categories = signal<RecipeCategory[]>([]);
+  protected readonly loading = signal(true);
+  protected readonly saving = signal(false);
+  protected readonly error = signal<string | null>(null);
+  // The category whose delete is being asked about, and where its recipes go.
+  protected readonly confirming = signal<string | null>(null);
+  protected moveTo: string | null = null;
+
+  constructor() {
+    void this.load();
+  }
+
+  // What a category holds: its recipes and its prep items, which move with it.
+  protected held(category: RecipeCategory): number {
+    return category.recipes + category.prepItems;
+  }
+
+  // "3 recipes and 1 prep item move", as the delete asks.
+  protected heldText(category: RecipeCategory): string {
+    const parts = [
+      category.recipes ? `${category.recipes} ${category.recipes === 1 ? 'recipe' : 'recipes'}` : null,
+      category.prepItems ? `${category.prepItems} ${category.prepItems === 1 ? 'prep item' : 'prep items'}` : null,
+    ].filter((p) => p !== null);
+    return `${parts.join(' and ')} ${this.held(category) === 1 ? 'moves' : 'move'}`;
+  }
+
+  protected others(category: RecipeCategory): RecipeCategory[] {
+    return this.categories().filter((c) => c.id !== category.id);
+  }
+
+  protected async add(): Promise<void> {
+    if (await this.open({})) {
+      await this.load();
+    }
+  }
+
+  protected async edit(category: RecipeCategory): Promise<void> {
+    if (await this.open({ category })) {
+      await this.load();
+    }
+  }
+
+  protected ask(category: RecipeCategory): void {
+    this.moveTo = null;
+    this.confirming.set(category.id);
+  }
+
+  protected async remove(category: RecipeCategory): Promise<void> {
+    this.saving.set(true);
+    try {
+      await firstValueFrom(this.api.deleteRecipeCategory(category.id, this.held(category) ? this.moveTo : null));
+      const to = this.categories().find((c) => c.id === this.moveTo)?.name;
+      this.notify.info(this.held(category) && to ? `${category.name} deleted; its recipes are in ${to} now.` : `${category.name} deleted.`);
+      this.confirming.set(null);
+      await this.load();
+    } catch (error) {
+      this.notify.error(error, 'The category could not be deleted.');
+    } finally {
+      this.saving.set(false);
+    }
+  }
+
+  private async open(data: RecipeCategoryDialogData): Promise<RecipeCategory | undefined> {
+    return firstValueFrom(
+      this.dialog.open<RecipeCategoryDialog, RecipeCategoryDialogData, RecipeCategory>(RecipeCategoryDialog, { data, width: '440px' }).afterClosed(),
+    );
+  }
+
+  private async load(): Promise<void> {
+    try {
+      this.categories.set(await firstValueFrom(this.api.recipeCategories()));
+    } catch (error) {
+      this.error.set(errorMessage(error, 'The categories could not be loaded.'));
+    } finally {
+      this.loading.set(false);
+    }
+  }
+}
+```
+
+
+> 📄 **`frontend/src/app/features/costing/recipe-category-dialog.ts`** — 108 سطر
+
+```ts
+import { Component, inject, signal } from '@angular/core';
+import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
+import { MatButtonModule } from '@angular/material/button';
+import { MAT_DIALOG_DATA, MatDialogModule, MatDialogRef } from '@angular/material/dialog';
+import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatInputModule } from '@angular/material/input';
+import { firstValueFrom } from 'rxjs';
+import { CostingApi, RecipeCategory } from '../../core/costing/costing.api';
+import { errorMessage } from '../../core/http/error-message';
+
+// A category to rename, or none for a new one; fromRecipe when added from a recipe's form.
+export interface RecipeCategoryDialogData {
+  category?: RecipeCategory;
+  fromRecipe?: boolean;
+}
+
+// A recipe category's name, in English and optionally Arabic. Closes with the category as the
+// till saved it; a refusal (the name already taken) keeps it open with all typed.
+@Component({
+  selector: 'app-recipe-category-dialog',
+  imports: [MatButtonModule, MatDialogModule, MatFormFieldModule, MatInputModule, ReactiveFormsModule],
+  template: `
+    <h2 mat-dialog-title>
+      @if (data.category) {
+        Rename category <span class="ar">تعديل القسم</span>
+      } @else {
+        Add a recipe category <span class="ar">إضافة قسم</span>
+      }
+    </h2>
+    <mat-dialog-content>
+      @if (data.fromRecipe) {
+        <p class="hint">Added now, the recipe goes into it.</p>
+      }
+      <form [formGroup]="form" (ngSubmit)="save()" id="recipe-category-form" class="form">
+        <mat-form-field>
+          <mat-label>Name · الاسم</mat-label>
+          <input matInput formControlName="name" maxlength="100" placeholder="Sauces" cdkFocusInitial />
+        </mat-form-field>
+        <mat-form-field>
+          <mat-label>Arabic name · الاسم بالعربية</mat-label>
+          <input matInput formControlName="nameAr" maxlength="100" dir="rtl" placeholder="الصوصات" />
+        </mat-form-field>
+      </form>
+      @if (problem(); as p) {
+        <p class="error">{{ p }}</p>
+      }
+    </mat-dialog-content>
+    <mat-dialog-actions align="end">
+      <button mat-button mat-dialog-close [disabled]="saving()">Cancel</button>
+      <button mat-flat-button type="submit" form="recipe-category-form" [disabled]="form.invalid || saving()">
+        {{ data.fromRecipe ? 'Add and use it' : 'Save' }}
+      </button>
+    </mat-dialog-actions>
+  `,
+  styles: `
+    .form {
+      display: grid;
+      gap: 4px;
+      min-width: min(380px, 80vw);
+    }
+    .ar {
+      direction: rtl;
+      unicode-bidi: isolate;
+      margin-left: 6px;
+      opacity: 0.75;
+      font-size: 0.8em;
+    }
+    .hint {
+      margin: 0 0 12px;
+      color: var(--mat-sys-on-surface-variant);
+    }
+    .error {
+      color: var(--mat-sys-error);
+    }
+  `,
+})
+export class RecipeCategoryDialog {
+  private readonly api = inject(CostingApi);
+  private readonly ref = inject(MatDialogRef<RecipeCategoryDialog, RecipeCategory>);
+  protected readonly data = inject<RecipeCategoryDialogData>(MAT_DIALOG_DATA);
+
+  protected readonly saving = signal(false);
+  protected readonly problem = signal<string | null>(null);
+
+  protected readonly form = new FormGroup({
+    name: new FormControl(this.data.category?.name ?? '', { nonNullable: true, validators: [Validators.required, Validators.pattern(/\S/)] }),
+    nameAr: new FormControl(this.data.category?.nameAr ?? '', { nonNullable: true }),
+  });
+
+  // The id is made here for a new one: a retry after a lost answer adds it once.
+  private readonly id = this.data.category?.id ?? crypto.randomUUID();
+
+  protected async save(): Promise<void> {
+    if (this.form.invalid || this.saving()) {
+      return;
+    }
+    const v = this.form.getRawValue();
+    this.saving.set(true);
+    this.problem.set(null);
+    try {
+      this.ref.close(await firstValueFrom(this.api.saveRecipeCategory(this.id, { name: v.name.trim(), nameAr: v.nameAr.trim() || null })));
+    } catch (error) {
+      this.problem.set(errorMessage(error, 'The category could not be saved.'));
+    } finally {
+      this.saving.set(false);
+    }
+  }
+}
+```
+
+
+`PrepItemsPage` و `PrepItemPage`: المصنعات بتكلفتها بوصفتها اليوم وتكلفة دفعاتها على الرف ورصيدها، وصفحة وصفة الدفعة (EP للدفعة، وكمية الدفعة).
+
+> 📄 **`frontend/src/app/features/costing/prep-items-page.ts`** — 342 سطر
+
+```ts
+import { DatePipe, DecimalPipe } from '@angular/common';
+import { Component, computed, effect, inject, input, signal, untracked } from '@angular/core';
+import { FormsModule } from '@angular/forms';
+import { MatButtonModule } from '@angular/material/button';
+import { MatDialog } from '@angular/material/dialog';
+import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatIconModule } from '@angular/material/icon';
+import { MatInputModule } from '@angular/material/input';
+import { MatProgressBarModule } from '@angular/material/progress-bar';
+import { MatSelectModule } from '@angular/material/select';
+import { MatTooltipModule } from '@angular/material/tooltip';
+import { Router, RouterLink } from '@angular/router';
+import { firstValueFrom } from 'rxjs';
+import { CostingApi, PrepImportResult, PrepItem, RecipeCategory } from '../../core/costing/costing.api';
+import { errorMessage } from '../../core/http/error-message';
+import { MoneyPipe } from '../../core/ui/money.pipe';
+import { NotifyService } from '../../core/ui/notify.service';
+import { Approvals, pendingLabel } from './approvals';
+import { saveBlob } from '../../core/ui/save-blob';
+import { todayIso } from './financials';
+import { PrepImportDialog } from './prep-import-dialog';
+import { recipeSheetRules } from './recipe-sheet-rules';
+import { SheetImportData, SheetImportDialog } from './sheet-import-dialog';
+import { FilterOption, FilterSelect } from '../shared/filter-select';
+import { SearchField } from '../shared/search-field';
+import { SortOption, SortState, smartMatch, sortItems } from '../shared/smart-search';
+import { SortControl } from '../shared/sort-control';
+
+type PrepSort = 'name' | 'category' | 'batchCost' | 'unitCost' | 'stock' | 'made';
+
+const prepSorts: SortOption<PrepSort>[] = [
+  { key: 'name', en: 'Name', ar: 'الاسم' },
+  { key: 'category', en: 'Category', ar: 'القسم' },
+  { key: 'batchCost', en: 'Cost per batch', ar: 'تكلفة الدفعة', descending: true },
+  { key: 'unitCost', en: 'Cost per unit', ar: 'تكلفة الوحدة', descending: true },
+  { key: 'stock', en: 'Stock on hand', ar: 'الرصيد', descending: true },
+  { key: 'made', en: 'Last made', ar: 'آخر تشغيلة', descending: true },
+];
+
+// The prep items: made in the kitchen from their own recipes, kept in stock, used by dishes.
+// Each with what it costs by its recipe at today's prices, what the batches on the shelf cost,
+// and how much is on the shelf. A row opens its profile. New ones asked for by an accountant are
+// listed first, waiting for a manager: they are not prep items until approved. To and from Excel:
+// every prep item a row per ingredient, the ingredient chosen from a dropdown that says its unit;
+// a sheet imported replaces the batch recipes it names. New ones from the kitchen's own sheet of
+// batch recipes (المصنعات) too: each prep item's name on a row of its own, then its ingredients.
+// Sorted under the kitchen's recipe categories, as the dishes are, and shown one category at a time.
+@Component({
+  selector: 'app-prep-items-page',
+  imports: [
+    FilterSelect,
+    SearchField,
+    SortControl,
+    DatePipe,
+    DecimalPipe,
+    FormsModule,
+    MatButtonModule,
+    MatFormFieldModule,
+    MatIconModule,
+    MatInputModule,
+    MatProgressBarModule,
+    MatSelectModule,
+    MatTooltipModule,
+    MoneyPipe,
+    RouterLink,
+  ],
+  template: `
+    <p class="note">
+      Made here from other materials (dough, house sauces) and kept in stock like them. A dish's recipe uses the prep item, so a sale
+      takes dough, not flour; a production order turns the flour into dough.
+      <span class="inline-ar">تُصنع في المطبخ وتُخزن، وتستهلكها الأطباق.</span>
+    </p>
+    @if (loading()) {
+      <mat-progress-bar mode="indeterminate" />
+    } @else if (error()) {
+      <p class="error">{{ error() }}</p>
+    } @else {
+      <div class="toolbar smart">
+        <app-search-field [(value)]="search" />
+        <div class="pills">
+          <app-filter-select label="Category · القسم" icon="category" [options]="categoryFilters()" [(value)]="category" />
+          <app-sort-control [options]="sorts" [(sort)]="sort" />
+        </div>
+      </div>
+      <div class="toolbar">
+        <span class="muted shown-count">Showing {{ shown().length }} of {{ items().length }}<span class="inline-ar">المعروض</span></span>
+        <span class="spacer"></span>
+        <a mat-button routerLink="../production"><mat-icon>precision_manufacturing</mat-icon> Make a batch</a>
+        <button mat-stroked-button (click)="exportExcel()" [disabled]="busy()">
+          <mat-icon>download</mat-icon> Export Excel <span class="inline-ar">تصدير إلى إكسل</span>
+        </button>
+        <button mat-stroked-button (click)="importExcel()" [disabled]="busy()">
+          <mat-icon>upload_file</mat-icon> Import Excel <span class="inline-ar">استيراد من إكسل</span>
+        </button>
+        <button mat-button class="batch-sheet" (click)="picker.click()" [disabled]="busy()"
+          matTooltip="New prep items from a sheet of batch recipes: each name on a row of its own, then its ingredients">
+          <mat-icon>post_add</mat-icon> Batch recipes sheet<span class="inline-ar">ملف المصنعات</span>
+        </button>
+        <input #picker type="file" hidden accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+          (change)="importFile(picker)" aria-label="Excel sheet of batch recipes to import" />
+        <a mat-flat-button routerLink="new"><mat-icon>add</mat-icon> Add prep item</a>
+      </div>
+      @if (busy()) {
+        <mat-progress-bar mode="indeterminate" />
+      }
+      <div class="table-wrap">
+        <table class="grid">
+          <thead>
+            <tr>
+              <th>Prep item<span class="ar">الصنف</span></th>
+              <th class="num">One batch<span class="ar">الدفعة</span></th>
+              <th class="num">By its recipe<span class="ar">التكلفة المعيارية</span></th>
+              <th class="num">In stock at<span class="ar">متوسط التكلفة</span></th>
+              <th class="num">On hand<span class="ar">الرصيد</span></th>
+              <th class="num">Stock value<span class="ar">قيمة المخزون</span></th>
+              <th>Last made<span class="ar">آخر تصنيع</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            @for (r of waiting(); track r.id) {
+              <tr class="pending-deletion">
+                <td colspan="7">
+                  {{ r.summary }}
+                  <div>
+                    <span class="pending-badge">{{ pendingLabel(r).en }}<span class="ar">{{ pendingLabel(r).ar }}</span></span>
+                    <span class="muted small"> asked by {{ r.requestedBy }}, {{ r.requestedAtUtc | date: 'd MMM, HH:mm' }}</span>
+                  </div>
+                </td>
+              </tr>
+            }
+            @for (p of shown(); track p.id) {
+              @let asked = approvals.pendingFor(p.id);
+              <tr class="clickable" [class.pending-deletion]="!!asked" (click)="open(p)">
+                <td>
+                  @if (p.code) {
+                    <span class="muted">{{ p.code }} · </span>
+                  }
+                  {{ p.name }}
+                  @if (categoryName(p); as c) {
+                    <div class="muted small">{{ c }}</div>
+                  }
+                  @if (asked) {
+                    <div>
+                      <span class="pending-badge">{{ pendingLabel(asked).en }}<span class="ar">{{ pendingLabel(asked).ar }}</span></span>
+                      <span class="muted small"> by {{ asked.requestedBy }}</span>
+                    </div>
+                  }
+                  @if (p.ingredients.length === 0) {
+                    <div class="warn small">No recipe yet</div>
+                  } @else if (p.missingPrices.length) {
+                    <div class="warn small">No cost yet: {{ p.missingPrices.join(', ') }}</div>
+                  }
+                </td>
+                <td class="num">{{ p.batchQuantity / p.displayUnitSize | number: '1.0-3' }} {{ p.displayUnit }}</td>
+                <td class="num">{{ p.standardCostPerDisplayUnit === null ? '—' : (p.standardCostPerDisplayUnit | money) + ' / ' + p.displayUnit }}</td>
+                <td class="num">{{ p.averageCostPerDisplayUnit === null ? '—' : (p.averageCostPerDisplayUnit | money) + ' / ' + p.displayUnit }}</td>
+                <td class="num" [class.warn]="p.quantityOnHand < 0">{{ p.quantityOnHand / p.displayUnitSize | number: '1.0-3' }} {{ p.displayUnit }}</td>
+                <td class="num">{{ p.stockValue === null ? '—' : (p.stockValue | money) }}</td>
+                <td class="nowrap">{{ p.lastProducedAtUtc ? (p.lastProducedAtUtc | date: 'd MMM, HH:mm') : 'Never' }}</td>
+              </tr>
+            } @empty {
+              @if (!waiting().length) {
+                <tr>
+                  <td colspan="7" class="muted">
+                    {{ items().length ? 'No prep item matches.' : 'No prep items yet. Add one, such as pizza dough, with its recipe for a batch.' }}
+                  </td>
+                </tr>
+              }
+            }
+          </tbody>
+        </table>
+      </div>
+    }
+  `,
+  styleUrl: './costing.scss',
+  styles: `
+    .small {
+      font-size: 0.85em;
+    }
+    .warn {
+      color: var(--mat-sys-error);
+    }
+    .nowrap {
+      white-space: nowrap;
+    }
+  `,
+})
+export class PrepItemsPage {
+  private readonly api = inject(CostingApi);
+  private readonly router = inject(Router);
+  private readonly dialog = inject(MatDialog);
+  private readonly notify = inject(NotifyService);
+  protected readonly approvals = inject(Approvals);
+  protected readonly pendingLabel = pendingLabel;
+
+  protected readonly items = signal<PrepItem[]>([]);
+  protected readonly loading = signal(true);
+  protected readonly error = signal<string | null>(null);
+  protected readonly search = signal('');
+  protected readonly busy = signal(false);
+
+  // The kitchen's recipe categories; the one shown ('': all), or none for the unsorted ones.
+  protected readonly categories = signal<RecipeCategory[]>([]);
+  protected readonly category = signal('');
+  protected readonly uncategorized = 'none';
+  protected readonly sorts = prepSorts;
+  protected readonly sort = signal<SortState<PrepSort>>({ key: 'name', direction: 1 });
+
+  protected readonly categoryFilters = computed<FilterOption[]>(() => [
+    { value: '', label: 'All · الكل', count: this.items().length },
+    ...this.categories().map((c) => ({
+      value: c.id, label: c.nameAr ? `${c.name} · ${c.nameAr}` : c.name, count: this.items().filter((p) => p.recipeCategoryId === c.id).length,
+    })),
+    { value: this.uncategorized, label: 'Uncategorized · بدون قسم', count: this.items().filter((p) => !p.recipeCategoryId).length },
+  ]);
+
+  // From the query: a category to show, from the recipe categories' counts.
+  readonly categoryParam = input<string | undefined>(undefined, { alias: 'category' });
+
+  protected readonly shown = computed(() => {
+    const category = this.category();
+    const found = this.items().filter(
+      (p) =>
+        smartMatch(this.search(), p.name, p.code, this.categoryName(p)) &&
+        (!category || (category === this.uncategorized ? !p.recipeCategoryId : p.recipeCategoryId === category)),
+    );
+    return sortItems(found, this.sort(), (p, key) => {
+      switch (key) {
+        case 'category':
+          return this.categoryName(p);
+        case 'batchCost':
+          return p.standardBatchCost;
+        case 'unitCost':
+          return p.averageCostPerDisplayUnit ?? p.standardCostPerDisplayUnit;
+        case 'stock':
+          return p.quantityOnHand;
+        case 'made':
+          return p.lastProducedAtUtc;
+        default:
+          return p.name;
+      }
+    }, (p) => p.name);
+  });
+
+  private readonly categoryNames = computed(() => new Map(this.categories().map((c) => [c.id, c.name] as const)));
+
+  // New prep items asked for, waiting for a manager: not made yet, so not openable.
+  protected readonly waiting = computed(() => this.approvals.waitingToBeMade('PrepItem'));
+
+  constructor() {
+    effect(() => {
+      const category = this.categoryParam();
+      untracked(() => this.category.set(category ?? ''));
+    });
+    void this.load();
+    void this.approvals.refresh();
+  }
+
+  protected categoryName(item: PrepItem): string | null {
+    return item.recipeCategoryId ? (this.categoryNames().get(item.recipeCategoryId) ?? null) : null;
+  }
+
+  protected open(item: PrepItem): void {
+    void this.router.navigate(['/costing/recipes/prep', item.id]);
+  }
+
+  protected async exportExcel(): Promise<void> {
+    this.busy.set(true);
+    try {
+      saveBlob(await firstValueFrom(this.api.exportPrepItems()), `prep-items-${todayIso()}.xlsx`);
+      this.notify.info('Prep items exported to Excel. · تم تصدير الأصناف المُصنَّعة إلى إكسل.');
+    } catch (error) {
+      this.notify.error(error, 'The prep items could not be exported. · تعذّر تصدير الأصناف المُصنَّعة.');
+    } finally {
+      this.busy.set(false);
+    }
+  }
+
+  // The smart sheet imported in the dialog, which says what it did and what a batch of each costs
+  // now; the list read again when it changed it.
+  protected async importExcel(): Promise<void> {
+    const data: SheetImportData = {
+      title: { en: 'Import prep items from Excel', ar: 'استيراد الأصناف المُصنَّعة من إكسل' },
+      noun: { one: 'prep item', many: 'prep items', ar: 'الصنف المُصنَّع' },
+      rules: [
+        {
+          en: 'One ingredient a row: the prep item, the ingredient from the list, and its quantity for one batch; what a batch makes on any of its rows.',
+          ar: 'مكوّن في كل صف: الصنف المُصنَّع، والمكوّن من القائمة، وكميته في التشغيلة؛ وكمية التشغيلة في أي من صفوفه.',
+        },
+        ...recipeSheetRules,
+        {
+          en: 'Imported by anyone but a manager, each goes to a manager for approval.',
+          ar: 'استيراد غير المدير يذهب إلى المدير للموافقة على كل صنف.',
+        },
+      ],
+      templateName: 'prep-items-template.xlsx',
+      template: () => this.api.prepItemsTemplate(),
+      upload: (file) => this.api.importPrepItemsSheet(file),
+    };
+    const changed = await firstValueFrom(
+      this.dialog.open<SheetImportDialog, SheetImportData, boolean>(SheetImportDialog, { data, width: '860px', maxWidth: '96vw' }).afterClosed(),
+    );
+    if (changed) {
+      await this.load();
+    } else {
+      // Asked of a manager: the requests are listed first.
+      void this.approvals.refresh();
+    }
+  }
+
+  // The sheet chosen: imported, what it did shown, and the list read again. The picker is cleared,
+  // so the same file can be chosen again once it is put right.
+  protected async importFile(picker: HTMLInputElement): Promise<void> {
+    const file = picker.files?.[0];
+    picker.value = '';
+    if (!file) {
+      return;
+    }
+    this.busy.set(true);
+    try {
+      const result = await firstValueFrom(this.api.importPrepItems(file));
+      this.dialog.open<PrepImportDialog, PrepImportResult>(PrepImportDialog, { data: result, width: '820px', maxWidth: '95vw' });
+      await Promise.all([this.load(), this.approvals.refresh()]);
+    } catch (error) {
+      this.notify.error(error, 'The file could not be imported.');
+    } finally {
+      this.busy.set(false);
+    }
+  }
+
+  private async load(): Promise<void> {
+    try {
+      const [items, categories] = await Promise.all([firstValueFrom(this.api.prepItems()), firstValueFrom(this.api.recipeCategories())]);
+      this.items.set(items);
+      this.categories.set(categories);
+    } catch (error) {
+      this.error.set(errorMessage(error, 'The prep items could not be loaded.'));
+    } finally {
+      this.loading.set(false);
+    }
+  }
+}
+```
+
+
+> 📄 **`frontend/src/app/features/costing/prep-item-page.ts`** — 618 سطر
+
+```ts
+import { DatePipe, DecimalPipe } from '@angular/common';
+import { Component, computed, effect, inject, input, signal, untracked } from '@angular/core';
+import { FormsModule } from '@angular/forms';
+import { MatButtonModule } from '@angular/material/button';
+import { MatDialog } from '@angular/material/dialog';
+import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatIconModule } from '@angular/material/icon';
+import { MatInputModule } from '@angular/material/input';
+import { MatProgressBarModule } from '@angular/material/progress-bar';
+import { MatSelectModule } from '@angular/material/select';
+import { Router, RouterLink } from '@angular/router';
+import { firstValueFrom } from 'rxjs';
+import { CostingApi, MaterialCost, PrepItem, ProductionOrder, RecipeCategory, SavePrepItem, UnitOfMeasure, isRequested, recipeCostOf } from '../../core/costing/costing.api';
+import { errorMessage } from '../../core/http/error-message';
+import { MoneyPipe } from '../../core/ui/money.pipe';
+import { NotifyService } from '../../core/ui/notify.service';
+import { Approvals } from './approvals';
+import { ApprovalChanges } from './approval-changes';
+import { showProductionOrder } from './production-order-dialog';
+import { PurchaseCategoryField } from './purchase-category-field';
+import { GridKeys } from '../shared/grid-keys';
+import { MaterialPicker } from './material-picker';
+
+interface Line {
+  rawMaterialId: string | null;
+  // The Edible Portion for one batch, in the ingredient's own unit.
+  quantity: number | null;
+  yieldPercent: number | null;
+}
+
+const baseLabels: Record<UnitOfMeasure, string> = { Gram: 'g', Millilitre: 'ml', Piece: 'pc' };
+const displayUnits: Record<UnitOfMeasure, [string, number]> = { Gram: ['kg', 1000], Millilitre: ['L', 1000], Piece: ['piece', 1] };
+
+// A prep item's profile: what it is, its recipe for one batch with every ingredient's cost and
+// share, what that comes to per kg by the recipe at today's prices, and against it what the
+// batches on the shelf actually cost, how much is there, and the batches made. The recipe is
+// written here; costs follow as it is typed.
+//
+// Saved at once by a manager. Anyone else's save goes to a manager: a new prep item is not made
+// until approved, and a changed one stays as it was, locked, with what was asked shown here.
+@Component({
+  selector: 'app-prep-item-page',
+  imports: [
+    ApprovalChanges,
+    GridKeys,
+    MaterialPicker,
+    DatePipe,
+    DecimalPipe,
+    FormsModule,
+    MatButtonModule,
+    MatFormFieldModule,
+    MatIconModule,
+    MatInputModule,
+    MatProgressBarModule,
+    MatSelectModule,
+    MoneyPipe,
+    PurchaseCategoryField,
+    RouterLink,
+  ],
+  template: `
+    <div class="toolbar no-print">
+      <a mat-button routerLink="/costing/recipes/prep"><mat-icon>arrow_back</mat-icon> All prep items</a>
+      <span class="spacer"></span>
+      @if (saved(); as p) {
+        @if (!pending()) {
+          <button mat-button class="danger" (click)="deleteItem()" [disabled]="saving()"><mat-icon>delete</mat-icon> Delete</button>
+        }
+        <a mat-flat-button routerLink="/costing/recipes/production" [queryParams]="{ prepItemId: p.id }">
+          <mat-icon>precision_manufacturing</mat-icon> Make a batch
+        </a>
+      }
+    </div>
+    @if (loading()) {
+      <mat-progress-bar mode="indeterminate" />
+    } @else if (error()) {
+      <p class="error">{{ error() }}</p>
+    } @else {
+      <h2 class="title">{{ saved()?.name ?? 'New prep item' }} <span class="inline-ar">صنف نصف مصنع</span></h2>
+      @if (pending(); as r) {
+        <div class="pending-banner">
+          <mat-icon>lock_clock</mat-icon>
+          <div>
+            {{ r.requestedBy }} asked {{ r.action === 'Delete' ? 'to delete' : 'to change' }} this prep item on {{ r.requestedAtUtc | date: 'd MMM y, HH:mm' }}.
+            It stays as it is, and cannot be changed, until a manager decides.
+            <span class="inline-ar">بانتظار موافقة المدير.</span>
+            @if (r.changes.length) {
+              <app-approval-changes [changes]="r.changes" />
+            }
+          </div>
+        </div>
+      } @else if (!approvals.canApprove()) {
+        <p class="note">
+          A manager approves {{ saved() ? 'changes to prep items' : 'new prep items' }}: {{ saved() ? 'it stays as it is' : 'it is not added' }} until then.
+          <span class="inline-ar">يُرسل للمدير للموافقة.</span>
+        </p>
+      }
+
+      <div class="figures">
+        <div class="box key">
+          <span class="label">By its recipe, today<span class="ar">التكلفة المعيارية</span></span>
+          <strong>{{ lineCount() ? (standardPerUnit() | money) + ' / ' + displayUnit : '—' }}</strong>
+          <small>One batch of {{ batch ?? 0 | number: '1.0-3' }} {{ displayUnit }}: {{ batchCost() | money }}</small>
+        </div>
+        @if (saved(); as p) {
+          <div class="box">
+            <span class="label">In stock at<span class="ar">متوسط تكلفة المخزون</span></span>
+            <strong>{{ p.averageCostPerDisplayUnit === null ? '—' : (p.averageCostPerDisplayUnit | money) + ' / ' + p.displayUnit }}</strong>
+            <small class="muted">The moving average of the batches made</small>
+          </div>
+          <div class="box">
+            <span class="label">On hand<span class="ar">الرصيد</span></span>
+            <strong [class.warn]="p.quantityOnHand < 0">{{ p.quantityOnHand / p.displayUnitSize | number: '1.0-3' }} {{ p.displayUnit }}</strong>
+            <small class="muted">Worth {{ p.stockValue === null ? '—' : (p.stockValue | money) }}</small>
+          </div>
+          <div class="box">
+            <span class="label">Last batch<span class="ar">آخر دفعة</span></span>
+            <strong>{{ p.lastBatchCostPerDisplayUnit === null ? '—' : (p.lastBatchCostPerDisplayUnit | money) + ' / ' + p.displayUnit }}</strong>
+            <small class="muted">{{ p.lastProducedAtUtc ? (p.lastProducedAtUtc | date: 'd MMM y, HH:mm') : 'Not made yet' }}</small>
+          </div>
+        }
+      </div>
+
+      <section class="form">
+        <mat-form-field class="wide">
+          <mat-label>Name · الاسم</mat-label>
+          <input matInput [(ngModel)]="name" maxlength="200" />
+        </mat-form-field>
+        <mat-form-field>
+          <mat-label>Code · الكود</mat-label>
+          <input matInput [(ngModel)]="code" maxlength="32" placeholder="PREP-01" />
+        </mat-form-field>
+        <app-purchase-category-field [(ngModel)]="categoryId" class="category-field" kind="RawMaterials" />
+        <mat-form-field>
+          <mat-label>Recipe category · قسم الوصفة</mat-label>
+          <mat-select [(ngModel)]="recipeCategoryId" aria-label="Recipe category">
+            <mat-option [value]="null">None · بدون قسم</mat-option>
+            @for (c of recipeCategories(); track c.id) {
+              <mat-option [value]="c.id">{{ c.name }}{{ c.nameAr ? ' · ' + c.nameAr : '' }}</mat-option>
+            }
+          </mat-select>
+          <mat-hint>Sorted with the dishes' recipes</mat-hint>
+        </mat-form-field>
+        <mat-form-field>
+          <mat-label>Kept in · وحدة التخزين</mat-label>
+          <mat-select [(ngModel)]="unit" (ngModelChange)="unitChanged($event)" [disabled]="!!saved()">
+            <mat-option value="Gram">Grams, shown in kg</mat-option>
+            <mat-option value="Millilitre">Millilitres, shown in L</mat-option>
+            <mat-option value="Piece">Pieces</mat-option>
+          </mat-select>
+          @if (saved()) {
+            <mat-hint>Fixed: its stock and batches are in it.</mat-hint>
+          }
+        </mat-form-field>
+        <mat-form-field>
+          <mat-label>One batch makes · الدفعة تنتج</mat-label>
+          <input matInput type="number" min="0" step="any" [(ngModel)]="batch" (ngModelChange)="touch()" />
+          <span matTextSuffix>&nbsp;{{ displayUnit }}</span>
+        </mat-form-field>
+        <mat-form-field>
+          <mat-label>Reorder below · حد إعادة الطلب</mat-label>
+          <input matInput type="number" min="0" step="any" [(ngModel)]="reorder" />
+          <span matTextSuffix>&nbsp;{{ displayUnit }}</span>
+        </mat-form-field>
+      </section>
+
+      <h3>Recipe for one batch <span class="inline-ar">مكونات الدفعة</span></h3>
+      <div class="table-wrap">
+        <table class="grid" appGridKeys (appGridKeysAppend)="add()">
+          <thead>
+            <tr>
+              <th>Ingredient<span class="ar">المكون</span></th>
+              <th class="num">Quantity (EP)<span class="ar">الكمية الصافية</span></th>
+              <th class="num">Yield %<span class="ar">نسبة الصافي</span></th>
+              <th class="num">Takes from stock<span class="ar">الكمية الإجمالية</span></th>
+              <th class="num">Average cost<span class="ar">متوسط التكلفة</span></th>
+              <th class="num">Batch cost<span class="ar">تكلفة الدفعة</span></th>
+              <th class="num">Share<span class="ar">النسبة</span></th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            @for (line of lines(); track $index; let i = $index) {
+              @let m = material(line);
+              <tr>
+                <td>
+                  <app-material-picker class="ingredient" [materials]="ingredientChoices()" [value]="line.rawMaterialId"
+                    (valueChange)="line.rawMaterialId = $event; picked(line)" [label]="'Ingredient, line ' + (i + 1)" />
+                </td>
+                <td class="num">
+                  <mat-form-field subscriptSizing="dynamic" class="small">
+                    <input matInput type="number" min="0" step="any" [(ngModel)]="line.quantity" (ngModelChange)="touch()" [attr.aria-label]="'Quantity, line ' + (i + 1)" />
+                    <span matTextSuffix>&nbsp;{{ m ? base(m.unit) : '' }}</span>
+                  </mat-form-field>
+                </td>
+                <td class="num">
+                  <mat-form-field subscriptSizing="dynamic" class="yield">
+                    <input matInput type="number" min="1" max="100" step="any" [(ngModel)]="line.yieldPercent" (ngModelChange)="touch()" [attr.aria-label]="'Yield, line ' + (i + 1)" />
+                    <span matTextSuffix>%</span>
+                  </mat-form-field>
+                </td>
+                <td class="num">{{ asPurchased(line) === null ? '' : (asPurchased(line) | number: '1.0-3') + ' ' + base(m!.unit) }}</td>
+                <td class="num muted">
+                  @if (m) {
+                    {{ aps(m) === null ? 'No cost yet' : (aps(m) | money) + ' / ' + m.purchaseUnit }}
+                    @if (aps(m) !== null && m.costedByRecipe) {
+                      <div class="by-recipe" title="Not made yet: costed by its own recipe today, until a batch is made">By its recipe · حسب وصفته</div>
+                    }
+                  }
+                </td>
+                <td class="num">{{ lineCost(line) === null ? '' : (lineCost(line) | money) }}</td>
+                <td class="num">{{ share(line) === null ? '' : (share(line) | number: '1.0-1') + '%' }}</td>
+                <td>
+                  <button mat-icon-button (click)="remove(i)" aria-label="Remove ingredient"><mat-icon>delete</mat-icon></button>
+                </td>
+              </tr>
+            }
+          </tbody>
+          <tfoot>
+            <tr>
+              <td colspan="5"><button mat-button (click)="add()"><mat-icon>add</mat-icon> Add ingredient</button></td>
+              <td class="num">{{ batchCost() | money }}</td>
+              <td class="num">{{ lineCount() ? '100%' : '' }}</td>
+              <td></td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+      @if (missing().length) {
+        <p class="warn">No cost yet for {{ missing().join(', ') }}: the cost shown is short of it, and no batch can be made until it has one.</p>
+      }
+      @if (!pending()) {
+        <div class="toolbar actions">
+          <span class="spacer"></span>
+          @if (approvals.canApprove()) {
+            <button mat-flat-button (click)="save()" [disabled]="!ready() || saving()"><mat-icon>save</mat-icon> Save</button>
+          } @else {
+            <button mat-flat-button (click)="save()" [disabled]="!ready() || saving()">
+              <mat-icon>send</mat-icon> Send for approval · إرسال للموافقة
+            </button>
+          }
+        </div>
+      }
+
+      @if (saved(); as p) {
+        <h3>Batches made <span class="inline-ar">سجل التصنيع</span></h3>
+        <div class="table-wrap">
+          <table class="grid">
+            <thead>
+              <tr>
+                <th>Made<span class="ar">التاريخ</span></th>
+                <th class="num">Planned<span class="ar">المخطط</span></th>
+                <th class="num">Came out<span class="ar">المنتج</span></th>
+                <th class="num">Yield<span class="ar">نسبة الإنتاج</span></th>
+                <th class="num">Batch cost<span class="ar">التكلفة</span></th>
+                <th class="num">Per {{ p.displayUnit }}<span class="ar">تكلفة الوحدة</span></th>
+                <th>By<span class="ar">بواسطة</span></th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              @for (o of p.recent; track o.id) {
+                <tr [class.voided]="o.status === 'Voided'">
+                  <td class="nowrap">
+                    {{ o.producedAtUtc | date: 'd MMM y, HH:mm' }}
+                    @if (o.status === 'Voided') {
+                      <div><span class="voided-badge">{{ o.replacedBy ? 'Corrected' : 'Voided' }}<span class="ar">{{ o.replacedBy ? 'مُصحح' : 'ملغى' }}</span></span></div>
+                    }
+                  </td>
+                  <td class="num">{{ o.plannedQuantity / o.displayUnitSize | number: '1.0-3' }} {{ o.displayUnit }}</td>
+                  <td class="num">{{ o.producedQuantity / o.displayUnitSize | number: '1.0-3' }} {{ o.displayUnit }}</td>
+                  <td class="num">{{ o.yieldPercent | number: '1.0-1' }}%</td>
+                  <td class="num">{{ o.totalCost | money }}</td>
+                  <td class="num">{{ o.unitCostPerDisplayUnit | money }}</td>
+                  <td>{{ o.producedBy || '—' }}</td>
+                  <td class="num"><button mat-stroked-button (click)="show(o)">Show · عرض</button></td>
+                </tr>
+              } @empty {
+                <tr><td colspan="8" class="muted">Not made yet. Make a batch to put it in stock.</td></tr>
+              }
+            </tbody>
+          </table>
+        </div>
+      }
+    }
+  `,
+  styleUrl: './costing.scss',
+  styles: `
+    .by-recipe {
+      font-size: 0.78em;
+      color: var(--mat-sys-tertiary);
+      white-space: nowrap;
+    }
+    .title {
+      margin: 0 0 12px;
+      font: var(--mat-sys-title-large);
+    }
+    h3 {
+      margin: 20px 0 8px;
+      font: var(--mat-sys-title-medium);
+    }
+    .figures {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+      gap: 8px;
+      margin-bottom: 16px;
+    }
+    .box {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      padding: 10px 12px;
+      border-radius: 12px;
+      border: 1px solid var(--mat-sys-outline-variant);
+      background: var(--mat-sys-surface);
+
+      .label {
+        font: var(--mat-sys-label-medium);
+        color: var(--mat-sys-on-surface-variant);
+      }
+      strong {
+        font: var(--mat-sys-title-large);
+      }
+      &.key {
+        background: var(--mat-sys-secondary-container);
+        color: var(--mat-sys-on-secondary-container);
+        border-color: transparent;
+      }
+    }
+    .form {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+      gap: 4px 12px;
+    }
+    .wide {
+      grid-column: span 2;
+    }
+    .ingredient {
+      min-width: 220px;
+      width: 100%;
+    }
+    .small {
+      width: 140px;
+    }
+    .yield {
+      width: 100px;
+    }
+    .warn {
+      color: var(--mat-sys-error);
+    }
+    .nowrap {
+      white-space: nowrap;
+    }
+    .actions {
+      margin-top: 12px;
+    }
+    .danger {
+      color: var(--mat-sys-error);
+    }
+    tr.voided td {
+      color: var(--mat-sys-on-surface-variant);
+      text-decoration: line-through;
+      text-decoration-color: color-mix(in srgb, currentColor 40%, transparent);
+    }
+  `,
+})
+export class PrepItemPage {
+  private readonly api = inject(CostingApi);
+  private readonly router = inject(Router);
+  private readonly dialog = inject(MatDialog);
+  private readonly notify = inject(NotifyService);
+  protected readonly approvals = inject(Approvals);
+
+  // From the route: an id, or 'new'.
+  readonly id = input.required<string>();
+
+  protected readonly saved = signal<PrepItem | null>(null);
+  protected readonly materials = signal<MaterialCost[]>([]);
+  protected readonly recipeCategories = signal<RecipeCategory[]>([]);
+  protected readonly lines = signal<Line[]>([this.blank()]);
+  protected readonly loading = signal(true);
+  protected readonly saving = signal(false);
+  protected readonly error = signal<string | null>(null);
+
+  protected name = '';
+  protected code = '';
+  protected categoryId: string | null = null;
+  protected recipeCategoryId: string | null = null;
+  protected unit: UnitOfMeasure = 'Gram';
+  protected displayUnit = 'kg';
+  protected displayUnitSize = 1000;
+  // In the display unit: 10 (kg).
+  protected batch: number | null = 10;
+  protected reorder: number | null = 0;
+
+  // The form is changed in place; this bumps the signal so the costs follow.
+  private readonly version = signal(0);
+
+  // A request is made under an id made here, so a retry is recorded once; a new one after each.
+  private requestId = crypto.randomUUID();
+
+  // What waits for a manager on this prep item: it is locked meanwhile.
+  protected readonly pending = computed(() => {
+    const id = this.saved()?.id;
+    return id ? this.approvals.pendingFor(id) : undefined;
+  });
+
+  // What it can be made from: anything but itself.
+  protected readonly ingredientChoices = computed(() => this.materials().filter((m) => m.id !== this.saved()?.id));
+
+  protected readonly lineCount = computed(() => {
+    this.version();
+    return this.lines().filter((l) => l.rawMaterialId && (l.quantity ?? 0) > 0).length;
+  });
+
+  protected readonly batchCost = computed(() => {
+    this.version();
+    return this.lines().reduce((sum, l) => sum + (this.lineCost(l) ?? 0), 0);
+  });
+
+  protected readonly standardPerUnit = computed(() => {
+    this.version();
+    const batch = this.batch ?? 0;
+    return batch > 0 ? this.batchCost() / batch : 0;
+  });
+
+  protected readonly missing = computed(() => {
+    this.version();
+    return this.lines()
+      .map((l) => this.material(l))
+      // No price of its own, or one inside a prep item costed by its recipe.
+      .flatMap((m) => (!m ? [] : recipeCostOf(m) === null ? [m.name] : (m.recipeCostMissing ?? [])));
+  });
+
+  // A name, a batch, and each line an ingredient with a quantity, none twice.
+  protected readonly ready = computed(() => {
+    this.version();
+    const lines = this.lines().filter((l) => l.rawMaterialId || l.quantity);
+    const ids = lines.map((l) => l.rawMaterialId);
+    return (
+      this.name.trim() !== '' &&
+      (this.batch ?? 0) > 0 &&
+      lines.every((l) => l.rawMaterialId && (l.quantity ?? 0) > 0 && (l.yieldPercent === null || (l.yieldPercent > 0 && l.yieldPercent <= 100))) &&
+      new Set(ids).size === ids.length
+    );
+  });
+
+  constructor() {
+    effect(() => {
+      const id = this.id();
+      untracked(() => void this.load(id));
+    });
+  }
+
+  protected material(line: Line): MaterialCost | undefined {
+    return this.materials().find((m) => m.id === line.rawMaterialId);
+  }
+
+  protected base(unit: UnitOfMeasure): string {
+    return baseLabels[unit];
+  }
+
+  // What the line takes off stock for one batch: the quantity before trimming.
+  protected asPurchased(line: Line): number | null {
+    if (!this.material(line) || !line.quantity || line.quantity <= 0) {
+      return null;
+    }
+    return (line.quantity * 100) / (line.yieldPercent || 100);
+  }
+
+  protected lineCost(line: Line): number | null {
+    const material = this.material(line);
+    const quantity = this.asPurchased(line);
+    const perUnit = material ? recipeCostOf(material) : null;
+    return quantity !== null && perUnit !== null ? quantity * perUnit : null;
+  }
+
+  // What a purchase unit of it costs: its average, or a prep item never made yet by its own recipe.
+  protected aps(material: MaterialCost): number | null {
+    const perUnit = recipeCostOf(material);
+    return perUnit === null ? null : perUnit * material.purchaseUnitSize;
+  }
+
+  protected share(line: Line): number | null {
+    const cost = this.lineCost(line);
+    const total = this.batchCost();
+    return cost !== null && total > 0 ? (cost * 100) / total : null;
+  }
+
+  protected touch(): void {
+    this.version.update((v) => v + 1);
+  }
+
+  // An ingredient chosen: its usual yield, until another is typed.
+  protected picked(line: Line): void {
+    line.yieldPercent = this.material(line)?.defaultYieldPercent ?? 100;
+    this.touch();
+  }
+
+  protected unitChanged(unit: UnitOfMeasure): void {
+    [this.displayUnit, this.displayUnitSize] = displayUnits[unit];
+    this.touch();
+  }
+
+  protected add(): void {
+    this.lines.update((lines) => [...lines, this.blank()]);
+  }
+
+  protected remove(index: number): void {
+    this.lines.update((lines) => lines.filter((_, i) => i !== index));
+    this.touch();
+  }
+
+  protected show(order: ProductionOrder): void {
+    showProductionOrder(this.dialog, order);
+  }
+
+  protected async save(): Promise<void> {
+    if (!this.ready()) {
+      return;
+    }
+    const body: SavePrepItem = {
+      name: this.name.trim(),
+      unit: this.unit,
+      batchQuantity: PrepItemPage.toBase(this.batch!, this.displayUnitSize),
+      ingredients: this.lines()
+        .filter((l) => l.rawMaterialId)
+        .map((l) => ({ rawMaterialId: l.rawMaterialId!, quantity: l.quantity!, yieldPercent: l.yieldPercent })),
+      code: this.code.trim() || null,
+      categoryId: this.categoryId,
+      recipeCategoryId: this.recipeCategoryId,
+      displayUnit: this.displayUnit,
+      displayUnitSize: this.displayUnitSize,
+      reorderLevel: PrepItemPage.toBase(this.reorder ?? 0, this.displayUnitSize),
+    };
+    this.saving.set(true);
+    try {
+      const saved = await firstValueFrom(this.api.savePrepItem(this.saved()?.id ?? null, { ...body, requestId: this.requestId }));
+      if (isRequested(saved)) {
+        this.requestId = crypto.randomUUID();
+        await this.approvals.requested(saved);
+        if (!this.saved()) {
+          await this.router.navigate(['/costing/recipes/prep']);
+        }
+      } else {
+        this.notify.info(`${saved.name} saved.`);
+        if (this.saved()) {
+          this.fill(saved);
+        } else {
+          await this.router.navigate(['/costing/recipes/prep', saved.id], { replaceUrl: true });
+        }
+      }
+    } catch (error) {
+      this.notify.error(error, 'The prep item could not be saved.');
+    } finally {
+      this.saving.set(false);
+    }
+  }
+
+  // Archived for a manager (it then leaves the lists); asked of one for anyone else.
+  protected async deleteItem(): Promise<void> {
+    const item = this.saved();
+    if (item && (await this.approvals.delete('PrepItem', item.id, item.name)) === 'Applied') {
+      await this.router.navigate(['/costing/recipes/prep']);
+    }
+  }
+
+  private fill(item: PrepItem): void {
+    this.saved.set(item);
+    this.name = item.name;
+    this.code = item.code ?? '';
+    this.categoryId = item.categoryId;
+    this.recipeCategoryId = item.recipeCategoryId ?? null;
+    this.unit = item.unit;
+    this.displayUnit = item.displayUnit;
+    this.displayUnitSize = item.displayUnitSize;
+    this.batch = item.batchQuantity / item.displayUnitSize;
+    this.reorder = item.reorderLevel / item.displayUnitSize;
+    this.lines.set(
+      item.ingredients.length
+        ? item.ingredients.map((i) => ({ rawMaterialId: i.rawMaterialId, quantity: i.quantity, yieldPercent: i.yieldPercent }))
+        : [this.blank()],
+    );
+    this.touch();
+  }
+
+  private async load(id: string): Promise<void> {
+    this.loading.set(true);
+    this.error.set(null);
+    void this.approvals.refresh();
+    try {
+      const [materials, item, recipeCategories] = await Promise.all([
+        firstValueFrom(this.api.materials()),
+        id === 'new' ? Promise.resolve(null) : firstValueFrom(this.api.prepItem(id)),
+        firstValueFrom(this.api.recipeCategories()),
+      ]);
+      this.materials.set(materials);
+      this.recipeCategories.set(recipeCategories);
+      if (id !== 'new' && !item) {
+        this.error.set('No such prep item.');
+      } else if (item) {
+        this.fill(item);
+      }
+    } catch (error) {
+      this.error.set(errorMessage(error, 'The prep item could not be loaded.'));
+    } finally {
+      this.loading.set(false);
+    }
+  }
+
+  private blank(): Line {
+    return { rawMaterialId: null, quantity: null, yieldPercent: null };
+  }
+
+  // To the thousandth, as stock is kept: 0.25 kg is 250 g.
+  private static toBase(value: number, size: number): number {
+    return Math.round(value * size * 1000) / 1000;
+  }
+}
+```
+
+
+## 8. الإنتاج
+
+`ProductionPage`: اختر المصنّع، المخطط (يحدد المكونات بوصفته)، والمنتج فعلًا؛ راجع ما ستأخذه مقابل السجلات وتكلفتها بمتوسط اليوم؛ ثم سجّل (مدير) أو اطلب. و `ProductionOrderDialog`: دفعة كما صُنعت، للقراءة.
+
+> 📄 **`frontend/src/app/features/costing/production-page.ts`** — 568 سطر
+
+```ts
+import { DatePipe, DecimalPipe } from '@angular/common';
+import { Component, computed, effect, inject, input, signal, untracked } from '@angular/core';
+import { FormsModule } from '@angular/forms';
+import { MatButtonModule } from '@angular/material/button';
+import { MatDialog } from '@angular/material/dialog';
+import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatIconModule } from '@angular/material/icon';
+import { MatInputModule } from '@angular/material/input';
+import { MatProgressBarModule } from '@angular/material/progress-bar';
+import { MatSelectModule } from '@angular/material/select';
+import { MatTooltipModule } from '@angular/material/tooltip';
+import { RouterLink } from '@angular/router';
+import { firstValueFrom } from 'rxjs';
+import { CostingApi, PrepItem, ProductionOrder, ProductionPreview, UnitOfMeasure, isRequested } from '../../core/costing/costing.api';
+import { errorMessage } from '../../core/http/error-message';
+import { Company } from '../../core/settings/company';
+import { MoneyPipe } from '../../core/ui/money.pipe';
+import { NotifyService } from '../../core/ui/notify.service';
+import { Approvals, pendingLabel } from './approvals';
+import { showProductionOrder } from './production-order-dialog';
+import { ItemPicker, PickItem } from '../shared/item-picker';
+
+const baseLabels: Record<UnitOfMeasure, string> = { Gram: 'g', Millilitre: 'ml', Piece: 'pc' };
+
+// The kitchen's prep work, logged. Choose the prep item, how much was planned (which sets the
+// ingredients, by its recipe) and how much came out; review what it takes against what the
+// records show and what it costs at today's averages; then Confirm & post, which takes the
+// ingredients off stock and puts the prep item in at their cost over what came out.
+//
+// A batch moves two stocks, so it is a manager's. Anyone else sends it for approval, and nothing
+// moves until a manager approves it, at the averages then; the same for a correction (the batch
+// reversed and made again) and a deletion (the batch reversed). Waiting ones are listed, locked.
+@Component({
+  selector: 'app-production-page',
+  imports: [
+    ItemPicker,
+    DatePipe,
+    DecimalPipe,
+    FormsModule,
+    MatButtonModule,
+    MatFormFieldModule,
+    MatIconModule,
+    MatInputModule,
+    MatProgressBarModule,
+    MatSelectModule,
+    MatTooltipModule,
+    MoneyPipe,
+    RouterLink,
+  ],
+  template: `
+    @if (loading()) {
+      <mat-progress-bar mode="indeterminate" />
+    } @else if (error()) {
+      <p class="error">{{ error() }}</p>
+    } @else {
+      <section class="entry">
+        @if (editing(); as e) {
+          <h2>Correct a batch <span class="inline-ar">تصحيح إذن تصنيع</span></h2>
+          <div class="pending-banner">
+            <mat-icon>edit_note</mat-icon>
+            <span>
+              The batch of {{ e.prepItem }} made {{ e.producedAtUtc | date: 'd MMM y, HH:mm' }}: {{ e.plannedQuantity / e.displayUnitSize | number: '1.0-3' }}
+              {{ e.displayUnit }} planned, {{ e.producedQuantity / e.displayUnitSize | number: '1.0-3' }} {{ e.displayUnit }} came out. Enter what it should have
+              been: {{ approvals.canApprove() ? 'posting' : 'once a manager approves, it' }} reverses the batch and makes it again with these quantities,
+              at the average costs of that moment.
+            </span>
+          </div>
+        } @else {
+          <h2>Make a batch <span class="inline-ar">إذن تصنيع جديد</span></h2>
+        }
+        @if (!approvals.canApprove()) {
+          <p class="note">
+            A manager approves batches: nothing moves in stock until then, and the batch is costed at the averages on the day it is approved.
+            <span class="inline-ar">يُرسل للمدير للموافقة، ولا يتحرك المخزون قبلها.</span>
+          </p>
+        }
+        @if (items().length === 0) {
+          <p class="note">No prep items with a recipe yet. <a routerLink="../prep/new">Add one</a>, such as pizza dough, first.</p>
+        } @else {
+          <div class="form">
+            <div class="wide picked">
+              <span class="pick-label">Prep item · الصنف</span>
+              <app-item-picker [items]="prepChoices()" [value]="prepItemId" (valueChange)="prepItemId = $event; changed()" label="Prep item"
+                [disabled]="!!editing()" />
+            </div>
+            <mat-form-field>
+              <mat-label>Planned · الكمية المخططة</mat-label>
+              <input matInput type="number" min="0" step="any" [(ngModel)]="planned" (ngModelChange)="plannedChanged()" aria-label="Planned" />
+              <span matTextSuffix>&nbsp;{{ item()?.displayUnit }}</span>
+              @if (item(); as p) {
+                <mat-hint>A batch is {{ p.batchQuantity / p.displayUnitSize | number: '1.0-3' }} {{ p.displayUnit }}</mat-hint>
+              }
+            </mat-form-field>
+            <mat-form-field>
+              <mat-label>Came out · الكمية المنتجة</mat-label>
+              <input matInput type="number" min="0" step="any" [(ngModel)]="produced" (ngModelChange)="changed()" aria-label="Came out" />
+              <span matTextSuffix>&nbsp;{{ item()?.displayUnit }}</span>
+              @if (yieldPercent(); as y) {
+                <mat-hint [class.warn]="y < 100">{{ y | number: '1.0-1' }}% of planned</mat-hint>
+              }
+            </mat-form-field>
+            <mat-form-field class="wide">
+              <mat-label>Notes · ملاحظات</mat-label>
+              <input matInput [(ngModel)]="notes" (ngModelChange)="changed()" maxlength="200" placeholder="Morning batch" />
+            </mat-form-field>
+            @if (editing()) {
+              <mat-form-field class="wide">
+                <mat-label>Why · السبب</mat-label>
+                <input matInput [(ngModel)]="reason" maxlength="500" placeholder="Weighed again" />
+              </mat-form-field>
+            }
+          </div>
+
+          @if (preview(); as r) {
+            <!-- The review: nothing has moved yet. -->
+            <div class="table-wrap">
+              <table class="grid">
+                <thead>
+                  <tr>
+                    <th>Ingredient<span class="ar">المكون</span></th>
+                    <th class="num">Takes<span class="ar">المطلوب</span></th>
+                    <th class="num">On record<span class="ar">الرصيد الدفتري</span></th>
+                    <th class="num">Average cost<span class="ar">متوسط التكلفة</span></th>
+                    <th class="num">Cost<span class="ar">التكلفة</span></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  @for (l of r.lines; track l.rawMaterialId) {
+                    <tr [class.short]="l.short !== null">
+                      <td>
+                        {{ l.material }}
+                        @if (l.isPrepItem) {
+                          <span class="muted"> · prep</span>
+                        }
+                      </td>
+                      <td class="num">{{ l.quantity | number: '1.0-3' }} {{ base(l.unit) }}</td>
+                      <td class="num">
+                        {{ l.onHand | number: '1.0-3' }} {{ base(l.unit) }}
+                        @if (l.short !== null) {
+                          <div class="warn small">{{ l.short | number: '1.0-3' }} {{ base(l.unit) }} short</div>
+                        }
+                      </td>
+                      <td class="num muted">{{ l.costPerPurchaseUnit === null ? 'No cost yet' : (l.costPerPurchaseUnit | money) + ' / ' + l.purchaseUnit }}</td>
+                      <td class="num">{{ l.cost === null ? '—' : (l.cost | money) }}</td>
+                    </tr>
+                  }
+                </tbody>
+                <tfoot>
+                  <tr>
+                    <td colspan="4">Batch cost · تكلفة الدفعة</td>
+                    <td class="num">{{ r.totalCost === null ? '—' : (r.totalCost | money) }}</td>
+                  </tr>
+                  <tr>
+                    <td colspan="4">
+                      Per {{ r.displayUnit }} of {{ r.prepItem }}, over {{ r.producedQuantity / r.displayUnitSize | number: '1.0-3' }} {{ r.displayUnit }} made
+                      <span class="inline-ar">تكلفة الوحدة</span>
+                    </td>
+                    <td class="num strong">{{ r.unitCostPerDisplayUnit === null ? '—' : (r.unitCostPerDisplayUnit | money) }}</td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+            @if (r.missingPrices.length) {
+              <p class="warn">{{ r.missingPrices.join(', ') }} {{ r.missingPrices.length === 1 ? 'has' : 'have' }} no cost yet, so the batch cannot be made: enter it on Raw materials, or post the invoice it came on.</p>
+            } @else if (r.shortages.length) {
+              <p class="caution">
+                The records show too little {{ r.shortages.join(', ') }}. If it is on the shelf, make the batch: the records go below zero until the
+                delivery is entered or a count puts them right.
+              </p>
+            }
+          }
+
+          <div class="toolbar actions">
+            @if (editing()) {
+              <button mat-button (click)="stopEditing()" [disabled]="saving()">Cancel the correction</button>
+            }
+            <span class="spacer"></span>
+            @if (preview()) {
+              <button mat-flat-button (click)="confirm()" [disabled]="saving() || !!preview()!.missingPrices.length">
+                <mat-icon>{{ approvals.canApprove() ? 'inventory' : 'send' }}</mat-icon> {{ confirmLabel() }}
+              </button>
+            } @else {
+              <button mat-flat-button (click)="review()" [disabled]="!ready() || saving()"><mat-icon>fact_check</mat-icon> Review</button>
+            }
+          </div>
+        }
+      </section>
+
+      <h3>Batches made <span class="inline-ar">سجل أذونات التصنيع</span></h3>
+      <div class="table-wrap">
+        <table class="grid">
+          <thead>
+            <tr>
+              <th>Made<span class="ar">التاريخ</span></th>
+              <th>Prep item<span class="ar">الصنف</span></th>
+              <th class="num">Planned<span class="ar">المخطط</span></th>
+              <th class="num">Came out<span class="ar">المنتج</span></th>
+              <th class="num">Yield<span class="ar">نسبة الإنتاج</span></th>
+              <th class="num">Batch cost<span class="ar">التكلفة</span></th>
+              <th class="num">Unit cost<span class="ar">تكلفة الوحدة</span></th>
+              <th>By<span class="ar">بواسطة</span></th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            @for (r of waiting(); track r.id) {
+              <tr class="pending-deletion">
+                <td class="nowrap">—</td>
+                <td colspan="7">
+                  {{ r.summary }}
+                  <div>
+                    <span class="pending-badge">{{ pendingLabel(r).en }}<span class="ar">{{ pendingLabel(r).ar }}</span></span>
+                    <span class="muted small"> asked by {{ r.requestedBy }}, {{ r.requestedAtUtc | date: 'd MMM, HH:mm' }}: nothing has moved yet</span>
+                  </div>
+                </td>
+                <td></td>
+              </tr>
+            }
+            @for (o of orders(); track o.id) {
+              @let asked = approvals.pendingFor(o.id);
+              <tr [class.voided]="o.status === 'Voided'" [class.pending-deletion]="!!asked" [class.editing]="editing()?.id === o.id">
+                <td class="nowrap">{{ o.producedAtUtc | date: 'd MMM, HH:mm' }}</td>
+                <td>
+                  {{ o.prepItem }}
+                  @if (o.status === 'Voided') {
+                    <div>
+                      <span class="voided-badge">{{ o.replacedBy ? 'Corrected' : 'Voided' }}<span class="ar">{{ o.replacedBy ? 'مُصحح' : 'ملغى' }}</span></span>
+                      <span class="muted small"> by {{ o.voidedBy }}, {{ o.voidedAtUtc | date: 'd MMM' }}</span>
+                    </div>
+                  } @else if (asked) {
+                    <div>
+                      <span class="pending-badge">{{ pendingLabel(asked).en }}<span class="ar">{{ pendingLabel(asked).ar }}</span></span>
+                      <span class="muted small"> by {{ asked.requestedBy }}</span>
+                    </div>
+                  } @else if (o.revisionOf) {
+                    <div class="muted small">A correction</div>
+                  }
+                </td>
+                <td class="num">{{ o.plannedQuantity / o.displayUnitSize | number: '1.0-3' }} {{ o.displayUnit }}</td>
+                <td class="num">{{ o.producedQuantity / o.displayUnitSize | number: '1.0-3' }} {{ o.displayUnit }}</td>
+                <td class="num">{{ o.yieldPercent | number: '1.0-1' }}%</td>
+                <td class="num">{{ o.totalCost | money }}</td>
+                <td class="num">{{ o.unitCostPerDisplayUnit | money }} / {{ o.displayUnit }}</td>
+                <td>
+                  {{ o.producedBy || '—' }}
+                  @if (o.approvedBy) {
+                    <div class="muted small">approved by {{ o.approvedBy }}</div>
+                  }
+                </td>
+                <td class="num row-actions">
+                  <button mat-stroked-button class="show" (click)="show(o)">Show · عرض</button>
+                  @if (o.status === 'Made' && !asked) {
+                    <button mat-icon-button (click)="startEditing(o)" [disabled]="saving()" matTooltip="Correct the quantities"
+                      [attr.aria-label]="'Correct the batch of ' + o.prepItem">
+                      <mat-icon>edit</mat-icon>
+                    </button>
+                    <button mat-icon-button class="danger" (click)="remove(o)" [disabled]="saving()" matTooltip="Delete (void)"
+                      [attr.aria-label]="'Delete the batch of ' + o.prepItem">
+                      <mat-icon>delete</mat-icon>
+                    </button>
+                  } @else if (asked) {
+                    <mat-icon class="locked" matTooltip="Locked until a manager decides">lock_clock</mat-icon>
+                  }
+                </td>
+              </tr>
+            } @empty {
+              @if (!waiting().length) {
+                <tr><td colspan="9" class="muted">No batches made yet.</td></tr>
+              }
+            }
+          </tbody>
+        </table>
+      </div>
+    }
+  `,
+  styleUrl: './costing.scss',
+  styles: `
+    .picked {
+      display: grid;
+      gap: 4px;
+      margin-bottom: 8px;
+    }
+    .pick-label {
+      color: var(--mat-sys-on-surface-variant);
+      font: var(--mat-sys-label-medium);
+    }
+    .entry h2 {
+      margin: 0 0 12px;
+      font: var(--mat-sys-title-large);
+    }
+    h3 {
+      margin: 24px 0 8px;
+      font: var(--mat-sys-title-medium);
+    }
+    .form {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+      gap: 8px 12px;
+      margin-bottom: 12px;
+    }
+    .wide {
+      grid-column: span 2;
+    }
+    tr.short td {
+      background: var(--mat-sys-error-container);
+      color: var(--mat-sys-on-error-container);
+    }
+    .warn {
+      color: var(--mat-sys-error);
+    }
+    .caution {
+      padding: 8px 12px;
+      border-radius: 12px;
+      background: var(--mat-sys-tertiary-container);
+      color: var(--mat-sys-on-tertiary-container);
+    }
+    .small {
+      font-size: 0.85em;
+    }
+    .strong {
+      font-weight: 600;
+    }
+    .nowrap,
+    .show {
+      white-space: nowrap;
+    }
+    .actions {
+      margin-top: 12px;
+    }
+    .row-actions {
+      white-space: nowrap;
+    }
+    .danger {
+      color: var(--mat-sys-error);
+    }
+    tr.voided td {
+      color: var(--mat-sys-on-surface-variant);
+    }
+    tr.editing td {
+      background: var(--mat-sys-secondary-container);
+    }
+  `,
+})
+export class ProductionPage {
+  protected readonly company = inject(Company);
+  private readonly api = inject(CostingApi);
+  private readonly dialog = inject(MatDialog);
+  private readonly notify = inject(NotifyService);
+  protected readonly approvals = inject(Approvals);
+  protected readonly pendingLabel = pendingLabel;
+
+  // From the query: a prep item to start with, from its profile's "Make a batch".
+  readonly prepItemIdParam = input<string | undefined>(undefined, { alias: 'prepItemId' });
+
+  // The prep items that can be made: those with a recipe.
+  protected readonly items = signal<PrepItem[]>([]);
+  // The prep items as the picker offers them: each with the unit it is kept in and what it costs now.
+  protected readonly prepChoices = computed<PickItem[]>(() =>
+    this.items().map((p) => {
+      const cost = p.averageCostPerDisplayUnit ?? p.standardCostPerDisplayUnit;
+      return {
+        id: p.id, name: p.name, code: p.code, kind: 'prep', unit: p.displayUnit, detail: p.category,
+        cost: cost === null ? null : `${this.company.money(cost)} / ${p.displayUnit}`,
+      };
+    }),
+  );
+  protected readonly orders = signal<ProductionOrder[]>([]);
+  protected readonly preview = signal<ProductionPreview | null>(null);
+  protected readonly loading = signal(true);
+  protected readonly saving = signal(false);
+  protected readonly error = signal<string | null>(null);
+
+  protected prepItemId: string | null = null;
+  // In the prep item's display unit: 10 (kg).
+  protected planned: number | null = null;
+  protected produced: number | null = null;
+  protected notes = '';
+  // Why a correction, for the manager.
+  protected reason = '';
+
+  // The batch being corrected, if one is: the form holds what it should have been.
+  protected readonly editing = signal<ProductionOrder | null>(null);
+  // Batches asked for, waiting for a manager: nothing has moved for them.
+  protected readonly waiting = computed(() => this.approvals.waitingToBeMade('ProductionOrder'));
+
+  // One batch, one id, made here: a retry after a lost answer makes it once. The same for the
+  // request that asks for it, or for a correction.
+  private orderId: string = crypto.randomUUID();
+  private requestId: string = crypto.randomUUID();
+  private readonly version = signal(0);
+
+  protected readonly item = computed(() => {
+    this.version();
+    return this.items().find((p) => p.id === this.prepItemId) ?? null;
+  });
+
+  protected readonly yieldPercent = computed(() => {
+    this.version();
+    return this.planned && this.produced ? (this.produced * 100) / this.planned : null;
+  });
+
+  // Posting for a manager; a request for anyone else.
+  protected readonly confirmLabel = computed(() =>
+    this.approvals.canApprove() ? (this.editing() ? 'Correct & post' : 'Confirm & post') : 'Send for approval · إرسال للموافقة',
+  );
+
+  protected readonly ready = computed(() => {
+    this.version();
+    return !!this.item() && (this.planned ?? 0) > 0 && (this.produced ?? 0) > 0;
+  });
+
+  constructor() {
+    effect(() => {
+      const chosen = this.prepItemIdParam();
+      untracked(() => void this.load(chosen));
+    });
+  }
+
+  protected base(unit: UnitOfMeasure): string {
+    return baseLabels[unit];
+  }
+
+  // Changed after a review: reviewed again before it can be posted.
+  protected changed(): void {
+    this.preview.set(null);
+    this.version.update((v) => v + 1);
+  }
+
+  // What came out starts as what was planned.
+  protected plannedChanged(): void {
+    this.produced = this.planned;
+    this.changed();
+  }
+
+  protected async review(): Promise<void> {
+    const item = this.item();
+    if (!item || !this.ready()) {
+      return;
+    }
+    this.saving.set(true);
+    try {
+      this.preview.set(
+        await firstValueFrom(
+          this.api.previewProduction(item.id, ProductionPage.toBase(this.planned!, item.displayUnitSize), ProductionPage.toBase(this.produced!, item.displayUnitSize)),
+        ),
+      );
+    } catch (error) {
+      this.notify.error(error, 'The batch could not be worked out.');
+    } finally {
+      this.saving.set(false);
+    }
+  }
+
+  protected async confirm(): Promise<void> {
+    const item = this.item();
+    if (!item || !this.preview()) {
+      return;
+    }
+    const quantities = {
+      plannedQuantity: ProductionPage.toBase(this.planned!, item.displayUnitSize),
+      producedQuantity: ProductionPage.toBase(this.produced!, item.displayUnitSize),
+      notes: this.notes.trim() || null,
+    };
+    const editing = this.editing();
+    this.saving.set(true);
+    try {
+      if (editing) {
+        const result = await firstValueFrom(
+          this.api.reviseProductionOrder(editing.id, {
+            ...quantities,
+            requestId: this.requestId,
+            newOrderId: this.orderId,
+            reason: this.reason.trim() || null,
+          }),
+        );
+        if (result.outcome === 'Requested') {
+          await this.approvals.requested(result);
+        } else {
+          this.notify.info(`Corrected: the batch of ${item.name} is reversed and made again.`);
+        }
+      } else {
+        const made = await firstValueFrom(
+          this.api.makeProductionOrder(this.orderId, { ...quantities, prepItemId: item.id, requestId: this.requestId }),
+        );
+        if (isRequested(made)) {
+          await this.approvals.requested(made);
+        } else {
+          this.notify.info(
+            `Made ${(made.producedQuantity / made.displayUnitSize).toLocaleString('en-EG', { maximumFractionDigits: 3 })} ${made.displayUnit} of ${made.prepItem}, ` +
+              `at ${this.company.money(made.unitCostPerDisplayUnit)} a ${made.displayUnit}.`,
+          );
+        }
+      }
+      this.reset();
+      this.orders.set(await firstValueFrom(this.api.productionOrders()));
+    } catch (error) {
+      this.notify.error(error, editing ? 'The batch could not be corrected.' : 'The batch could not be made.');
+    } finally {
+      this.saving.set(false);
+    }
+  }
+
+  // The form filled with the batch as it was, to enter what it should have been.
+  protected startEditing(order: ProductionOrder): void {
+    this.reset();
+    this.editing.set(order);
+    this.prepItemId = order.prepItemId;
+    this.planned = order.plannedQuantity / order.displayUnitSize;
+    this.produced = order.producedQuantity / order.displayUnitSize;
+    this.notes = order.notes ?? '';
+    this.changed();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  protected stopEditing(): void {
+    this.reset();
+  }
+
+  // Voided for a manager (its entries reversed); asked of one for anyone else.
+  protected async remove(order: ProductionOrder): Promise<void> {
+    const made = new Date(order.producedAtUtc).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+    if ((await this.approvals.delete('ProductionOrder', order.id, `the batch of ${order.prepItem} made ${made}`)) === 'Applied') {
+      this.orders.set(await firstValueFrom(this.api.productionOrders()));
+    }
+  }
+
+  // A fresh form, with new ids: the next batch or request is another one.
+  private reset(): void {
+    this.editing.set(null);
+    this.orderId = crypto.randomUUID();
+    this.requestId = crypto.randomUUID();
+    this.planned = null;
+    this.produced = null;
+    this.notes = '';
+    this.reason = '';
+    this.changed();
+  }
+
+  protected show(order: ProductionOrder): void {
+    showProductionOrder(this.dialog, order);
+  }
+
+  private async load(chosen: string | undefined): Promise<void> {
+    void this.approvals.refresh();
+    try {
+      const [items, orders] = await Promise.all([firstValueFrom(this.api.prepItems()), firstValueFrom(this.api.productionOrders())]);
+      this.items.set(items.filter((p) => p.ingredients.length > 0));
+      this.orders.set(orders);
+      if (chosen && this.items().some((p) => p.id === chosen)) {
+        this.prepItemId = chosen;
+        this.version.update((v) => v + 1);
+        const item = this.item()!;
+        // One batch, to start from.
+        this.planned = this.produced = item.batchQuantity / item.displayUnitSize;
+      }
+      this.changed();
+    } catch (error) {
+      this.error.set(errorMessage(error, 'The prep items could not be loaded.'));
+    } finally {
+      this.loading.set(false);
+    }
+  }
+
+  // To the thousandth, as stock is kept: 9.6 kg is 9,600 g.
+  private static toBase(value: number, size: number): number {
+    return Math.round(value * size * 1000) / 1000;
+  }
+}
+```
+
+
+> 📄 **`frontend/src/app/features/costing/production-order-dialog.ts`** — 109 سطر
+
+```ts
+import { DatePipe, DecimalPipe } from '@angular/common';
+import { Component, inject } from '@angular/core';
+import { MatButtonModule } from '@angular/material/button';
+import { MAT_DIALOG_DATA, MatDialog, MatDialogModule } from '@angular/material/dialog';
+import { ProductionOrder, UnitOfMeasure } from '../../core/costing/costing.api';
+import { MoneyPipe } from '../../core/ui/money.pipe';
+
+const baseLabels: Record<UnitOfMeasure, string> = { Gram: 'g', Millilitre: 'ml', Piece: 'pc' };
+
+// One batch as it was made, read-only: what was planned and what came out, each ingredient taken
+// at its average cost then, and what that came to per unit of the prep item.
+@Component({
+  selector: 'app-production-order-dialog',
+  imports: [DatePipe, DecimalPipe, MatButtonModule, MatDialogModule, MoneyPipe],
+  template: `
+    @let o = order;
+    <h2 mat-dialog-title>{{ o.prepItem }} <span class="inline-ar">إذن تصنيع</span></h2>
+    <mat-dialog-content>
+      <dl class="details">
+        <div><dt>Date · التاريخ</dt><dd>{{ o.producedAtUtc | date: 'EEE d MMM y, HH:mm' }}</dd></div>
+        <div><dt>By · بواسطة</dt><dd>{{ o.producedBy || '—' }}</dd></div>
+        @if (o.approvedBy) {
+          <div><dt>Approved by · اعتمده</dt><dd>{{ o.approvedBy }}</dd></div>
+        }
+        <div><dt>Planned · المخطط</dt><dd>{{ o.plannedQuantity / o.displayUnitSize | number: '1.0-3' }} {{ o.displayUnit }}</dd></div>
+        <div><dt>Came out · المنتج فعليًا</dt><dd>{{ o.producedQuantity / o.displayUnitSize | number: '1.0-3' }} {{ o.displayUnit }} ({{ o.yieldPercent | number: '1.0-1' }}%)</dd></div>
+        <div><dt>Batch cost · تكلفة الدفعة</dt><dd>{{ o.totalCost | money }}</dd></div>
+        <div><dt>Unit cost · تكلفة الوحدة</dt><dd class="strong">{{ o.unitCostPerDisplayUnit | money }} / {{ o.displayUnit }}</dd></div>
+      </dl>
+      @if (o.status === 'Voided') {
+        <p>
+          <span class="voided-badge">{{ o.replacedBy ? 'Corrected' : 'Voided' }}<span class="ar">{{ o.replacedBy ? 'مُصحح' : 'ملغى' }}</span></span>
+          by {{ o.voidedBy }}, {{ o.voidedAtUtc | date: 'd MMM y, HH:mm' }}:
+          {{ o.replacedBy
+            ? 'reversed and made again with the right quantities, as another batch.'
+            : 'reversed, its ingredients back in stock and the prep item back out.' }}
+        </p>
+      } @else if (o.revisionOf) {
+        <p class="muted">A correction: the batch it replaced was reversed.</p>
+      }
+      @if (o.notes) {
+        <p class="muted">{{ o.notes }}</p>
+      }
+      <div class="table-wrap">
+        <table class="grid">
+          <thead>
+            <tr>
+              <th>Ingredient<span class="ar">المكون</span></th>
+              <th class="num">Taken<span class="ar">الكمية المصروفة</span></th>
+              <th class="num">At<span class="ar">متوسط التكلفة</span></th>
+              <th class="num">Cost<span class="ar">التكلفة</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            @for (l of o.lines; track l.rawMaterialId) {
+              <tr>
+                <td>{{ l.material }}</td>
+                <td class="num">{{ l.quantity | number: '1.0-3' }} {{ base(l.unit) }}</td>
+                <td class="num muted">{{ l.costPerPurchaseUnit === null ? '—' : (l.costPerPurchaseUnit | money) + ' / ' + l.purchaseUnit }}</td>
+                <td class="num">{{ l.cost === null ? '—' : (l.cost | money) }}</td>
+              </tr>
+            }
+          </tbody>
+          <tfoot>
+            <tr>
+              <td colspan="3">{{ o.lines.length }} {{ o.lines.length === 1 ? 'ingredient' : 'ingredients' }}</td>
+              <td class="num">{{ o.totalCost | money }}</td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </mat-dialog-content>
+    <mat-dialog-actions align="end">
+      <button mat-flat-button mat-dialog-close>Close</button>
+    </mat-dialog-actions>
+  `,
+  styleUrl: './costing.scss',
+  styles: `
+    .details {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+      gap: 8px 16px;
+      margin: 0 0 12px;
+
+      dt {
+        font: var(--mat-sys-label-medium);
+        color: var(--mat-sys-on-surface-variant);
+      }
+      dd {
+        margin: 2px 0 0;
+        font: var(--mat-sys-body-large);
+      }
+      .strong {
+        font-weight: 600;
+      }
+    }
+  `,
+})
+export class ProductionOrderDialog {
+  protected readonly order = inject<ProductionOrder>(MAT_DIALOG_DATA);
+
+  protected base(unit: UnitOfMeasure): string {
+    return baseLabels[unit];
+  }
+}
+
+export function showProductionOrder(dialog: MatDialog, order: ProductionOrder): void {
+  dialog.open<ProductionOrderDialog, ProductionOrder>(ProductionOrderDialog, { data: order, width: '760px', maxWidth: '95vw', autoFocus: 'dialog' });
+}
+```
+
+
+## 9. المنيو
+
+`MenuPage`: الفئات والأصناف (الرقم يُعطى مرة)، الأحجام بأسعارها، الإضافات، والاستيراد. و `AddToMenuDialog`: الوصفات خارج المنيو، كلها معلّمة، بالسعر المخطط وفئة المطبخ، **ونسبة تكلفة لحظية** لكل صف، و "فئة للباقي"، والنتيجة بالأكواد.
+
+> 📄 **`frontend/src/app/features/costing/menu-page.ts`** — 608 سطر
+
+```ts
+import { Component, computed, inject, signal } from '@angular/core';
+import { FormsModule } from '@angular/forms';
+import { MatButtonModule } from '@angular/material/button';
+import { MatCheckboxModule } from '@angular/material/checkbox';
+import { MAT_DIALOG_DATA, MatDialog, MatDialogModule, MatDialogRef } from '@angular/material/dialog';
+import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatIconModule } from '@angular/material/icon';
+import { MatInputModule } from '@angular/material/input';
+import { MatProgressBarModule } from '@angular/material/progress-bar';
+import { MatSelectModule } from '@angular/material/select';
+import { MatTooltipModule } from '@angular/material/tooltip';
+import { firstValueFrom } from 'rxjs';
+import { AuthService } from '../../core/auth/auth.service';
+import { Permissions } from '../../core/auth/permissions';
+import { Menu, MenuAddOn, MenuImportResult, MenuItem, MenuItemInput, MenuSalesApi } from '../../core/costing/menu-sales.api';
+import { errorMessage } from '../../core/http/error-message';
+import { MoneyPipe } from '../../core/ui/money.pipe';
+import { NotifyService } from '../../core/ui/notify.service';
+import { saveBlob } from '../../core/ui/save-blob';
+import { FilterOption, FilterSelect } from '../shared/filter-select';
+import { SearchField } from '../shared/search-field';
+import { SortOption, SortState, smartMatch, sortItems } from '../shared/smart-search';
+import { SortControl } from '../shared/sort-control';
+
+type MenuSort = 'menu' | 'code' | 'name' | 'category' | 'price';
+
+const menuSorts: SortOption<MenuSort>[] = [
+  { key: 'menu', en: 'Menu order', ar: 'ترتيب المنيو' },
+  { key: 'code', en: 'Code', ar: 'الكود' },
+  { key: 'name', en: 'Name', ar: 'الاسم' },
+  { key: 'category', en: 'Category', ar: 'القسم' },
+  { key: 'price', en: 'Selling price', ar: 'سعر البيع', descending: true },
+];
+
+export interface MenuItemDialogData {
+  item?: MenuItem;
+  menu: Menu;
+}
+
+// An item's form: its number (its code on every report, given once), names, category, price, its
+// sizes each at its own price, and the add-ons it is sold with. Closes with the item as saved.
+@Component({
+  selector: 'app-menu-item-dialog',
+  imports: [FormsModule, MatButtonModule, MatCheckboxModule, MatDialogModule, MatFormFieldModule, MatIconModule, MatInputModule, MatSelectModule],
+  template: `
+    <h2 mat-dialog-title>
+      @if (data.item) {
+        {{ data.item.name }} <span class="inline-ar">تعديل صنف</span>
+      } @else {
+        New item <span class="inline-ar">صنف جديد</span>
+      }
+    </h2>
+    <mat-dialog-content>
+      <form id="menu-item-form" class="form" (ngSubmit)="save()">
+        <div class="row">
+          <mat-form-field class="number">
+            <mat-label>Number · رقم الصنف</mat-label>
+            <input matInput type="number" min="1" step="1" name="number" [(ngModel)]="number" [disabled]="!!data.item" placeholder="Next" />
+            <mat-hint>{{ data.item ? 'Its code on the reports' : 'Blank: the next one' }}</mat-hint>
+          </mat-form-field>
+          <mat-form-field class="wide">
+            <mat-label>Name · الاسم</mat-label>
+            <input matInput name="name" [(ngModel)]="name" maxlength="200" required />
+          </mat-form-field>
+          <mat-form-field class="wide">
+            <mat-label>Arabic name · الاسم بالعربي</mat-label>
+            <input matInput name="nameAr" [(ngModel)]="nameAr" maxlength="200" dir="rtl" />
+          </mat-form-field>
+        </div>
+        <div class="row">
+          <mat-form-field class="wide">
+            <mat-label>Category · القسم</mat-label>
+            <mat-select name="category" [(ngModel)]="category" required>
+              @for (c of data.menu.categories; track c.id) {
+                <mat-option [value]="c.name">{{ c.name }}@if (c.nameAr) { · {{ c.nameAr }}}</mat-option>
+              }
+            </mat-select>
+          </mat-form-field>
+          <mat-form-field>
+            <mat-label>Price · السعر</mat-label>
+            <input matInput type="number" min="0" step="0.01" name="price" [(ngModel)]="price" [disabled]="byAddOns || sizes.length > 0" />
+            <mat-hint>{{ sizes.length ? 'Each size has its own' : byAddOns ? 'Its add-ons make it' : '' }}</mat-hint>
+          </mat-form-field>
+        </div>
+        <div class="row">
+          <mat-checkbox name="byAddOns" [(ngModel)]="byAddOns">Priced by its add-ons · السعر بالإضافات</mat-checkbox>
+          <mat-checkbox name="available" [(ngModel)]="available">On sale · متاح</mat-checkbox>
+        </div>
+
+        <h3>Sizes <span class="inline-ar">الأحجام</span></h3>
+        @for (s of sizes; track $index; let i = $index) {
+          <div class="row size">
+            <mat-form-field subscriptSizing="dynamic">
+              <mat-label>Size · الحجم</mat-label>
+              <input matInput [name]="'size' + i" [(ngModel)]="s.name" maxlength="200" required />
+            </mat-form-field>
+            <mat-form-field subscriptSizing="dynamic">
+              <mat-label>Arabic · بالعربي</mat-label>
+              <input matInput [name]="'sizeAr' + i" [(ngModel)]="s.nameAr" maxlength="200" dir="rtl" />
+            </mat-form-field>
+            <mat-form-field subscriptSizing="dynamic" class="price">
+              <mat-label>Price · السعر</mat-label>
+              <input matInput type="number" min="0" step="0.01" [name]="'sizePrice' + i" [(ngModel)]="s.price" required />
+            </mat-form-field>
+            <button mat-icon-button type="button" (click)="sizes.splice(i, 1)" [attr.aria-label]="'Remove the size ' + s.name"><mat-icon>close</mat-icon></button>
+          </div>
+        }
+        <button mat-button type="button" (click)="sizes.push({ name: '', nameAr: null, price: 0 })"><mat-icon>add</mat-icon> Add a size <span class="inline-ar">إضافة حجم</span></button>
+
+        @if (data.menu.addOns.length) {
+          <h3>Add-ons it is sold with <span class="inline-ar">الإضافات</span></h3>
+          <mat-form-field class="full">
+            <mat-label>Add-ons · الإضافات</mat-label>
+            <mat-select name="addOns" [(ngModel)]="addOnIds" multiple>
+              @for (a of liveAddOns; track a.id) {
+                <mat-option [value]="a.id">{{ a.name }} · {{ a.price }}</mat-option>
+              }
+            </mat-select>
+          </mat-form-field>
+        }
+      </form>
+      @if (error(); as message) {
+        <p class="error" role="alert">{{ message }}</p>
+      }
+    </mat-dialog-content>
+    <mat-dialog-actions align="end">
+      <button mat-button mat-dialog-close>Cancel</button>
+      <button mat-flat-button type="submit" form="menu-item-form" [disabled]="saving()">Save · حفظ</button>
+    </mat-dialog-actions>
+  `,
+  styles: `
+    .form {
+      display: grid;
+      gap: 4px;
+      min-width: min(640px, 80vw);
+    }
+    .row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px 12px;
+    }
+    .wide {
+      flex: 1 1 200px;
+    }
+    .number {
+      width: 140px;
+    }
+    .price {
+      width: 120px;
+    }
+    .full {
+      width: 100%;
+    }
+    h3 {
+      margin: 12px 0 4px;
+      font: var(--mat-sys-title-small);
+    }
+    .inline-ar {
+      direction: rtl;
+      unicode-bidi: isolate;
+      opacity: 0.75;
+      margin-left: 6px;
+    }
+    .error {
+      color: var(--mat-sys-error);
+    }
+  `,
+})
+export class MenuItemDialog {
+  protected readonly data = inject<MenuItemDialogData>(MAT_DIALOG_DATA);
+  private readonly ref = inject(MatDialogRef<MenuItemDialog, MenuItem>);
+  private readonly api = inject(MenuSalesApi);
+
+  protected number: number | null = this.data.item?.id ?? null;
+  protected name = this.data.item?.name ?? '';
+  protected nameAr = this.data.item?.nameAr ?? '';
+  protected category = this.data.item?.category ?? this.data.menu.categories[0]?.name ?? '';
+  protected price = this.data.item?.price ?? 0;
+  protected byAddOns = this.data.item?.isPriceBasedOnAddons ?? false;
+  protected available = this.data.item?.isAvailable ?? true;
+  protected sizes = (this.data.item?.sizes ?? []).map((s) => ({ name: s.name, nameAr: s.nameAr, price: s.price }));
+  protected addOnIds = [...(this.data.item?.addOnIds ?? [])];
+  protected readonly liveAddOns = this.data.menu.addOns.filter((a) => !a.isDeleted || this.addOnIds.includes(a.id));
+  protected readonly saving = signal(false);
+  protected readonly error = signal<string | null>(null);
+
+  protected async save(): Promise<void> {
+    this.saving.set(true);
+    this.error.set(null);
+    const input: MenuItemInput = {
+      number: this.number ? Number(this.number) : null,
+      name: this.name.trim(),
+      nameAr: this.nameAr.trim() || null,
+      category: this.category,
+      price: Number(this.price) || 0,
+      isPriceBasedOnAddons: this.byAddOns,
+      isAvailable: this.available,
+      sizes: this.sizes.map((s) => ({ name: s.name.trim(), nameAr: s.nameAr?.trim() || null, price: Number(s.price) || 0 })),
+      addOnIds: this.addOnIds,
+    };
+    try {
+      const saved = await firstValueFrom(this.data.item ? this.api.saveItem(this.data.item.id, input) : this.api.addItem(input));
+      this.ref.close(saved);
+    } catch (error) {
+      this.error.set(errorMessage(error, 'The item could not be saved.'));
+    } finally {
+      this.saving.set(false);
+    }
+  }
+}
+
+// The menu (قائمة الطعام) the recipes sell by and the sales name: its categories, its items with
+// their sizes, and the add-ons. An item's number is its code on every report (6101, a size of it
+// 6101-2, an add-on A3). Kept here, or imported from a sheet: a point of sale's export, its columns
+// named as the template's. A deleted item leaves the menu; its recipe and its sales stay.
+@Component({
+  selector: 'app-menu-page',
+  imports: [
+    FilterSelect,
+    FormsModule,
+    MatButtonModule,
+    MatFormFieldModule,
+    MatIconModule,
+    MatInputModule,
+    MatProgressBarModule,
+    MatTooltipModule,
+    MoneyPipe,
+    SearchField,
+    SortControl,
+  ],
+  template: `
+    <div class="toolbar smart no-print">
+      <app-search-field [(value)]="query" label="Search the menu" placeholder="Name, Arabic name or code · الاسم أو الكود" />
+      <div class="pills">
+        <app-filter-select label="Category · القسم" icon="category" [options]="categoryFilters()" [(value)]="category" />
+        <app-sort-control [options]="sorts" [(sort)]="sort" />
+      </div>
+    </div>
+    <div class="toolbar no-print">
+      <span class="muted shown-count">Showing {{ shown().length }} of {{ (menu()?.items ?? []).length }}<span class="inline-ar">المعروض</span></span>
+      <span class="spacer"></span>
+      @if (canChange) {
+        <button mat-stroked-button (click)="template()"><mat-icon>download</mat-icon> Template <span class="inline-ar">النموذج</span></button>
+        <button mat-stroked-button type="button" (click)="picker.click()" [disabled]="busy()"><mat-icon>upload_file</mat-icon> Import <span class="inline-ar">استيراد</span></button>
+        <input #picker type="file" accept=".xlsx" (change)="import($event)" hidden aria-label="The menu's sheet" />
+        <button mat-flat-button (click)="edit()" [disabled]="!menu()?.categories?.length"><mat-icon>add</mat-icon> New item <span class="inline-ar">صنف جديد</span></button>
+      }
+    </div>
+
+    @if (imported(); as result) {
+      <div class="note" role="status">
+        <strong>{{ result.added }} added, {{ result.updated }} changed, {{ result.categoriesAdded }} new categories.</strong>
+        @for (s of result.skipped; track s.row) {
+          <div class="muted small">Row {{ s.row }}{{ s.name ? ' · ' + s.name : '' }}: {{ s.reason }}</div>
+        }
+      </div>
+    }
+
+    @if (loading()) {
+      <mat-progress-bar mode="indeterminate" />
+    } @else if (error(); as message) {
+      <p class="error">{{ message }}</p>
+    } @else if (menu(); as m) {
+      <section class="categories" aria-label="Categories">
+        @for (c of m.categories; track c.id) {
+          <span class="chip">
+            {{ c.name }}@if (c.nameAr) {<span class="inline-ar">{{ c.nameAr }}</span>}
+            <span class="count">{{ c.items }}</span>
+            @if (canChange) {
+              <button mat-icon-button class="mini" (click)="renameCategory(c.id, c.name, c.nameAr)" [attr.aria-label]="'Rename ' + c.name"><mat-icon>edit</mat-icon></button>
+              @if (!c.items) {
+                <button mat-icon-button class="mini" (click)="deleteCategory(c.id, c.name)" [attr.aria-label]="'Delete ' + c.name"><mat-icon>close</mat-icon></button>
+              }
+            }
+          </span>
+        }
+        @if (canChange) {
+          <button mat-button (click)="addCategory()"><mat-icon>add</mat-icon> Category <span class="inline-ar">قسم</span></button>
+        }
+      </section>
+
+      <div class="table-wrap">
+        <table class="grid" aria-label="Menu items">
+          <thead>
+            <tr>
+              <th>Code<span class="ar">الكود</span></th>
+              <th>Item<span class="ar">الصنف</span></th>
+              <th>Category<span class="ar">القسم</span></th>
+              <th class="num">Price<span class="ar">السعر</span></th>
+              <th>Sizes<span class="ar">الأحجام</span></th>
+              <th>Add-ons<span class="ar">الإضافات</span></th>
+              <th><span class="visually-hidden">Actions</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            @for (item of shown(); track item.id) {
+              <tr [class.voided]="item.isDeleted">
+                <td class="code">{{ item.id }}</td>
+                <td>
+                  <strong>{{ item.name }}</strong>
+                  @if (item.nameAr) {
+                    <div class="muted small" dir="rtl">{{ item.nameAr }}</div>
+                  }
+                  @if (!item.isAvailable) {
+                    <span class="tag warn">Not on sale<span class="ar">غير متاح</span></span>
+                  }
+                  @if (item.isDeleted) {
+                    <span class="tag bad">Deleted<span class="ar">محذوف</span></span>
+                  }
+                </td>
+                <td>{{ item.category }}</td>
+                <td class="num">{{ item.isPriceBasedOnAddons ? 'By add-ons' : item.sizes.length ? '—' : (item.price | money) }}</td>
+                <td>
+                  @for (s of item.sizes; track s.id) {
+                    <div class="small">{{ item.id }}-{{ s.id }} · {{ s.name }} · {{ s.price | money }}</div>
+                  } @empty {
+                    <span class="muted">—</span>
+                  }
+                </td>
+                <td class="small">{{ addOnNames(item) }}</td>
+                <td class="num actions">
+                  @if (canChange) {
+                    @if (item.isDeleted) {
+                      <button mat-icon-button (click)="restore(item)" [attr.aria-label]="'Restore ' + item.name" matTooltip="Restore · استعادة"><mat-icon>restore</mat-icon></button>
+                    } @else {
+                      <button mat-icon-button (click)="edit(item)" [attr.aria-label]="'Edit ' + item.name" matTooltip="Edit · تعديل"><mat-icon>edit</mat-icon></button>
+                      <button mat-icon-button (click)="remove(item)" [attr.aria-label]="'Delete ' + item.name" matTooltip="Delete · حذف"><mat-icon>delete</mat-icon></button>
+                    }
+                  }
+                </td>
+              </tr>
+            } @empty {
+              <tr>
+                <td colspan="7" class="empty">
+                  No items yet. Add categories, then items, or import the menu from its sheet.
+                  <span class="note-ar" lang="ar" dir="rtl">لا توجد أصناف بعد. أضف الأقسام ثم الأصناف، أو استورد القائمة من ملف Excel.</span>
+                </td>
+              </tr>
+            }
+          </tbody>
+        </table>
+      </div>
+
+      <h2 class="section">Add-ons <span class="inline-ar">الإضافات</span></h2>
+      <div class="table-wrap narrow">
+        <table class="grid" aria-label="Add-ons">
+          <thead>
+            <tr>
+              <th>Code<span class="ar">الكود</span></th>
+              <th>Add-on<span class="ar">الإضافة</span></th>
+              <th class="num">Price<span class="ar">السعر</span></th>
+              <th><span class="visually-hidden">Actions</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            @for (a of m.addOns; track a.id) {
+              <tr [class.voided]="a.isDeleted">
+                <td class="code">A{{ a.id }}</td>
+                <td>{{ a.name }}@if (a.nameAr) {<span class="inline-ar">{{ a.nameAr }}</span>}</td>
+                <td class="num">{{ a.price | money }}</td>
+                <td class="num actions">
+                  @if (canChange) {
+                    @if (a.isDeleted) {
+                      <button mat-icon-button (click)="restoreAddOn(a)" [attr.aria-label]="'Restore ' + a.name"><mat-icon>restore</mat-icon></button>
+                    } @else {
+                      <button mat-icon-button (click)="editAddOn(a)" [attr.aria-label]="'Edit ' + a.name"><mat-icon>edit</mat-icon></button>
+                      <button mat-icon-button (click)="deleteAddOn(a)" [attr.aria-label]="'Delete ' + a.name"><mat-icon>delete</mat-icon></button>
+                    }
+                  }
+                </td>
+              </tr>
+            } @empty {
+              <tr><td colspan="4" class="empty">No add-ons. <span class="inline-ar">لا توجد إضافات.</span></td></tr>
+            }
+          </tbody>
+        </table>
+      </div>
+      @if (canChange) {
+        <button mat-button (click)="editAddOn()"><mat-icon>add</mat-icon> Add-on <span class="inline-ar">إضافة</span></button>
+      }
+
+      <p class="note">
+        <span class="note-ar" lang="ar" dir="rtl">رقم الصنف هو كوده في كل التقارير، وحجم منه برقم الصنف ورقم الحجم. الوصفة تُربط بالصنف أو بحجمه أو بالإضافة، وكل بيع يخصم المخزون بها. الصنف المحذوف يخرج من القائمة وتبقى وصفته ومبيعاته.</span>
+        An item's number is its code on every report; a size of it, the item's and the size's. A recipe sells by an item, a size of it or an
+        add-on, and every sale takes its stock by it. A deleted item leaves the menu; its recipe and its sales stay.
+      </p>
+    }
+  `,
+  styleUrl: './costing.scss',
+  styles: `
+    .search {
+      width: 240px;
+    }
+    .categories {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 12px;
+    }
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 4px 2px 12px;
+      border-radius: 999px;
+      border: 1px solid var(--app-line);
+      background: var(--mat-sys-surface-container-lowest);
+      font: var(--mat-sys-label-large);
+    }
+    .count {
+      padding: 0 6px;
+      border-radius: 999px;
+      background: var(--mat-sys-surface-container-high);
+      font: var(--mat-sys-label-small);
+    }
+    .mini {
+      --mat-icon-button-state-layer-size: 28px;
+      width: 28px;
+      height: 28px;
+      padding: 2px;
+    }
+    .mini mat-icon {
+      font-size: 16px;
+      width: 16px;
+      height: 16px;
+    }
+    .section {
+      margin: 20px 0 8px;
+      font: var(--mat-sys-title-medium);
+    }
+    .narrow {
+      max-width: 640px;
+    }
+    tr.voided td {
+      opacity: 0.6;
+    }
+    .small {
+      font-size: 0.85em;
+    }
+  `,
+})
+export class MenuPage {
+  private readonly api = inject(MenuSalesApi);
+  private readonly dialog = inject(MatDialog);
+  private readonly notify = inject(NotifyService);
+  protected readonly canChange = inject(AuthService).can(Permissions.InventoryManage);
+
+  protected readonly menu = signal<Menu | null>(null);
+  protected readonly loading = signal(true);
+  protected readonly busy = signal(false);
+  protected readonly error = signal<string | null>(null);
+  protected readonly imported = signal<MenuImportResult | null>(null);
+  protected readonly query = signal('');
+  protected readonly category = signal('');
+  protected readonly sorts = menuSorts;
+  protected readonly sort = signal<SortState<MenuSort>>({ key: 'menu', direction: 1 });
+
+  protected readonly categoryFilters = computed<FilterOption[]>(() => [
+    { value: '', label: 'All · الكل', count: this.menu()?.items.filter((i) => !i.isDeleted).length },
+    ...(this.menu()?.categories ?? []).map((c) => ({ value: c.name, label: c.name, count: c.items })),
+  ]);
+
+  protected readonly shown = computed(() => {
+    const all = this.menu()?.items ?? [];
+    const found = all.filter(
+      (i) => (!this.category() || i.category === this.category()) && smartMatch(this.query(), i.name, i.nameAr, i.id, i.category),
+    );
+    return sortItems(found, this.sort(), (i, key) => {
+      switch (key) {
+        case 'name':
+          return i.name;
+        case 'category':
+          return i.category;
+        // Sold by size: by its lowest.
+        case 'price':
+          return i.sizes.length ? Math.min(...i.sizes.map((z) => z.price)) : i.price;
+        case 'code':
+          return i.id;
+        // As the menu lists them: by its categories' order.
+        default:
+          return all.indexOf(i);
+      }
+    }, (i) => i.name);
+  });
+
+  constructor() {
+    void this.load();
+  }
+
+  protected addOnNames(item: MenuItem): string {
+    const names = new Map((this.menu()?.addOns ?? []).map((a) => [a.id, a.name]));
+    return item.addOnIds.map((id) => names.get(id) ?? `A${id}`).join(', ') || '—';
+  }
+
+  protected async edit(item?: MenuItem): Promise<void> {
+    const saved = await firstValueFrom(
+      this.dialog.open(MenuItemDialog, { data: { item, menu: this.menu()! } satisfies MenuItemDialogData, autoFocus: 'first-tabbable' }).afterClosed(),
+    );
+    if (saved) {
+      this.notify.info(`${saved.name} saved, as ${saved.id}.`);
+      await this.load();
+    }
+  }
+
+  protected async remove(item: MenuItem): Promise<void> {
+    if (!confirm(`Delete ${item.name} from the menu? Its recipe and its sales stay.`)) {
+      return;
+    }
+    await this.run(() => firstValueFrom(this.api.deleteItem(item.id)), `${item.name} is off the menu.`);
+  }
+
+  protected async restore(item: MenuItem): Promise<void> {
+    await this.run(() => firstValueFrom(this.api.restoreItem(item.id)), `${item.name} is back on the menu.`);
+  }
+
+  protected async addCategory(): Promise<void> {
+    const name = prompt('The new category’s name · اسم القسم')?.trim();
+    if (name) {
+      await this.run(() => firstValueFrom(this.api.addCategory(name, null)), `${name} added.`);
+    }
+  }
+
+  protected async renameCategory(id: number, current: string, currentAr: string | null): Promise<void> {
+    const name = prompt('The category’s name · اسم القسم', current)?.trim();
+    if (!name) {
+      return;
+    }
+    const nameAr = prompt('Its Arabic name · الاسم بالعربي', currentAr ?? '')?.trim() || null;
+    await this.run(() => firstValueFrom(this.api.saveCategory(id, name, nameAr, null)), `${name} saved.`);
+  }
+
+  protected async deleteCategory(id: number, name: string): Promise<void> {
+    await this.run(() => firstValueFrom(this.api.deleteCategory(id)), `${name} deleted.`);
+  }
+
+  protected async editAddOn(addOn?: MenuAddOn): Promise<void> {
+    const name = prompt('The add-on’s name · اسم الإضافة', addOn?.name ?? '')?.trim();
+    if (!name) {
+      return;
+    }
+    const price = Number(prompt('Its price · السعر', String(addOn?.price ?? 0)));
+    if (!Number.isFinite(price) || price < 0) {
+      this.notify.error(null, 'A price is a number, 0 or more.');
+      return;
+    }
+    await this.run(
+      () => firstValueFrom(addOn ? this.api.saveAddOn(addOn.id, name, addOn.nameAr, price) : this.api.addAddOn(name, null, price)),
+      `${name} saved.`,
+    );
+  }
+
+  protected async deleteAddOn(addOn: MenuAddOn): Promise<void> {
+    await this.run(() => firstValueFrom(this.api.deleteAddOn(addOn.id)), `${addOn.name} is off the menu.`);
+  }
+
+  protected async restoreAddOn(addOn: MenuAddOn): Promise<void> {
+    await this.run(() => firstValueFrom(this.api.restoreAddOn(addOn.id)), `${addOn.name} is back.`);
+  }
+
+  protected async template(): Promise<void> {
+    try {
+      saveBlob(await firstValueFrom(this.api.menuTemplate()), 'menu-template.xlsx');
+    } catch (error) {
+      this.notify.error(error, 'The template could not be downloaded.');
+    }
+  }
+
+  protected async import(event: Event): Promise<void> {
+    const input = event.target as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = '';
+    if (!file) {
+      return;
+    }
+    this.busy.set(true);
+    try {
+      this.imported.set(await firstValueFrom(this.api.importMenu(file)));
+      await this.load();
+    } catch (error) {
+      this.notify.error(error, 'The sheet could not be imported.');
+    } finally {
+      this.busy.set(false);
+    }
+  }
+
+  private async run(action: () => Promise<unknown>, done: string): Promise<void> {
+    try {
+      await action();
+      this.notify.info(done);
+      await this.load();
+    } catch (error) {
+      this.notify.error(error, 'It could not be saved.');
+    }
+  }
+
+  private async load(): Promise<void> {
+    try {
+      this.menu.set(await firstValueFrom(this.api.menu()));
+      this.error.set(null);
+    } catch (error) {
+      this.error.set(errorMessage(error, 'The menu could not be loaded.'));
+    } finally {
+      this.loading.set(false);
+    }
+  }
+}
+```
+
+
+> 📄 **`frontend/src/app/features/costing/add-to-menu-dialog.ts`** — 371 سطر
+
+```ts
+import { Component, computed, inject, signal } from '@angular/core';
+import { FormsModule } from '@angular/forms';
+import { MatButtonModule } from '@angular/material/button';
+import { MatCheckboxModule } from '@angular/material/checkbox';
+import { MAT_DIALOG_DATA, MatDialogModule, MatDialogRef } from '@angular/material/dialog';
+import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatIconModule } from '@angular/material/icon';
+import { MatInputModule } from '@angular/material/input';
+import { MatProgressBarModule } from '@angular/material/progress-bar';
+import { firstValueFrom } from 'rxjs';
+import { RecipeCostCard } from '../../core/costing/costing.api';
+import { MenuItem, MenuSalesApi, RecipesToMenuResult } from '../../core/costing/menu-sales.api';
+import { errorMessage } from '../../core/http/error-message';
+import { Company } from '../../core/settings/company';
+import { MoneyPipe } from '../../core/ui/money.pipe';
+
+export interface AddToMenuData {
+  // The recipes off the menu to offer; all ticked to begin with.
+  recipes: RecipeCostCard[];
+}
+
+interface Row {
+  id: string;
+  name: string;
+  costPerPortion: number;
+  chosen: boolean;
+  category: string;
+  price: number | null;
+  // A menu item of its name already there: linked to it, as it is.
+  existing: MenuItem | null;
+}
+
+const key = (name: string) => name.trim().replace(/\s+/g, ' ').toLowerCase();
+
+// Recipes put on the menu (إضافة للمنيو): each a menu item of its name, at the price and in the menu
+// category given here, linked to it, so that selling it on Sales takes its stock by the recipe and
+// counts in the reports. Its planned price and its kitchen category to start from; one of a name
+// on the menu already is linked to that item as it is. Then what was done: each recipe's item by
+// its code, and any that could not go on, and why.
+@Component({
+  selector: 'app-add-to-menu-dialog',
+  imports: [FormsModule, MatButtonModule, MatCheckboxModule, MatDialogModule, MatFormFieldModule, MatIconModule, MatInputModule, MatProgressBarModule, MoneyPipe],
+  template: `
+    <h2 mat-dialog-title>Add to the menu <span class="inline-ar">إضافة للمنيو</span></h2>
+    <mat-dialog-content>
+      @if (result(); as r) {
+        <div class="counts">
+          <span class="count added"><strong>{{ r.linked.length }}</strong> on the menu <span class="ar">أُضيفت للمنيو</span></span>
+          <span class="count" [class.bad]="r.skipped.length"><strong>{{ r.skipped.length }}</strong> not added <span class="ar">لم تُضف</span></span>
+        </div>
+        @if (r.linked.length) {
+          <p class="note">
+            Now on Sales: choose them on a new sale, or import them by name or code. Each sold takes its stock by its recipe.
+            <span class="note-ar" lang="ar" dir="rtl">متاحة الآن في المبيعات: اخترها في فاتورة جديدة أو استوردها بالاسم أو الكود، وكل بيع يخصم المخزون بالوصفة.</span>
+          </p>
+          @if (r.categoriesAdded.length) {
+            <p class="muted">New menu categories · أقسام جديدة في المنيو: {{ r.categoriesAdded.join(', ') }}</p>
+          }
+          <div class="table-wrap">
+            <table class="grid linked">
+              <thead>
+                <tr>
+                  <th>Code<span class="ar">الكود</span></th>
+                  <th>Item<span class="ar">الصنف</span></th>
+                  <th>Category<span class="ar">القسم</span></th>
+                  <th class="num">Price<span class="ar">السعر</span></th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                @for (l of r.linked; track l.recipeId) {
+                  <tr>
+                    <td class="code">{{ l.menuItemId }}</td>
+                    <td>{{ l.recipe }}</td>
+                    <td>{{ l.category }}</td>
+                    <td class="num">{{ l.price | money }}</td>
+                    <td class="muted small">{{ l.created ? 'New item · صنف جديد' : 'Linked to the item there · رُبطت بالصنف الموجود' }}</td>
+                  </tr>
+                }
+              </tbody>
+            </table>
+          </div>
+        }
+        @if (r.skipped.length) {
+          <h3>Not added <span class="inline-ar">لم تُضف</span></h3>
+          <ul class="skipped">
+            @for (s of r.skipped; track s.recipeId) {
+              <li>
+                <strong>{{ s.recipe ?? '—' }}</strong>: {{ s.reason }}
+                <div class="reason-ar" lang="ar" dir="rtl">{{ s.reasonAr }}</div>
+              </li>
+            }
+          </ul>
+        }
+      } @else {
+        <p class="note">
+          Each recipe becomes a menu item of its name, linked to it: sold on Sales from then on, it takes its stock by the recipe. A name on
+          the menu already is linked to that item as it is.
+          <span class="note-ar" lang="ar" dir="rtl">كل وصفة تصبح صنفًا في المنيو باسمها ومرتبطًا بها، فيخصم بيعها المخزون بالوصفة. والاسم الموجود في المنيو يُربط بصنفه كما هو.</span>
+        </p>
+        @if (loading()) {
+          <mat-progress-bar mode="indeterminate" />
+        } @else {
+          @if (rows().length > 1) {
+            <div class="toolbar">
+              <mat-form-field subscriptSizing="dynamic">
+                <mat-icon matPrefix>search</mat-icon>
+                <mat-label>Find · بحث</mat-label>
+                <input matInput [ngModel]="query()" (ngModelChange)="query.set($event)" />
+              </mat-form-field>
+              <mat-form-field subscriptSizing="dynamic" class="fill">
+                <mat-label>Category for the rest · قسم للباقي</mat-label>
+                <input matInput [(ngModel)]="allCategory" list="menu-categories" aria-label="Category for those with none" />
+              </mat-form-field>
+              <button mat-stroked-button type="button" (click)="fillCategory()" [disabled]="!allCategory.trim()">Apply <span class="inline-ar">تطبيق</span></button>
+            </div>
+          }
+          <datalist id="menu-categories">
+            @for (c of categories(); track c) {
+              <option [value]="c"></option>
+            }
+          </datalist>
+          <div class="table-wrap">
+            <table class="grid rows">
+              <thead>
+                <tr>
+                  <th>
+                    <mat-checkbox [checked]="allChosen()" [indeterminate]="someChosen()" (change)="chooseAll($event.checked)" aria-label="Choose all"></mat-checkbox>
+                  </th>
+                  <th>Recipe<span class="ar">الوصفة</span></th>
+                  <th class="num">Cost a portion<span class="ar">تكلفة الحصة</span></th>
+                  <th>Menu category<span class="ar">القسم في المنيو</span></th>
+                  <th class="num">Selling price<span class="ar">سعر البيع</span></th>
+                  <th class="num">Food cost<span class="ar">نسبة التكلفة</span></th>
+                </tr>
+              </thead>
+              <tbody>
+                @for (r of shown(); track r.id) {
+                  <tr [class.off]="!r.chosen">
+                    <td><mat-checkbox [(ngModel)]="r.chosen" (ngModelChange)="touch()" [aria-label]="'Add ' + r.name"></mat-checkbox></td>
+                    <td><strong>{{ r.name }}</strong></td>
+                    <td class="num">{{ r.costPerPortion | money }}</td>
+                    @if (r.existing; as item) {
+                      <td colspan="3" class="muted small">
+                        On the menu as {{ item.id }} at {{ item.price | money }}: linked to it.
+                        <div lang="ar" dir="rtl">موجود في المنيو بكود {{ item.id }}: يُربط به.</div>
+                      </td>
+                    } @else {
+                      <td>
+                        <input class="cell" [(ngModel)]="r.category" (ngModelChange)="touch()" list="menu-categories" [class.missing]="r.chosen && !r.category.trim()"
+                          [attr.aria-label]="r.name + ', menu category'" placeholder="Category · القسم" />
+                      </td>
+                      <td class="num">
+                        <input class="cell price" type="number" min="0" step="any" [(ngModel)]="r.price" (ngModelChange)="touch()"
+                          [class.missing]="r.chosen && !((r.price ?? 0) > 0)" [attr.aria-label]="r.name + ', selling price'" />
+                        <span class="muted small">&nbsp;{{ company.currency() }}</span>
+                      </td>
+                      <td class="num">{{ foodCost(r) === null ? '—' : foodCost(r) + '%' }}</td>
+                    }
+                  </tr>
+                } @empty {
+                  <tr><td colspan="6" class="empty">No recipe off the menu. · لا توجد وصفات خارج المنيو.</td></tr>
+                }
+              </tbody>
+            </table>
+          </div>
+          @if (incomplete(); as n) {
+            <p class="warn">
+              {{ n === 1 ? '1 chosen recipe has' : n + ' chosen recipes have' }} no category or price yet: each new item needs both.
+              <span class="inline-ar">أكمل القسم والسعر لكل وصفة مختارة.</span>
+            </p>
+          }
+        }
+        @if (error(); as message) {
+          <p class="error" role="alert">{{ message }}</p>
+        }
+      }
+    </mat-dialog-content>
+    <mat-dialog-actions align="end">
+      @if (result()) {
+        <button mat-flat-button type="button" (click)="close()">Done <span class="inline-ar">تم</span></button>
+      } @else {
+        <span class="muted chosen-count">{{ chosen().length }} chosen · مختارة</span>
+        <span class="spacer"></span>
+        <button mat-button type="button" (click)="close()" [disabled]="saving()">Cancel <span class="inline-ar">إلغاء</span></button>
+        <button mat-flat-button type="button" (click)="add()" [disabled]="saving() || loading() || chosen().length === 0 || incomplete() > 0">
+          <mat-icon>restaurant_menu</mat-icon> Add {{ chosen().length }} to the menu <span class="inline-ar">إضافة للمنيو</span>
+        </button>
+      }
+    </mat-dialog-actions>
+  `,
+  styleUrl: './costing.scss',
+  styles: `
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .fill {
+      min-width: 260px;
+    }
+    .cell {
+      width: 100%;
+      min-width: 120px;
+      padding: 6px 8px;
+      border: 1px solid var(--app-line);
+      border-radius: 8px;
+      background: var(--mat-sys-surface);
+      color: inherit;
+      font: inherit;
+    }
+    .cell.price {
+      width: 96px;
+      min-width: 0;
+      text-align: end;
+    }
+    .cell.missing {
+      border-color: var(--mat-sys-error);
+    }
+    tr.off td {
+      opacity: 0.55;
+    }
+    .counts {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .count {
+      padding: 6px 12px;
+      border-radius: 999px;
+      background: var(--mat-sys-surface-container-high);
+      font: var(--mat-sys-label-large);
+
+      .ar {
+        display: inline;
+        margin-inline-start: 4px;
+        opacity: 0.75;
+      }
+    }
+    .count.bad {
+      background: var(--mat-sys-error-container);
+      color: var(--mat-sys-on-error-container);
+    }
+    .skipped li {
+      margin-bottom: 6px;
+    }
+    .reason-ar {
+      color: var(--mat-sys-on-surface-variant);
+      font-size: 0.92em;
+    }
+    .small {
+      font-size: 0.85em;
+    }
+    .spacer {
+      flex: 1;
+    }
+    h3 {
+      margin: 16px 0 8px;
+      font: var(--mat-sys-title-small);
+    }
+  `,
+})
+export class AddToMenuDialog {
+  private readonly data = inject<AddToMenuData>(MAT_DIALOG_DATA);
+  private readonly ref = inject<MatDialogRef<AddToMenuDialog, boolean>>(MatDialogRef);
+  private readonly api = inject(MenuSalesApi);
+  protected readonly company = inject(Company);
+
+  protected readonly rows = signal<Row[]>([]);
+  protected readonly categories = signal<string[]>([]);
+  protected readonly loading = signal(true);
+  protected readonly saving = signal(false);
+  protected readonly error = signal<string | null>(null);
+  protected readonly result = signal<RecipesToMenuResult | null>(null);
+  protected readonly query = signal('');
+  protected allCategory = '';
+  // Bumped as a row is typed into: what is chosen and complete is read again.
+  private readonly version = signal(0);
+
+  protected readonly shown = computed(() => {
+    const q = key(this.query());
+    return this.rows().filter((r) => !q || key(r.name).includes(q));
+  });
+
+  protected readonly chosen = computed(() => {
+    this.version();
+    return this.rows().filter((r) => r.chosen);
+  });
+
+  protected readonly allChosen = computed(() => this.chosen().length === this.rows().length && this.rows().length > 0);
+  protected readonly someChosen = computed(() => this.chosen().length > 0 && !this.allChosen());
+
+  // Chosen, new, and short of a category or a price.
+  protected readonly incomplete = computed(() => this.chosen().filter((r) => !r.existing && (!r.category.trim() || !((r.price ?? 0) > 0))).length);
+
+  constructor() {
+    void this.load();
+  }
+
+  protected touch(): void {
+    this.version.update((v) => v + 1);
+  }
+
+  protected chooseAll(on: boolean): void {
+    this.rows().forEach((r) => (r.chosen = on));
+    this.touch();
+  }
+
+  // The category typed above, for each chosen one with none.
+  protected fillCategory(): void {
+    const category = this.allCategory.trim();
+    this.rows().filter((r) => r.chosen && !r.existing && !r.category.trim()).forEach((r) => (r.category = category));
+    this.touch();
+  }
+
+  protected foodCost(r: Row): number | null {
+    return r.price && r.price > 0 ? Math.round((r.costPerPortion / r.price) * 1000) / 10 : null;
+  }
+
+  protected async add(): Promise<void> {
+    if (this.incomplete() > 0 || this.chosen().length === 0) {
+      return;
+    }
+    this.saving.set(true);
+    this.error.set(null);
+    try {
+      this.result.set(
+        await firstValueFrom(
+          this.api.addRecipesToMenu(this.chosen().map((r) => ({ recipeId: r.id, category: r.category.trim() || null, price: r.price }))),
+        ),
+      );
+    } catch (error) {
+      this.error.set(errorMessage(error, 'They could not be added to the menu. · تعذّرت الإضافة للمنيو.'));
+    } finally {
+      this.saving.set(false);
+    }
+  }
+
+  protected close(): void {
+    this.ref.close((this.result()?.linked.length ?? 0) > 0);
+  }
+
+  // The menu's categories to choose from, and its items by name: a recipe of one's name is linked to it.
+  private async load(): Promise<void> {
+    try {
+      const menu = await firstValueFrom(this.api.menu());
+      this.categories.set(menu.categories.map((c) => c.name));
+      const byName = new Map(menu.items.filter((i) => !i.isDeleted).map((i) => [key(i.name), i]));
+      this.rows.set(
+        this.data.recipes
+          .filter((c) => c.recipeId && c.isStandalone && !c.isDeleted)
+          .map((c) => ({
+            id: c.recipeId!,
+            name: c.recipeName ?? c.recipe,
+            costPerPortion: c.costPerPortion,
+            chosen: true,
+            category: c.recipeCategory ?? '',
+            price: c.plannedPrice,
+            existing: byName.get(key(c.recipeName ?? c.recipe)) ?? null,
+          })),
+      );
+    } catch (error) {
+      this.error.set(errorMessage(error, 'The menu could not be loaded. · تعذّر تحميل المنيو.'));
+    } finally {
+      this.loading.set(false);
+    }
+  }
+}
+```
+
+
+## 10. المشتريات
+
+`PurchasesShell`. ثم `InvoiceLines` (مشترك بين شاشة الفاتورة وكل فاتورة في اليومية): البنود، الوحدات، المجاميع، **حصص الخصم** (`discount` signal و `shares`)، المورد، والإضافة السريعة. و `PurchasesPage`: الخطوتان (حفظ مسودة ⇐ تأكيد وترحيل)، وصورة الورقة.
+
+> 📄 **`frontend/src/app/features/costing/purchases-shell.ts`** — 46 سطر
+
+```ts
+import { Component, computed, inject } from '@angular/core';
+import { MatButtonModule } from '@angular/material/button';
+import { MatIconModule } from '@angular/material/icon';
+import { RouterOutlet } from '@angular/router';
+import { SubNav, SubNavTab } from '../shared/sub-nav';
+import { AuthService } from '../../core/auth/auth.service';
+import { CostingAccess } from '../../core/costing/costing-tabs';
+import { Permissions } from '../../core/auth/permissions';
+import { Treasury } from './financials';
+
+// Purchases: entering a supplier's invoice, the invoices entered, the suppliers they are from, and
+// the categories everything is filed under. What was spent is under Reports. An employee's advance
+// is paid from here too, as in Financials: out of the safe or a day's takings, and off their pay
+// (or, naming no one, a lump sum shared among the staff).
+@Component({
+  selector: 'app-purchases-shell',
+  imports: [MatButtonModule, MatIconModule, RouterOutlet, SubNav],
+  template: `
+    <app-sub-nav label="Purchases" [tabs]="tabs">
+      @if (canAdvance()) {
+        <button mat-stroked-button (click)="advance()"><mat-icon>request_quote</mat-icon> New advance <span class="inline-ar">سلفة جديدة</span></button>
+      }
+    </app-sub-nav>
+    <router-outlet />
+  `,
+  styleUrl: './costing.scss',
+})
+export class PurchasesShell {
+  private readonly auth = inject(AuthService);
+  private readonly treasury = inject(Treasury);
+  // Who may pay an advance: whoever works Financials, as in the daily batch.
+  protected readonly canAdvance = computed(() => this.access.has('Financials'));
+  private readonly access = inject(CostingAccess);
+
+  protected async advance(): Promise<void> {
+    await this.treasury.enter('EmployeeAdvance');
+  }
+
+  protected readonly tabs: SubNavTab[] = [
+    { path: 'new', icon: 'add_shopping_cart', en: 'New invoice', ar: 'فاتورة جديدة' },
+    { path: 'batch', icon: 'library_add', en: 'Daily batch', ar: 'يومية المشتريات' },
+    { path: 'invoices', icon: 'history', en: 'Invoices', ar: 'أرشيف الفواتير' },
+    { path: 'suppliers', icon: 'local_shipping', en: 'Suppliers', ar: 'إدارة الموردين' },
+    { path: 'categories', icon: 'category', en: 'Categories', ar: 'الأقسام' },
+  ];
+}
+```
+
+
+> 📄 **`frontend/src/app/features/costing/invoice-lines.ts`** — 882 سطر
+
+```ts
+import { Component, Injectable, computed, inject, input, signal } from '@angular/core';
+import { FormsModule } from '@angular/forms';
+import { MatAutocompleteModule } from '@angular/material/autocomplete';
+import { MatButtonModule } from '@angular/material/button';
+import { ErrorStateMatcher } from '@angular/material/core';
+import { MatDialog } from '@angular/material/dialog';
+import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatIconModule } from '@angular/material/icon';
+import { MatInputModule } from '@angular/material/input';
+import { MatSelectModule } from '@angular/material/select';
+import { firstValueFrom } from 'rxjs';
+import {
+  CostingApi,
+  ExpenseItem,
+  MaterialCost,
+  PurchaseInvoiceLine,
+  PurchaseItemType,
+  SavePurchaseLine,
+  Supplier,
+  purchaseUnits,
+} from '../../core/costing/costing.api';
+import { Company } from '../../core/settings/company';
+import { MoneyPipe } from '../../core/ui/money.pipe';
+import { NotifyService } from '../../core/ui/notify.service';
+import { ExpenseItemDialog, ExpenseItemDialogData } from './expense-item-dialog';
+import { FormChecks, FormProblem } from './form-checks';
+import { QuickMaterialData, QuickMaterialDialog, QuickMaterialResult } from './quick-material-dialog';
+import { SupplierDialog, SupplierDialogData } from './supplier-dialog';
+import { GridKeys } from '../shared/grid-keys';
+import { PickRow } from '../shared/pick-row';
+import { searchable, smartMatch } from '../shared/smart-search';
+import { materialCostText } from './material-picker';
+
+// An invoice's lines and supplier as they are entered, shared by the invoice screen and each
+// invoice of a daily batch: what a line names and in what unit, what the lines come to, the
+// supplier chosen, and the quick additions of a material, an expense or a supplier typed that is
+// not there yet.
+
+// The last options when what was typed matches nothing: add it, from the invoice, as a raw
+// material or an expense item; or, in the supplier field, as a supplier.
+export interface AddNew {
+  addNew: string;
+  as?: PurchaseItemType;
+}
+
+export interface InvoiceLine {
+  // What the item field holds: text being typed, or the material or expense chosen.
+  entry?: string | MaterialCost | ExpenseItem | AddNew | null;
+  // Stock (a raw material) or an expense, as the item chosen is; null until one is.
+  itemType: PurchaseItemType | null;
+  rawMaterialId: string | null;
+  expenseItemId: string | null;
+  quantity: number | null;
+  // How many of the material's own units the chosen unit holds: 1000 for kg of a material kept
+  // in grams. Null until a material is chosen, then what it is bought by. An expense's is 1.
+  unitSize: number | null;
+  // An expense line's unit, as written (bottle, visit); none for a bill.
+  unitLabel: string;
+  // What the line came to as written (إجمالي السطر), and what was taken off it (الخصم).
+  cost: number | null;
+  discount: number | null;
+}
+
+export function blankLine(): InvoiceLine {
+  return { itemType: null, rawMaterialId: null, expenseItemId: null, quantity: null, unitSize: null, unitLabel: '', cost: null, discount: 0 };
+}
+
+// To the piastre, as amounts are kept.
+function piastres(amount: number): number {
+  return Math.round(amount * 100) / 100;
+}
+
+const baseLabels = { Gram: 'g', Millilitre: 'ml', Piece: 'pc' } as const;
+
+// As the till compares names: capitals and extra spaces aside.
+function normalize(name: string): string {
+  return name.trim().split(/\s+/).join(' ').toUpperCase();
+}
+
+function isMaterial(item: MaterialCost | ExpenseItem): item is MaterialCost {
+  return 'purchaseUnitSize' in item;
+}
+
+// What a screen's invoices can name, loaded once for it: the materials bought (prep items are made
+// in the kitchen), the expense items and the suppliers new invoices can use; and adding one from an
+// invoice, by its quick dialog. Provided by each screen that enters invoices.
+@Injectable()
+export class PurchaseCatalog {
+  private readonly api = inject(CostingApi);
+  private readonly dialog = inject(MatDialog);
+  private readonly notify = inject(NotifyService);
+  private readonly company = inject(Company);
+
+  // An amount in the company's currency.
+  money(amount: number): string {
+    return this.company.money(amount);
+  }
+
+  readonly materials = signal<MaterialCost[]>([]);
+  // The archived ones are not offered.
+  readonly expenses = signal<ExpenseItem[]>([]);
+  readonly suppliers = signal<Supplier[]>([]);
+
+  async load(): Promise<void> {
+    const [materials, suppliers, expenses] = await Promise.all([
+      firstValueFrom(this.api.materials()),
+      firstValueFrom(this.api.suppliers()),
+      firstValueFrom(this.api.expenseItems()),
+    ]);
+    this.materials.set(materials.filter((m) => m.kind !== 'Prep'));
+    this.suppliers.set(suppliers);
+    this.expenses.set(expenses);
+  }
+
+  async loadMaterials(): Promise<void> {
+    this.materials.set((await firstValueFrom(this.api.materials())).filter((m) => m.kind !== 'Prep'));
+  }
+
+  // The quick dialog over the invoice. The new material, as listed now; or its name and id when the
+  // list does not have it yet; null when cancelled.
+  async addMaterial(name: string): Promise<MaterialCost | { id: string; name: string } | null> {
+    const created = await firstValueFrom(
+      this.dialog
+        .open<QuickMaterialDialog, QuickMaterialData, QuickMaterialResult>(QuickMaterialDialog, { data: { name }, width: '520px' })
+        .afterClosed(),
+    );
+    if (!created) {
+      return null;
+    }
+    await this.loadMaterials();
+    this.notify.info(`${created.name} added, and on the invoice.`);
+    return this.materials().find((m) => m.id === created.id) ?? { id: created.id, name: created.name };
+  }
+
+  async addExpense(name: string): Promise<ExpenseItem | null> {
+    const created = await firstValueFrom(
+      this.dialog
+        .open<ExpenseItemDialog, ExpenseItemDialogData, ExpenseItem>(ExpenseItemDialog, { data: { name, fromInvoice: true }, width: '480px' })
+        .afterClosed(),
+    );
+    if (!created) {
+      return null;
+    }
+    this.expenses.set(await firstValueFrom(this.api.expenseItems()));
+    this.notify.info(`${created.name} added, and on the invoice.`);
+    return this.expenses().find((e) => e.id === created.id) ?? created;
+  }
+
+  async addSupplier(name: string): Promise<Supplier | null> {
+    const created = await firstValueFrom(
+      this.dialog
+        .open<SupplierDialog, SupplierDialogData, Supplier>(SupplierDialog, { data: { name, fromInvoice: true }, width: '520px' })
+        .afterClosed(),
+    );
+    if (!created) {
+      return null;
+    }
+    this.suppliers.set(await firstValueFrom(this.api.suppliers()));
+    this.notify.info(`${created.name} added, and on the invoice.`);
+    return this.suppliers().find((s) => s.id === created.id) ?? created;
+  }
+
+  supplierNamed(name: string): Supplier | undefined {
+    const key = normalize(name);
+    return this.suppliers().find((s) => normalize(s.name) === key);
+  }
+}
+
+// One invoice's lines as they are entered, and its own discount.
+export class InvoiceLines {
+  readonly lines = signal<InvoiceLine[]>([blankLine()]);
+
+  // The discount on the whole invoice (خصم الفاتورة), off what the lines come to after theirs.
+  readonly discount = signal<number | null>(0);
+
+  // The lines are changed in place by the form; this bumps the signal so totals follow.
+  readonly version = signal(0);
+
+  // What the lines came to as written, and their own discounts.
+  readonly subtotal = computed(() => {
+    this.version();
+    return piastres(this.lines().reduce((sum, l) => sum + (l.cost ?? 0), 0));
+  });
+
+  readonly lineDiscounts = computed(() => {
+    this.version();
+    return piastres(this.lines().reduce((sum, l) => sum + (l.discount ?? 0), 0));
+  });
+
+  // The invoice's discount shared among the priced lines by what each comes to after its own, as
+  // the server shares it: to the piastre, each share rounded down and the piastres left one each to
+  // the lines that lost the most to rounding. None while the discount is more than the lines.
+  readonly shares = computed(() => {
+    this.version();
+    const shares = new Map<InvoiceLine, number>();
+    const cents = Math.round((this.discount() ?? 0) * 100);
+    const priced = this.lines().filter((l) => (this.ownNet(l) ?? 0) > 0);
+    const net = priced.reduce((sum, l) => sum + this.ownNet(l)!, 0);
+    if (cents <= 0 || cents > Math.round(net * 100)) {
+      return shares;
+    }
+    const exact = priced.map((l) => (cents * this.ownNet(l)!) / net);
+    const floors = exact.map((e) => Math.floor(e + 1e-9));
+    const left = cents - floors.reduce((sum, f) => sum + f, 0);
+    priced
+      .map((_, i) => i)
+      .sort((a, b) => exact[b] - floors[b] - (exact[a] - floors[a]) || a - b)
+      .slice(0, left)
+      .forEach((i) => floors[i]++);
+    priced.forEach((l, i) => shares.set(l, floors[i] / 100));
+    return shares;
+  });
+
+  // Both discounts together, and what is paid after them (الصافي المستحق).
+  readonly totalDiscount = computed(() => {
+    this.version();
+    return piastres(this.lineDiscounts() + [...this.shares().values()].reduce((sum, s) => sum + s, 0));
+  });
+
+  readonly total = computed(() => {
+    this.version();
+    return piastres(this.lines().reduce((sum, l) => sum + (this.netCost(l) ?? 0), 0));
+  });
+
+  // The total split: what goes into stock, and what is expenses.
+  readonly totals = computed(() => {
+    this.version();
+    const sum = (type: PurchaseItemType) =>
+      piastres(this.lines().filter((l) => l.itemType === type).reduce((s, l) => s + (this.netCost(l) ?? 0), 0));
+    return { stock: sum('Inventory'), expenses: sum('Expense') };
+  });
+
+  // Every line names an item and a quantity; nothing twice; costs, where given, not negative, and
+  // always given for an expense, which is nothing else.
+  readonly ready = computed(() => this.problems().length === 0);
+
+  // What holds the lines up, each by its line and field. prefix tells one invoice's from
+  // another's, as the table's label does: "Invoice 2, ".
+  problems(prefix = ''): FormProblem[] {
+    this.version();
+    const lines = this.lines();
+    return lines.flatMap((line, i) => {
+      const where = prefix ? `${prefix}line ${i + 1}` : `Line ${i + 1}`;
+      const field = (name: string) => `${prefix}${name}, line ${i + 1}`;
+      const found: FormProblem[] = [];
+      const id = line.rawMaterialId ?? line.expenseItemId;
+      if (!id) {
+        const typed = typeof line.entry === 'string' && line.entry.trim();
+        found.push({ where, what: typed ? 'choose the item from the list, or add it' : 'choose the item', field: field('Item') });
+      } else if (lines.findIndex((l) => (l.rawMaterialId ?? l.expenseItemId) === id) < i) {
+        found.push({ where, what: 'it is on the invoice twice: put it on one line', field: field('Item') });
+      }
+      if (!((line.quantity ?? 0) > 0)) {
+        found.push({ where, what: 'enter the quantity', field: field('Quantity') });
+      }
+      if (line.cost === null ? line.itemType === 'Expense' : line.cost < 0) {
+        found.push({ where, what: line.cost === null ? 'enter what the expense cost' : 'the line total cannot be below 0', field: field('Line total') });
+      }
+      const discount = line.discount ?? 0;
+      if (discount < 0) {
+        found.push({ where, what: 'the discount cannot be below 0', field: field('Discount') });
+      } else if (discount > 0 && line.cost === null) {
+        found.push({ where, what: 'enter the line total before its discount', field: field('Discount') });
+      } else if (line.cost !== null && discount > line.cost) {
+        found.push({ where, what: 'the discount cannot be more than the line total', field: field('Discount') });
+      }
+      return found;
+    }).concat(this.discountProblems(prefix));
+  }
+
+  private discountProblems(prefix: string): FormProblem[] {
+    const discount = this.discount() ?? 0;
+    const where = prefix ? `${prefix}invoice discount` : 'Invoice discount';
+    const field = `${prefix}Invoice discount`;
+    const net = this.lines().reduce((sum, l) => sum + Math.max(this.ownNet(l) ?? 0, 0), 0);
+    if (discount < 0) {
+      return [{ where, what: 'it cannot be below 0', field }];
+    }
+    if (discount > 0 && net <= 0) {
+      return [{ where, what: 'enter the line totals before the invoice discount', field }];
+    }
+    if (Math.round(discount * 100) > Math.round(net * 100)) {
+      return [{ where, what: 'it cannot be more than the lines come to', field }];
+    }
+    return [];
+  }
+
+  // What a line comes to after its own discount; and after its share of the invoice's too: what it
+  // really cost, what is paid, and what goes into the average. Null with no line total.
+  ownNet(line: InvoiceLine): number | null {
+    return line.cost === null ? null : piastres(line.cost - (line.discount ?? 0));
+  }
+
+  netCost(line: InvoiceLine): number | null {
+    const own = this.ownNet(line);
+    return own === null ? null : piastres(own - (this.shares().get(line) ?? 0));
+  }
+
+  // A line's share of the invoice's discount, while it has one.
+  share(line: InvoiceLine): number {
+    return this.shares().get(line) ?? 0;
+  }
+
+  constructor(readonly catalog: PurchaseCatalog) {}
+
+  touch(): void {
+    this.version.update((v) => v + 1);
+  }
+
+  add(): void {
+    this.lines.update((lines) => [...lines, blankLine()]);
+  }
+
+  remove(index: number): void {
+    this.lines.update((lines) => lines.filter((_, i) => i !== index));
+  }
+
+  reset(): void {
+    this.lines.set([blankLine()]);
+    this.discount.set(0);
+    this.touch();
+  }
+
+  material(line: InvoiceLine): MaterialCost | undefined {
+    return line.rawMaterialId ? this.catalog.materials().find((m) => m.id === line.rawMaterialId) : undefined;
+  }
+
+  expense(line: InvoiceLine): ExpenseItem | undefined {
+    return line.expenseItemId ? this.catalog.expenses().find((e) => e.id === line.expenseItemId) : undefined;
+  }
+
+  units(material: MaterialCost): { label: string; size: number }[] {
+    return purchaseUnits(material);
+  }
+
+  label(material: MaterialCost): string {
+    return material.code ? `${material.code} · ${material.name}` : material.name;
+  }
+
+  // What the field shows for a choice: the material, the expense, or the name being added.
+  readonly display = (value: string | MaterialCost | ExpenseItem | AddNew | null | undefined): string =>
+    !value ? '' : typeof value === 'string' ? value : 'addNew' in value ? value.addNew : isMaterial(value) ? this.label(value) : value.name;
+
+  // The materials and expenses matching what is typed, the closest first (its code, then a name
+  // that starts with it); all of them before anything is.
+  matches(line: InvoiceLine): { materials: MaterialCost[]; expenses: ExpenseItem[] } {
+    const text = typeof line.entry === 'string' ? line.entry : '';
+    const typed = searchable(text);
+    const rank = (name: string, code: string | null) =>
+      !typed ? 2 : searchable(code) === typed ? 0 : searchable(name).startsWith(typed) ? 1 : 2;
+    return {
+      materials: this.catalog
+        .materials()
+        .filter((m) => smartMatch(text, m.name, m.code, m.category))
+        .sort((a, b) => rank(a.name, a.code) - rank(b.name, b.code) || a.name.localeCompare(b.name)),
+      expenses: this.catalog
+        .expenses()
+        .filter((e) => smartMatch(text, e.name, e.nameAr, e.category))
+        .sort((a, b) => rank(a.name, null) - rank(b.name, null) || a.name.localeCompare(b.name)),
+    };
+  }
+
+  // What a material costs now, per the unit it is bought in.
+  costText(material: MaterialCost): string | null {
+    return materialCostText(material, (n) => this.catalog.money(n));
+  }
+
+  // The typed name, when nothing is called exactly that: it can be added, as either.
+  typedNew(line: InvoiceLine): string | null {
+    const text = typeof line.entry === 'string' ? line.entry.trim() : '';
+    const key = text.toLowerCase();
+    return text &&
+      !this.catalog.materials().some((m) => m.name.toLowerCase() === key) &&
+      !this.catalog.expenses().some((e) => e.name.toLowerCase() === key)
+      ? text
+      : null;
+  }
+
+  // Typing, choosing a material or an expense, or choosing to add one. A material chosen is taken
+  // in what it is bought by until another unit is picked; an expense in its usual unit, one of it.
+  entered(line: InvoiceLine, value: string | MaterialCost | ExpenseItem | AddNew | null): void {
+    if (value && typeof value === 'object' && 'addNew' in value) {
+      void (value.as === 'Expense' ? this.addExpense(line, value.addNew) : this.addMaterial(line, value.addNew));
+      return;
+    }
+    this.choose(line, value && typeof value === 'object' ? value : null);
+    this.touch();
+  }
+
+  // Added, and on this line; cancelled, the line keeps what was typed.
+  async addExpense(line: InvoiceLine, name: string): Promise<void> {
+    const item = await this.catalog.addExpense(name);
+    line.entry = item ?? name;
+    if (item) {
+      this.choose(line, item);
+    }
+    this.touch();
+  }
+
+  // Added, and on this line: nothing else on the invoice changes. Cancelled, the line keeps what was typed.
+  async addMaterial(line: InvoiceLine, name: string): Promise<void> {
+    const created = await this.catalog.addMaterial(name);
+    if (!created) {
+      line.entry = name;
+      this.touch();
+      return;
+    }
+    if ('purchaseUnitSize' in created) {
+      line.entry = created;
+      this.choose(line, created);
+    } else {
+      line.entry = created.name;
+      Object.assign(line, { itemType: 'Inventory', rawMaterialId: created.id, expenseItemId: null, unitSize: null });
+    }
+    this.touch();
+  }
+
+  private choose(line: InvoiceLine, item: MaterialCost | ExpenseItem | null): void {
+    const material = item && isMaterial(item) ? item : null;
+    const expense = item && !isMaterial(item) ? item : null;
+    line.itemType = material ? 'Inventory' : expense ? 'Expense' : null;
+    line.rawMaterialId = material?.id ?? null;
+    line.expenseItemId = expense?.id ?? null;
+    line.unitSize = material?.purchaseUnitSize ?? (expense ? 1 : null);
+    if (expense) {
+      line.unitLabel = expense.unit ?? '';
+      line.quantity ??= 1;
+    }
+  }
+
+  // The line's quantity in the material's own unit, as stock is kept.
+  baseQuantity(line: InvoiceLine): number | null {
+    const material = this.material(line);
+    if (!material || !line.quantity || line.quantity <= 0) {
+      return null;
+    }
+    // To the thousandth, as stock is stored: 0.1 kg is 100 g, not 100.00000000000001.
+    return Math.round(line.quantity * (line.unitSize ?? material.purchaseUnitSize) * 1000) / 1000;
+  }
+
+  stockAdded(line: InvoiceLine): string | null {
+    const material = this.material(line);
+    const base = this.baseQuantity(line);
+    if (!material || base === null || (line.unitSize ?? material.purchaseUnitSize) === 1) {
+      return null;
+    }
+    return `${base.toLocaleString('en-EG', { maximumFractionDigits: 3 })} ${baseLabels[material.unit]}`;
+  }
+
+  // What the line paid per purchase unit after every discount, whatever unit it was entered in:
+  // comparable with the average beside it, which it moves. An expense's: per one of what it is
+  // counted in.
+  unitPrice(line: InvoiceLine): number | null {
+    const cost = this.netCost(line);
+    if (this.expense(line)) {
+      return cost !== null && line.quantity ? cost / line.quantity : null;
+    }
+    const material = this.material(line);
+    const base = this.baseQuantity(line);
+    return material && base && cost !== null ? (cost / base) * material.purchaseUnitSize : null;
+  }
+
+  // The lines as an invoice sends them. Lines not finished yet are left out of a draft saved only
+  // to hold its paper (partial), and a discount not right yet kept back from it.
+  toSave(partial = false): SavePurchaseLine[] {
+    const discountOf = (l: InvoiceLine) => {
+      const discount = l.discount ?? 0;
+      return partial && (discount < 0 || discount > (l.cost ?? 0)) ? 0 : discount;
+    };
+    return this.lines()
+      .filter((l) => !partial || ((l.rawMaterialId || (l.expenseItemId && l.cost !== null)) && (l.quantity ?? 0) > 0))
+      .map((l): SavePurchaseLine => {
+        if (l.itemType === 'Expense') {
+          return {
+            itemType: 'Expense',
+            rawMaterialId: null,
+            expenseItemId: l.expenseItemId,
+            enteredQuantity: l.quantity!,
+            unitLabel: l.unitLabel.trim() || null,
+            unitSize: 1,
+            cost: l.cost,
+            discount: discountOf(l),
+          };
+        }
+        const material = this.material(l)!;
+        const size = l.unitSize ?? material.purchaseUnitSize;
+        return {
+          itemType: 'Inventory',
+          rawMaterialId: l.rawMaterialId!,
+          expenseItemId: null,
+          enteredQuantity: l.quantity!,
+          unitLabel: purchaseUnits(material).find((u) => u.size === size)?.label ?? material.purchaseUnit,
+          unitSize: size,
+          cost: l.cost,
+          discount: discountOf(l),
+        };
+      });
+  }
+
+  // The invoice's discount as sent: on a draft saved only to hold its paper, none while it is more
+  // than the lines finished so far come to.
+  discountToSave(partial = false): number {
+    const discount = this.discount() ?? 0;
+    if (!partial) {
+      return discount;
+    }
+    const net = this.toSave(true).reduce((sum, l) => sum + Math.max((l.cost ?? 0) - l.discount, 0), 0);
+    return discount > 0 && Math.round(discount * 100) <= Math.round(net * 100) ? discount : 0;
+  }
+
+  // A saved invoice's lines and discount, back on screen as they were entered: each line at its
+  // total as written, before its discounts.
+  fill(lines: PurchaseInvoiceLine[], discount = 0): void {
+    this.discount.set(discount);
+    this.lines.set(
+      lines.length
+        ? lines.map((l) => ({
+            entry:
+              (l.itemType === 'Expense'
+                ? this.catalog.expenses().find((e) => e.id === l.expenseItemId)
+                : this.catalog.materials().find((m) => m.id === l.rawMaterialId)) ?? l.material,
+            itemType: l.itemType,
+            rawMaterialId: l.rawMaterialId,
+            expenseItemId: l.expenseItemId,
+            quantity: l.enteredQuantity,
+            unitSize: l.unitSize,
+            unitLabel: l.itemType === 'Expense' && l.unitLabel !== 'unit' ? l.unitLabel : '',
+            cost: l.lineTotal ?? l.cost,
+            discount: l.discount ?? 0,
+          }))
+        : [blankLine()],
+    );
+    this.touch();
+  }
+}
+
+// One invoice's supplier as it is entered: chosen from the list, or typed and added.
+export class InvoiceSupplier {
+  // What the field holds: text being typed, a supplier chosen, or one to add.
+  entry: string | Supplier | AddNew | null = '';
+  id: string | null = null;
+  readonly version = signal(0);
+
+  constructor(readonly catalog: PurchaseCatalog) {}
+
+  touch(): void {
+    this.version.update((v) => v + 1);
+  }
+
+  // The suppliers matching what is typed (by name, contact or phone), names starting with it first;
+  // all of them before anything is.
+  matches(): Supplier[] {
+    const text = typeof this.entry === 'string' ? this.entry : '';
+    const typed = searchable(text);
+    return this.catalog
+      .suppliers()
+      .filter((s) => smartMatch(text, s.name, s.contactPerson, s.phone))
+      .sort((a, b) => Number(!searchable(a.name).startsWith(typed)) - Number(!searchable(b.name).startsWith(typed)) || a.name.localeCompare(b.name));
+  }
+
+  // The typed name, when no supplier is called that (capitals and extra spaces aside): it can be added.
+  typedNew(): string | null {
+    const text = typeof this.entry === 'string' ? this.entry.trim() : '';
+    return text && !this.catalog.supplierNamed(text) ? text : null;
+  }
+
+  readonly label = (value: string | Supplier | AddNew | null | undefined): string =>
+    !value ? '' : typeof value === 'string' ? value : 'addNew' in value ? value.addNew : value.name;
+
+  // A name typed that is no supplier yet: neither chosen nor added.
+  unresolved(): boolean {
+    this.version();
+    return typeof this.entry === 'string' && this.entry.trim() !== '' && this.id === null;
+  }
+
+  // Typing, choosing a supplier, or choosing to add one. A name typed in full is that supplier.
+  entered(value: string | Supplier | AddNew | null): void {
+    if (value && typeof value === 'object' && 'addNew' in value) {
+      void this.add(value.addNew);
+      return;
+    }
+    this.id = !value ? null : typeof value === 'string' ? (this.catalog.supplierNamed(value)?.id ?? null) : value.id;
+    this.touch();
+  }
+
+  // The quick dialog over the invoice: the supplier is added and chosen. Cancelled, the field keeps
+  // what was typed.
+  async add(name: string): Promise<void> {
+    const created = await this.catalog.addSupplier(name);
+    this.entry = created ?? name;
+    this.id = created?.id ?? null;
+    this.touch();
+  }
+
+  // Back to none, or to one already chosen (archived since or not: a draft keeps the one it had).
+  set(id: string | null, name: string | null = null): void {
+    this.id = id;
+    this.entry = !id ? '' : (this.catalog.suppliers().find((s) => s.id === id) ?? ({ id, name: name ?? 'A supplier' } as Supplier));
+    this.touch();
+  }
+}
+
+// Material's own: a field in error once touched and invalid.
+const defaultMatcher = new ErrorStateMatcher();
+
+// An invoice's lines as a table: each line's item, found by typing or added there, its quantity
+// in the unit billed, its total and discount, what it comes to per purchase unit after every
+// discount beside the average now; a line added or taken off; and the subtotal, the invoice's
+// discount, and what is paid after them, split into stock and expenses when it has both.
+@Component({
+  selector: 'app-invoice-lines',
+  imports: [FormsModule, GridKeys, MatAutocompleteModule, MatButtonModule, MatFormFieldModule, MatIconModule, MatInputModule, MatSelectModule, MoneyPipe, PickRow],
+  template: `
+    @let e = editor();
+    <div class="table-wrap">
+      <table class="grid" appGridKeys (appGridKeysAppend)="e.add()">
+        <thead>
+          <tr>
+            <th>Item<span class="ar">الصنف</span></th>
+            <th class="num">Quantity<span class="ar">الكمية</span></th>
+            <th class="num">Line total<span class="ar">إجمالي السطر</span></th>
+            <th class="num">Discount<span class="ar">الخصم</span></th>
+            <th class="num">AP$ per purchase unit<span class="ar">سعر وحدة الشراء</span></th>
+            <th class="num">Average now<span class="ar">المتوسط الحالي</span></th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          @for (line of e.lines(); track $index; let i = $index) {
+            <tr>
+              <td>
+                <mat-form-field subscriptSizing="dynamic" class="material">
+                  <input matInput [matAutocomplete]="auto" [(ngModel)]="line.entry" (ngModelChange)="e.entered(line, $event)"
+                    placeholder="Type to find…" [attr.aria-label]="label() + 'Item, line ' + (i + 1)"
+                    [errorStateMatcher]="marked(label() + 'Item, line ' + (i + 1))" />
+                  <mat-autocomplete #auto="matAutocomplete" [displayWith]="e.display" panelClass="pick-panel" [panelWidth]="460" [autoActiveFirstOption]="true">
+                    @if (e.matches(line); as found) {
+                      @if (found.materials.length) {
+                        <mat-optgroup label="Stock items · خامات">
+                          @for (m of found.materials; track m.id) {
+                            <mat-option [value]="m">
+                              <app-pick-row [name]="m.name" [code]="m.code" [kind]="m.kind === 'Prep' ? 'prep' : 'material'" [unit]="m.purchaseUnit"
+                                [detail]="m.category" [cost]="e.costText(m)" />
+                            </mat-option>
+                          }
+                        </mat-optgroup>
+                      }
+                      @if (found.expenses.length) {
+                        <mat-optgroup label="Expenses · مصروفات">
+                          @for (x of found.expenses; track x.id) {
+                            <mat-option [value]="x">
+                              <app-pick-row [name]="x.name" kind="expense" [unit]="x.unit" [detail]="x.nameAr ? x.category + ' · ' + x.nameAr : x.category" />
+                            </mat-option>
+                          }
+                        </mat-optgroup>
+                      }
+                    }
+                    @if (e.typedNew(line); as name) {
+                      <mat-option [value]="{ addNew: name, as: 'Inventory' }" class="add-new">
+                        <mat-icon>add</mat-icon> Add new material: "{{ name }}"
+                      </mat-option>
+                      <mat-option [value]="{ addNew: name, as: 'Expense' }" class="add-new">
+                        <mat-icon>add</mat-icon> Add new expense: "{{ name }}"
+                      </mat-option>
+                    }
+                  </mat-autocomplete>
+                  <mat-error>{{ said(label() + 'Item, line ' + (i + 1)) }}</mat-error>
+                </mat-form-field>
+                @if (e.expense(line)) {
+                  <span class="badge expense">Expense · مصروف</span>
+                }
+              </td>
+              <td class="num">
+                <div class="quantity">
+                  <mat-form-field subscriptSizing="dynamic" class="small">
+                    <input matInput type="number" min="0" step="any" [(ngModel)]="line.quantity" (ngModelChange)="e.touch()"
+                      [attr.aria-label]="label() + 'Quantity, line ' + (i + 1)" [errorStateMatcher]="marked(label() + 'Quantity, line ' + (i + 1))" />
+                    <mat-error>{{ said(label() + 'Quantity, line ' + (i + 1)) }}</mat-error>
+                  </mat-form-field>
+                  @if (e.material(line); as m) {
+                    <mat-form-field subscriptSizing="dynamic" class="unit">
+                      <mat-select [(ngModel)]="line.unitSize" (ngModelChange)="e.touch()" [aria-label]="label() + 'Unit, line ' + (i + 1)">
+                        @for (u of e.units(m); track u.size) {
+                          <mat-option [value]="u.size">{{ u.label }}</mat-option>
+                        }
+                      </mat-select>
+                    </mat-form-field>
+                  } @else if (e.expense(line)) {
+                    <mat-form-field subscriptSizing="dynamic" class="unit">
+                      <input matInput [(ngModel)]="line.unitLabel" maxlength="32" placeholder="unit" [attr.aria-label]="label() + 'Unit, line ' + (i + 1)" />
+                    </mat-form-field>
+                  }
+                </div>
+                @if (e.stockAdded(line); as added) {
+                  <small class="muted">+ {{ added }} to stock</small>
+                } @else if (e.expense(line)) {
+                  <small class="muted">Not stock</small>
+                }
+              </td>
+              <td class="num">
+                <mat-form-field subscriptSizing="dynamic" class="small">
+                  <span matTextPrefix>{{ company.currency() }}&nbsp;</span>
+                  <input matInput type="number" min="0" step="any" [(ngModel)]="line.cost" (ngModelChange)="e.touch()"
+                    [attr.aria-label]="label() + 'Line total, line ' + (i + 1)" [required]="!!e.expense(line)"
+                    [errorStateMatcher]="marked(label() + 'Line total, line ' + (i + 1))" />
+                  <mat-error>{{ said(label() + 'Line total, line ' + (i + 1)) }}</mat-error>
+                </mat-form-field>
+                @if (e.expense(line) && line.cost === null && !checks()?.shown()) {
+                  <small class="warn-text">Its amount</small>
+                }
+              </td>
+              <td class="num">
+                <mat-form-field subscriptSizing="dynamic" class="discount">
+                  <span matTextPrefix>{{ company.currency() }}&nbsp;</span>
+                  <input matInput type="number" min="0" step="any" [(ngModel)]="line.discount" (ngModelChange)="e.touch()"
+                    [attr.aria-label]="label() + 'Discount, line ' + (i + 1)" [errorStateMatcher]="marked(label() + 'Discount, line ' + (i + 1))" />
+                  <mat-error>{{ said(label() + 'Discount, line ' + (i + 1)) }}</mat-error>
+                </mat-form-field>
+                @if (e.share(line) > 0) {
+                  <small class="muted share" title="Its share of the invoice discount · نصيبه من خصم الفاتورة">+ {{ e.share(line) | money }} shared</small>
+                }
+                @if (e.share(line) > 0 || (line.discount ?? 0) > 0) {
+                  <small class="net">Net · الصافي {{ e.netCost(line) | money }}</small>
+                }
+              </td>
+              <td class="num">{{ e.unitPrice(line) === null ? '' : (e.unitPrice(line) | money) }}</td>
+              <td class="num muted">
+                @if (e.expense(line); as x) {
+                  <span class="category">{{ x.category }}</span>
+                } @else {
+                  {{ e.material(line)?.costPerPurchaseUnit == null ? '' : (e.material(line)!.costPerPurchaseUnit | money) }}
+                }
+              </td>
+              <td>
+                <button mat-icon-button (click)="e.remove(i)" [disabled]="e.lines().length === 1" [attr.aria-label]="label() + 'Remove line'">
+                  <mat-icon>delete</mat-icon>
+                </button>
+              </td>
+            </tr>
+          }
+        </tbody>
+        <tfoot>
+          <tr class="subtotal">
+            <td>
+              <button mat-button (click)="e.add()"><mat-icon>add</mat-icon> Add line</button>
+            </td>
+            <td class="num">Subtotal · الإجمالي قبل الخصم</td>
+            <td class="num">{{ e.subtotal() | money }}</td>
+            <td class="num muted">{{ e.lineDiscounts() > 0 ? (e.lineDiscounts() | money) : '' }}</td>
+            <td colspan="3"></td>
+          </tr>
+          <tr class="invoice-discount">
+            <td></td>
+            <td class="num">Invoice discount · خصم الفاتورة</td>
+            <td></td>
+            <td class="num">
+              <mat-form-field subscriptSizing="dynamic" class="discount">
+                <span matTextPrefix>{{ company.currency() }}&nbsp;</span>
+                <input matInput type="number" min="0" step="any" [ngModel]="e.discount()" (ngModelChange)="e.discount.set($event); e.touch()"
+                  [attr.aria-label]="label() + 'Invoice discount'" [errorStateMatcher]="marked(label() + 'Invoice discount')" />
+                <mat-error>{{ said(label() + 'Invoice discount') }}</mat-error>
+              </mat-form-field>
+            </td>
+            <td colspan="3" class="muted hint">Shared among the lines by their totals · يُوزَّع على البنود</td>
+          </tr>
+          @if (e.totalDiscount() > 0) {
+            <tr class="total-discount">
+              <td></td>
+              <td class="num">Total discount · إجمالي الخصم</td>
+              <td class="num">− {{ e.totalDiscount() | money }}</td>
+              <td colspan="4"></td>
+            </tr>
+          }
+          <tr class="net-payable">
+            <td></td>
+            <td class="num">
+              @if (e.totals().expenses > 0) {
+                <span class="split">Stock · مخزون</span>
+                <span class="split">Expenses · مصروفات</span>
+              }
+              Net payable · الصافي المستحق
+            </td>
+            <td class="num">
+              @if (e.totals().expenses > 0) {
+                <span class="split">{{ e.totals().stock | money }}</span>
+                <span class="split">{{ e.totals().expenses | money }}</span>
+              }
+              {{ e.total() | money }}
+            </td>
+            <td colspan="4"></td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+  `,
+  styleUrl: './costing.scss',
+  styles: `
+    .material {
+      min-width: 216px;
+      width: 100%;
+    }
+    .add-new {
+      color: var(--mat-sys-primary);
+      font-weight: 500;
+    }
+    /* Seven columns of fields side by side: kept tight, so a laptop's screen holds them all. */
+    .grid th,
+    .grid td {
+      padding-inline: 8px;
+    }
+    .small {
+      width: 112px;
+    }
+    .discount {
+      width: 112px;
+    }
+    .quantity {
+      display: flex;
+      gap: 6px;
+      justify-content: flex-end;
+    }
+    .unit {
+      width: 96px;
+    }
+    .warn-text {
+      color: var(--mat-sys-error);
+    }
+    .badge.expense {
+      margin: 4px 0 0;
+      display: inline-block;
+      background: color-mix(in srgb, var(--app-warn) 16%, transparent);
+      color: var(--app-warn);
+    }
+    .category {
+      white-space: nowrap;
+    }
+    .split {
+      display: block;
+      font-weight: 400;
+      color: var(--mat-sys-on-surface-variant);
+    }
+    .share {
+      display: block;
+      max-width: 112px;
+      margin-inline-start: auto;
+      white-space: normal;
+    }
+    .net {
+      display: block;
+      color: var(--app-slate-700, #334155);
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    tfoot tr:not(.net-payable) td {
+      font-weight: 400;
+      border-bottom: none;
+    }
+    tfoot .hint {
+      font-size: 12px;
+      text-align: start;
+    }
+    tfoot .net-payable td {
+      font-weight: 700;
+    }
+  `,
+})
+export class InvoiceLinesTable {
+  protected readonly company = inject(Company);
+  readonly editor = input.required<InvoiceLines>();
+  // Before each field's accessible name, to tell one invoice's from another's: "Invoice 2, ".
+  readonly label = input('');
+  // The screen's checks, which mark a field once a send is refused for what it is missing.
+  readonly checks = input<FormChecks | null>(null);
+
+  protected marked(field: string): ErrorStateMatcher {
+    return this.checks()?.field(field) ?? defaultMatcher;
+  }
+
+  protected said(field: string): string {
+    return this.checks()?.message(field) ?? '';
+  }
+}
+```
+
+
+> 📄 **`frontend/src/app/features/costing/purchases-page.ts`** — 952 سطر
+
+```ts
+import { DatePipe } from '@angular/common';
+import { Component, ElementRef, computed, effect, inject, input, signal, untracked } from '@angular/core';
+import { FormsModule } from '@angular/forms';
+import { MatAutocompleteModule } from '@angular/material/autocomplete';
+import { MatButtonModule } from '@angular/material/button';
+import { MatButtonToggleModule } from '@angular/material/button-toggle';
+import { MatDialog } from '@angular/material/dialog';
+import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatIconModule } from '@angular/material/icon';
+import { MatInputModule } from '@angular/material/input';
+import { MatProgressBarModule } from '@angular/material/progress-bar';
+import { MatSelectModule } from '@angular/material/select';
+import { Router, RouterLink } from '@angular/router';
+import { firstValueFrom } from 'rxjs';
+import {
+  CostingApi,
+  ExpenseItem,
+  InvoiceCorrectionInput,
+  InvoiceCorrectionPreview,
+  MaterialCost,
+  PurchaseInvoice,
+  PurchaseInvoiceSummary,
+  SavePurchaseInvoice,
+  Supplier,
+  SupplierBalance,
+  PurchasePaymentMethod,
+  isRequested,
+  paymentMethodLabels,
+} from '../../core/costing/costing.api';
+import { errorMessage } from '../../core/http/error-message';
+import { Company } from '../../core/settings/company';
+import { MoneyPipe } from '../../core/ui/money.pipe';
+import { NotifyService } from '../../core/ui/notify.service';
+import { Approvals } from './approvals';
+import { BusinessDay } from './financials';
+import { FormChecks, FormProblem } from './form-checks';
+import { AddNew, InvoiceLine, InvoiceLines, InvoiceLinesTable, InvoiceSupplier, PurchaseCatalog } from './invoice-lines';
+import { paperIcon, viewInvoicePaper } from './invoice-paper';
+import { InvoiceView } from './invoice-view';
+import { SupplierPaymentEntry, SupplierPaymentFields, newSupplierPayment, paymentProblems } from './supplier-payment-fields';
+import { PickRow } from '../shared/pick-row';
+
+// A supplier's invoice, in two steps. Entered as it is written (who from, their number and date,
+// each line in the unit billed, and a photo of the paper), then saved as a draft and reviewed;
+// only "Confirm & post" takes the stock in and moves the average costs. A draft survives a
+// reload, and can be finished on another tablet. A line is a raw material or an expense item
+// (cleaning, a repair, a bill), on the same invoice or one of its own: an expense is only its
+// cost, under its category, and never goes into stock.
+//
+// Or, switched at the top, a supplier paid with no invoice (سداد مورد): entered as in the daily
+// batch, against what they are owed, from the safe or a day's takings, and no stock moves.
+//
+// With ?correct=, a posted invoice corrected (تعديل فاتورة): it opens here as entered, and once its
+// changes are reviewed, it is voided and posted again as it should have been, a new invoice in its
+// place. A manager's at once; anyone else's waits for a manager's approval, the invoice as it was.
+@Component({
+  selector: 'app-purchases-page',
+  providers: [PurchaseCatalog],
+  imports: [PickRow, 
+    DatePipe,
+    FormsModule,
+    InvoiceLinesTable,
+    InvoiceView,
+    MatAutocompleteModule,
+    MatButtonModule,
+    MatButtonToggleModule,
+    MatFormFieldModule,
+    MatIconModule,
+    MatInputModule,
+    MatProgressBarModule,
+    MatSelectModule,
+    MoneyPipe,
+    RouterLink,
+    SupplierPaymentFields,
+  ],
+  template: `
+    @if (loading()) {
+      <mat-progress-bar mode="indeterminate" />
+    } @else if (error()) {
+      <p class="error">{{ error() }}</p>
+    } @else if (review(); as inv) {
+      <!-- Step two: the invoice as it will be posted. -->
+      <section class="review">
+        <h2>Review the invoice <span class="inline-ar">مراجعة الفاتورة</span></h2>
+        <p class="note">Check it against the paper. Nothing is in stock until you confirm.</p>
+        <app-invoice-view [invoice]="inv" />
+        <div class="toolbar actions">
+          <button mat-button (click)="backToEdit()" [disabled]="saving()"><mat-icon>edit</mat-icon> Back to edit</button>
+          <span class="spacer"></span>
+          <button mat-flat-button (click)="confirm()" [disabled]="saving()"><mat-icon>inventory</mat-icon> Confirm &amp; post</button>
+        </div>
+      </section>
+    } @else if (correctionPreview(); as cp) {
+      <!-- A correction, reviewed: what changes, as the manager will see it. -->
+      <section class="review">
+        <h2>Review the changes <span class="inline-ar">مراجعة التعديل</span></h2>
+        <p class="note">{{ cp.summary }}</p>
+        <div class="table-wrap">
+          <table class="grid changes">
+            <thead>
+              <tr>
+                <th>What<span class="ar">البند</span></th>
+                <th>Was<span class="ar">قبل</span></th>
+                <th>Now<span class="ar">بعد</span></th>
+              </tr>
+            </thead>
+            <tbody>
+              @for (c of cp.changes; track c.label) {
+                <tr>
+                  <td>{{ c.label }}</td>
+                  <td [class.muted]="!c.before">{{ c.before ?? 'Not on it' }}</td>
+                  <td [class.muted]="!c.after">{{ c.after ?? 'Taken off' }}</td>
+                </tr>
+              }
+            </tbody>
+          </table>
+        </div>
+        <p class="note">
+          {{ approvals.canApprove() ? 'Saved, the invoice is voided and this one posted in its place: its stock, cash and supplier’s account are redone.'
+            : 'A manager approves it first: until then the invoice stays as it is.' }}
+        </p>
+        @if (!approvals.canApprove()) {
+          <mat-form-field class="reason" subscriptSizing="dynamic">
+            <mat-label>Why · السبب</mat-label>
+            <input matInput [(ngModel)]="reason" maxlength="300" placeholder="Typed 5 for 6" aria-label="Why it is corrected" />
+          </mat-form-field>
+        }
+        <div class="toolbar actions">
+          <button mat-button (click)="correctionPreview.set(null)" [disabled]="saving()"><mat-icon>edit</mat-icon> Back to edit</button>
+          <span class="spacer"></span>
+          <button mat-flat-button (click)="sendCorrection()" [disabled]="saving()">
+            <mat-icon>{{ approvals.canApprove() ? 'published_with_changes' : 'send' }}</mat-icon>
+            {{ approvals.canApprove() ? 'Save correction' : 'Send for approval' }}
+            <span class="inline-ar">{{ approvals.canApprove() ? 'حفظ التعديل' : 'إرسال للموافقة' }}</span>
+          </button>
+        </div>
+      </section>
+    } @else {
+      @if (correcting(); as original) {
+        <div class="correcting" role="status">
+          <mat-icon>edit_note</mat-icon>
+          <span>
+            Correcting <a [routerLink]="['/costing/purchases/invoices', original.id]">{{ invoiceName(original) }}</a>,
+            {{ original.total | money }}. Saved, it is voided and this one posted in its place.
+            <span class="inline-ar">تعديل فاتورة</span>
+          </span>
+        </div>
+      } @else {
+      <mat-button-toggle-group class="mode" [value]="mode()" (change)="mode.set($event.value)" aria-label="What to enter" hideSingleSelectionIndicator>
+        <mat-button-toggle value="invoice"><mat-icon>receipt_long</mat-icon> Purchase invoice · فاتورة مشتريات</mat-button-toggle>
+        <mat-button-toggle value="payment"><mat-icon>payments</mat-icon> Supplier payment · سداد مورد</mat-button-toggle>
+      </mat-button-toggle-group>
+      }
+      @if (mode() === 'invoice' || correcting()) {
+      <!-- Step one: the invoice as written. -->
+      @if (drafts().length && !correcting()) {
+        <div class="drafts">
+          <strong>Unfinished invoices · فواتير لم تكتمل</strong>
+          @for (d of drafts(); track d.id) {
+            <div class="draft">
+              <span>{{ d.supplierName ?? 'No supplier' }} · {{ d.lines }} {{ d.lines === 1 ? 'line' : 'lines' }} · {{ d.total | money }}
+                <span class="muted">· {{ d.createdBy }}, {{ d.createdAtUtc | date: 'd MMM, HH:mm' }}</span></span>
+              <span class="spacer"></span>
+              <button mat-button (click)="continueDraft(d.id)">Continue</button>
+              <button mat-button class="danger" (click)="discardDraft(d.id)" [disabled]="saving()">Discard</button>
+            </div>
+          }
+        </div>
+      }
+      <p class="note">
+        Enter the invoice as it is written: how much came, in the unit it is billed in, and what each line cost. Stock is kept in
+        grams, millilitres and pieces; the conversion is done for you. A line can also be an expense (cleaning, a repair, a bill):
+        it is recorded at its cost and never goes into stock.
+        <span class="inline-ar">أدخل الفاتورة كما هي مكتوبة.</span>
+      </p>
+      <div class="header">
+        <mat-form-field subscriptSizing="dynamic" class="supplier">
+          <mat-label>Supplier · المورد</mat-label>
+          <input matInput [(ngModel)]="supplierEntry" (ngModelChange)="supplierEntered($event)" [matAutocomplete]="suppliersList"
+            placeholder="Choose or type a name" aria-label="Supplier" [errorStateMatcher]="checks.field('Supplier')" />
+          <mat-icon matSuffix>arrow_drop_down</mat-icon>
+          <mat-autocomplete #suppliersList="matAutocomplete" [displayWith]="supplierLabel" panelClass="pick-panel" [panelWidth]="380" [autoActiveFirstOption]="true">
+            @for (s of supplierMatches(); track s.id) {
+              <mat-option [value]="s"><app-pick-row [name]="s.name" kind="supplier" [detail]="supplierDetail(s)" [cost]="s.invoices ? s.invoices + (s.invoices === 1 ? ' invoice' : ' invoices') : null" /></mat-option>
+            }
+            @if (typedNewSupplier(); as name) {
+              <mat-option [value]="{ addNew: name }" class="add-new">
+                <mat-icon>add</mat-icon> Add new supplier: "{{ name }}"
+              </mat-option>
+            }
+          </mat-autocomplete>
+          @if (supplierUnresolved()) {
+            <mat-hint class="warn-text">Choose the supplier from the list, or add it.</mat-hint>
+          }
+          <mat-error>{{ checks.message('Supplier') }}</mat-error>
+        </mat-form-field>
+        <mat-form-field subscriptSizing="dynamic">
+          <mat-label>Invoice no. · رقم الفاتورة</mat-label>
+          <input matInput [(ngModel)]="supplierInvoiceNumber" maxlength="64" data-western-digits />
+        </mat-form-field>
+        <mat-form-field subscriptSizing="dynamic">
+          <mat-label>Invoice date · تاريخ الفاتورة</mat-label>
+          <input matInput type="date" [(ngModel)]="invoiceDate" />
+        </mat-form-field>
+        @if (paymentMethod === 'BeforeTreasury') {
+          <span class="muted before-treasury">Before the treasury · قبل الخزنة: no cash, no supplier's account</span>
+        } @else {
+        <mat-form-field subscriptSizing="dynamic" class="payment">
+          <mat-label>Paid · طريقة الدفع</mat-label>
+          <mat-select [(ngModel)]="paymentMethod" (ngModelChange)="touch()" aria-label="How it is paid" required [errorStateMatcher]="checks.field('How it is paid')">
+            @for (m of paymentMethods; track m) {
+              <mat-option [value]="m">{{ paymentLabels[m].en }} · {{ paymentLabels[m].ar }}</mat-option>
+            }
+          </mat-select>
+          @if (paymentMethod === 'Credit' && !supplierId) {
+            <mat-hint class="warn-text">On credit, it is owed to a supplier: choose one.</mat-hint>
+          } @else if (paymentMethod === 'Credit') {
+            <mat-hint>Owed to the supplier until paid by a payment voucher.</mat-hint>
+          } @else if (!paymentMethod) {
+            <mat-hint>Required to post it.</mat-hint>
+          }
+          <mat-error>{{ checks.message('How it is paid') }}</mat-error>
+        </mat-form-field>
+        }
+        @if (paymentMethod === 'DayRevenue') {
+          <mat-form-field subscriptSizing="dynamic">
+            <mat-label>Takings of · إيراد يوم</mat-label>
+            <input matInput type="date" [(ngModel)]="revenueDate" (ngModelChange)="touch()" [max]="today" aria-label="Takings of"
+              [errorStateMatcher]="checks.field('Takings of')" />
+            <mat-error>{{ checks.message('Takings of') }}</mat-error>
+          </mat-form-field>
+        }
+        <div class="paper" [hidden]="!!correcting()">
+          <input #file type="file" accept="image/jpeg,image/png,image/webp,application/pdf" hidden (change)="attach(file)" />
+          @if (paper(); as p) {
+            <button mat-button (click)="viewPaper(invoiceId, p)"><mat-icon>{{ icon(p) }}</mat-icon> {{ p }}</button>
+            <button mat-button (click)="file.click()" [disabled]="saving()">Replace</button>
+          } @else {
+            <button mat-stroked-button (click)="file.click()" [disabled]="saving()"><mat-icon>add_a_photo</mat-icon> Attach the paper <span class="inline-ar">إرفاق الفاتورة</span></button>
+          }
+        </div>
+      </div>
+      @if (materials().length === 0 && expenses().length === 0) {
+        <p class="note">No raw materials or expense items yet: type one's name on a line to add it.</p>
+      }
+      <app-invoice-lines [editor]="editor" [checks]="checks" />
+      <div class="toolbar actions">
+        <span class="spacer"></span>
+        @if (correcting(); as original) {
+          <a mat-button [routerLink]="['/costing/purchases/invoices', original.id]">Cancel</a>
+          <button mat-flat-button (click)="reviewCorrection()" [disabled]="saving()">
+            <mat-icon>fact_check</mat-icon> Review changes <span class="inline-ar">مراجعة التعديل</span>
+          </button>
+        } @else {
+          <button mat-button (click)="reset()" [disabled]="saving()">Start again</button>
+          <button mat-flat-button (click)="save()" [disabled]="saving()">
+            <mat-icon>fact_check</mat-icon> Save &amp; review
+          </button>
+        }
+      </div>
+      } @else {
+        <!-- A supplier paid with no invoice: no lines, no stock. -->
+        <p class="note">
+          A supplier paid against what they are owed, with no invoice: from the safe or a day's takings. What they are owed goes down
+          by it, and no stock moves. <span class="inline-ar">سداد مورد بدون فاتورة.</span>
+        </p>
+        <div class="header">
+          <app-supplier-payment-fields [payment]="payment()" [suppliers]="owedSuppliers()" [owed]="owedNow()" [checks]="paymentChecks"
+            (changed)="paymentEdited()" />
+          <mat-form-field subscriptSizing="dynamic" class="payment">
+            <mat-label>Paid · طريقة الدفع</mat-label>
+            <mat-select [(ngModel)]="payMethod" (ngModelChange)="paymentEdited()" aria-label="How the supplier is paid" required
+              [errorStateMatcher]="paymentChecks.field('How the supplier is paid')">
+              @for (m of cashMethods; track m) {
+                <mat-option [value]="m">{{ paymentLabels[m].en }} · {{ paymentLabels[m].ar }}</mat-option>
+              }
+            </mat-select>
+            <mat-hint>A payment is cash: never on credit.</mat-hint>
+            <mat-error>{{ paymentChecks.message('How the supplier is paid') }}</mat-error>
+          </mat-form-field>
+          @if (payMethod === 'DayRevenue') {
+            <mat-form-field subscriptSizing="dynamic">
+              <mat-label>Takings of · إيراد يوم</mat-label>
+              <input matInput type="date" [(ngModel)]="payRevenueDate" (ngModelChange)="paymentEdited()" [max]="today" aria-label="Paid from the takings of"
+                [errorStateMatcher]="paymentChecks.field('Paid from the takings of')" />
+              <mat-error>{{ paymentChecks.message('Paid from the takings of') }}</mat-error>
+            </mat-form-field>
+          }
+        </div>
+        @if (!approvals.canApprove()) {
+          <p class="ask">A manager approves supplier payments: no cash moves until then. <span class="inline-ar">يُرسل للمدير للموافقة.</span></p>
+        }
+        <div class="toolbar actions">
+          <span class="spacer"></span>
+          <button mat-button (click)="newPayment()" [disabled]="saving()">Start again</button>
+          <button mat-flat-button (click)="payNow()" [disabled]="saving()">
+            <mat-icon>payments</mat-icon> Pay the supplier <span class="inline-ar">سداد</span>
+          </button>
+        </div>
+      }
+    }
+  `,
+  styleUrl: './costing.scss',
+  styles: `
+    .material {
+      min-width: 240px;
+      width: 100%;
+    }
+    .add-new {
+      color: var(--mat-sys-primary);
+      font-weight: 500;
+    }
+    .small {
+      width: 130px;
+    }
+    .quantity {
+      display: flex;
+      gap: 6px;
+      justify-content: flex-end;
+    }
+    .unit {
+      width: 110px;
+    }
+    .actions {
+      margin-top: 12px;
+    }
+    .header {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px 12px;
+      margin-bottom: 12px;
+    }
+    .supplier {
+      min-width: 240px;
+    }
+    .payment {
+      min-width: 230px;
+    }
+    .paper {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .drafts {
+      display: grid;
+      gap: 4px;
+      padding: 10px 12px;
+      margin-bottom: 12px;
+      border-radius: 12px;
+      background: var(--mat-sys-secondary-container);
+      color: var(--mat-sys-on-secondary-container);
+    }
+    .draft {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .danger {
+      color: var(--mat-sys-error);
+    }
+    .review h2 {
+      margin: 0 0 4px;
+      font: var(--mat-sys-title-large);
+    }
+    .warn-text {
+      color: var(--mat-sys-error);
+    }
+    .mode {
+      margin-bottom: 12px;
+    }
+    .correcting {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 12px;
+      padding: 10px 12px;
+      border-radius: 12px;
+      background: color-mix(in srgb, var(--app-warn) 14%, transparent);
+    }
+    .before-treasury {
+      align-self: center;
+    }
+    .reason {
+      width: min(100%, 420px);
+    }
+    .changes td:first-child {
+      font-weight: 500;
+    }
+    .ask {
+      padding: 8px 10px;
+      border-radius: 8px;
+      background: color-mix(in srgb, var(--app-warn) 14%, transparent);
+    }
+    .badge.expense {
+      margin: 4px 0 0;
+      display: inline-block;
+      background: color-mix(in srgb, var(--app-warn) 16%, transparent);
+      color: var(--app-warn);
+    }
+    .category {
+      white-space: nowrap;
+    }
+    .split {
+      display: block;
+      font-weight: 400;
+      color: var(--mat-sys-on-surface-variant);
+    }
+  `,
+})
+export class PurchasesPage {
+  // A supplier as the picker shows it: whom to call there, and how.
+  protected supplierDetail(supplier: Supplier): string | null {
+    return [supplier.contactPerson, supplier.phone].filter(Boolean).join(' · ') || null;
+  }
+
+  protected readonly company = inject(Company);
+  private readonly api = inject(CostingApi);
+  private readonly dialog = inject(MatDialog);
+  private readonly notify = inject(NotifyService);
+  private readonly router = inject(Router);
+  protected readonly approvals = inject(Approvals);
+  private readonly businessDay = inject(BusinessDay);
+  private readonly catalog = inject(PurchaseCatalog);
+  private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
+
+  // The invoice's lines and its supplier, as entered: shared with the daily batch's invoices.
+  protected readonly editor = new InvoiceLines(this.catalog);
+  private readonly supplier = new InvoiceSupplier(this.catalog);
+
+  protected readonly materials = this.catalog.materials;
+  // The expense items new lines can name: the archived ones are not offered.
+  protected readonly expenses = this.catalog.expenses;
+  // The suppliers new invoices can name: the archived ones are not offered.
+  protected readonly suppliers = this.catalog.suppliers;
+  private readonly unfinished = signal<PurchaseInvoiceSummary[]>([]);
+  protected readonly loading = signal(true);
+  protected readonly saving = signal(false);
+  protected readonly error = signal<string | null>(null);
+  protected readonly lines = this.editor.lines;
+
+  // The saved draft being reviewed; null while the invoice is being entered.
+  protected readonly review = signal<PurchaseInvoice | null>(null);
+  // The attached paper's name, once one is.
+  protected readonly paper = signal<string | null>(null);
+
+  // What the supplier field holds: text being typed, a supplier chosen, or one to add.
+  protected get supplierEntry(): string | Supplier | AddNew | null {
+    return this.supplier.entry;
+  }
+  protected set supplierEntry(value: string | Supplier | AddNew | null) {
+    this.supplier.entry = value;
+  }
+  protected get supplierId(): string | null {
+    return this.supplier.id;
+  }
+  protected set supplierId(id: string | null) {
+    this.supplier.id = id;
+  }
+  protected supplierInvoiceNumber = '';
+  protected invoiceDate: string = PurchasesPage.today();
+  // How it is paid: required to post. From a day's takings names the day: the till's business
+  // day to begin with (after midnight, still the night before), and none later.
+  protected paymentMethod: PurchasePaymentMethod | null = null;
+  protected revenueDate: string = PurchasesPage.today();
+  protected today = PurchasesPage.today();
+  protected readonly paymentMethods: PurchasePaymentMethod[] = ['Safe', 'DayRevenue', 'Credit'];
+  protected readonly paymentLabels = paymentMethodLabels;
+
+  // One invoice, one id, made here: the draft's, and the stock movements' when it is posted, so a
+  // retry after a lost answer posts it once. A new one for each new invoice.
+  private readonly currentId = signal<string>(crypto.randomUUID());
+  protected get invoiceId(): string {
+    return this.currentId();
+  }
+  protected set invoiceId(id: string) {
+    this.currentId.set(id);
+  }
+
+  // The drafts waiting to be finished; the one on screen is not among them while it is open.
+  protected readonly drafts = computed(() => this.unfinished().filter((d) => d.id !== this.currentId()));
+
+  protected readonly total = this.editor.total;
+  // The total split: what goes into stock, and what is expenses.
+  protected readonly totals = this.editor.totals;
+
+  // The lines ready; a supplier name typed but not chosen or added would be lost, so it holds the
+  // save too; and the payment chosen with what it needs. Each said by its field.
+  protected readonly problems = computed((): FormProblem[] => {
+    this.supplier.version();
+    const found: FormProblem[] = [];
+    if (this.supplierUnresolved()) {
+      found.push({ where: 'Supplier', what: 'choose it from the list, or add it', field: 'Supplier' });
+    } else if (this.paymentMethod === 'Credit' && this.supplierId === null) {
+      found.push({ where: 'Supplier', what: 'on credit, choose who it is owed to', field: 'Supplier' });
+    }
+    if (this.paymentMethod === null || (this.paymentMethod === 'BeforeTreasury' && !this.correcting())) {
+      found.push({ where: 'Paid', what: 'choose how it is paid', field: 'How it is paid' });
+    } else if (this.paymentMethod === 'DayRevenue' && !this.revenueDate) {
+      found.push({ where: 'Takings of', what: 'choose the day', field: 'Takings of' });
+    }
+    return [...found, ...this.editor.problems()];
+  });
+  protected readonly ready = computed(() => this.problems().length === 0);
+  // Save and Review changes are never greyed out: clicked with something missing, they say what.
+  protected readonly checks = new FormChecks(() => this.problems());
+
+  // ?correct=: the posted invoice to correct.
+  readonly correct = input<string>();
+  // The posted invoice being corrected, opened here as it was entered; null for a new invoice.
+  protected readonly correcting = signal<PurchaseInvoice | null>(null);
+  // Its changes, reviewed before they are sent: the same lines the manager sees.
+  protected readonly correctionPreview = signal<InvoiceCorrectionPreview | null>(null);
+  // Why, for the manager who approves it.
+  protected reason = '';
+  private correctionRequestId = crypto.randomUUID();
+
+  // What is entered: a purchase invoice, or a supplier paid with no invoice (سداد مورد). Each keeps
+  // what was typed into it while the other is on screen.
+  protected readonly mode = signal<'invoice' | 'payment'>('invoice');
+  protected readonly payment = signal<SupplierPaymentEntry>(newSupplierPayment());
+  // How the supplier is paid: cash, from the safe or a day's takings, never on credit.
+  protected payMethod: PurchasePaymentMethod | null = null;
+  protected payRevenueDate: string = PurchasesPage.today();
+  protected readonly cashMethods: PurchasePaymentMethod[] = ['Safe', 'DayRevenue'];
+  // What each supplier is owed: only those owed something can be paid.
+  private readonly balances = signal<SupplierBalance[]>([]);
+  protected readonly owedSuppliers = computed(() => this.balances().filter((b) => b.balance > 0));
+  // The payment's fields are plain; this bumps so what reads them follows.
+  private readonly paymentVersion = signal(0);
+
+  // A supplier owed, an amount no more than that, and how it is paid.
+  protected readonly payProblems = computed((): FormProblem[] => {
+    this.paymentVersion();
+    const found = paymentProblems(this.payment(), this.owedNow(), 'Supplier payment');
+    if (this.payMethod === null) {
+      found.push({ where: 'Paid', what: 'choose how the supplier is paid', field: 'How the supplier is paid' });
+    } else if (this.payMethod === 'DayRevenue' && !this.payRevenueDate) {
+      found.push({ where: 'Takings of', what: 'choose the day', field: 'Paid from the takings of' });
+    }
+    return found;
+  });
+  protected readonly supplierPaymentReady = computed(() => this.payProblems().length === 0);
+  protected readonly paymentChecks = new FormChecks(() => this.payProblems());
+
+  constructor() {
+    void this.load();
+    effect(() => {
+      const id = this.correct();
+      untracked(() => void this.openCorrection(id));
+    });
+  }
+
+  // "Invoice F-1 · Nile Farms of 12 Oct".
+  protected invoiceName(invoice: PurchaseInvoice): string {
+    const date = invoice.invoiceDate ? new Date(`${invoice.invoiceDate}T00:00`).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) : null;
+    return (
+      (invoice.supplierInvoiceNumber ? `Invoice ${invoice.supplierInvoiceNumber}` : 'The invoice') +
+      (invoice.supplierName ? ` · ${invoice.supplierName}` : '') +
+      (date ? ` of ${date}` : '')
+    );
+  }
+
+  // The changes, checked by the server as they will be when sent.
+  protected async reviewCorrection(): Promise<void> {
+    const original = this.correcting();
+    if (!original || this.saving() || !this.checks.passed(this.notify, this.host.nativeElement)) {
+      return;
+    }
+    this.saving.set(true);
+    try {
+      this.correctionPreview.set(await firstValueFrom(this.api.previewInvoiceCorrection(original.id, this.correction())));
+    } catch (error) {
+      this.notify.error(error, 'The changes could not be checked.');
+    } finally {
+      this.saving.set(false);
+    }
+  }
+
+  // Done at once for a manager, to the corrected invoice; asked of one for anyone else, back to the
+  // invoice as it is.
+  protected async sendCorrection(): Promise<void> {
+    const original = this.correcting();
+    if (!original) {
+      return;
+    }
+    this.saving.set(true);
+    try {
+      const result = await firstValueFrom(this.api.correctPurchaseInvoice(original.id, this.correction()));
+      if (result.outcome === 'Requested') {
+        await this.approvals.requested(result);
+        await this.router.navigate(['/costing/purchases/invoices', original.id]);
+      } else {
+        this.notify.info(`Corrected: ${result.request.summary}.`);
+        await this.router.navigate(['/costing/purchases/invoices', this.invoiceId]);
+      }
+    } catch (error) {
+      this.notify.error(error, 'The correction could not be saved.');
+    } finally {
+      this.saving.set(false);
+    }
+  }
+
+  // The invoice as entered, opened to be corrected, with a new id for the invoice replacing it.
+  private async openCorrection(id: string | undefined): Promise<void> {
+    if (!id) {
+      // Left for a new invoice: an empty one.
+      if (this.correcting()) {
+        this.correcting.set(null);
+        this.correctionPreview.set(null);
+        this.reset();
+      }
+      return;
+    }
+    try {
+      const invoice = await firstValueFrom(this.api.purchaseInvoice(id));
+      if (!invoice || invoice.status !== 'Posted') {
+        this.notify.error(null, invoice?.replacedBy ? 'This invoice has already been corrected: correct the invoice that replaced it.' : 'Only a posted invoice is corrected.');
+        await this.router.navigate(['/costing/purchases/new']);
+        return;
+      }
+      this.reset();
+      this.supplier.set(invoice.supplierId, invoice.supplierName);
+      this.supplierInvoiceNumber = invoice.supplierInvoiceNumber ?? '';
+      this.invoiceDate = invoice.invoiceDate ?? PurchasesPage.today();
+      this.paymentMethod = invoice.paymentMethod ?? 'BeforeTreasury';
+      this.revenueDate = invoice.revenueDate ?? this.today;
+      this.editor.fill(invoice.lines, invoice.discount ?? 0);
+      this.correctionRequestId = crypto.randomUUID();
+      this.correcting.set(invoice);
+      this.touch();
+    } catch (error) {
+      this.notify.error(error, 'The invoice could not be opened.');
+    }
+  }
+
+  private correction(): InvoiceCorrectionInput {
+    return { requestId: this.correctionRequestId, newInvoiceId: this.invoiceId, ...this.draft(), reason: this.reason.trim() || null };
+  }
+
+  // What the chosen supplier is owed now.
+  protected owedNow(): number | null {
+    const id = this.payment().supplierId;
+    return id ? (this.balances().find((b) => b.supplierId === id)?.balance ?? null) : null;
+  }
+
+  protected paymentEdited(): void {
+    this.paymentVersion.update((v) => v + 1);
+  }
+
+  protected newPayment(): void {
+    this.paymentChecks.clear();
+    this.payment.set(newSupplierPayment());
+    this.payMethod = null;
+    this.payRevenueDate = this.today;
+    this.paymentEdited();
+  }
+
+  // Paid at once for a manager, asked of one for anyone else, as Pay a supplier is; its id made
+  // here, so a retry after a lost answer pays once.
+  protected async payNow(): Promise<void> {
+    const p = this.payment();
+    if (this.saving() || !this.paymentChecks.passed(this.notify, this.host.nativeElement) || !p.supplierId || p.amount === null) {
+      return;
+    }
+    this.saving.set(true);
+    try {
+      const result = await firstValueFrom(
+        this.api.recordVoucher({
+          requestId: p.id,
+          transactionId: p.id,
+          kind: 'SupplierPayment',
+          amount: p.amount,
+          date: this.today,
+          source: null,
+          revenueDate: this.payMethod === 'DayRevenue' ? this.payRevenueDate : null,
+          supplierId: p.supplierId,
+          expenseItemId: null,
+          notes: p.notes.trim() || null,
+          reason: null,
+          includesTax: false,
+        }),
+      );
+      if (isRequested(result)) {
+        await this.approvals.requested(result);
+      } else {
+        const name = this.balances().find((b) => b.supplierId === p.supplierId)?.supplier ?? 'The supplier';
+        this.notify.info(`${name} paid ${this.company.money(p.amount)}.`);
+      }
+      this.newPayment();
+      await this.loadBalances();
+    } catch (error) {
+      this.notify.error(error, 'The payment could not be saved.');
+    } finally {
+      this.saving.set(false);
+    }
+  }
+
+  private async loadBalances(): Promise<void> {
+    this.balances.set(await firstValueFrom(this.api.supplierBalances()));
+  }
+
+  protected supplierMatches(): Supplier[] {
+    return this.supplier.matches();
+  }
+
+  protected typedNewSupplier(): string | null {
+    return this.supplier.typedNew();
+  }
+
+  protected readonly supplierLabel = this.supplier.label;
+
+  protected supplierUnresolved(): boolean {
+    return this.supplier.unresolved();
+  }
+
+  protected supplierEntered(value: string | Supplier | AddNew | null): void {
+    this.supplier.entered(value);
+    this.editor.touch();
+  }
+
+  protected async addSupplier(name: string): Promise<void> {
+    await this.supplier.add(name);
+    this.editor.touch();
+  }
+
+  protected material(line: InvoiceLine): MaterialCost | undefined {
+    return this.editor.material(line);
+  }
+
+  protected expense(line: InvoiceLine): ExpenseItem | undefined {
+    return this.editor.expense(line);
+  }
+
+  protected matches(line: InvoiceLine): { materials: MaterialCost[]; expenses: ExpenseItem[] } {
+    return this.editor.matches(line);
+  }
+
+  protected typedNew(line: InvoiceLine): string | null {
+    return this.editor.typedNew(line);
+  }
+
+  protected entered(line: InvoiceLine, value: string | MaterialCost | ExpenseItem | AddNew | null): void {
+    this.editor.entered(line, value);
+  }
+
+  protected addExpense(line: InvoiceLine, name: string): Promise<void> {
+    return this.editor.addExpense(line, name);
+  }
+
+  protected addMaterial(line: InvoiceLine, name: string): Promise<void> {
+    return this.editor.addMaterial(line, name);
+  }
+
+  protected baseQuantity(line: InvoiceLine): number | null {
+    return this.editor.baseQuantity(line);
+  }
+
+  protected stockAdded(line: InvoiceLine): string | null {
+    return this.editor.stockAdded(line);
+  }
+
+  protected unitPrice(line: InvoiceLine): number | null {
+    return this.editor.unitPrice(line);
+  }
+
+  protected touch(): void {
+    this.editor.touch();
+    this.supplier.touch();
+  }
+
+  protected add(): void {
+    this.editor.add();
+  }
+
+  protected remove(index: number): void {
+    this.editor.remove(index);
+  }
+
+  // A new, empty invoice. The one on screen stays a draft if it was saved.
+  protected reset(): void {
+    this.checks.clear();
+    this.editor.reset();
+    this.supplier.set(null);
+    this.supplierInvoiceNumber = '';
+    this.invoiceDate = PurchasesPage.today();
+    this.paymentMethod = null;
+    this.revenueDate = this.today;
+    this.paper.set(null);
+    this.review.set(null);
+    this.invoiceId = crypto.randomUUID();
+  }
+
+  // Step one done: saved as a draft, and shown for review. No stock moves.
+  protected async save(): Promise<void> {
+    if (this.saving() || !this.checks.passed(this.notify, this.host.nativeElement)) {
+      return;
+    }
+    this.saving.set(true);
+    try {
+      this.review.set(await firstValueFrom(this.api.savePurchaseInvoice(this.invoiceId, this.draft())));
+    } catch (error) {
+      this.notify.error(error, 'The invoice could not be saved.');
+    } finally {
+      this.saving.set(false);
+    }
+  }
+
+  protected backToEdit(): void {
+    this.review.set(null);
+  }
+
+  // Step two: the stock goes in, at the units each line comes to, and the average costs move.
+  protected async confirm(): Promise<void> {
+    this.saving.set(true);
+    try {
+      const posted = await firstValueFrom(this.api.postPurchaseInvoice(this.invoiceId));
+      const stock = posted.lines.filter((l) => l.itemType === 'Inventory').length;
+      const expenses = posted.lines.length - stock;
+      const parts = [
+        stock ? `${stock} ${stock === 1 ? 'line' : 'lines'} into stock` : null,
+        expenses ? `${expenses} ${expenses === 1 ? 'expense' : 'expenses'} recorded` : null,
+      ].filter(Boolean);
+      const paid =
+        posted.paymentStatus === 'Pending'
+          ? ' Its payment waits for a manager’s approval: no cash moves until then.'
+          : posted.paymentStatus === 'OnCredit'
+            ? ` On credit: owed to ${posted.supplierName ?? 'the supplier'}.`
+            : posted.paymentStatus === 'Paid' && posted.paymentMethod === 'DayRevenue'
+              ? ' Paid from the day’s takings.'
+              : posted.paymentStatus === 'Paid'
+                ? ' Paid from the safe.'
+                : '';
+      this.notify.info(`Posted: ${parts.join(', ')}, ${this.company.money(posted.total)}.${paid}`);
+      this.reset();
+      void this.approvals.refresh();
+      await this.load();
+    } catch (error) {
+      this.notify.error(error, 'The invoice could not be posted.');
+    } finally {
+      this.saving.set(false);
+    }
+  }
+
+  // The paper needs an invoice to belong to: the one on screen is saved as a draft first.
+  protected async attach(input: HTMLInputElement): Promise<void> {
+    const file = input.files?.[0];
+    input.value = '';
+    if (!file) {
+      return;
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      this.notify.error(null, 'The file must be under 10 MB.');
+      return;
+    }
+    this.saving.set(true);
+    try {
+      await firstValueFrom(this.api.savePurchaseInvoice(this.invoiceId, this.draft(true)));
+      const saved = await firstValueFrom(this.api.attachPurchaseInvoiceFile(this.invoiceId, file));
+      this.paper.set(saved.attachment?.fileName ?? file.name);
+      this.notify.info('The paper is attached.');
+    } catch (error) {
+      this.notify.error(error, 'The paper could not be attached.');
+    } finally {
+      this.saving.set(false);
+    }
+  }
+
+  protected readonly icon = paperIcon;
+
+  protected viewPaper(invoiceId: string, fileName: string): void {
+    viewInvoicePaper(this.dialog, invoiceId, fileName);
+  }
+
+  // A draft from earlier, back on screen as it was entered.
+  protected async continueDraft(id: string): Promise<void> {
+    const invoice = await firstValueFrom(this.api.purchaseInvoice(id));
+    if (!invoice) {
+      await this.load();
+      return;
+    }
+    this.invoiceId = invoice.id;
+    // Its supplier, archived since or not: a draft keeps the one it had.
+    this.supplier.set(invoice.supplierId, invoice.supplierName);
+    this.supplierInvoiceNumber = invoice.supplierInvoiceNumber ?? '';
+    this.invoiceDate = invoice.invoiceDate ?? PurchasesPage.today();
+    this.paymentMethod = invoice.paymentMethod === 'BeforeTreasury' ? null : invoice.paymentMethod;
+    this.revenueDate = invoice.revenueDate ?? this.today;
+    this.paper.set(invoice.attachment?.fileName ?? null);
+    this.review.set(null);
+    this.editor.fill(invoice.lines, invoice.discount ?? 0);
+    this.touch();
+  }
+
+  protected async discardDraft(id: string): Promise<void> {
+    this.saving.set(true);
+    try {
+      await firstValueFrom(this.api.discardPurchaseInvoice(id));
+      if (id === this.invoiceId) {
+        this.reset();
+      }
+      this.notify.info('Draft discarded.');
+      await this.load();
+    } catch (error) {
+      this.notify.error(error, 'The draft could not be discarded.');
+    } finally {
+      this.saving.set(false);
+    }
+  }
+
+  // The invoice on screen, for the till. Lines not finished yet are left out of a draft saved only
+  // to hold its paper.
+  private draft(partial = false): SavePurchaseInvoice {
+    return {
+      supplierId: this.supplierId,
+      supplierInvoiceNumber: this.supplierInvoiceNumber.trim() || null,
+      invoiceDate: this.invoiceDate || null,
+      paymentMethod: this.paymentMethod,
+      revenueDate: this.paymentMethod === 'DayRevenue' ? this.revenueDate || null : null,
+      lines: this.editor.toSave(partial),
+      discount: this.editor.discountToSave(partial),
+    };
+  }
+
+  private async load(): Promise<void> {
+    this.error.set(null);
+    void this.businessDay.today().then((today) => {
+      // Not yet chosen: the business day.
+      if (this.revenueDate === this.today) {
+        this.revenueDate = today;
+      }
+      if (this.payRevenueDate === this.today) {
+        this.payRevenueDate = today;
+      }
+      this.today = today;
+    });
+    try {
+      const [drafts] = await Promise.all([firstValueFrom(this.api.purchaseInvoices('Draft')), this.catalog.load(), this.loadBalances()]);
+      this.unfinished.set(drafts);
+    } catch (error) {
+      this.error.set(errorMessage(error, 'The purchases could not be loaded.'));
+    } finally {
+      this.loading.set(false);
+    }
+  }
+
+  private static today(): string {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  }
+}
+```
+
+
+### 10.1 يومية المشتريات (`PurchaseBatchPage`)
+
+فاتورة لكل مورد بمعرّف يُصنع هنا، نقدي/آجل لكل فاتورة، **الفواتير المسلّمة في تقفيل اليوم** تفتح جاهزة مع صورتها للنسخ ("مسلّمة"/"مطابقة")، والصور تُرسل بعد الترحيل، وما لم يُرسل يعرض "أعد المحاولة". والمسودة محفوظة محليًا (بلا الصور) حتى لا يضيع العمل.
+
+> 📄 **`frontend/src/app/features/costing/purchase-batch-page.ts`** — 1230 سطر
+
+```ts
+import { DatePipe } from '@angular/common';
+import { Component, ElementRef, computed, effect, inject, signal } from '@angular/core';
+import { FormsModule } from '@angular/forms';
+import { MatAutocompleteModule } from '@angular/material/autocomplete';
+import { MatButtonModule } from '@angular/material/button';
+import { MatButtonToggleModule } from '@angular/material/button-toggle';
+import { MatDialog } from '@angular/material/dialog';
+import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatIconModule } from '@angular/material/icon';
+import { MatInputModule } from '@angular/material/input';
+import { MatProgressBarModule } from '@angular/material/progress-bar';
+import { MatSelectModule } from '@angular/material/select';
+import { ActivatedRoute, RouterLink } from '@angular/router';
+import { firstValueFrom } from 'rxjs';
+import {
+  CostingApi,
+  PurchaseBatchResult,
+  PurchasePaymentMethod,
+  SupplierBalance,
+  paymentMethodLabels,
+  paymentStatusLabels,
+  Supplier,
+} from '../../core/costing/costing.api';
+import { AuthService } from '../../core/auth/auth.service';
+import { Permissions } from '../../core/auth/permissions';
+import { CostingAccess } from '../../core/costing/costing-tabs';
+import { EndOfDay, EndOfDayApi, EndOfDayInvoice, EndOfDayInvoiceKind } from '../../core/costing/end-of-day.api';
+import { MenuSalesApi } from '../../core/costing/menu-sales.api';
+import { Employee } from '../../core/costing/staff';
+import { errorMessage } from '../../core/http/error-message';
+import { MoneyPipe } from '../../core/ui/money.pipe';
+import { NotifyService } from '../../core/ui/notify.service';
+import { AdvanceEntry, AdvanceFields, advanceProblems, newAdvance } from './advance-fields';
+import { Approvals } from './approvals';
+import { PhotoSource, PhotoViewer } from './end-of-day-photo';
+import { BusinessDay } from './financials';
+import { FormChecks, FormProblem } from './form-checks';
+import { InvoiceLine, InvoiceLines, InvoiceLinesTable, InvoiceSupplier, PurchaseCatalog } from './invoice-lines';
+import { paperIcon, viewInvoicePaper } from './invoice-paper';
+import { SupplierPaymentEntry, SupplierPaymentFields, newSupplierPayment, paymentProblems } from './supplier-payment-fields';
+import { PickRow } from '../shared/pick-row';
+
+// One invoice of the batch: its id, made here; its supplier, number and lines, entered as on the
+// invoice screen; and the photo or scan of its paper, sent once the invoice is posted. On credit
+// whatever the batch is paid by (credit). One handed in at the end of the day (handedIn) has its
+// photo for its paper, shown above its lines to type them from, and the total written on it.
+interface BatchBlock {
+  id: string;
+  supplier: InvoiceSupplier;
+  number: string;
+  editor: InvoiceLines;
+  paper: File | null;
+  credit: boolean;
+  handedIn: HandedIn | null;
+  // The photo above the lines, or hidden to give them the room.
+  photoShown: boolean;
+}
+
+// An invoice handed in at the end of a day, as its block starts from it.
+interface HandedIn {
+  date: string;
+  invoiceId: string;
+  kind: EndOfDayInvoiceKind;
+  reportedTotal: number;
+  note: string | null;
+  fileName: string;
+  contentType: string;
+  source: PhotoSource;
+}
+
+// What a paper can be, as the invoice screen takes it.
+const paperTypes = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'];
+const paperMaxBytes = 10 * 1024 * 1024;
+
+// A supplier paid in the batch (سداد مورد): an old debt settled, no invoice and no stock, entered as
+// on the new invoice screen.
+type PaymentBlock = SupplierPaymentEntry;
+
+// What is kept in the browser while a batch is being entered, so a reload does not lose it.
+interface StoredBatch {
+  invoiceDate: string;
+  paymentMethod: PurchasePaymentMethod | null;
+  revenueDate: string;
+  // A paper chosen is not kept: a reload asks for it again.
+  blocks: {
+    id: string;
+    supplierId: string | null;
+    supplierName: string | null;
+    number: string;
+    lines: Omit<InvoiceLine, 'entry'>[];
+    discount?: number | null;
+    credit?: boolean;
+    handedIn?: Omit<HandedIn, 'source'> | null;
+  }[];
+  payments?: PaymentBlock[];
+  advances?: AdvanceEntry[];
+}
+
+const storageKey = 'otantik-till.purchase-batch';
+
+// A day's purchases entered together (يومية المشتريات المجمعة): the date and how they were paid,
+// chosen once, then an invoice for each supplier, each entered as on the invoice screen, and
+// suppliers paid against what they are owed. Sent together, each invoice becomes its own posted
+// invoice, its stock in and paid as chosen: on credit owed to its supplier, in cash paid for a
+// manager and asked of one for anyone else. A payment is cash, never on credit, and never more than
+// the supplier is owed; so is an employee's advance (سلفة), which comes off their pay for the month.
+// None is saved unless all can be. Each invoice's paper (إرفاق الفاتورة) is attached once it is
+// posted, kept in the invoices' archive as one entered alone. A batch not sent yet is kept in this
+// browser, but for its papers.
+@Component({
+  selector: 'app-purchase-batch-page',
+  providers: [PurchaseCatalog],
+  imports: [PickRow,
+    DatePipe,
+    FormsModule,
+    InvoiceLinesTable,
+    MatAutocompleteModule,
+    MatButtonModule,
+    MatButtonToggleModule,
+    MatFormFieldModule,
+    MatIconModule,
+    MatInputModule,
+    MatProgressBarModule,
+    MatSelectModule,
+    MoneyPipe,
+    PhotoViewer,
+    RouterLink,
+    SupplierPaymentFields,
+    AdvanceFields,
+  ],
+  template: `
+    @if (loading()) {
+      <mat-progress-bar mode="indeterminate" />
+    } @else if (error()) {
+      <p class="error">{{ error() }}</p>
+    } @else {
+      @if (posted(); as result) {
+        <section class="posted" role="status">
+          <h2>
+            {{ sentLabel(result) }}
+            <span class="inline-ar">تم ترحيل اليومية</span>
+          </h2>
+          @if (result.invoices.length) {
+          <div class="table-wrap">
+            <table class="grid">
+              <thead>
+                <tr>
+                  <th>Supplier<span class="ar">المورد</span></th>
+                  <th>Invoice no.<span class="ar">رقم الفاتورة</span></th>
+                  <th class="num">Net payable<span class="ar">الصافي المستحق</span></th>
+                  <th>Payment<span class="ar">السداد</span></th>
+                  <th>Paper<span class="ar">الفاتورة</span></th>
+                </tr>
+              </thead>
+              <tbody>
+                @for (inv of result.invoices; track inv.id) {
+                  <tr>
+                    <td><a [routerLink]="['/costing/purchases/invoices', inv.id]">{{ inv.supplierName ?? 'No supplier' }}</a></td>
+                    <td>{{ inv.supplierInvoiceNumber ?? '—' }}</td>
+                    <td class="num">{{ inv.total | money }}</td>
+                    <td>{{ statusLabels[inv.paymentStatus].en }}<span class="ar">{{ statusLabels[inv.paymentStatus].ar }}</span></td>
+                    <td class="paper-cell">
+                      @if (inv.attachment; as paper) {
+                        <button mat-button (click)="viewPaper(inv.id, paper.fileName)"><mat-icon>{{ icon(paper.fileName) }}</mat-icon> {{ paper.fileName }}</button>
+                      } @else if (unsent().get(inv.id); as file) {
+                        <span class="warn-text">{{ file.name }} not attached</span>
+                        <button mat-button (click)="sendPaper(inv.id, file)" [disabled]="saving()"><mat-icon>refresh</mat-icon> Try again</button>
+                      } @else {
+                        <span class="muted">—</span>
+                      }
+                    </td>
+                  </tr>
+                }
+              </tbody>
+            </table>
+          </div>
+          }
+          @if (result.payments.length) {
+            <div class="table-wrap">
+              <table class="grid payments-made">
+                <thead>
+                  <tr>
+                    <th>Supplier paid<span class="ar">المورد</span></th>
+                    <th>Notes<span class="ar">ملاحظات</span></th>
+                    <th class="num">Amount<span class="ar">القيمة</span></th>
+                    <th>Payment<span class="ar">السداد</span></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  @for (pay of result.payments; track pay.transactionId) {
+                    <tr>
+                      <td>{{ pay.supplier }}</td>
+                      <td>{{ pay.notes ?? '—' }}</td>
+                      <td class="num">{{ pay.amount | money }}</td>
+                      <td>
+                        @if (pay.outcome === 'Applied') {
+                          Paid<span class="ar">تم السداد</span>
+                        } @else {
+                          Waits for a manager<span class="ar">بانتظار موافقة المدير</span>
+                        }
+                      </td>
+                    </tr>
+                  }
+                </tbody>
+              </table>
+            </div>
+          }
+          @if (result.advances?.length) {
+            <div class="table-wrap">
+              <table class="grid payments-made">
+                <thead>
+                  <tr>
+                    <th>Employee advanced<span class="ar">الموظف</span></th>
+                    <th>Notes<span class="ar">ملاحظات</span></th>
+                    <th class="num">Amount<span class="ar">القيمة</span></th>
+                    <th>Advance<span class="ar">السلفة</span></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  @for (adv of result.advances; track adv.transactionId) {
+                    <tr>
+                      <td>{{ adv.employee }}</td>
+                      <td>{{ adv.notes ?? '—' }}</td>
+                      <td class="num">{{ adv.amount | money }}</td>
+                      <td>
+                        @if (adv.outcome === 'Applied' && !adv.employeeId) {
+                          Paid, shared among the staff<span class="ar">صُرفت، للتوزيع على الموظفين</span>
+                        } @else if (adv.outcome === 'Applied') {
+                          Paid, off their pay<span class="ar">صُرفت</span>
+                        } @else {
+                          Waits for a manager<span class="ar">بانتظار موافقة المدير</span>
+                        }
+                      </td>
+                    </tr>
+                  }
+                </tbody>
+              </table>
+            </div>
+          }
+          <button mat-button (click)="posted.set(null)">Done</button>
+        </section>
+      }
+
+      <p class="note">
+        A day's purchases from several suppliers, entered together: the date and how they were paid once, then an invoice for each
+        supplier. Each is posted as its own invoice, on its supplier's account. A supplier paid an old debt, with no invoice, is a
+        supplier payment.
+        <span class="inline-ar">يومية المشتريات المجمعة: كل مورد بفاتورة مستقلة.</span>
+      </p>
+      <div class="header">
+        <mat-form-field subscriptSizing="dynamic">
+          <mat-label>Invoice date · تاريخ الفواتير</mat-label>
+          <input matInput type="date" [(ngModel)]="invoiceDate" (ngModelChange)="dateChosen()" aria-label="Invoice date"
+            [errorStateMatcher]="checks.field('Invoice date')" />
+          <mat-error>{{ checks.message('Invoice date') }}</mat-error>
+        </mat-form-field>
+        <mat-form-field subscriptSizing="dynamic" class="payment">
+          <mat-label>Paid · طريقة الدفع</mat-label>
+          <mat-select [(ngModel)]="paymentMethod" (ngModelChange)="changed()" aria-label="How they are paid" required
+            [errorStateMatcher]="checks.field('How they are paid')">
+            @for (m of paymentMethods; track m) {
+              <mat-option [value]="m" [disabled]="m === 'Credit' && (payments().length > 0 || advances().length > 0)">{{ paymentLabels[m].en }} · {{ paymentLabels[m].ar }}</mat-option>
+            }
+          </mat-select>
+          @if (paymentMethod && paymentMethod !== 'Credit' && anyCredit()) {
+            <mat-hint>The cash invoices are paid so; those on credit are owed to their supplier.</mat-hint>
+          } @else if (paymentMethod !== 'Credit' && (payments().length || advances().length)) {
+            <mat-hint>{{ payments().length ? 'Supplier payments' : 'Advances' }} are cash: not on credit.</mat-hint>
+          } @else if (paymentMethod === 'Credit') {
+            <mat-hint>Each owed to its supplier until paid by a payment voucher.</mat-hint>
+          } @else if (!paymentMethod) {
+            <mat-hint>Required to post them.</mat-hint>
+          }
+          <mat-error>{{ checks.message('How they are paid') }}</mat-error>
+        </mat-form-field>
+        @if (paymentMethod === 'DayRevenue') {
+          <mat-form-field subscriptSizing="dynamic">
+            <mat-label>Takings of · إيراد يوم</mat-label>
+            <input matInput type="date" [(ngModel)]="revenueDate" (ngModelChange)="changed()" [max]="today" aria-label="Takings of"
+              [errorStateMatcher]="checks.field('Takings of')" />
+            <mat-error>{{ checks.message('Takings of') }}</mat-error>
+          </mat-form-field>
+        }
+      </div>
+      @if (!approvals.canApprove() && paymentMethod && paymentMethod !== 'Credit') {
+        <p class="ask">Each invoice's cash payment, each supplier payment and each advance goes to a manager for approval; the stock is in at once.</p>
+      }
+
+      @if (handedInDay(); as d) {
+        <section class="handed-in" role="status" [class.waiting]="d.status !== 'Submitted'">
+          <mat-icon>assignment_turned_in</mat-icon>
+          <div class="handed-in-text">
+            @if (d.status === 'Submitted') {
+              <strong>End of day of {{ d.date | date: 'EEE d MMM' }} handed in <span class="inline-ar">تقفيل اليوم</span></strong>
+              <span>
+                {{ d.cashInvoices }} cash ({{ d.cashInvoicesTotal | money }}) · {{ d.creditInvoices }} on credit ({{ d.creditInvoicesTotal | money }})
+                · by {{ d.submittedBy }}.
+                @if (d.posted === d.invoices.length) {
+                  {{ d.invoices.length ? 'All posted.' : 'No invoices.' }}
+                } @else {
+                  {{ d.invoices.length - d.posted }} to post below, each with its photo{{ d.posted ? '; ' + d.posted + ' posted already' : '' }}.
+                }
+              </span>
+            } @else {
+              <strong>The end of day of this date is not submitted yet <span class="inline-ar">لم يتم إرسال تقفيل هذا اليوم بعد</span></strong>
+              <span>{{ d.invoices.length }} {{ d.invoices.length === 1 ? 'invoice' : 'invoices' }} handed in so far: they come here once it is submitted.</span>
+            }
+          </div>
+          @if (canCloseDay()) {
+            <a mat-button [routerLink]="['/costing/end-of-day']" [queryParams]="{ date: d.date }">Open · فتح</a>
+          }
+        </section>
+      }
+
+      @for (block of blocks(); track block.id; let i = $index) {
+        <section class="block" [class.from-day]="!!block.handedIn" [attr.aria-label]="'Invoice ' + (i + 1)">
+          <div class="block-head">
+            <h3>Invoice {{ i + 1 }} <span class="inline-ar">فاتورة {{ i + 1 }}</span></h3>
+            @if (block.handedIn; as h) {
+              <span class="tag teal" title="Handed in at the end of the day">Handed in · {{ h.kind === 'Cash' ? 'cash' : 'on credit' }}<span class="ar">من التقفيل</span></span>
+            }
+            <mat-form-field subscriptSizing="dynamic" class="supplier">
+              <mat-label>Supplier · المورد</mat-label>
+              <input matInput [(ngModel)]="block.supplier.entry" (ngModelChange)="block.supplier.entered($event); changed()" [matAutocomplete]="suppliersList"
+                placeholder="Choose or type a name" [attr.aria-label]="'Invoice ' + (i + 1) + ', supplier'"
+                [errorStateMatcher]="checks.field('Invoice ' + (i + 1) + ', supplier')" />
+              <mat-icon matSuffix>arrow_drop_down</mat-icon>
+              <mat-autocomplete #suppliersList="matAutocomplete" [displayWith]="block.supplier.label" panelClass="pick-panel" [panelWidth]="380" [autoActiveFirstOption]="true">
+                @for (s of block.supplier.matches(); track s.id) {
+                  <mat-option [value]="s"><app-pick-row [name]="s.name" kind="supplier" [detail]="supplierDetail(s)" [cost]="s.invoices ? s.invoices + (s.invoices === 1 ? ' invoice' : ' invoices') : null" /></mat-option>
+                }
+                @if (block.supplier.typedNew(); as name) {
+                  <mat-option [value]="{ addNew: name }" class="add-new"><mat-icon>add</mat-icon> Add new supplier: "{{ name }}"</mat-option>
+                }
+              </mat-autocomplete>
+              @if (block.supplier.unresolved()) {
+                <mat-hint class="warn-text">Choose the supplier from the list, or add it.</mat-hint>
+              } @else if ((paymentMethod === 'Credit' || block.credit) && !block.supplier.id) {
+                <mat-hint class="warn-text">On credit, it is owed to a supplier: choose one.</mat-hint>
+              }
+              <mat-error>{{ checks.message('Invoice ' + (i + 1) + ', supplier') }}</mat-error>
+            </mat-form-field>
+            <mat-form-field subscriptSizing="dynamic" class="number">
+              <mat-label>Invoice no. · رقم الفاتورة</mat-label>
+              <input matInput [(ngModel)]="block.number" (ngModelChange)="changed()" maxlength="64" data-western-digits [attr.aria-label]="'Invoice ' + (i + 1) + ', number'" />
+            </mat-form-field>
+            <div class="paid-as">
+              <mat-button-toggle-group [value]="paymentMethod === 'Credit' || block.credit ? 'Credit' : 'Cash'" (change)="payAs(block, $event.value)"
+                [disabled]="paymentMethod === 'Credit'" hideSingleSelectionIndicator [attr.aria-label]="'Invoice ' + (i + 1) + ', paid'">
+                <mat-button-toggle value="Cash">Cash · نقدي</mat-button-toggle>
+                <mat-button-toggle value="Credit">On credit · آجل</mat-button-toggle>
+              </mat-button-toggle-group>
+              @if (block.handedIn; as h) {
+                @if (h.kind === 'Cash' && (paymentMethod === 'Credit' || block.credit)) {
+                  <small class="warn-text">Handed in as paid in cash · سُلمت كنقدي</small>
+                } @else if (h.kind === 'Credit' && paymentMethod !== 'Credit' && !block.credit) {
+                  <small class="warn-text">Handed in as on credit · سُلمت كآجل</small>
+                }
+              }
+            </div>
+            <div class="paper">
+              <input #file type="file" [accept]="paperAccept" hidden (change)="choosePaper(block, file)" [attr.aria-label]="'Invoice ' + (i + 1) + ', paper'" />
+              @if (block.handedIn; as h) {
+                <button mat-button (click)="block.photoShown = !block.photoShown; changed()" [attr.aria-label]="'Invoice ' + (i + 1) + ', ' + (block.photoShown ? 'hide' : 'show') + ' the photo'">
+                  <mat-icon>{{ block.photoShown ? 'hide_image' : 'image' }}</mat-icon> {{ block.photoShown ? 'Hide photo' : 'Show photo' }}
+                </button>
+              } @else if (block.paper; as p) {
+                <span class="paper-name" [title]="p.name"><mat-icon>{{ icon(p.name) }}</mat-icon> {{ p.name }}</span>
+                <button mat-icon-button (click)="file.click()" [disabled]="saving()" title="Replace · استبدال"
+                  [attr.aria-label]="'Invoice ' + (i + 1) + ', replace the paper'">
+                  <mat-icon>swap_horiz</mat-icon>
+                </button>
+                <button mat-icon-button (click)="dropPaper(block)" [disabled]="saving()" [attr.aria-label]="'Invoice ' + (i + 1) + ', take the paper off'">
+                  <mat-icon>close</mat-icon>
+                </button>
+              } @else {
+                <button mat-stroked-button (click)="file.click()" [disabled]="saving()">
+                  <mat-icon>add_a_photo</mat-icon> Attach the paper <span class="inline-ar">إرفاق الفاتورة</span>
+                </button>
+              }
+            </div>
+            <span class="spacer"></span>
+            @if (block.handedIn; as h) {
+              @let left = leftOf(block);
+              <span class="reported" [class.matched]="left === 0" [attr.aria-label]="'Invoice ' + (i + 1) + ', reported total'">
+                Reported · المُبلغ: <strong>{{ h.reportedTotal | money }}</strong>
+                @if (left === 0) {
+                  <span class="match"><mat-icon>check_circle</mat-icon> Matched · مطابق</span>
+                } @else if (left > 0) {
+                  <span class="gap">{{ left | money }} to go · متبقي</span>
+                } @else {
+                  <span class="gap">{{ -left | money }} over · زيادة</span>
+                }
+              </span>
+            }
+            <strong class="block-total">{{ block.editor.total() | money }}</strong>
+            <button mat-icon-button (click)="removeBlock(i)" [disabled]="blocks().length === 1 && !payments().length && !advances().length" [attr.aria-label]="'Take invoice ' + (i + 1) + ' off the batch'">
+              <mat-icon>delete</mat-icon>
+            </button>
+          </div>
+          @if (block.handedIn; as h) {
+            @if (h.note) {
+              <p class="handed-note muted"><mat-icon>sticky_note_2</mat-icon> {{ h.note }}</p>
+            }
+            <div class="transcribe">
+              @if (block.photoShown) {
+                <app-photo-viewer [source]="h.source" [fileName]="h.fileName" />
+              }
+              <app-invoice-lines [editor]="block.editor" [label]="'Invoice ' + (i + 1) + ', '" [checks]="checks" />
+            </div>
+          } @else {
+            <app-invoice-lines [editor]="block.editor" [label]="'Invoice ' + (i + 1) + ', '" [checks]="checks" />
+          }
+        </section>
+      }
+
+      @for (pay of payments(); track pay.id; let j = $index) {
+        <section class="block payment-block" [attr.aria-label]="'Supplier payment ' + (j + 1)">
+          <div class="block-head">
+            <h3>Supplier payment {{ j + 1 }} <span class="inline-ar">سداد مورد {{ j + 1 }}</span></h3>
+            <app-supplier-payment-fields [payment]="pay" [suppliers]="owedSuppliers()" [owed]="owedBefore(j)" [afterAbove]="paidAbove(j) > 0"
+              [label]="'Supplier payment ' + (j + 1)" [checks]="checks" (changed)="changed()" />
+            <span class="spacer"></span>
+            <button mat-icon-button (click)="removePayment(j)" [attr.aria-label]="'Take supplier payment ' + (j + 1) + ' off the batch'">
+              <mat-icon>delete</mat-icon>
+            </button>
+          </div>
+        </section>
+      }
+
+      @for (adv of advances(); track adv.id; let k = $index) {
+        <section class="block payment-block" [attr.aria-label]="'Advance ' + (k + 1)">
+          <div class="block-head">
+            <h3>Employee advance {{ k + 1 }} <span class="inline-ar">سلفة {{ k + 1 }}</span></h3>
+            <app-advance-fields [advance]="adv" [employees]="employees()" [label]="'Advance ' + (k + 1)" [checks]="checks" (changed)="changed()" />
+            <span class="spacer"></span>
+            <button mat-icon-button (click)="removeAdvance(k)" [attr.aria-label]="'Take advance ' + (k + 1) + ' off the batch'">
+              <mat-icon>delete</mat-icon>
+            </button>
+          </div>
+        </section>
+      }
+
+      <div class="toolbar actions">
+        <button mat-stroked-button (click)="addBlock()"><mat-icon>add</mat-icon> Add another invoice <span class="inline-ar">فاتورة أخرى</span></button>
+        <button mat-stroked-button (click)="addPayment()" [disabled]="paymentMethod === 'Credit'">
+          <mat-icon>payments</mat-icon> Add supplier payment <span class="inline-ar">سداد مورد</span>
+        </button>
+        @if (canAdvance()) {
+          <button mat-stroked-button (click)="addAdvance()" [disabled]="paymentMethod === 'Credit'">
+            <mat-icon>request_quote</mat-icon> Add employee advance <span class="inline-ar">سلفة موظف</span>
+          </button>
+        }
+        <span class="spacer"></span>
+        <span class="batch-total">{{ countLabel() }} · <strong>{{ total() | money }}</strong></span>
+        <button mat-button (click)="startAgain()" [disabled]="saving()">Start again</button>
+        <button mat-flat-button (click)="submit()" [disabled]="saving()">
+          <mat-icon>inventory</mat-icon> Submit batch <span class="inline-ar">ترحيل اليومية</span>
+        </button>
+      </div>
+      @if (saving()) {
+        <mat-progress-bar mode="indeterminate" />
+      }
+      @if (problems(); as p) {
+        <p class="error problems" role="alert">{{ p }}</p>
+      }
+    }
+  `,
+  styleUrl: './costing.scss',
+  styles: `
+    .header {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px 12px;
+      margin-bottom: 12px;
+    }
+    .payment {
+      min-width: 230px;
+    }
+    .block {
+      margin: 0 0 16px;
+      padding: 12px;
+      border: 1px solid var(--mat-sys-outline-variant);
+      border-radius: 12px;
+    }
+    .block-head {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px 12px;
+      margin-bottom: 8px;
+
+      h3 {
+        margin: 0;
+        font: var(--mat-sys-title-small);
+      }
+    }
+    /* Sized, so the supplier, number, paper and total share one line. */
+    .supplier {
+      width: 250px;
+    }
+    .number {
+      width: 190px;
+    }
+    .payment-block {
+      border-style: dashed;
+    }
+    .block-total,
+    .batch-total strong {
+      font: var(--mat-sys-title-medium);
+    }
+    .add-new {
+      color: var(--mat-sys-primary);
+      font-weight: 500;
+    }
+    .warn-text {
+      color: var(--mat-sys-error);
+    }
+    .actions {
+      align-items: center;
+      margin-top: 4px;
+    }
+    .problems {
+      white-space: pre-line;
+    }
+    .ask {
+      padding: 8px 10px;
+      border-radius: 8px;
+      background: color-mix(in srgb, var(--app-warn) 14%, transparent);
+    }
+    .paper {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .paper-name {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      max-width: 140px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--app-slate-700, #334155);
+
+      mat-icon {
+        flex: none;
+        color: var(--app-slate-500, #64748b);
+      }
+    }
+    .paper-cell {
+      white-space: nowrap;
+    }
+    .paid-as {
+      display: grid;
+      gap: 2px;
+    }
+    .from-day {
+      border-color: color-mix(in srgb, var(--tag-teal-fg, #0f766e) 35%, var(--mat-sys-outline-variant));
+    }
+    .handed-in {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      margin: 0 0 14px;
+      padding: 10px 12px;
+      border-radius: 12px;
+      background: var(--tag-teal-bg, #e0f4f3);
+      color: var(--tag-teal-fg, #0f766e);
+
+      &.waiting {
+        background: var(--tag-warn-bg, #fff3d6);
+        color: var(--tag-warn-fg, #8a5300);
+      }
+      a {
+        margin-left: auto;
+      }
+    }
+    .handed-in-text {
+      display: grid;
+      gap: 2px;
+    }
+    .handed-note {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin: 0 0 8px;
+    }
+    .reported {
+      display: inline-flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 4px 8px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: var(--mat-sys-surface-container-high);
+      font: var(--mat-sys-label-large);
+      font-variant-numeric: tabular-nums;
+
+      .gap {
+        color: var(--app-warn);
+      }
+      &.matched {
+        background: var(--tag-ok-bg, #e6f4ea);
+        color: var(--tag-ok-fg, #1e6b34);
+      }
+      .match {
+        display: inline-flex;
+        align-items: center;
+        gap: 2px;
+        font-weight: 600;
+
+        mat-icon {
+          width: 18px;
+          height: 18px;
+          font-size: 18px;
+        }
+      }
+    }
+    /* The photo right above its lines, as wide as the block: the lines need some 980px, which leaves a photo beside them too
+       narrow to read without zooming. Hidden, the lines have the block to themselves. */
+    .transcribe {
+      display: grid;
+      gap: 12px;
+
+      app-photo-viewer {
+        --viewer-height: max(360px, 44vh);
+      }
+    }
+    .posted {
+      margin-bottom: 16px;
+      padding: 12px;
+      border-radius: 12px;
+      background: var(--mat-sys-secondary-container);
+
+      h2 {
+        margin: 0 0 8px;
+        font: var(--mat-sys-title-medium);
+      }
+    }
+  `,
+})
+export class PurchaseBatchPage {
+  // A supplier as the picker shows it: whom to call there, and how.
+  protected supplierDetail(supplier: Supplier): string | null {
+    return [supplier.contactPerson, supplier.phone].filter(Boolean).join(' · ') || null;
+  }
+
+  private readonly api = inject(CostingApi);
+  private readonly notify = inject(NotifyService);
+  private readonly businessDay = inject(BusinessDay);
+  private readonly catalog = inject(PurchaseCatalog);
+  protected readonly approvals = inject(Approvals);
+  private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
+  private readonly dialog = inject(MatDialog);
+  private readonly endOfDay = inject(EndOfDayApi);
+  private readonly route = inject(ActivatedRoute);
+  // The end of day of the batch's date, as handed in: its invoices are the blocks.
+  protected readonly handedInDay = signal<EndOfDay | null>(null);
+
+  protected readonly loading = signal(true);
+  protected readonly saving = signal(false);
+  protected readonly error = signal<string | null>(null);
+  // What stopped the batch, each problem by its invoice or payment; nothing was saved.
+  protected readonly problems = signal<string | null>(null);
+  // The invoices and payments the last batch made.
+  protected readonly posted = signal<PurchaseBatchResult | null>(null);
+  // Papers of the last batch that could not be sent, by their invoice: tried again from there.
+  protected readonly unsent = signal(new Map<string, File>());
+  protected readonly paperAccept = paperTypes.join(',');
+  protected readonly icon = paperIcon;
+  protected readonly blocks = signal<BatchBlock[]>([this.block()]);
+  protected readonly payments = signal<PaymentBlock[]>([]);
+  protected readonly advances = signal<AdvanceEntry[]>([]);
+  // Who can be advanced: the staff still working. Only for whoever works Financials.
+  private readonly staffApi = inject(MenuSalesApi);
+  private readonly access = inject(CostingAccess);
+  private readonly auth = inject(AuthService);
+  protected readonly canAdvance = computed(() => this.access.has('Financials'));
+  protected readonly canCloseDay = computed(() => this.access.has('EndOfDay'));
+  // Some invoice on credit in a batch paid in cash.
+  protected readonly anyCredit = computed(() => {
+    this.headerVersion();
+    return this.blocks().some((b) => b.credit);
+  });
+  private readonly staff = signal<Employee[]>([]);
+  protected readonly employees = computed(() => this.staff().filter((e) => e.isActive));
+  // What each supplier is owed, for paying them: only those owed something can be paid.
+  private readonly balances = signal<SupplierBalance[]>([]);
+  protected readonly owedSuppliers = computed(() => this.balances().filter((b) => b.balance > 0));
+
+  protected invoiceDate = PurchaseBatchPage.today();
+  protected paymentMethod: PurchasePaymentMethod | null = null;
+  protected revenueDate = PurchaseBatchPage.today();
+  protected today = PurchaseBatchPage.today();
+  protected readonly paymentMethods: PurchasePaymentMethod[] = ['Safe', 'DayRevenue', 'Credit'];
+  protected readonly paymentLabels = paymentMethodLabels;
+  protected readonly statusLabels = paymentStatusLabels;
+
+  // The header's fields are plain; this bumps so what reads them follows.
+  private readonly headerVersion = signal(0);
+
+  protected readonly total = computed(() => {
+    this.headerVersion();
+    return (
+      this.blocks().reduce((sum, b) => sum + b.editor.total(), 0) +
+      this.payments().reduce((sum, p) => sum + (p.amount ?? 0), 0) +
+      this.advances().reduce((sum, a) => sum + (a.amount ?? 0), 0)
+    );
+  });
+
+  // "2 invoices, 1 payment, 1 advance".
+  protected readonly countLabel = computed(() => {
+    const [invoices, payments, advances] = [this.blocks().length, this.payments().length, this.advances().length];
+    const parts = [
+      invoices ? `${invoices} ${invoices === 1 ? 'invoice' : 'invoices'}` : '',
+      payments ? `${payments} ${payments === 1 ? 'payment' : 'payments'}` : '',
+      advances ? `${advances} ${advances === 1 ? 'advance' : 'advances'}` : '',
+    ];
+    return parts.filter(Boolean).join(', ') || 'Nothing yet';
+  });
+
+  // Every invoice ready as on the invoice screen, each with its supplier on credit; every payment
+  // to a supplier owed it, never on credit; the payment chosen, and from a day's takings, the day.
+  // Each said by its field.
+  protected readonly missing = computed((): FormProblem[] => {
+    this.headerVersion();
+    const blocks = this.blocks();
+    const payments = this.payments();
+    const advances = this.advances();
+    const found: FormProblem[] = [];
+    if (!this.invoiceDate) {
+      found.push({ where: 'Invoice date', what: 'choose the date', field: 'Invoice date' });
+    }
+    if (this.paymentMethod === null) {
+      found.push({ where: 'Paid', what: 'choose how they were paid', field: 'How they are paid' });
+    } else if (this.paymentMethod === 'DayRevenue' && !this.revenueDate) {
+      found.push({ where: 'Takings of', what: 'choose the day', field: 'Takings of' });
+    } else if (this.paymentMethod === 'Credit' && (payments.length || advances.length)) {
+      found.push({
+        where: 'Paid',
+        what: `${payments.length ? 'supplier payments' : 'advances'} are cash: choose the safe or a day's takings`,
+        field: 'How they are paid',
+      });
+    }
+    if (!blocks.length && !payments.length && !advances.length) {
+      found.push({ where: 'The batch', what: 'add an invoice, a supplier payment or an advance', field: '' });
+    }
+    blocks.forEach((b, i) => {
+      b.supplier.version();
+      const name = `Invoice ${i + 1}`;
+      if (b.supplier.unresolved()) {
+        found.push({ where: name, what: 'choose the supplier from the list, or add it', field: `${name}, supplier` });
+      } else if ((this.paymentMethod === 'Credit' || b.credit) && b.supplier.id === null) {
+        found.push({ where: name, what: 'on credit, choose who it is owed to', field: `${name}, supplier` });
+      }
+      if (b.handedIn && this.invoiceDate && b.handedIn.date !== this.invoiceDate) {
+        found.push({ where: name, what: `it was handed in on ${b.handedIn.date}: post it with that date`, field: 'Invoice date' });
+      }
+      found.push(...b.editor.problems(`${name}, `));
+    });
+    payments.forEach((p, j) => found.push(...paymentProblems(p, this.owedBefore(j), `Supplier payment ${j + 1}`)));
+    advances.forEach((a, k) => found.push(...advanceProblems(a, `Advance ${k + 1}`)));
+    return found;
+  });
+  protected readonly ready = computed(() => this.missing().length === 0);
+  // Submit batch is never greyed out: clicked with something missing, it says what.
+  protected readonly checks = new FormChecks(() => this.missing());
+
+  constructor() {
+    // Kept in this browser as it is typed, until it is sent.
+    effect(() => {
+      this.headerVersion();
+      const blocks = this.blocks();
+      blocks.forEach((b) => {
+        b.editor.version();
+        b.supplier.version();
+      });
+      if (!this.loading()) {
+        this.store();
+      }
+    });
+    void this.load();
+  }
+
+  protected changed(): void {
+    this.headerVersion.update((v) => v + 1);
+    this.problems.set(null);
+  }
+
+  // Another date: the invoices handed in on the one before, not typed into yet, go; the new
+  // date's come.
+  protected dateChosen(): void {
+    this.blocks.update((blocks) => blocks.filter((b) => !b.handedIn || b.handedIn.date === this.invoiceDate || !this.untouched(b, true)));
+    if (!this.blocks().length && !this.payments().length && !this.advances().length) {
+      this.blocks.set([this.block()]);
+    }
+    this.changed();
+    void this.loadHandedIn();
+  }
+
+  protected payAs(block: BatchBlock, paid: 'Cash' | 'Credit'): void {
+    block.credit = paid === 'Credit';
+    this.changed();
+  }
+
+  // What is left of the total handed in once the lines, after their discounts, are typed: none
+  // when they match it.
+  protected leftOf(block: BatchBlock): number {
+    return block.handedIn ? Math.round((block.handedIn.reportedTotal - block.editor.total()) * 100) / 100 : 0;
+  }
+
+  protected addBlock(): void {
+    this.blocks.update((blocks) => [...blocks, this.block()]);
+  }
+
+  protected removeBlock(index: number): void {
+    this.blocks.update((blocks) => blocks.filter((_, i) => i !== index));
+  }
+
+  // A supplier payment added: the empty invoice the batch starts with goes, so a batch of payments
+  // alone can be sent.
+  protected addPayment(): void {
+    const blocks = this.blocks();
+    if (blocks.length === 1 && this.untouched(blocks[0])) {
+      this.blocks.set([]);
+    }
+    this.payments.update((payments) => [...payments, newSupplierPayment()]);
+    this.changed();
+  }
+
+  protected removePayment(index: number): void {
+    this.payments.update((payments) => payments.filter((_, i) => i !== index));
+    if (!this.payments().length && !this.advances().length && !this.blocks().length) {
+      this.blocks.set([this.block()]);
+    }
+    this.changed();
+  }
+
+  // An advance added: as a payment, the empty invoice the batch starts with goes.
+  protected addAdvance(): void {
+    const blocks = this.blocks();
+    if (blocks.length === 1 && this.untouched(blocks[0])) {
+      this.blocks.set([]);
+    }
+    this.advances.update((advances) => [...advances, newAdvance()]);
+    this.changed();
+  }
+
+  protected removeAdvance(index: number): void {
+    this.advances.update((advances) => advances.filter((_, i) => i !== index));
+    if (!this.payments().length && !this.advances().length && !this.blocks().length) {
+      this.blocks.set([this.block()]);
+    }
+    this.changed();
+  }
+
+  // What the supplier of payment `index` is owed, less what the payments above it pay them.
+  protected owedBefore(index: number): number | null {
+    const pay = this.payments()[index];
+    const owed = pay?.supplierId ? this.balances().find((b) => b.supplierId === pay.supplierId)?.balance : undefined;
+    return owed === undefined ? null : Math.round((owed - this.paidAbove(index)) * 100) / 100;
+  }
+
+  protected paidAbove(index: number): number {
+    const supplierId = this.payments()[index]?.supplierId;
+    return this.payments()
+      .slice(0, index)
+      .filter((p) => p.supplierId === supplierId)
+      .reduce((sum, p) => sum + (p.amount ?? 0), 0);
+  }
+
+  // A photo or scan of the invoice's paper, kept with it until the batch is sent.
+  protected choosePaper(block: BatchBlock, input: HTMLInputElement): void {
+    const file = input.files?.[0];
+    input.value = '';
+    if (!file) {
+      return;
+    }
+    if (!paperTypes.includes(file.type)) {
+      this.notify.error(null, 'Attach a photo (JPEG, PNG or WebP) or a PDF of the invoice.');
+      return;
+    }
+    if (file.size > paperMaxBytes) {
+      this.notify.error(null, 'The file must be under 10 MB.');
+      return;
+    }
+    block.paper = file;
+    this.changed();
+  }
+
+  protected dropPaper(block: BatchBlock): void {
+    block.paper = null;
+    this.changed();
+  }
+
+  protected viewPaper(invoiceId: string, fileName: string): void {
+    viewInvoicePaper(this.dialog, invoiceId, fileName);
+  }
+
+  // A posted invoice's paper, attached to it in the archive. Refused, it waits to be tried again,
+  // and says so unless the batch says it (say).
+  protected async sendPaper(invoiceId: string, file: File, say = true): Promise<boolean> {
+    try {
+      const saved = await firstValueFrom(this.api.attachPurchaseInvoiceFile(invoiceId, file));
+      this.posted.update((result) => result && { ...result, invoices: result.invoices.map((i) => (i.id === invoiceId ? saved : i)) });
+      this.unsent.update((unsent) => {
+        const left = new Map(unsent);
+        left.delete(invoiceId);
+        return left;
+      });
+      return true;
+    } catch (error) {
+      this.unsent.update((unsent) => new Map(unsent).set(invoiceId, file));
+      if (say) {
+        this.notify.error(error, `${file.name} could not be attached.`);
+      }
+      return false;
+    }
+  }
+
+  // "2 invoices posted, 1 supplier paid, 1 advance paid".
+  protected sentLabel(result: PurchaseBatchResult): string {
+    const [invoices, payments, advances] = [result.invoices.length, result.payments.length, result.advances?.length ?? 0];
+    return [
+      invoices ? `${invoices === 1 ? '1 invoice' : `${invoices} invoices`} posted` : '',
+      payments ? `${payments === 1 ? '1 supplier' : `${payments} suppliers`} paid` : '',
+      advances ? `${advances === 1 ? '1 advance' : `${advances} advances`} paid` : '',
+    ]
+      .filter(Boolean)
+      .join(', ');
+  }
+
+  protected startAgain(): void {
+    this.checks.clear();
+    this.blocks.set([this.block()]);
+    this.payments.set([]);
+    this.advances.set([]);
+    this.paymentMethod = null;
+    this.invoiceDate = this.today;
+    this.revenueDate = this.today;
+    this.problems.set(null);
+    this.changed();
+    void this.loadHandedIn();
+  }
+
+  // Sent together: each invoice made and posted, or none. Done, the batch starts again with new ids;
+  // refused, it stays on screen with each problem said by its invoice.
+  protected async submit(): Promise<void> {
+    if (this.saving() || !this.checks.passed(this.notify, this.host.nativeElement) || !this.paymentMethod) {
+      return;
+    }
+    this.saving.set(true);
+    this.problems.set(null);
+    // Each paper goes to its invoice once it is posted.
+    const papers = this.blocks().filter((b) => b.paper).map((b) => ({ invoiceId: b.id, file: b.paper! }));
+    try {
+      const made = await firstValueFrom(
+        this.api.postPurchaseBatch({
+          invoiceDate: this.invoiceDate,
+          paymentMethod: this.paymentMethod,
+          revenueDate: this.paymentMethod === 'DayRevenue' ? this.revenueDate : null,
+          invoices: this.blocks().map((b) => ({
+            invoiceId: b.id,
+            supplierId: b.supplier.id,
+            supplierInvoiceNumber: b.number.trim() || null,
+            lines: b.editor.toSave(),
+            discount: b.editor.discount() ?? 0,
+            onCredit: b.credit,
+            endOfDayInvoiceId: b.handedIn?.invoiceId ?? null,
+          })),
+          payments: this.payments().map((p) => ({ transactionId: p.id, supplierId: p.supplierId!, amount: p.amount!, notes: p.notes.trim() || null })),
+          advances: this.advances().map((a) => ({ transactionId: a.id, employeeId: a.employeeId, amount: a.amount!, notes: a.notes.trim() || null })),
+        }),
+      );
+      this.posted.set(made);
+      this.unsent.set(new Map());
+      this.checks.clear();
+      this.blocks.set([this.block()]);
+      this.payments.set([]);
+      this.advances.set([]);
+      this.changed();
+      void this.approvals.refresh();
+      void this.loadHandedIn();
+      const sent = await Promise.all(papers.map((p) => this.sendPaper(p.invoiceId, p.file, false)));
+      const attached = sent.filter((ok) => ok).length;
+      const pending =
+        made.invoices.filter((i) => i.paymentStatus === 'Pending').length +
+        made.payments.filter((p) => p.outcome === 'Requested').length +
+        (made.advances ?? []).filter((a) => a.outcome === 'Requested').length;
+      const said =
+        `${this.sentLabel(made)}.` +
+        (attached ? ` ${attached === 1 ? '1 paper' : `${attached} papers`} attached.` : '') +
+        (pending ? ` ${pending === 1 ? '1 payment waits' : `${pending} payments wait`} for a manager's approval.` : '');
+      if (attached < papers.length) {
+        this.notify.error(null, `${said} ${papers.length - attached === 1 ? 'A paper' : 'Some papers'} could not be attached: try again below.`);
+      } else {
+        this.notify.info(said);
+      }
+      await Promise.all([this.catalog.loadMaterials(), this.loadBalances()]);
+    } catch (error) {
+      this.problems.set(errorMessage(error, 'The batch could not be posted.'));
+    } finally {
+      this.saving.set(false);
+    }
+  }
+
+  private block(): BatchBlock {
+    return {
+      id: crypto.randomUUID(),
+      supplier: new InvoiceSupplier(this.catalog),
+      number: '',
+      editor: new InvoiceLines(this.catalog),
+      paper: null,
+      credit: false,
+      handedIn: null,
+      photoShown: true,
+    };
+  }
+
+  // An invoice handed in at the end of the day, as a block: its supplier, paid as it was, its photo.
+  private handedInBlock(date: string, invoice: EndOfDayInvoice): BatchBlock {
+    const block = this.block();
+    block.supplier.set(invoice.supplierId, invoice.supplier);
+    block.credit = invoice.kind === 'Credit';
+    block.handedIn = {
+      date,
+      invoiceId: invoice.id,
+      kind: invoice.kind,
+      reportedTotal: invoice.reportedTotal,
+      note: invoice.note,
+      fileName: invoice.photo.fileName,
+      contentType: invoice.photo.contentType,
+      source: this.photoSource(date, invoice.id),
+    };
+    return block;
+  }
+
+  private photoSource(date: string, invoiceId: string): PhotoSource {
+    return () => this.endOfDay.photo(date, invoiceId);
+  }
+
+  // The end of day of the batch's date: each invoice handed in and not posted yet, a block of its
+  // own (once), the empty one the batch starts with going; one posted since, gone from here. Paid
+  // as not chosen yet: out of that day's takings, or on credit when every one is.
+  private async loadHandedIn(): Promise<void> {
+    const date = this.invoiceDate;
+    if (!date) {
+      this.handedInDay.set(null);
+      return;
+    }
+    let day: EndOfDay | null;
+    try {
+      day = await firstValueFrom(this.endOfDay.day(date));
+    } catch {
+      day = null;
+    }
+    if (this.invoiceDate !== date) {
+      return;
+    }
+    this.handedInDay.set(day);
+    if (day?.status !== 'Submitted') {
+      return;
+    }
+    const posted = new Set(day.invoices.filter((i) => i.purchaseInvoiceId).map((i) => i.id));
+    let blocks = this.blocks().filter((b) => !(b.handedIn && b.handedIn.date === date && posted.has(b.handedIn.invoiceId)));
+    const present = new Set(blocks.filter((b) => b.handedIn).map((b) => b.handedIn!.invoiceId));
+    const fresh = day.invoices.filter((i) => !i.purchaseInvoiceId && !present.has(i.id)).map((i) => this.handedInBlock(date, i));
+    if (fresh.length) {
+      if (blocks.length === 1 && this.untouched(blocks[0])) {
+        blocks = [];
+      }
+      blocks = [...fresh, ...blocks];
+      if (this.paymentMethod === null) {
+        const anyCash = fresh.some((b) => !b.credit);
+        this.paymentMethod = anyCash ? 'DayRevenue' : 'Credit';
+        this.revenueDate = date;
+      }
+    }
+    this.blocks.set(blocks.length ? blocks : [this.block()]);
+    this.changed();
+  }
+
+  // Nothing entered on it yet; one handed in counts as nothing entered unless asked (handedIn).
+  private untouched(block: BatchBlock, handedIn = false): boolean {
+    return (
+      (handedIn || !block.handedIn) &&
+      (handedIn || !block.supplier.id) &&
+      !(typeof block.supplier.entry === 'string' && block.supplier.entry.trim()) &&
+      !block.number.trim() &&
+      !block.paper &&
+      block.editor.lines().every((l) => !l.rawMaterialId && !l.expenseItemId)
+    );
+  }
+
+  // Only for whoever works Financials; without it, no advance can be added.
+  private async loadEmployees(): Promise<void> {
+    if (this.canAdvance()) {
+      try {
+        this.staff.set(await firstValueFrom(this.staffApi.staff()));
+      } catch {
+        this.staff.set([]);
+      }
+    }
+  }
+
+  private async loadBalances(): Promise<void> {
+    this.balances.set(await firstValueFrom(this.api.supplierBalances()));
+  }
+
+  private store(): void {
+    const batch: StoredBatch = {
+      invoiceDate: this.invoiceDate,
+      paymentMethod: this.paymentMethod,
+      revenueDate: this.revenueDate,
+      blocks: this.blocks().map((b) => ({
+        id: b.id,
+        supplierId: b.supplier.id,
+        supplierName: typeof b.supplier.entry === 'string' ? b.supplier.entry : null,
+        number: b.number,
+        lines: b.editor.lines().map(({ entry, ...line }) => ({ ...line, ...(typeof entry === 'string' ? { typed: entry } : {}) })),
+        discount: b.editor.discount(),
+        credit: b.credit,
+        handedIn: b.handedIn ? (({ source, ...kept }) => kept)(b.handedIn) : null,
+      })),
+      payments: this.payments().map((p) => ({ ...p })),
+      advances: this.advances().map((a) => ({ ...a })),
+    };
+    try {
+      const empty =
+        !batch.payments?.length &&
+        !batch.advances?.length &&
+        batch.blocks.length === 1 &&
+        !batch.blocks[0].supplierId &&
+        batch.blocks[0].lines.every((l) => !l.rawMaterialId && !l.expenseItemId);
+      if (empty && !batch.paymentMethod) {
+        localStorage.removeItem(storageKey);
+      } else {
+        localStorage.setItem(storageKey, JSON.stringify(batch));
+      }
+    } catch {
+      // Storage refused: the batch is only on screen.
+    }
+  }
+
+  // A batch left unsent in this browser, back on screen as it was.
+  private restore(): void {
+    let stored: StoredBatch | null = null;
+    try {
+      stored = JSON.parse(localStorage.getItem(storageKey) ?? 'null') as StoredBatch | null;
+    } catch {
+      stored = null;
+    }
+    if (!stored?.blocks?.length && !stored?.payments?.length && !stored?.advances?.length) {
+      return;
+    }
+    this.advances.set((stored.advances ?? []).map((a) => ({ id: a.id, employeeId: a.employeeId ?? null, amount: a.amount ?? null, notes: a.notes ?? '' })));
+    this.payments.set((stored.payments ?? []).map((p) => ({ id: p.id, supplierId: p.supplierId ?? null, amount: p.amount ?? null, notes: p.notes ?? '' })));
+    this.invoiceDate = stored.invoiceDate || this.today;
+    this.paymentMethod = stored.paymentMethod;
+    this.revenueDate = stored.revenueDate || this.today;
+    this.blocks.set(
+      (stored.blocks ?? []).map((b) => {
+        const block = this.block();
+        block.id = b.id;
+        block.number = b.number ?? '';
+        if (b.supplierId) {
+          block.supplier.set(b.supplierId, null);
+        } else if (b.supplierName) {
+          block.supplier.entry = b.supplierName;
+        }
+        block.editor.lines.set(
+          b.lines.map((l) => {
+            const { typed, ...line } = l as Omit<InvoiceLine, 'entry'> & { typed?: string };
+            const entry =
+              (line.rawMaterialId && this.catalog.materials().find((m) => m.id === line.rawMaterialId)) ||
+              (line.expenseItemId && this.catalog.expenses().find((e) => e.id === line.expenseItemId)) ||
+              typed;
+            return { ...line, discount: line.discount ?? 0, entry };
+          }),
+        );
+        block.editor.discount.set(b.discount ?? 0);
+        block.editor.touch();
+        block.credit = b.credit ?? false;
+        block.handedIn = b.handedIn ? { ...b.handedIn, source: this.photoSource(b.handedIn.date, b.handedIn.invoiceId) } : null;
+        return block;
+      }),
+    );
+  }
+
+  private async load(): Promise<void> {
+    void this.businessDay.today().then((today) => {
+      // Not yet chosen: the business day.
+      if (this.revenueDate === this.today) {
+        this.revenueDate = today;
+      }
+      const moved = this.invoiceDate === this.today && this.invoiceDate !== today;
+      if (this.invoiceDate === this.today) {
+        this.invoiceDate = today;
+      }
+      this.today = today;
+      this.changed();
+      // Loaded already on the browser's date: the business day's end of day instead.
+      if (moved && !this.loading()) {
+        void this.loadHandedIn();
+      }
+    });
+    try {
+      await Promise.all([this.catalog.load(), this.loadBalances(), this.loadEmployees()]);
+      this.restore();
+      // Opened on a day (from the end of the day): that day's batch.
+      const asked = this.route.snapshot.queryParamMap.get('date');
+      if (asked && /^\d{4}-\d{2}-\d{2}$/.test(asked) && asked !== this.invoiceDate) {
+        this.invoiceDate = asked;
+        this.blocks.update((blocks) => blocks.filter((b) => !b.handedIn || b.handedIn.date === asked || !this.untouched(b, true)));
+      }
+      void this.loadHandedIn();
+    } catch (error) {
+      this.error.set(errorMessage(error, 'The purchases could not be loaded.'));
+    } finally {
+      this.loading.set(false);
+    }
+  }
+
+  private static today(): string {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  }
+}
+```
+
+
+`InvoicesPage` (القائمة)، `InvoicePage` (فاتورة بصفحة للقراءة؛ "تعديل" = تصحيح بفاتورة جديدة)، `InvoiceView` و `InvoiceViewDialog`، و `InvoicePaper` (صورة الورقة بالتوكن).
+
+> 📄 **`frontend/src/app/features/costing/invoices-page.ts`** — 349 سطر
+
+```ts
+import { DatePipe, formatDate } from '@angular/common';
+import { Component, computed, inject, signal } from '@angular/core';
+import { FormsModule } from '@angular/forms';
+import { MatButtonModule } from '@angular/material/button';
+import { MatCheckboxModule } from '@angular/material/checkbox';
+import { MatDialog } from '@angular/material/dialog';
+import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatIconModule } from '@angular/material/icon';
+import { MatInputModule } from '@angular/material/input';
+import { MatProgressBarModule } from '@angular/material/progress-bar';
+import { MatTooltipModule } from '@angular/material/tooltip';
+import { RouterLink } from '@angular/router';
+import { firstValueFrom } from 'rxjs';
+import { ApprovalRequest, CostingApi, PurchaseInvoiceSummary, paymentMethodLabels, paymentStatusLabels } from '../../core/costing/costing.api';
+import { errorMessage } from '../../core/http/error-message';
+import { MoneyPipe } from '../../core/ui/money.pipe';
+import { Approvals, pendingLabel } from './approvals';
+import { Treasury } from './financials';
+import { viewInvoicePaper } from './invoice-paper';
+import { showInvoice } from './invoice-view-dialog';
+import { FilterOption, FilterSelect } from '../shared/filter-select';
+import { SearchField } from '../shared/search-field';
+import { SortOption, SortState, smartMatch, sortItems } from '../shared/smart-search';
+import { SortControl } from '../shared/sort-control';
+
+type InvoiceSort = 'date' | 'total' | 'supplier';
+
+const invoiceSorts: SortOption<InvoiceSort>[] = [
+  { key: 'date', en: 'Date', ar: 'التاريخ', descending: true },
+  { key: 'total', en: 'Invoice total', ar: 'إجمالي الفاتورة', descending: true },
+  { key: 'supplier', en: 'Supplier', ar: 'المورد' },
+];
+
+// What an invoice bought: stock, expenses, or both.
+type InvoiceContents = 'stock' | 'expenses' | 'both';
+
+// Every posted supplier invoice, newest first: what came in, from whom, for how much, who
+// entered it, and whether the paper is on file. Show (or the row) opens the invoice as it was
+// posted, read-only, over the list.
+@Component({
+  selector: 'app-invoices-page',
+  imports: [
+    DatePipe,
+    FilterSelect,
+    FormsModule,
+    MatButtonModule,
+    MatCheckboxModule,
+    MatFormFieldModule,
+    MatIconModule,
+    MatInputModule,
+    MatProgressBarModule,
+    MatTooltipModule,
+    MoneyPipe,
+    RouterLink,
+    SearchField,
+    SortControl,
+  ],
+  template: `
+    @if (loading()) {
+      <mat-progress-bar mode="indeterminate" />
+    } @else if (error()) {
+      <p class="error">{{ error() }}</p>
+    } @else {
+      <div class="toolbar smart">
+        <app-search-field [(value)]="search" placeholder="Supplier or invoice number · المورد أو رقم الفاتورة" />
+        <div class="pills">
+          <app-filter-select label="Supplier · المورد" icon="local_shipping" [options]="supplierFilters()" [(value)]="supplier" />
+          <app-filter-select label="Bought · المشتريات" icon="category" [options]="contentsFilters()" [(value)]="contents" />
+          <app-filter-select label="Paid · الدفع" icon="payments" [options]="paymentFilters()" [(value)]="payment" />
+          <app-sort-control [options]="sorts" [(sort)]="sort" />
+        </div>
+      </div>
+      <div class="toolbar">
+        <mat-checkbox [ngModel]="showVoided()" (ngModelChange)="showVoided.set($event)">
+          Show voided <span class="inline-ar">الملغاة</span>
+        </mat-checkbox>
+        <span class="spacer"></span>
+        <span class="muted">{{ shown().length }} {{ shown().length === 1 ? 'invoice' : 'invoices' }} · {{ shownTotal() | money }}</span>
+        <a mat-flat-button routerLink="/costing/purchases/new"><mat-icon>add</mat-icon> New invoice</a>
+      </div>
+      <div class="table-wrap">
+        <table class="grid">
+          <thead>
+            <tr>
+              <th>Date<span class="ar">التاريخ</span></th>
+              <th>Supplier<span class="ar">المورد</span></th>
+              <th>Invoice no.<span class="ar">رقم الفاتورة</span></th>
+              <th class="num">Total<span class="ar">الإجمالي</span></th>
+              <th>Paid<span class="ar">الدفع</span></th>
+              <th>Created by<span class="ar">أنشأها</span></th>
+              <th class="num">Paper<span class="ar">الصورة</span></th>
+              <th class="num"><span class="visually-hidden">Actions</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            @for (inv of shown(); track inv.id) {
+              <tr class="clickable" [class.voided]="inv.status === 'Voided'" [class.pending-deletion]="!!pendingOf(inv)" (click)="open(inv)">
+                <td class="nowrap">{{ date(inv) | date: 'd MMM y' }}</td>
+                <td>
+                  {{ inv.supplierName ?? '—' }}
+                  @if (inv.status === 'Voided') {
+                    <div><span class="voided-badge">Voided<span class="ar">ملغاة</span></span>
+                      <span class="muted small"> by {{ inv.voidedBy }}, {{ inv.voidedAtUtc | date: 'd MMM' }}</span></div>
+                  } @else if (pendingOf(inv); as p) {
+                    @if (p.action === 'Delete') {
+                      <div><span class="pending-badge">{{ pendingLabel(p).en }}<span class="ar">{{ pendingLabel(p).ar }}</span></span>
+                        <span class="muted small"> by {{ p.requestedBy }}</span></div>
+                    }
+                  }
+                </td>
+                <td>{{ inv.supplierInvoiceNumber ?? '—' }}</td>
+                <td class="num">
+                  {{ inv.total | money }}
+                  @if (inv.expenseTotal > 0) {
+                    <small class="muted expenses">{{ inv.expenseTotal === inv.total ? 'all expenses' : 'incl. ' + (inv.expenseTotal | money) + ' expenses' }}</small>
+                  }
+                </td>
+                <td>
+                  <span class="pay" [class]="inv.paymentStatus">{{ paymentText(inv) }}</span>
+                </td>
+                <td>{{ inv.createdBy || '—' }}</td>
+                <td class="num">
+                  @if (inv.attachmentFileName; as fileName) {
+                    <button mat-icon-button (click)="$event.stopPropagation(); viewPaper(inv.id, fileName)" [attr.aria-label]="'View ' + fileName">
+                      <mat-icon>attach_file</mat-icon>
+                    </button>
+                  } @else {
+                    <span class="muted" aria-label="No paper">—</span>
+                  }
+                </td>
+                <td class="num actions" (click)="$event.stopPropagation()">
+                  <button mat-stroked-button class="show" (click)="open(inv)">
+                    <mat-icon>visibility</mat-icon> Show · عرض
+                  </button>
+                  @if (inv.status === 'Posted' && inv.paymentStatus === 'Unpaid' && !pendingOf(inv)) {
+                    <button mat-stroked-button (click)="pay(inv)"><mat-icon>payments</mat-icon> Pay</button>
+                  }
+                  @if (inv.status === 'Posted') {
+                    @if (pendingOf(inv)) {
+                      <mat-icon class="locked" matTooltip="Waiting for a manager's approval" aria-label="Locked: deletion requested">lock_clock</mat-icon>
+                    } @else {
+                      <button mat-icon-button class="danger" (click)="remove(inv)" matTooltip="Delete (void)" [attr.aria-label]="'Delete ' + title(inv)">
+                        <mat-icon>delete</mat-icon>
+                      </button>
+                    }
+                  }
+                </td>
+              </tr>
+            } @empty {
+              <tr>
+                <td colspan="8" class="muted">
+                  {{ invoices().length ? 'No invoice matches.' : 'No invoices posted yet. They are entered under New invoice.' }}
+                </td>
+              </tr>
+            }
+          </tbody>
+        </table>
+      </div>
+    }
+  `,
+  styleUrl: './costing.scss',
+  styles: `
+    .search {
+      min-width: 280px;
+    }
+    .show,
+    .nowrap {
+      white-space: nowrap;
+    }
+    .visually-hidden {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip: rect(0 0 0 0);
+    }
+    .expenses {
+      display: block;
+    }
+    .actions {
+      white-space: nowrap;
+    }
+    .danger {
+      color: var(--mat-sys-error);
+    }
+    .small {
+      font-size: 0.85em;
+    }
+    tr.voided td {
+      color: var(--mat-sys-on-surface-variant);
+    }
+  `,
+})
+export class InvoicesPage {
+  protected readonly pendingLabel = pendingLabel;
+  private readonly api = inject(CostingApi);
+  private readonly dialog = inject(MatDialog);
+
+  private readonly approvals = inject(Approvals);
+  private readonly treasury = inject(Treasury);
+
+  // Posted and voided; the voided shown only when asked for.
+  protected readonly invoices = signal<PurchaseInvoiceSummary[]>([]);
+  protected readonly showVoided = signal(false);
+  protected readonly loading = signal(true);
+  protected readonly error = signal<string | null>(null);
+  protected readonly search = signal('');
+  protected readonly supplier = signal('');
+  protected readonly contents = signal('');
+  protected readonly payment = signal('');
+  protected readonly sorts = invoiceSorts;
+  protected readonly sort = signal<SortState<InvoiceSort>>({ key: 'date', direction: -1 });
+
+  // Those the filters count from: posted, and voided too when asked for.
+  private readonly listed = computed(() => this.invoices().filter((i) => this.showVoided() || i.status !== 'Voided'));
+
+  protected readonly supplierFilters = computed<FilterOption[]>(() => {
+    const names = new Map<string, number>();
+    for (const i of this.listed()) {
+      const name = i.supplierName ?? '';
+      names.set(name, (names.get(name) ?? 0) + 1);
+    }
+    return [
+      { value: '', label: 'All · الكل', count: this.listed().length },
+      ...[...names.entries()]
+        .filter(([name]) => name)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([name, count]) => ({ value: name, label: name, count })),
+      ...(names.has('') ? [{ value: '-', label: 'No supplier · بدون مورد', count: names.get('')! }] : []),
+    ];
+  });
+
+  protected readonly contentsFilters = computed<FilterOption[]>(() => [
+    { value: '', label: 'All · الكل', count: this.listed().length },
+    { value: 'stock', label: 'Stock only · خامات', count: this.listed().filter((i) => this.contentsOf(i) === 'stock').length },
+    { value: 'expenses', label: 'Expenses only · مصروفات', count: this.listed().filter((i) => this.contentsOf(i) === 'expenses').length },
+    { value: 'both', label: 'Both · الاثنان', count: this.listed().filter((i) => this.contentsOf(i) === 'both').length },
+  ]);
+
+  protected readonly paymentFilters = computed<FilterOption[]>(() => [
+    { value: '', label: 'All · الكل', count: this.listed().length },
+    ...(['Safe', 'DayRevenue', 'Credit', 'BeforeTreasury'] as const).map((m) => ({
+      value: m, label: `${paymentMethodLabels[m].en} · ${paymentMethodLabels[m].ar}`, count: this.listed().filter((i) => i.paymentMethod === m).length,
+    })),
+    { value: 'unpaid', label: 'Unpaid · غير مدفوعة', count: this.listed().filter((i) => i.paymentStatus === 'Unpaid').length },
+  ]);
+
+  protected readonly shown = computed(() => {
+    const supplier = this.supplier();
+    const payment = this.payment();
+    const found = this.listed().filter(
+      (i) =>
+        smartMatch(this.search(), i.supplierName, i.supplierInvoiceNumber, i.createdBy) &&
+        (!supplier || (supplier === '-' ? !i.supplierName : i.supplierName === supplier)) &&
+        (!this.contents() || this.contentsOf(i) === this.contents()) &&
+        (!payment || (payment === 'unpaid' ? i.paymentStatus === 'Unpaid' : i.paymentMethod === payment)),
+    );
+    return sortItems(found, this.sort(), (i, key) => {
+      switch (key) {
+        case 'total':
+          return i.total;
+        case 'supplier':
+          return i.supplierName;
+        default:
+          return this.date(i);
+      }
+    }, (i) => i.supplierName ?? '');
+  });
+
+  // What was bought: voided invoices are not.
+  protected readonly shownTotal = computed(() => this.shown().filter((i) => i.status !== 'Voided').reduce((sum, i) => sum + i.total, 0));
+
+  constructor() {
+    void this.load();
+  }
+
+  protected contentsOf(invoice: PurchaseInvoiceSummary): InvoiceContents {
+    return invoice.inventoryTotal > 0 && invoice.expenseTotal > 0 ? 'both' : invoice.expenseTotal > 0 ? 'expenses' : 'stock';
+  }
+
+  // The date on the supplier's paper; when none was written, the day it was posted.
+  protected date(invoice: PurchaseInvoiceSummary): string {
+    return invoice.invoiceDate ?? invoice.postedAtUtc ?? invoice.createdAtUtc;
+  }
+
+  protected open(invoice: PurchaseInvoiceSummary): void {
+    showInvoice(this.dialog, invoice.id);
+  }
+
+  // How it was paid, or where its payment stands: "From the safe", "Takings of 12 Oct", "On credit".
+  protected paymentText(invoice: PurchaseInvoiceSummary): string {
+    if (invoice.status === 'Voided') {
+      return '—';
+    }
+    if (invoice.paymentStatus === 'Paid') {
+      return invoice.paymentMethod === 'DayRevenue' && invoice.revenueDate
+        ? `Takings of ${new Date(invoice.revenueDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}`
+        : 'From the safe';
+    }
+    return paymentStatusLabels[invoice.paymentStatus].en;
+  }
+
+  // An unpaid cash invoice, paid now: from the safe or a day's takings, or put on credit.
+  protected async pay(invoice: PurchaseInvoiceSummary): Promise<void> {
+    if (await this.treasury.payInvoice(invoice.id, { what: this.title(invoice), total: invoice.total, hasSupplier: !!invoice.supplierId })) {
+      await this.load();
+    }
+  }
+
+  protected pendingOf(invoice: PurchaseInvoiceSummary): ApprovalRequest | undefined {
+    return this.approvals.pendingFor(invoice.id);
+  }
+
+  // What the invoice is called in the delete dialog: its number, else its date and supplier.
+  protected title(invoice: PurchaseInvoiceSummary): string {
+    if (invoice.supplierInvoiceNumber) {
+      return `invoice ${invoice.supplierInvoiceNumber}`;
+    }
+    const date = formatDate(this.date(invoice), 'd MMM y', 'en-US');
+    return invoice.supplierName ? `the ${date} invoice from ${invoice.supplierName}` : `the ${date} invoice`;
+  }
+
+  // Voided for a manager (its goods go back out of stock); asked of one for anyone else.
+  protected async remove(invoice: PurchaseInvoiceSummary): Promise<void> {
+    if ((await this.approvals.delete('PurchaseInvoice', invoice.id, this.title(invoice))) === 'Applied') {
+      await this.load();
+    }
+  }
+
+  protected viewPaper(invoiceId: string, fileName: string): void {
+    viewInvoicePaper(this.dialog, invoiceId, fileName);
+  }
+
+  private async load(): Promise<void> {
+    void this.approvals.refresh();
+    try {
+      const [posted, voided] = await Promise.all([
+        firstValueFrom(this.api.purchaseInvoices('Posted')),
+        firstValueFrom(this.api.purchaseInvoices('Voided')),
+      ]);
+      // Each as the till lists them, newest posted first; the voided after.
+      this.invoices.set([...posted, ...voided]);
+    } catch (error) {
+      this.error.set(errorMessage(error, 'The invoices could not be loaded.'));
+    } finally {
+      this.loading.set(false);
+    }
+  }
+}
+```
+
+
+> 📄 **`frontend/src/app/features/costing/invoice-page.ts`** — 98 سطر
+
+```ts
+import { Component, effect, inject, input, signal, untracked } from '@angular/core';
+import { MatButtonModule } from '@angular/material/button';
+import { MatIconModule } from '@angular/material/icon';
+import { MatProgressBarModule } from '@angular/material/progress-bar';
+import { RouterLink } from '@angular/router';
+import { firstValueFrom } from 'rxjs';
+import { CostingApi, PurchaseInvoice } from '../../core/costing/costing.api';
+import { errorMessage } from '../../core/http/error-message';
+import { Approvals } from './approvals';
+import { InvoiceView } from './invoice-view';
+
+// One invoice on a page of its own, read-only, for a link to it. A posted invoice is not rewritten:
+// Edit corrects it, voiding it and posting a new invoice in its place, linked both ways; at once
+// for a manager, after a manager's approval for anyone else, the invoice locked until then.
+@Component({
+  selector: 'app-invoice-page',
+  imports: [InvoiceView, MatButtonModule, MatIconModule, MatProgressBarModule, RouterLink],
+  template: `
+    <div class="toolbar no-print">
+      <a mat-button routerLink="/costing/purchases/invoices"><mat-icon>arrow_back</mat-icon> All invoices</a>
+    </div>
+    @if (loading()) {
+      <mat-progress-bar mode="indeterminate" />
+    } @else if (error()) {
+      <p class="error">{{ error() }}</p>
+    } @else if (invoice(); as inv) {
+      <h2 class="title">
+        {{ inv.supplierName ?? 'Invoice' }}{{ inv.supplierInvoiceNumber ? ' · ' + inv.supplierInvoiceNumber : '' }}
+        <span class="inline-ar">فاتورة شراء</span>
+      </h2>
+      @if (inv.status === 'Draft') {
+        <p><a routerLink="/costing/purchases/new">Finish it on New invoice</a>.</p>
+      }
+      @if (inv.replacedBy) {
+        <p class="link-note">Corrected: <a [routerLink]="['/costing/purchases/invoices', inv.replacedBy]">see the invoice that replaced it</a>. · تم تعديلها</p>
+      }
+      @if (inv.revisionOf) {
+        <p class="link-note">A correction of <a [routerLink]="['/costing/purchases/invoices', inv.revisionOf]">an earlier invoice</a>, voided. · فاتورة معدلة</p>
+      }
+      @if (inv.status === 'Posted') {
+        @if (approvals.pendingFor(inv.id); as asked) {
+          <p class="ask no-print">{{ asked.requestedBy }} has asked {{ asked.action === 'Update' ? 'to correct it' : asked.action === 'Delete' ? 'to void it' : 'to pay it' }}: it waits for a manager, and stays as it is until then.</p>
+        } @else {
+          <div class="toolbar no-print">
+            <a mat-stroked-button [routerLink]="['/costing/purchases/new']" [queryParams]="{ correct: inv.id }"><mat-icon>edit</mat-icon> Edit · تعديل</a>
+          </div>
+        }
+      }
+      <app-invoice-view [invoice]="inv" />
+    } @else {
+      <p class="error">No such invoice. It may have been a draft that was discarded.</p>
+    }
+  `,
+  styleUrl: './costing.scss',
+  styles: `
+    .title {
+      margin: 0 0 8px;
+      font: var(--mat-sys-title-large);
+    }
+    .link-note {
+      margin: 0 0 8px;
+    }
+    .ask {
+      padding: 8px 10px;
+      border-radius: 8px;
+      background: color-mix(in srgb, var(--app-warn) 14%, transparent);
+    }
+  `,
+})
+export class InvoicePage {
+  private readonly api = inject(CostingApi);
+  protected readonly approvals = inject(Approvals);
+
+  readonly id = input.required<string>();
+
+  protected readonly invoice = signal<PurchaseInvoice | null>(null);
+  protected readonly loading = signal(true);
+  protected readonly error = signal<string | null>(null);
+
+  constructor() {
+    effect(() => {
+      const id = this.id();
+      untracked(() => void this.load(id));
+    });
+  }
+
+  private async load(id: string): Promise<void> {
+    this.loading.set(true);
+    this.error.set(null);
+    try {
+      this.invoice.set(await firstValueFrom(this.api.purchaseInvoice(id)));
+    } catch (error) {
+      this.error.set(errorMessage(error, 'The invoice could not be loaded.'));
+    } finally {
+      this.loading.set(false);
+    }
+  }
+}
+```
+
+
+> 📄 **`frontend/src/app/features/costing/invoice-view.ts`** — 238 سطر
+
+```ts
+import { DatePipe, DecimalPipe } from '@angular/common';
+import { Component, computed, input } from '@angular/core';
+import { PurchaseInvoice, PurchaseInvoiceLine, UnitOfMeasure, paymentMethodLabels, paymentStatusLabels } from '../../core/costing/costing.api';
+import { MoneyPipe } from '../../core/ui/money.pipe';
+import { PaperPreview } from './invoice-paper';
+
+const baseLabels: Record<UnitOfMeasure, string> = { Gram: 'g', Millilitre: 'ml', Piece: 'pc' };
+
+// One invoice, read-only: who it is from and when, each line as billed (quantity, unit, unit
+// price, line total) and what it put into stock, or that it is an expense and under which
+// category, the total split into stock and expenses, and the paper itself. With discounts, each
+// line's (its own and its share of the invoice's) and what it came to after them, and the
+// subtotal, less the discounts, as what is paid. Shown for review before posting, from the
+// history's Show, and on the invoice's own page.
+@Component({
+  selector: 'app-invoice-view',
+  imports: [DatePipe, DecimalPipe, MoneyPipe, PaperPreview],
+  template: `
+    @let inv = invoice();
+    <dl class="details">
+      <div><dt>Supplier · المورد</dt><dd>{{ inv.supplierName ?? '—' }}</dd></div>
+      <div><dt>Invoice no. · رقم الفاتورة</dt><dd>{{ inv.supplierInvoiceNumber ?? '—' }}</dd></div>
+      <div><dt>Date · التاريخ</dt><dd>{{ date() | date: 'd MMM y' }}</dd></div>
+      @if (discounted()) {
+        <div><dt>Net payable · الصافي المستحق</dt><dd class="total">{{ inv.total | money }}</dd></div>
+      } @else {
+        <div><dt>Total · الإجمالي</dt><dd class="total">{{ inv.total | money }}</dd></div>
+      }
+      <div>
+        <dt>Paid · طريقة الدفع</dt>
+        <dd>
+          @if (inv.paymentMethod; as m) {
+            {{ methods[m].en }}{{ m === 'DayRevenue' && inv.revenueDate ? ' of ' + (inv.revenueDate | date: 'd MMM') : '' }}
+            @if (inv.status === 'Posted' && (inv.paymentStatus === 'Pending' || inv.paymentStatus === 'Unpaid')) {
+              <span class="pay-status" [class]="inv.paymentStatus">{{ statuses[inv.paymentStatus].en }}</span>
+            }
+          } @else {
+            Not chosen yet
+          }
+        </dd>
+      </div>
+    </dl>
+    <p class="muted status">
+      @if (inv.status === 'Voided') {
+        <span class="voided-badge">Voided<span class="ar">ملغاة</span></span>
+        {{ inv.voidedAtUtc | date: 'EEE d MMM y, HH:mm' }} by {{ inv.voidedBy || 'a manager' }}: its goods were taken back out of stock and its
+        expenses left the reports. Posted {{ inv.postedAtUtc | date: 'd MMM y' }} by {{ inv.postedBy || 'someone' }}.
+      } @else if (inv.status === 'Posted') {
+        Posted {{ inv.postedAtUtc | date: 'EEE d MMM y, HH:mm' }} by {{ inv.postedBy || 'someone' }}; entered by {{ inv.createdBy || 'someone' }}.
+      } @else {
+        A draft, not posted: nothing on it is in stock or in the expenses yet.
+      }
+    </p>
+    <div class="table-wrap">
+      <table class="grid">
+        <thead>
+          <tr>
+            <th>Item<span class="ar">الصنف</span></th>
+            <th>Category<span class="ar">الفئة</span></th>
+            <th class="num">Quantity<span class="ar">الكمية</span></th>
+            <th>Unit<span class="ar">الوحدة</span></th>
+            <th class="num">Unit price<span class="ar">سعر الوحدة</span></th>
+            <th class="num">Line total<span class="ar">إجمالي السطر</span></th>
+            @if (discounted()) {
+              <th class="num">Discount<span class="ar">الخصم</span></th>
+              <th class="num">Net<span class="ar">الصافي</span></th>
+            }
+            <th class="num">Into stock<span class="ar">إلى المخزون</span></th>
+          </tr>
+        </thead>
+        <tbody>
+          @for (l of inv.lines; track l.rawMaterialId ?? l.expenseItemId) {
+            <tr>
+              <td>
+                {{ l.material }}
+                @if (l.itemType === 'Expense') {
+                  <span class="badge expense">Expense · مصروف</span>
+                }
+              </td>
+              <td>{{ l.category ?? '—' }}</td>
+              <td class="num">{{ l.enteredQuantity | number: '1.0-3' }}</td>
+              <td>{{ l.unitLabel }}</td>
+              <td class="num">{{ written(l) === null ? '' : (written(l)! / l.enteredQuantity | money) }}</td>
+              <td class="num">{{ written(l) === null ? 'No price' : (written(l) | money) }}</td>
+              @if (discounted()) {
+                <td class="num">
+                  {{ off(l) > 0 ? (off(l) | money) : '' }}
+                  @if (l.discountShare) {
+                    <small class="muted share">{{ l.discountShare | money }} of the invoice's</small>
+                  }
+                </td>
+                <td class="num">{{ l.cost === null ? '' : (l.cost | money) }}</td>
+              }
+              <td class="num muted">{{ l.itemType === 'Expense' ? 'Not stock' : (l.quantity | number: '1.0-3') + ' ' + base(l) }}</td>
+            </tr>
+          } @empty {
+            <tr><td [attr.colspan]="discounted() ? 9 : 7" class="muted">No lines.</td></tr>
+          }
+        </tbody>
+        <tfoot>
+          @if (discounted()) {
+            <!-- Subtotal, less every discount, as what is paid: each under its column. -->
+            <tr class="split">
+              <td colspan="5">{{ inv.lines.length }} {{ inv.lines.length === 1 ? 'line' : 'lines' }} · Subtotal · الإجمالي قبل الخصم</td>
+              <td class="num">{{ inv.subtotal ?? 0 | money }}</td>
+              <td class="num">− {{ (inv.lineDiscounts ?? 0) + (inv.discount ?? 0) | money }}</td>
+              <td colspan="2"></td>
+            </tr>
+            @if ((inv.discount ?? 0) > 0) {
+              <tr class="split">
+                <td colspan="6">Of which the invoice discount · منها خصم الفاتورة</td>
+                <td class="num">{{ inv.discount | money }}</td>
+                <td colspan="2"></td>
+              </tr>
+            }
+            @if (inv.expenseTotal > 0) {
+              <tr class="split">
+                <td colspan="7">Into stock · إلى المخزون</td>
+                <td class="num">{{ inv.inventoryTotal | money }}</td>
+                <td></td>
+              </tr>
+              <tr class="split">
+                <td colspan="7">Expenses · مصروفات</td>
+                <td class="num">{{ inv.expenseTotal | money }}</td>
+                <td></td>
+              </tr>
+            }
+            <tr>
+              <td colspan="7">Net payable · الصافي المستحق</td>
+              <td class="num">{{ inv.total | money }}</td>
+              <td></td>
+            </tr>
+          } @else {
+            @if (inv.expenseTotal > 0) {
+              <tr class="split">
+                <td colspan="5">Into stock · إلى المخزون</td>
+                <td class="num">{{ inv.inventoryTotal | money }}</td>
+                <td></td>
+              </tr>
+              <tr class="split">
+                <td colspan="5">Expenses · مصروفات</td>
+                <td class="num">{{ inv.expenseTotal | money }}</td>
+                <td></td>
+              </tr>
+            }
+            <tr>
+              <td colspan="5">{{ inv.lines.length }} {{ inv.lines.length === 1 ? 'line' : 'lines' }}</td>
+              <td class="num">{{ inv.total | money }}</td>
+              <td></td>
+            </tr>
+          }
+        </tfoot>
+      </table>
+    </div>
+    <section class="paper">
+      <h3>Paper <span class="inline-ar">صورة الفاتورة</span></h3>
+      @if (inv.attachment; as paper) {
+        <app-paper-preview [invoiceId]="inv.id" [fileName]="paper.fileName" />
+      } @else {
+        <p class="muted">No photo or scan attached.</p>
+      }
+    </section>
+  `,
+  styleUrl: './costing.scss',
+  styles: `
+    .details {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+      gap: 8px 16px;
+      margin: 0 0 4px;
+
+      dt {
+        font: var(--mat-sys-label-medium);
+        color: var(--mat-sys-on-surface-variant);
+      }
+      dd {
+        margin: 2px 0 0;
+        font: var(--mat-sys-body-large);
+      }
+      .total {
+        font-weight: 600;
+      }
+    }
+    .status {
+      margin: 0 0 12px;
+    }
+    .badge.expense {
+      background: color-mix(in srgb, var(--app-warn) 16%, transparent);
+      color: var(--app-warn);
+    }
+    tfoot tr.split td {
+      font-weight: 400;
+    }
+    .share {
+      display: block;
+      white-space: nowrap;
+    }
+    .paper {
+      margin-top: 16px;
+
+      h3 {
+        margin: 0 0 8px;
+        font: var(--mat-sys-title-medium);
+      }
+    }
+  `,
+})
+export class InvoiceView {
+  protected readonly methods = paymentMethodLabels;
+  protected readonly statuses = paymentStatusLabels;
+  readonly invoice = input.required<PurchaseInvoice>();
+
+  // Anything taken off it, by a line or on the whole invoice.
+  protected readonly discounted = computed(() => {
+    const inv = this.invoice();
+    return (inv.lineDiscounts ?? 0) > 0 || (inv.discount ?? 0) > 0;
+  });
+
+  // A line as written on the paper, before its discounts.
+  protected written(line: PurchaseInvoiceLine): number | null {
+    return line.lineTotal ?? line.cost;
+  }
+
+  // What was taken off a line: its own discount and its share of the invoice's.
+  protected off(line: PurchaseInvoiceLine): number {
+    return (line.discount ?? 0) + (line.discountShare ?? 0);
+  }
+
+  // The date on the supplier's paper; when none was written, the day it was posted or entered.
+  protected date(): string {
+    const inv = this.invoice();
+    return inv.invoiceDate ?? inv.postedAtUtc ?? inv.createdAtUtc;
+  }
+
+  protected base(line: PurchaseInvoiceLine): string {
+    return line.unit ? baseLabels[line.unit] : '';
+  }
+}
+```
+
+
+> 📄 **`frontend/src/app/features/costing/invoice-view-dialog.ts`** — 88 سطر
+
+```ts
+import { Component, inject, signal } from '@angular/core';
+import { MatButtonModule } from '@angular/material/button';
+import { MAT_DIALOG_DATA, MatDialog, MatDialogModule } from '@angular/material/dialog';
+import { MatIconModule } from '@angular/material/icon';
+import { MatProgressBarModule } from '@angular/material/progress-bar';
+import { RouterLink } from '@angular/router';
+import { firstValueFrom } from 'rxjs';
+import { CostingApi, PurchaseInvoice } from '../../core/costing/costing.api';
+import { errorMessage } from '../../core/http/error-message';
+import { InvoiceView } from './invoice-view';
+
+export interface InvoiceViewData {
+  invoiceId: string;
+}
+
+// The history's Show: one invoice, read-only, over the list, so the place in it is kept.
+@Component({
+  selector: 'app-invoice-view-dialog',
+  imports: [InvoiceView, MatButtonModule, MatDialogModule, MatIconModule, MatProgressBarModule, RouterLink],
+  template: `
+    <h2 mat-dialog-title>
+      {{ invoice()?.supplierName ?? 'Purchase invoice' }}{{ invoice()?.supplierInvoiceNumber ? ' · ' + invoice()!.supplierInvoiceNumber : '' }}
+      <span class="inline-ar">عرض تفاصيل الفاتورة</span>
+    </h2>
+    <mat-dialog-content>
+      @if (error()) {
+        <p class="error">{{ error() }}</p>
+      } @else if (invoice(); as inv) {
+        <app-invoice-view [invoice]="inv" />
+      } @else if (loading()) {
+        <mat-progress-bar mode="indeterminate" />
+      } @else {
+        <p class="error">No such invoice. It may have been a draft that was discarded.</p>
+      }
+    </mat-dialog-content>
+    <mat-dialog-actions align="end">
+      @if (invoice()?.status === 'Posted') {
+        <a mat-button [routerLink]="['/costing/purchases/new']" [queryParams]="{ correct: data.invoiceId }" mat-dialog-close><mat-icon>edit</mat-icon> Edit</a>
+      }
+      <a mat-button [routerLink]="['/costing/purchases/invoices', data.invoiceId]" mat-dialog-close><mat-icon>open_in_full</mat-icon> Open as a page</a>
+      <button mat-flat-button mat-dialog-close>Close</button>
+    </mat-dialog-actions>
+  `,
+  styles: `
+    .inline-ar {
+      direction: rtl;
+      unicode-bidi: isolate;
+      opacity: 0.75;
+      margin-left: 6px;
+    }
+    .error {
+      color: var(--mat-sys-error);
+    }
+  `,
+})
+export class InvoiceViewDialog {
+  private readonly api = inject(CostingApi);
+  protected readonly data = inject<InvoiceViewData>(MAT_DIALOG_DATA);
+
+  protected readonly invoice = signal<PurchaseInvoice | null>(null);
+  protected readonly loading = signal(true);
+  protected readonly error = signal<string | null>(null);
+
+  constructor() {
+    void this.load();
+  }
+
+  private async load(): Promise<void> {
+    try {
+      this.invoice.set(await firstValueFrom(this.api.purchaseInvoice(this.data.invoiceId)));
+    } catch (error) {
+      this.error.set(errorMessage(error, 'The invoice could not be loaded.'));
+    } finally {
+      this.loading.set(false);
+    }
+  }
+}
+
+// Focus on the dialog itself: on its first button or the paper's viewer, it would open
+// scrolled past the supplier and the lines.
+export function showInvoice(dialog: MatDialog, invoiceId: string): void {
+  dialog.open<InvoiceViewDialog, InvoiceViewData>(InvoiceViewDialog, {
+    data: { invoiceId },
+    width: '1000px',
+    maxWidth: '95vw',
+    autoFocus: 'dialog',
+  });
+}
+```
+
+
+> 📄 **`frontend/src/app/features/costing/invoice-paper.ts`** — 167 سطر
+
+```ts
+import { Component, DestroyRef, effect, inject, input, signal, untracked } from '@angular/core';
+import { MatButtonModule } from '@angular/material/button';
+import { MAT_DIALOG_DATA, MatDialog, MatDialogModule } from '@angular/material/dialog';
+import { MatIconModule } from '@angular/material/icon';
+import { MatProgressBarModule } from '@angular/material/progress-bar';
+import { DomSanitizer, SafeResourceUrl } from '@angular/platform-browser';
+import { Observable, firstValueFrom } from 'rxjs';
+import { CostingApi } from '../../core/costing/costing.api';
+import { errorMessage } from '../../core/http/error-message';
+import { saveBlob } from '../../core/ui/save-blob';
+
+// An invoice's photo or scan, fetched with the manager's sign-in (a plain link would carry none)
+// and shown in the page: a photo as it is, a PDF in the browser's own viewer. A till running
+// full screen has no tabs to open it in. Another file (an employee's ID card) is shown the same
+// way, given how to fetch it.
+@Component({
+  selector: 'app-paper-preview',
+  imports: [MatButtonModule, MatIconModule, MatProgressBarModule],
+  template: `
+    @if (error()) {
+      <p class="error">{{ error() }}</p>
+    } @else if (image(); as src) {
+      <img [src]="src" [alt]="fileName()" />
+    } @else if (document(); as src) {
+      <iframe [src]="src" [title]="fileName()"></iframe>
+    } @else {
+      <mat-progress-bar mode="indeterminate" />
+    }
+    <div class="actions">
+      <span class="name">{{ fileName() }}</span>
+      <button mat-button (click)="download()" [disabled]="!blob()"><mat-icon>download</mat-icon> Download</button>
+    </div>
+  `,
+  styles: `
+    :host {
+      display: block;
+    }
+    /* As tall as where it is shown lets it: --paper-height, 70vh unless said. */
+    img {
+      display: block;
+      max-width: 100%;
+      max-height: var(--paper-height, 70vh);
+      margin: 0 auto;
+    }
+    iframe {
+      display: block;
+      width: 100%;
+      min-width: var(--paper-min-width, min(80vw, 640px));
+      height: var(--paper-height, 70vh);
+      border: 0;
+    }
+    .actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 4px;
+    }
+    .name {
+      flex: 1;
+      color: var(--mat-sys-on-surface-variant);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .error {
+      color: var(--mat-sys-error);
+    }
+  `,
+})
+export class PaperPreview {
+  private readonly api = inject(CostingApi);
+  private readonly sanitizer = inject(DomSanitizer);
+
+  readonly invoiceId = input<string | null>(null);
+  // Another file than an invoice's paper: how it is fetched.
+  readonly fetch = input<(() => Observable<Blob>) | null>(null);
+  readonly fileName = input.required<string>();
+
+  protected readonly image = signal<string | null>(null);
+  protected readonly document = signal<SafeResourceUrl | null>(null);
+  protected readonly error = signal<string | null>(null);
+  protected readonly blob = signal<Blob | null>(null);
+  private url: string | null = null;
+
+  constructor() {
+    effect(() => {
+      const [id, fetch] = [this.invoiceId(), this.fetch()];
+      untracked(() => void this.load(fetch ?? (() => this.api.purchaseInvoiceFile(id!))));
+    });
+    inject(DestroyRef).onDestroy(() => this.release());
+  }
+
+  protected download(): void {
+    const blob = this.blob();
+    if (blob) {
+      saveBlob(blob, this.fileName());
+    }
+  }
+
+  private async load(fetch: () => Observable<Blob>): Promise<void> {
+    this.release();
+    this.image.set(null);
+    this.document.set(null);
+    this.error.set(null);
+    try {
+      const blob = await firstValueFrom(fetch());
+      this.blob.set(blob);
+      this.url = URL.createObjectURL(blob);
+      if (blob.type.startsWith('image/')) {
+        this.image.set(this.url);
+      } else {
+        // A PDF, in the browser's own viewer. The URL is one made here, of a file the till checked
+        // was a PDF by its first bytes when it was uploaded.
+        this.document.set(this.sanitizer.bypassSecurityTrustResourceUrl(this.url));
+      }
+    } catch (error) {
+      this.error.set(errorMessage(error, 'The file could not be loaded.'));
+    }
+  }
+
+  private release(): void {
+    if (this.url) {
+      URL.revokeObjectURL(this.url);
+      this.url = null;
+    }
+  }
+}
+
+export interface InvoicePaperData {
+  invoiceId: string;
+  fileName: string;
+}
+
+// The paper alone, over the page: from the invoice being entered, or a paperclip in the history.
+@Component({
+  selector: 'app-invoice-paper',
+  imports: [MatButtonModule, MatDialogModule, PaperPreview],
+  template: `
+    <h2 mat-dialog-title>{{ data.fileName }} <span class="inline-ar">صورة الفاتورة</span></h2>
+    <mat-dialog-content>
+      <app-paper-preview [invoiceId]="data.invoiceId" [fileName]="data.fileName" />
+    </mat-dialog-content>
+    <mat-dialog-actions align="end">
+      <button mat-flat-button mat-dialog-close>Close</button>
+    </mat-dialog-actions>
+  `,
+  styles: `
+    .inline-ar {
+      direction: rtl;
+      unicode-bidi: isolate;
+      opacity: 0.75;
+      margin-left: 6px;
+    }
+  `,
+})
+export class InvoicePaperDialog {
+  protected readonly data = inject<InvoicePaperData>(MAT_DIALOG_DATA);
+}
+
+// The icon beside a paper's name: a PDF or a photo.
+export function paperIcon(fileName: string): string {
+  return fileName.toLowerCase().endsWith('.pdf') ? 'picture_as_pdf' : 'image';
+}
+
+export function viewInvoicePaper(dialog: MatDialog, invoiceId: string, fileName: string): void {
+  dialog.open<InvoicePaperDialog, InvoicePaperData>(InvoicePaperDialog, { data: { invoiceId, fileName }, maxWidth: '95vw' });
+}
+```
+
+
+الفئات وحذفها (بخطة لكل صنف)، والموردون، والمصروفات العمومية:
+
+> 📄 **`frontend/src/app/features/costing/purchase-categories-page.ts`** — 255 سطر
+
+```ts
+import { Component, computed, inject, input, signal } from '@angular/core';
+import { FormsModule } from '@angular/forms';
+import { MatButtonModule } from '@angular/material/button';
+import { MatDialog } from '@angular/material/dialog';
+import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatIconModule } from '@angular/material/icon';
+import { MatProgressBarModule } from '@angular/material/progress-bar';
+import { MatTabsModule } from '@angular/material/tabs';
+import { MatTooltipModule } from '@angular/material/tooltip';
+import { ActivatedRoute, Router } from '@angular/router';
+import { firstValueFrom } from 'rxjs';
+import { ApprovalRequest, CategoryKind, CostingApi, PurchaseCategory, expenseLineLabels } from '../../core/costing/costing.api';
+import { errorMessage } from '../../core/http/error-message';
+import { NotifyService } from '../../core/ui/notify.service';
+import { Approvals, pendingLabel } from './approvals';
+import { CategoryDeleteDialog, CategoryDeleteDialogData } from './category-delete-dialog';
+import { PurchaseCategoryDialog, PurchaseCategoryDialogData } from './purchase-category-dialog';
+
+// The categories (الأقسام), for purchases and expenses alike: what raw materials and expense items are
+// filed under, so purchases add up by category, and where each category's expenses count in the
+// profit and loss. One holding anything is deleted only after choosing where it moves, so nothing
+// is left without one, and on the way its raw materials can be made expense items or its expense
+// items raw materials (CategoryDeleteDialog); General, where anything not yet sorted goes, is never
+// deleted. One whose deletion waits for a manager is marked, and locked. Each kind on a tab of its
+// own, with only the columns it needs, and adding there adds one of that kind; the tab is kept in
+// the address (?tab=expenses), so a reload or a link opens it again.
+@Component({
+  selector: 'app-purchase-categories-page',
+  imports: [MatButtonModule, MatIconModule, MatProgressBarModule, MatTabsModule, MatTooltipModule],
+  template: `
+    <p class="note">
+      How purchases are grouped: Meat, Dairy, Packaging for raw materials; Utilities, Cleaning, Rent for expense items. Each category
+      is for one kind: a raw material goes in a raw materials category, an expense item in a general expenses one, and spending is
+      added up by them. For expenses, the category also says where they count in the profit and loss.
+      <span class="inline-ar">تصنيف المشتريات والخامات والمصروفات.</span>
+    </p>
+    @if (loading()) {
+      <mat-progress-bar mode="indeterminate" />
+    } @else if (error()) {
+      <p class="error">{{ error() }}</p>
+    } @else {
+      <mat-tab-group [selectedIndex]="kinds.indexOf(kind())" (selectedIndexChange)="selectTab($event)" animationDuration="0ms" mat-stretch-tabs="false">
+        @for (k of kinds; track k) {
+          <mat-tab>
+            <ng-template mat-tab-label>
+              {{ tabLabels[k].en }}<span class="inline-ar">{{ tabLabels[k].ar }}</span><span class="count">{{ of(k).length }}</span>
+            </ng-template>
+            <div class="toolbar">
+              <span class="spacer"></span>
+              <button mat-flat-button (click)="add(k)"><mat-icon>add</mat-icon> Add category</button>
+            </div>
+            <div class="table-wrap">
+              <table class="grid">
+                <thead>
+                  <tr>
+                    <th>Category<span class="ar">الفئة</span></th>
+                    <th>Arabic name<span class="ar">الاسم بالعربية</span></th>
+                    @if (k === 'Expenses') {
+                      <th>Expenses count as<span class="ar">تُحتسب المصروفات ضمن</span></th>
+                      <th class="num">Expense items<span class="ar">بنود المصروفات</span></th>
+                    } @else {
+                      <th class="num">Raw materials<span class="ar">الخامات</span></th>
+                    }
+                    <th class="num"><span class="visually-hidden">Actions</span></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  @for (c of of(k); track c.id) {
+                    <tr [class.pending-deletion]="!!pendingOf(c)">
+                      <td>
+                        {{ c.name }}
+                        @if (c.isGeneral) {
+                          <span class="badge">Default · افتراضي</span>
+                        }
+                        @if (c.misplaced) {
+                          <div class="misplaced">
+                            {{ c.misplaced }} {{ c.kind === 'RawMaterials' ? (c.misplaced === 1 ? 'expense item does' : 'expense items do') : (c.misplaced === 1 ? 'raw material does' : 'raw materials do') }}
+                            not belong here: move or convert {{ c.misplaced === 1 ? 'it' : 'them' }}.
+                          </div>
+                        }
+                        @if (pendingOf(c); as p) {
+                          <div><span class="pending-badge">{{ pendingLabel(p).en }}<span class="ar">{{ pendingLabel(p).ar }}</span></span>
+                            <span class="muted small"> by {{ p.requestedBy }}</span></div>
+                        }
+                      </td>
+                      <td dir="rtl" class="ar-cell">{{ c.nameAr ?? '—' }}</td>
+                      @if (k === 'Expenses') {
+                        <td>{{ lines[c.expenseLine].en }}<span class="ar">{{ lines[c.expenseLine].ar }}</span></td>
+                        <td class="num">{{ c.expenseItems }}</td>
+                      } @else {
+                        <td class="num">{{ c.materials }}</td>
+                      }
+                      <td class="num actions">
+                        @if (pendingOf(c)) {
+                          <mat-icon class="locked" matTooltip="Waiting for a manager's approval: locked until decided" aria-label="Locked: waiting for a manager">lock_clock</mat-icon>
+                        } @else {
+                          <button mat-icon-button (click)="edit(c)" [attr.aria-label]="'Edit ' + c.name"><mat-icon>edit</mat-icon></button>
+                          @if (!c.isGeneral) {
+                            <button mat-icon-button class="danger" (click)="remove(c)" [attr.aria-label]="'Delete ' + c.name">
+                              <mat-icon>delete</mat-icon>
+                            </button>
+                          }
+                        }
+                      </td>
+                    </tr>
+                  } @empty {
+                    <tr><td [attr.colspan]="k === 'Expenses' ? 5 : 4" class="muted">No {{ tabLabels[k].en.toLowerCase() }} categories yet.</td></tr>
+                  }
+                </tbody>
+              </table>
+            </div>
+          </mat-tab>
+        }
+      </mat-tab-group>
+    }
+  `,
+  styleUrl: './costing.scss',
+  styles: `
+    .ar-cell {
+      text-align: start;
+    }
+    .count {
+      margin-left: 8px;
+      padding: 0 8px;
+      border-radius: 999px;
+      font: var(--mat-sys-label-small);
+      background: var(--mat-sys-surface-container-highest);
+      color: var(--mat-sys-on-surface-variant);
+    }
+    .toolbar {
+      margin-top: 12px;
+    }
+    .misplaced {
+      margin-top: 2px;
+      font-size: 0.85em;
+      color: var(--mat-sys-error);
+    }
+    .actions {
+      white-space: nowrap;
+    }
+    .danger {
+      color: var(--mat-sys-error);
+    }
+    .badge {
+      margin-left: 6px;
+      background: var(--mat-sys-surface-container-highest);
+      color: var(--mat-sys-on-surface-variant);
+    }
+    .spacer {
+      flex: 1;
+    }
+    .visually-hidden {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip: rect(0 0 0 0);
+    }
+  `,
+})
+export class PurchaseCategoriesPage {
+  private readonly api = inject(CostingApi);
+  private readonly dialog = inject(MatDialog);
+  private readonly notify = inject(NotifyService);
+  private readonly approvals = inject(Approvals);
+
+  private readonly router = inject(Router);
+  private readonly route = inject(ActivatedRoute);
+
+  protected readonly lines = expenseLineLabels;
+  protected readonly pendingLabel = pendingLabel;
+  protected readonly kinds: CategoryKind[] = ['RawMaterials', 'Expenses'];
+  protected readonly tabLabels: Record<CategoryKind, { en: string; ar: string }> = {
+    RawMaterials: { en: 'Purchases & raw materials', ar: 'مشتريات وخامات' },
+    Expenses: { en: 'General expenses', ar: 'مصروفات عمومية' },
+  };
+
+  // ?tab=expenses: the general expenses tab; anything else, the raw materials one.
+  readonly tab = input<string>();
+  protected readonly kind = computed<CategoryKind>(() => (this.tab() === 'expenses' ? 'Expenses' : 'RawMaterials'));
+  protected readonly categories = signal<PurchaseCategory[]>([]);
+  protected readonly loading = signal(true);
+  protected readonly error = signal<string | null>(null);
+
+  constructor() {
+    void this.load();
+  }
+
+  protected pendingOf(category: PurchaseCategory): ApprovalRequest | undefined {
+    return this.approvals.pendingFor(category.id);
+  }
+
+  // The categories of one kind: its General first, then by name, as the till lists them.
+  protected of(kind: CategoryKind): PurchaseCategory[] {
+    return this.categories().filter((c) => c.kind === kind);
+  }
+
+  protected selectTab(index: number): void {
+    void this.router.navigate([], {
+      relativeTo: this.route,
+      queryParams: { tab: this.kinds[index] === 'Expenses' ? 'expenses' : null },
+      queryParamsHandling: 'merge',
+      replaceUrl: true,
+    });
+  }
+
+  // One of the tab's kind: the dialog does not ask which.
+  protected async add(kind: CategoryKind): Promise<void> {
+    if (await this.open({ kind })) {
+      await this.load();
+    }
+  }
+
+  protected async edit(category: PurchaseCategory): Promise<void> {
+    if (await this.open({ category })) {
+      await this.load();
+    }
+  }
+
+  // Where what is in it goes, and what it becomes on the way: asked in the delete dialog, which
+  // deletes it (or sends it to a manager) before it closes.
+  protected async remove(category: PurchaseCategory): Promise<void> {
+    const done = await firstValueFrom(
+      this.dialog
+        .open<CategoryDeleteDialog, CategoryDeleteDialogData, boolean>(CategoryDeleteDialog, {
+          data: { category, categories: this.categories() },
+          width: '720px',
+          maxWidth: '95vw',
+        })
+        .afterClosed(),
+    );
+    if (done) {
+      await this.load();
+    }
+  }
+
+  private async open(data: PurchaseCategoryDialogData): Promise<PurchaseCategory | undefined> {
+    return firstValueFrom(
+      this.dialog
+        .open<PurchaseCategoryDialog, PurchaseCategoryDialogData, PurchaseCategory>(PurchaseCategoryDialog, { data, width: '460px' })
+        .afterClosed(),
+    );
+  }
+
+  private async load(): Promise<void> {
+    void this.approvals.refresh();
+    try {
+      this.categories.set(await firstValueFrom(this.api.purchaseCategories()));
+    } catch (error) {
+      this.error.set(errorMessage(error, 'The categories could not be loaded.'));
+    } finally {
+      this.loading.set(false);
+    }
+  }
+}
+```
+
+
+> 📄 **`frontend/src/app/features/costing/purchase-category-dialog.ts`** — 171 سطر
+
+```ts
+import { Component, inject, signal } from '@angular/core';
+import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
+import { MatButtonModule } from '@angular/material/button';
+import { MAT_DIALOG_DATA, MatDialogModule, MatDialogRef } from '@angular/material/dialog';
+import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatInputModule } from '@angular/material/input';
+import { MatRadioModule } from '@angular/material/radio';
+import { MatSelectModule } from '@angular/material/select';
+import { firstValueFrom } from 'rxjs';
+import { CategoryKind, CostingApi, ExpenseLine, PurchaseCategory, categoryKindLabels, expenseLineLabels } from '../../core/costing/costing.api';
+import { errorMessage } from '../../core/http/error-message';
+
+// A category to change, or none for a new one; fromItem when added from a material's or an
+// expense's form, which then goes into it. kind: the kind a new one is, given by that form or by
+// the categories page's tab, and then not asked.
+export interface PurchaseCategoryDialogData {
+  category?: PurchaseCategory;
+  fromItem?: boolean;
+  kind?: CategoryKind;
+}
+
+// A purchase category: what it files (raw materials or general expenses, asked of a new one), its
+// name, in English and optionally Arabic, and, for expenses, where they count in the profit and
+// loss. Closes with the category as the till saved it; a refusal (the name already taken, or a
+// kind it cannot take while it holds the other) keeps it open with all typed.
+@Component({
+  selector: 'app-purchase-category-dialog',
+  imports: [MatButtonModule, MatDialogModule, MatFormFieldModule, MatInputModule, MatRadioModule, MatSelectModule, ReactiveFormsModule],
+  template: `
+    <h2 mat-dialog-title>
+      @if (data.category) {
+        Edit category <span class="ar">تعديل الفئة</span>
+      } @else if (data.kind === 'Expenses') {
+        Add a general expenses category <span class="ar">إضافة قسم مصروفات</span>
+      } @else if (data.kind === 'RawMaterials') {
+        Add a raw materials category <span class="ar">إضافة قسم خامات</span>
+      } @else {
+        Add a purchase category <span class="ar">إضافة فئة مشتريات</span>
+      }
+    </h2>
+    <mat-dialog-content>
+      @if (data.fromItem) {
+        <p class="hint">Added now, the item goes into it.</p>
+      }
+      <form [formGroup]="form" (ngSubmit)="save()" id="purchase-category-form" class="form">
+        @if (!data.kind || data.category) {
+          <div class="kind">
+            <span class="kind-label" id="category-kind-label">Is this category for · هذا القسم لـ</span>
+            <mat-radio-group formControlName="kind" aria-labelledby="category-kind-label">
+              @for (k of kinds; track k) {
+                <mat-radio-button [value]="k">{{ kindLabels[k].en }} · {{ kindLabels[k].ar }}</mat-radio-button>
+              }
+            </mat-radio-group>
+            @if (data.category?.isGeneral) {
+              <span class="hint">Where anything not yet sorted goes: it stays {{ kindLabels[data.category!.kind].en.toLowerCase() }}.</span>
+            }
+          </div>
+        }
+        <mat-form-field>
+          <mat-label>Name · الاسم</mat-label>
+          <input matInput formControlName="name" maxlength="100" placeholder="Utilities" cdkFocusInitial />
+        </mat-form-field>
+        <mat-form-field>
+          <mat-label>Arabic name · الاسم بالعربية</mat-label>
+          <input matInput formControlName="nameAr" maxlength="100" dir="rtl" placeholder="المرافق" />
+        </mat-form-field>
+        @if (form.controls.kind.value === 'Expenses') {
+          <mat-form-field subscriptSizing="dynamic">
+            <mat-label>Expenses count as · تُحتسب المصروفات ضمن</mat-label>
+            <mat-select formControlName="expenseLine">
+              @for (line of lines; track line) {
+                <mat-option [value]="line">{{ labels[line].en }} · {{ labels[line].ar }}</mat-option>
+              }
+            </mat-select>
+            <mat-hint>{{ labels[form.controls.expenseLine.value].hint }}.</mat-hint>
+          </mat-form-field>
+        }
+      </form>
+      @if (problem(); as p) {
+        <p class="error">{{ p }}</p>
+      }
+    </mat-dialog-content>
+    <mat-dialog-actions align="end">
+      <button mat-button mat-dialog-close [disabled]="saving()">Cancel</button>
+      <button mat-flat-button type="submit" form="purchase-category-form" [disabled]="form.invalid || saving()">
+        {{ data.fromItem ? 'Add and use it' : 'Save' }}
+      </button>
+    </mat-dialog-actions>
+  `,
+  styles: `
+    .form {
+      display: grid;
+      gap: 4px;
+      min-width: min(400px, 80vw);
+    }
+    .ar {
+      direction: rtl;
+      unicode-bidi: isolate;
+      margin-left: 6px;
+      opacity: 0.75;
+      font-size: 0.8em;
+    }
+    .hint {
+      margin: 0 0 12px;
+      color: var(--mat-sys-on-surface-variant);
+    }
+    .error {
+      color: var(--mat-sys-error);
+    }
+    .kind {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      margin-bottom: 8px;
+    }
+    .kind mat-radio-group {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0 12px;
+    }
+    .kind-label {
+      font: var(--mat-sys-title-small);
+    }
+  `,
+})
+export class PurchaseCategoryDialog {
+  private readonly api = inject(CostingApi);
+  private readonly ref = inject(MatDialogRef<PurchaseCategoryDialog, PurchaseCategory>);
+  protected readonly data = inject<PurchaseCategoryDialogData>(MAT_DIALOG_DATA);
+
+  protected readonly labels = expenseLineLabels;
+  protected readonly lines = Object.keys(expenseLineLabels) as ExpenseLine[];
+  protected readonly kindLabels = categoryKindLabels;
+  protected readonly kinds: CategoryKind[] = ['RawMaterials', 'Expenses'];
+  protected readonly saving = signal(false);
+  protected readonly problem = signal<string | null>(null);
+
+  protected readonly form = new FormGroup({
+    name: new FormControl(this.data.category?.name ?? '', { nonNullable: true, validators: [Validators.required, Validators.pattern(/\S/)] }),
+    nameAr: new FormControl(this.data.category?.nameAr ?? '', { nonNullable: true }),
+    expenseLine: new FormControl<ExpenseLine>(this.data.category?.expenseLine ?? 'Controllable', { nonNullable: true }),
+    // Asked of a new one; given by the form it is added from, and a General's is fixed.
+    kind: new FormControl<CategoryKind | null>(
+      { value: this.data.category?.kind ?? this.data.kind ?? null, disabled: !!this.data.kind || !!this.data.category?.isGeneral },
+      { validators: [Validators.required] },
+    ),
+  });
+
+  // The id is made here for a new one: a retry after a lost answer adds it once.
+  private readonly id = this.data.category?.id ?? crypto.randomUUID();
+
+  protected async save(): Promise<void> {
+    if (this.form.invalid || this.saving()) {
+      return;
+    }
+    const v = this.form.getRawValue();
+    this.saving.set(true);
+    this.problem.set(null);
+    try {
+      this.ref.close(
+        await firstValueFrom(
+          this.api.savePurchaseCategory(this.id, { name: v.name.trim(), nameAr: v.nameAr.trim() || null, expenseLine: v.expenseLine, kind: v.kind! }),
+        ),
+      );
+    } catch (error) {
+      this.problem.set(errorMessage(error, 'The category could not be saved.'));
+    } finally {
+      this.saving.set(false);
+    }
+  }
+}
+```
+
+
+> 📄 **`frontend/src/app/features/costing/purchase-category-field.ts`** — 137 سطر
+
+```ts
+import { Component, computed, forwardRef, inject, input, signal } from '@angular/core';
+import { ControlValueAccessor, NG_VALUE_ACCESSOR } from '@angular/forms';
+import { MatDialog } from '@angular/material/dialog';
+import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatSelect, MatSelectModule } from '@angular/material/select';
+import { firstValueFrom } from 'rxjs';
+import { CategoryKind, CostingApi, PurchaseCategory, categoryKindLabels } from '../../core/costing/costing.api';
+import { PurchaseCategoryDialog, PurchaseCategoryDialogData } from './purchase-category-dialog';
+
+// The purchase category a material or an expense item is filed under, as a form field: only the
+// categories of its kind (raw materials for a material, general expenses for an expense item),
+// its General first, then the rest by name, and a last option to add one of its kind there and
+// then. Its value is the category's id; none given is its General. One filed in the other kind
+// before the kinds were kept apart is still offered, and said to be in the wrong kind, until it is
+// moved.
+@Component({
+  selector: 'app-purchase-category-field',
+  imports: [MatFormFieldModule, MatSelectModule],
+  providers: [{ provide: NG_VALUE_ACCESSOR, useExisting: forwardRef(() => PurchaseCategoryField), multi: true }],
+  template: `
+    <mat-form-field class="field" subscriptSizing="dynamic">
+      <mat-label>Category · الفئة</mat-label>
+      <mat-select #select [value]="value()" (selectionChange)="chosen($event.value, select)" [disabled]="disabled()" aria-label="Purchase category">
+        @for (c of shown(); track c.id) {
+          <mat-option [value]="c.id">{{ c.name }}{{ c.nameAr ? ' · ' + c.nameAr : '' }}</mat-option>
+        }
+        <mat-option [value]="newCategory" class="add-new">+ New category…</mat-option>
+      </mat-select>
+      @if (misplaced(); as m) {
+        <mat-hint class="warn-text">{{ m.name }} is a {{ labels[m.kind].en.toLowerCase() }} category: move it to one of its own kind.</mat-hint>
+      } @else if (hint()) {
+        <mat-hint>{{ hint() }}</mat-hint>
+      }
+    </mat-form-field>
+  `,
+  styles: `
+    :host {
+      display: block;
+    }
+    .field {
+      width: 100%;
+    }
+    .warn-text {
+      color: var(--mat-sys-error);
+    }
+  `,
+})
+export class PurchaseCategoryField implements ControlValueAccessor {
+  private readonly api = inject(CostingApi);
+  private readonly dialog = inject(MatDialog);
+
+  readonly hint = input<string | null>(null);
+  // What is filed: a raw material, or an expense item.
+  readonly kind = input.required<CategoryKind>();
+
+  protected readonly labels = categoryKindLabels;
+  protected readonly newCategory = '+new';
+  protected readonly categories = signal<PurchaseCategory[]>([]);
+  protected readonly value = signal<string | null>(null);
+  protected readonly disabled = signal(false);
+  // Those of its kind, and the one it is in already whatever its kind.
+  protected readonly shown = computed(() => this.categories().filter((c) => c.kind === this.kind() || c.id === this.value()));
+  protected readonly misplaced = computed(() => this.categories().find((c) => c.id === this.value() && c.kind !== this.kind()) ?? null);
+
+  private onChange: (value: string | null) => void = () => undefined;
+  private onTouched: () => void = () => undefined;
+
+  constructor() {
+    void this.load();
+  }
+
+  writeValue(value: string | null): void {
+    this.value.set(value ?? null);
+    this.fillGeneral();
+  }
+
+  registerOnChange(fn: (value: string | null) => void): void {
+    this.onChange = fn;
+  }
+
+  registerOnTouched(fn: () => void): void {
+    this.onTouched = fn;
+  }
+
+  setDisabledState(disabled: boolean): void {
+    this.disabled.set(disabled);
+  }
+
+  // A category chosen, or the last option: a new one, added and chosen; cancelled, the field
+  // keeps the one it had.
+  protected async chosen(value: string, select: MatSelect): Promise<void> {
+    this.onTouched();
+    if (value !== this.newCategory) {
+      this.set(value);
+      return;
+    }
+    select.value = this.value();
+    const created = await firstValueFrom(
+      this.dialog
+        .open<PurchaseCategoryDialog, PurchaseCategoryDialogData, PurchaseCategory>(PurchaseCategoryDialog, {
+          data: { fromItem: true, kind: this.kind() },
+          width: '460px',
+        })
+        .afterClosed(),
+    );
+    if (!created) {
+      return;
+    }
+    await this.load();
+    this.set(created.id);
+  }
+
+  private set(value: string | null): void {
+    this.value.set(value);
+    this.onChange(value);
+  }
+
+  // Nothing chosen yet: the General of its kind, as the till files it.
+  private fillGeneral(): void {
+    if (this.value() !== null) {
+      return;
+    }
+    const general = this.categories().find((c) => c.isGeneral && c.kind === this.kind());
+    if (general) {
+      this.set(general.id);
+    }
+  }
+
+  private async load(): Promise<void> {
+    try {
+      this.categories.set(await firstValueFrom(this.api.purchaseCategories()));
+      this.fillGeneral();
+    } catch {
+      // The field stays empty; saving without one files it under General.
+    }
+  }
+}
+```
+
+
+> 📄 **`frontend/src/app/features/costing/category-delete-dialog.ts`** — 400 سطر
+
+```ts
+import { Component, computed, inject, signal } from '@angular/core';
+import { FormsModule } from '@angular/forms';
+import { MatButtonModule } from '@angular/material/button';
+import { MAT_DIALOG_DATA, MatDialogModule, MatDialogRef } from '@angular/material/dialog';
+import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatInputModule } from '@angular/material/input';
+import { MatProgressBarModule } from '@angular/material/progress-bar';
+import { MatSelectModule } from '@angular/material/select';
+import { firstValueFrom } from 'rxjs';
+import {
+  CategoryDeletionPreview,
+  CategoryKind,
+  CostingApi,
+  DeleteCategoryInput,
+  ExpenseItem,
+  PurchaseCategory,
+  UnitOfMeasure,
+  expenseLineLabels,
+} from '../../core/costing/costing.api';
+import { errorMessage } from '../../core/http/error-message';
+import { NotifyService } from '../../core/ui/notify.service';
+import { Approvals } from './approvals';
+
+export interface CategoryDeleteDialogData {
+  category: PurchaseCategory;
+  categories: PurchaseCategory[];
+}
+
+// An expense item made a raw material, as it is being filled in.
+interface StockRow {
+  item: ExpenseItem;
+  unit: UnitOfMeasure | null;
+  purchaseUnit: string;
+  purchaseUnitSize: number | null;
+}
+
+// A category deleted (حذف قسم), what is in it moved first: its raw materials to one category and
+// its expense items to another, each listed by kind. To a category of its own kind, a kind moves as
+// it is; to one of the other, it is converted on the way: raw materials made expense items (bought
+// as stock by mistake), expense items made raw materials (to be counted from now on). Moved as they
+// are, it is deleted at once. Converted, the change is reviewed as the server sees it, then done at
+// once for a manager or sent to one for approval. The dialog closes with true once it has gone, or
+// been asked for.
+@Component({
+  selector: 'app-category-delete-dialog',
+  imports: [FormsModule, MatButtonModule, MatDialogModule, MatFormFieldModule, MatInputModule, MatProgressBarModule, MatSelectModule],
+  template: `
+    <h2 mat-dialog-title>Delete {{ data.category.name }} <span class="inline-ar">حذف القسم</span></h2>
+    <mat-dialog-content>
+      @if (loading()) {
+        <mat-progress-bar mode="indeterminate" />
+      } @else if (preview(); as p) {
+        <p class="summary">{{ p.summary }}.</p>
+        <div class="table-wrap">
+          <table class="grid changes">
+            <tbody>
+              @for (c of p.changes; track $index) {
+                <tr>
+                  <th scope="row">{{ c.label }}</th>
+                  <td>{{ c.before ?? '' }}</td>
+                  <td>{{ c.after ?? '' }}</td>
+                </tr>
+              }
+            </tbody>
+          </table>
+        </div>
+        @if (!approvals.canApprove()) {
+          <p class="ask">A manager approves this: nothing changes until then, and {{ data.category.name }} is locked.</p>
+          <mat-form-field class="wide" subscriptSizing="dynamic">
+            <mat-label>Reason · السبب</mat-label>
+            <textarea matInput [(ngModel)]="reason" maxlength="500" rows="2" placeholder="Optional: tells the manager why"></textarea>
+          </mat-form-field>
+        }
+      } @else if (!filed()) {
+        <p>Nothing is in {{ data.category.name }}. It is deleted straight away.</p>
+      } @else {
+        <p>They move, with their purchases, to other categories: each kind to one of its own as it is, or to one of the other kind, converted on the way.</p>
+        @if (data.category.materials) {
+          <div class="step">
+            <mat-form-field subscriptSizing="dynamic" class="target">
+              <mat-label>Its {{ count(data.category.materials, 'raw material') }} go to · تُنقل الخامات إلى</mat-label>
+              <mat-select [(ngModel)]="materialsTo" (ngModelChange)="error.set(null)" aria-label="Where its raw materials go">
+                <mat-optgroup label="Raw materials · خامات (as they are)">
+                  @for (c of targets('RawMaterials'); track c.id) {
+                    <mat-option [value]="c.id">{{ c.name }}</mat-option>
+                  }
+                </mat-optgroup>
+                <mat-optgroup label="General expenses · مصروفات (made expense items)">
+                  @for (c of targets('Expenses'); track c.id) {
+                    <mat-option [value]="c.id">{{ c.name }}</mat-option>
+                  }
+                </mat-optgroup>
+              </mat-select>
+              @if (kindOf(materialsTo) === 'Expenses') {
+                <mat-hint>Their expenses count as {{ lines[target(materialsTo)!.expenseLine].en }}</mat-hint>
+              }
+            </mat-form-field>
+            <p class="hint" [class.warn]="materialsBecomeExpenses()">{{ materialsEffect() }}</p>
+          </div>
+        }
+        @if (data.category.expenseItems) {
+          <div class="step">
+            <mat-form-field subscriptSizing="dynamic" class="target">
+              <mat-label>Its {{ count(data.category.expenseItems, 'expense item') }} go to · تُنقل بنود المصروفات إلى</mat-label>
+              <mat-select [(ngModel)]="expenseItemsTo" (ngModelChange)="error.set(null)" aria-label="Where its expense items go">
+                <mat-optgroup label="General expenses · مصروفات (as they are)">
+                  @for (c of targets('Expenses'); track c.id) {
+                    <mat-option [value]="c.id">{{ c.name }}</mat-option>
+                  }
+                </mat-optgroup>
+                <mat-optgroup label="Raw materials · خامات (made raw materials)">
+                  @for (c of targets('RawMaterials'); track c.id) {
+                    <mat-option [value]="c.id">{{ c.name }}</mat-option>
+                  }
+                </mat-optgroup>
+              </mat-select>
+            </mat-form-field>
+            <p class="hint" [class.warn]="expenseItemsBecomeStock()">{{ expenseItemsEffect() }}</p>
+            @if (expenseItemsBecomeStock()) {
+              <div class="table-wrap">
+                <table class="grid units">
+                  <thead>
+                    <tr>
+                      <th>Expense item<span class="ar">بند المصروف</span></th>
+                      <th>Counted in<span class="ar">وحدة العد</span></th>
+                      <th>Bought by<span class="ar">وحدة الشراء</span></th>
+                      <th class="num">How much one holds<span class="ar">تحتوي</span></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    @for (r of rows(); track r.item.id) {
+                      <tr>
+                        <td>{{ r.item.name }}</td>
+                        <td>
+                          <mat-form-field subscriptSizing="dynamic" class="unit">
+                            <mat-select [(ngModel)]="r.unit" [aria-label]="r.item.name + ', counted in'" placeholder="Choose">
+                              <mat-option value="Gram">Grams (g)</mat-option>
+                              <mat-option value="Millilitre">Millilitres (ml)</mat-option>
+                              <mat-option value="Piece">Pieces (pc)</mat-option>
+                            </mat-select>
+                          </mat-form-field>
+                        </td>
+                        <td>
+                          <mat-form-field subscriptSizing="dynamic" class="unit">
+                            <input matInput [(ngModel)]="r.purchaseUnit" maxlength="32" [attr.aria-label]="r.item.name + ', bought by'" />
+                          </mat-form-field>
+                        </td>
+                        <td class="num">
+                          <mat-form-field subscriptSizing="dynamic" class="size">
+                            <input matInput type="number" min="0" step="any" [(ngModel)]="r.purchaseUnitSize" [attr.aria-label]="r.item.name + ', how much one holds'" />
+                            @if (r.unit) {
+                              <span matTextSuffix>&nbsp;{{ unitNames[r.unit] }}</span>
+                            }
+                          </mat-form-field>
+                        </td>
+                      </tr>
+                    }
+                  </tbody>
+                </table>
+              </div>
+            }
+          </div>
+        }
+      }
+      @if (error(); as e) {
+        <p class="error" role="alert">{{ e }}</p>
+      }
+    </mat-dialog-content>
+    <mat-dialog-actions align="end">
+      @if (preview()) {
+        <button mat-button (click)="preview.set(null)" [disabled]="saving()">Back</button>
+        <button mat-flat-button class="danger-fill" (click)="send()" [disabled]="saving()">
+          {{ approvals.canApprove() ? 'Delete and convert' : 'Send for approval' }}
+        </button>
+      } @else {
+        <button mat-button mat-dialog-close [disabled]="saving()">Cancel</button>
+        @if (converts()) {
+          <button mat-flat-button (click)="review()" [disabled]="saving() || loading()">Review the changes</button>
+        } @else {
+          <button mat-flat-button class="danger-fill" (click)="send()" [disabled]="saving() || loading()">
+            {{ filed() ? 'Move and delete' : 'Delete' }}
+          </button>
+        }
+      }
+    </mat-dialog-actions>
+  `,
+  styleUrl: './costing.scss',
+  styles: `
+    .step {
+      margin: 12px 0;
+    }
+    .hint {
+      margin: 4px 0 0;
+      color: var(--mat-sys-on-surface-variant);
+    }
+    .hint.warn {
+      color: var(--mat-sys-on-surface);
+      font-weight: 500;
+    }
+    .target {
+      min-width: 300px;
+    }
+    .unit {
+      width: 150px;
+    }
+    .size {
+      width: 130px;
+    }
+    .wide {
+      width: 100%;
+    }
+    .summary {
+      font-weight: 500;
+    }
+    .ask {
+      margin: 8px 0;
+      font-weight: 500;
+    }
+    .changes th {
+      text-align: start;
+    }
+    .danger-fill:not(:disabled) {
+      background: var(--mat-sys-error);
+      color: var(--mat-sys-on-error);
+    }
+  `,
+})
+export class CategoryDeleteDialog {
+  protected readonly data = inject<CategoryDeleteDialogData>(MAT_DIALOG_DATA);
+  private readonly ref = inject(MatDialogRef<CategoryDeleteDialog, boolean>);
+  private readonly api = inject(CostingApi);
+  private readonly notify = inject(NotifyService);
+  protected readonly approvals = inject(Approvals);
+  protected readonly lines = expenseLineLabels;
+  protected readonly unitNames: Record<UnitOfMeasure, string> = { Gram: 'g', Millilitre: 'ml', Piece: 'pc' };
+
+  protected readonly loading = signal(true);
+  protected readonly saving = signal(false);
+  protected readonly error = signal<string | null>(null);
+  protected readonly preview = signal<CategoryDeletionPreview | null>(null);
+  // Its expense items still in use: the ones that would become raw materials.
+  protected readonly rows = signal<StockRow[]>([]);
+
+  // Where each kind goes: chosen, never assumed.
+  private readonly materialsTarget = signal<string | null>(null);
+  protected get materialsTo(): string | null {
+    return this.materialsTarget();
+  }
+  protected set materialsTo(value: string | null) {
+    this.materialsTarget.set(value);
+  }
+  private readonly expensesTarget = signal<string | null>(null);
+  protected get expenseItemsTo(): string | null {
+    return this.expensesTarget();
+  }
+  protected set expenseItemsTo(value: string | null) {
+    this.expensesTarget.set(value);
+  }
+  protected reason = '';
+  private readonly requestId = crypto.randomUUID();
+
+  protected readonly filed = computed(() => this.data.category.materials + this.data.category.expenseItems);
+  protected readonly materialsBecomeExpenses = computed(
+    () => this.data.category.materials > 0 && this.kindOf(this.materialsTarget()) === 'Expenses',
+  );
+  protected readonly expenseItemsBecomeStock = computed(
+    () => this.rows().length > 0 && this.kindOf(this.expensesTarget()) === 'RawMaterials',
+  );
+  protected readonly converts = computed(() => this.materialsBecomeExpenses() || this.expenseItemsBecomeStock());
+
+  constructor() {
+    void this.load();
+  }
+
+  // The other categories of that kind, its General first.
+  protected targets(kind: CategoryKind): PurchaseCategory[] {
+    return this.data.categories.filter((c) => c.id !== this.data.category.id && c.kind === kind);
+  }
+
+  protected target(id: string | null): PurchaseCategory | null {
+    return this.data.categories.find((c) => c.id === id) ?? null;
+  }
+
+  protected kindOf(id: string | null): CategoryKind | null {
+    return this.target(id)?.kind ?? null;
+  }
+
+  protected count(n: number, what: string): string {
+    return `${n} ${n === 1 ? what : `${what}s`}`;
+  }
+
+  protected materialsEffect(): string {
+    const n = this.data.category.materials;
+    if (!this.materialsTarget()) {
+      return 'Choose where they go.';
+    }
+    if (!this.materialsBecomeExpenses()) {
+      return 'They move as they are.';
+    }
+    return n === 1
+      ? 'It becomes an expense item: its past invoice lines are restated as expenses on their own dates, and its stock ledger is taken out.'
+      : 'They become expense items: their past invoice lines are restated as expenses on their own dates, and their stock ledger is taken out.';
+  }
+
+  protected expenseItemsEffect(): string {
+    if (!this.expensesTarget()) {
+      return 'Choose where they go.';
+    }
+    if (!this.expenseItemsBecomeStock()) {
+      return 'They move as they are.';
+    }
+    return this.rows().length === 1
+      ? 'It becomes a raw material, starting with nothing on hand; its past invoices stay expenses. Say how it is counted:'
+      : 'They become raw materials, starting with nothing on hand; their past invoices stay expenses. Say how each is counted:';
+  }
+
+  protected async review(): Promise<void> {
+    const deletion = this.deletion();
+    if (!deletion) {
+      return;
+    }
+    this.saving.set(true);
+    try {
+      this.preview.set(await firstValueFrom(this.api.previewCategoryDeletion(this.data.category.id, deletion)));
+    } catch (error) {
+      this.error.set(errorMessage(error, 'What deleting it would do could not be checked.'));
+    } finally {
+      this.saving.set(false);
+    }
+  }
+
+  // Moved as they are (or nothing in it), deleted at once; converted, done or asked of a manager.
+  protected async send(): Promise<void> {
+    const deletion = this.deletion();
+    if (!deletion) {
+      return;
+    }
+    this.saving.set(true);
+    try {
+      const result = await firstValueFrom(this.api.deletePurchaseCategory(this.data.category.id, deletion));
+      if (result.outcome === 'Requested' && result.request) {
+        await this.approvals.requested({ outcome: result.outcome, request: result.request });
+      } else {
+        this.notify.info(`${this.preview()?.summary ?? `${this.data.category.name} deleted`}.`);
+      }
+      this.ref.close(true);
+    } catch (error) {
+      this.preview.set(null);
+      this.error.set(errorMessage(error, `${this.data.category.name} could not be deleted.`));
+    } finally {
+      this.saving.set(false);
+    }
+  }
+
+  // What is sent, or null with what is missing said.
+  private deletion(): DeleteCategoryInput | null {
+    if (this.data.category.materials > 0 && !this.materialsTo) {
+      this.error.set('Choose where its raw materials go.');
+      return null;
+    }
+    if (this.data.category.expenseItems > 0 && !this.expenseItemsTo) {
+      this.error.set('Choose where its expense items go.');
+      return null;
+    }
+    if (this.expenseItemsBecomeStock()) {
+      const missing = this.rows().find((r) => !r.unit || !r.purchaseUnit.trim() || !((r.purchaseUnitSize ?? 0) > 0));
+      if (missing) {
+        this.error.set(`Say what ${missing.item.name} is counted in, what it is bought by, and how much one holds.`);
+        return null;
+      }
+    }
+    this.error.set(null);
+    return {
+      requestId: this.requestId,
+      materialsTo: this.data.category.materials > 0 ? this.materialsTo : null,
+      expenseItemsTo: this.data.category.expenseItems > 0 ? this.expenseItemsTo : null,
+      units: this.expenseItemsBecomeStock()
+        ? this.rows().map((r) => ({ expenseItemId: r.item.id, unit: r.unit!, purchaseUnit: r.purchaseUnit.trim(), purchaseUnitSize: r.purchaseUnitSize! }))
+        : [],
+      reason: this.reason.trim() || null,
+    };
+  }
+
+  private async load(): Promise<void> {
+    try {
+      if (this.data.category.expenseItems > 0) {
+        const items = await firstValueFrom(this.api.expenseItems(true));
+        this.rows.set(
+          items
+            .filter((i) => i.categoryId === this.data.category.id && !i.isArchived)
+            .map((item) => ({ item, unit: null, purchaseUnit: item.unit ?? 'piece', purchaseUnitSize: 1 })),
+        );
+      }
+    } catch (error) {
+      this.error.set(errorMessage(error, 'Its expense items could not be loaded.'));
+    } finally {
+      this.loading.set(false);
+    }
+  }
+}
+```
+
+
+> 📄 **`frontend/src/app/features/costing/suppliers-page.ts`** — 265 سطر
+
+```ts
+import { DatePipe } from '@angular/common';
+import { Component, computed, inject, signal } from '@angular/core';
+import { FormsModule } from '@angular/forms';
+import { MatButtonModule } from '@angular/material/button';
+import { MatCheckboxModule } from '@angular/material/checkbox';
+import { MatDialog } from '@angular/material/dialog';
+import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatIconModule } from '@angular/material/icon';
+import { MatInputModule } from '@angular/material/input';
+import { MatProgressBarModule } from '@angular/material/progress-bar';
+import { firstValueFrom } from 'rxjs';
+import { CostingApi, Supplier } from '../../core/costing/costing.api';
+import { errorMessage } from '../../core/http/error-message';
+import { MoneyPipe } from '../../core/ui/money.pipe';
+import { NotifyService } from '../../core/ui/notify.service';
+import { SupplierDialog, SupplierDialogData } from './supplier-dialog';
+
+// The suppliers: added, changed, and removed. One on an invoice is archived rather than deleted:
+// it leaves the list new invoices choose from and stays on the invoices it is on, and can be
+// restored. One never invoiced is deleted for good. Either way it is asked first, in the row.
+@Component({
+  selector: 'app-suppliers-page',
+  imports: [
+    DatePipe,
+    FormsModule,
+    MatButtonModule,
+    MatCheckboxModule,
+    MatFormFieldModule,
+    MatIconModule,
+    MatInputModule,
+    MatProgressBarModule,
+    MoneyPipe,
+  ],
+  template: `
+    @if (loading()) {
+      <mat-progress-bar mode="indeterminate" />
+    } @else if (error()) {
+      <p class="error">{{ error() }}</p>
+    } @else {
+      <div class="toolbar">
+        <mat-form-field subscriptSizing="dynamic" class="search">
+          <mat-icon matPrefix>search</mat-icon>
+          <mat-label>Search · بحث</mat-label>
+          <input matInput [ngModel]="search()" (ngModelChange)="search.set($event)" />
+        </mat-form-field>
+        <mat-checkbox [ngModel]="showArchived()" (ngModelChange)="showArchived.set($event)">
+          Show archived <span class="inline-ar">المؤرشفة</span>
+        </mat-checkbox>
+        <span class="spacer"></span>
+        <button mat-flat-button (click)="add()"><mat-icon>add</mat-icon> Add supplier</button>
+      </div>
+      <div class="table-wrap">
+        <table class="grid">
+          <thead>
+            <tr>
+              <th>Supplier<span class="ar">المورد</span></th>
+              <th>Contact<span class="ar">المسؤول</span></th>
+              <th>Phone<span class="ar">الهاتف</span></th>
+              <th class="num">Invoices<span class="ar">الفواتير</span></th>
+              <th class="num">Bought<span class="ar">إجمالي المشتريات</span></th>
+              <th>Last invoice<span class="ar">آخر فاتورة</span></th>
+              <th class="num"><span class="visually-hidden">Actions</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            @for (s of shown(); track s.id) {
+              <tr [class.archived]="s.isArchived">
+                <td>
+                  {{ s.name }}
+                  @if (s.isArchived) {
+                    <span class="badge">Archived · مؤرشف</span>
+                  }
+                  @if (s.email) {
+                    <div class="muted small">{{ s.email }}</div>
+                  }
+                </td>
+                <td>{{ s.contactPerson ?? '—' }}</td>
+                <td class="nowrap">{{ s.phone ?? '—' }}</td>
+                <td class="num">{{ s.invoices }}</td>
+                <td class="num">{{ s.postedTotal | money }}</td>
+                <td class="nowrap">{{ s.lastPostedAtUtc ? (s.lastPostedAtUtc | date: 'd MMM y') : '—' }}</td>
+                <td class="num actions">
+                  @if (s.isArchived) {
+                    <button mat-button (click)="restore(s)" [disabled]="saving()"><mat-icon>unarchive</mat-icon> Restore</button>
+                  } @else {
+                    <button mat-icon-button (click)="edit(s)" [attr.aria-label]="'Edit ' + s.name"><mat-icon>edit</mat-icon></button>
+                    <button mat-icon-button class="danger" (click)="confirming.set(s.id)" [disabled]="confirming() === s.id"
+                      [attr.aria-label]="'Delete ' + s.name">
+                      <mat-icon>delete</mat-icon>
+                    </button>
+                  }
+                </td>
+              </tr>
+              @if (confirming() === s.id) {
+                <tr class="confirm-row">
+                  <td colspan="7">
+                    <div class="confirm">
+                      <span class="ask">
+                        @if (s.invoices) {
+                          Archive {{ s.name }}? It is on {{ s.invoices }} {{ s.invoices === 1 ? 'invoice' : 'invoices' }}, so it is kept for them
+                          and taken off the list for new ones. It can be restored.
+                        } @else {
+                          Delete {{ s.name }} for good? It is on no invoice.
+                        }
+                      </span>
+                      <span class="spacer"></span>
+                      <button mat-button (click)="confirming.set(null)" [disabled]="saving()">Cancel</button>
+                      <button mat-flat-button class="danger-fill" (click)="remove(s)" [disabled]="saving()">
+                        {{ s.invoices ? 'Archive' : 'Delete' }}
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              }
+            } @empty {
+              <tr>
+                <td colspan="7" class="muted">
+                  {{ suppliers().length ? 'No supplier matches.' : 'No suppliers yet. Add one here, or type a new name on an invoice.' }}
+                </td>
+              </tr>
+            }
+          </tbody>
+        </table>
+      </div>
+    }
+  `,
+  styleUrl: './costing.scss',
+  styles: `
+    .search {
+      min-width: 240px;
+    }
+    .small {
+      font-size: 0.85em;
+    }
+    .badge {
+      margin-left: 6px;
+      padding: 1px 8px;
+      border-radius: 999px;
+      font: var(--mat-sys-label-small);
+      background: var(--mat-sys-surface-container-highest);
+      color: var(--mat-sys-on-surface-variant);
+    }
+    tr.archived td {
+      color: var(--mat-sys-on-surface-variant);
+    }
+    .actions,
+    .nowrap {
+      white-space: nowrap;
+    }
+    tr.confirm-row td {
+      background: var(--mat-sys-error-container);
+      color: var(--mat-sys-on-error-container);
+    }
+    .confirm {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+    }
+    .spacer {
+      flex: 1;
+    }
+    .danger {
+      color: var(--mat-sys-error);
+    }
+    .danger-fill:not(:disabled) {
+      background: var(--mat-sys-error);
+      color: var(--mat-sys-on-error);
+    }
+    .visually-hidden {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip: rect(0 0 0 0);
+    }
+  `,
+})
+export class SuppliersPage {
+  private readonly api = inject(CostingApi);
+  private readonly dialog = inject(MatDialog);
+  private readonly notify = inject(NotifyService);
+
+  // All of them, archived too; the archived are shown only when asked for.
+  protected readonly suppliers = signal<Supplier[]>([]);
+  protected readonly loading = signal(true);
+  protected readonly saving = signal(false);
+  protected readonly error = signal<string | null>(null);
+  protected readonly search = signal('');
+  protected readonly showArchived = signal(false);
+  // The supplier whose delete is being asked about.
+  protected readonly confirming = signal<string | null>(null);
+
+  protected readonly shown = computed(() => {
+    const text = this.search().trim().toLowerCase();
+    return this.suppliers().filter(
+      (s) =>
+        (this.showArchived() || !s.isArchived) &&
+        (!text || [s.name, s.contactPerson, s.phone, s.email].some((v) => v?.toLowerCase().includes(text))),
+    );
+  });
+
+  constructor() {
+    void this.load();
+  }
+
+  protected async add(): Promise<void> {
+    if (await this.open({})) {
+      await this.load();
+    }
+  }
+
+  protected async edit(supplier: Supplier): Promise<void> {
+    if (await this.open({ supplier })) {
+      await this.load();
+    }
+  }
+
+  protected async remove(supplier: Supplier): Promise<void> {
+    this.saving.set(true);
+    try {
+      const { outcome } = await firstValueFrom(this.api.deleteSupplier(supplier.id));
+      this.notify.info(
+        outcome === 'Archived'
+          ? `${supplier.name} is archived: kept on its invoices, off the list for new ones.`
+          : `${supplier.name} is deleted.`,
+      );
+      this.confirming.set(null);
+      await this.load();
+    } catch (error) {
+      this.notify.error(error, 'The supplier could not be removed.');
+    } finally {
+      this.saving.set(false);
+    }
+  }
+
+  protected async restore(supplier: Supplier): Promise<void> {
+    this.saving.set(true);
+    try {
+      await firstValueFrom(this.api.restoreSupplier(supplier.id));
+      this.notify.info(`${supplier.name} is back on the list.`);
+      await this.load();
+    } catch (error) {
+      this.notify.error(error, 'The supplier could not be restored.');
+    } finally {
+      this.saving.set(false);
+    }
+  }
+
+  private async open(data: SupplierDialogData): Promise<Supplier | undefined> {
+    return firstValueFrom(
+      this.dialog.open<SupplierDialog, SupplierDialogData, Supplier>(SupplierDialog, { data, width: '520px' }).afterClosed(),
+    );
+  }
+
+  private async load(): Promise<void> {
+    try {
+      this.suppliers.set(await firstValueFrom(this.api.suppliers(true)));
+    } catch (error) {
+      this.error.set(errorMessage(error, 'The suppliers could not be loaded.'));
+    } finally {
+      this.loading.set(false);
+    }
+  }
+}
+```
+
+
+> 📄 **`frontend/src/app/features/costing/supplier-dialog.ts`** — 147 سطر
+
+```ts
+import { Component, inject, signal } from '@angular/core';
+import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
+import { MatButtonModule } from '@angular/material/button';
+import { MAT_DIALOG_DATA, MatDialogModule, MatDialogRef } from '@angular/material/dialog';
+import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatInputModule } from '@angular/material/input';
+import { firstValueFrom } from 'rxjs';
+import { CostingApi, Supplier } from '../../core/costing/costing.api';
+import { errorMessage } from '../../core/http/error-message';
+
+// One of: a supplier to change, a name typed on an invoice to add, or neither for a new one.
+export interface SupplierDialogData {
+  supplier?: Supplier;
+  name?: string;
+  // Opened from an invoice: the supplier goes on it once saved.
+  fromInvoice?: boolean;
+}
+
+// A supplier's name and how to reach them. Opened on the Suppliers tab to add or change one,
+// and over an invoice to add the supplier just typed without leaving it. Closes with the
+// supplier as the till saved it; a refusal (a name already taken) keeps it open with all typed.
+@Component({
+  selector: 'app-supplier-dialog',
+  imports: [MatButtonModule, MatDialogModule, MatFormFieldModule, MatInputModule, ReactiveFormsModule],
+  template: `
+    <h2 mat-dialog-title>
+      @if (data.supplier) {
+        Edit supplier <span class="ar">تعديل مورد</span>
+      } @else {
+        Add a supplier <span class="ar">إضافة مورد</span>
+      }
+    </h2>
+    <mat-dialog-content>
+      @if (data.fromInvoice) {
+        <p class="hint">Added now, it goes on this invoice. The rest can be filled in later on the Suppliers tab.</p>
+      }
+      <form [formGroup]="form" (ngSubmit)="save()" id="supplier-form" class="form">
+        <mat-form-field class="wide">
+          <mat-label>Name · الاسم</mat-label>
+          <input matInput formControlName="name" maxlength="200" cdkFocusInitial />
+        </mat-form-field>
+        <mat-form-field>
+          <mat-label>Contact person · المسؤول</mat-label>
+          <input matInput formControlName="contactPerson" maxlength="200" />
+        </mat-form-field>
+        <mat-form-field>
+          <mat-label>Phone · الهاتف</mat-label>
+          <input matInput type="tel" formControlName="phone" maxlength="32" />
+        </mat-form-field>
+        <mat-form-field class="wide">
+          <mat-label>Email · البريد الإلكتروني</mat-label>
+          <input matInput type="email" formControlName="email" maxlength="200" />
+        </mat-form-field>
+        <mat-form-field class="wide">
+          <mat-label>Notes · ملاحظات</mat-label>
+          <textarea matInput formControlName="notes" maxlength="500" rows="2" placeholder="Delivers Mondays and Thursdays"></textarea>
+        </mat-form-field>
+      </form>
+      @if (problem(); as p) {
+        <p class="error">{{ p }}</p>
+      }
+    </mat-dialog-content>
+    <mat-dialog-actions align="end">
+      <button mat-button mat-dialog-close [disabled]="saving()">Cancel</button>
+      <button mat-flat-button type="submit" form="supplier-form" [disabled]="form.invalid || saving()">
+        {{ data.fromInvoice ? 'Add and use it' : 'Save' }}
+      </button>
+    </mat-dialog-actions>
+  `,
+  styles: `
+    .form {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(180px, 1fr));
+      gap: 8px 12px;
+    }
+    .wide {
+      grid-column: 1 / -1;
+    }
+    .ar {
+      direction: rtl;
+      unicode-bidi: isolate;
+      margin-left: 6px;
+      opacity: 0.75;
+      font-size: 0.8em;
+    }
+    .hint {
+      margin: 0 0 12px;
+      color: var(--mat-sys-on-surface-variant);
+    }
+    .error {
+      color: var(--mat-sys-error);
+    }
+    @media (max-width: 560px) {
+      .form {
+        grid-template-columns: 1fr;
+      }
+    }
+  `,
+})
+export class SupplierDialog {
+  private readonly api = inject(CostingApi);
+  private readonly ref = inject(MatDialogRef<SupplierDialog, Supplier>);
+  protected readonly data = inject<SupplierDialogData>(MAT_DIALOG_DATA);
+
+  protected readonly saving = signal(false);
+  protected readonly problem = signal<string | null>(null);
+
+  protected readonly form = new FormGroup({
+    name: new FormControl((this.data.supplier?.name ?? this.data.name ?? '').trim(), {
+      nonNullable: true,
+      validators: [Validators.required, Validators.pattern(/\S/)],
+    }),
+    contactPerson: new FormControl(this.data.supplier?.contactPerson ?? '', { nonNullable: true }),
+    phone: new FormControl(this.data.supplier?.phone ?? '', { nonNullable: true }),
+    email: new FormControl(this.data.supplier?.email ?? '', { nonNullable: true, validators: [Validators.email] }),
+    notes: new FormControl(this.data.supplier?.notes ?? '', { nonNullable: true }),
+  });
+
+  // The id is made here for a new one: a retry after a lost answer adds it once.
+  private readonly id = this.data.supplier?.id ?? crypto.randomUUID();
+
+  protected async save(): Promise<void> {
+    if (this.form.invalid || this.saving()) {
+      return;
+    }
+    const v = this.form.getRawValue();
+    const blank = (value: string) => value.trim() || null;
+    this.saving.set(true);
+    this.problem.set(null);
+    try {
+      const saved = await firstValueFrom(
+        this.api.saveSupplier(this.id, {
+          name: v.name.trim(),
+          contactPerson: blank(v.contactPerson),
+          phone: blank(v.phone),
+          email: blank(v.email),
+          notes: blank(v.notes),
+        }),
+      );
+      this.ref.close(saved);
+    } catch (error) {
+      this.problem.set(errorMessage(error, 'The supplier could not be saved.'));
+    } finally {
+      this.saving.set(false);
+    }
+  }
+}
+```
+
+
+> 📄 **`frontend/src/app/features/costing/expense-items-page.ts`** — 379 سطر
+
+```ts
+import { DatePipe } from '@angular/common';
+import { Component, computed, inject, signal } from '@angular/core';
+import { FormsModule } from '@angular/forms';
+import { MatButtonModule } from '@angular/material/button';
+import { MatCheckboxModule } from '@angular/material/checkbox';
+import { MatDialog } from '@angular/material/dialog';
+import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatIconModule } from '@angular/material/icon';
+import { MatInputModule } from '@angular/material/input';
+import { MatProgressBarModule } from '@angular/material/progress-bar';
+import { MatSelectModule } from '@angular/material/select';
+import { RouterLink } from '@angular/router';
+import { firstValueFrom } from 'rxjs';
+import { CostingApi, ExpenseItem } from '../../core/costing/costing.api';
+import { errorMessage } from '../../core/http/error-message';
+import { MoneyPipe } from '../../core/ui/money.pipe';
+import { NotifyService } from '../../core/ui/notify.service';
+import { saveBlob } from '../../core/ui/save-blob';
+import { ExpenseItemDialog, ExpenseItemDialogData } from './expense-item-dialog';
+import { todayIso } from './financials';
+import { SheetImportData, SheetImportDialog } from './sheet-import-dialog';
+import { FilterOption, FilterSelect } from '../shared/filter-select';
+import { SearchField } from '../shared/search-field';
+import { SortOption, SortState, smartMatch, sortItems } from '../shared/smart-search';
+import { SortControl } from '../shared/sort-control';
+
+type ExpenseSort = 'name' | 'category' | 'spent' | 'last';
+
+const expenseSorts: SortOption<ExpenseSort>[] = [
+  { key: 'name', en: 'Name', ar: 'الاسم' },
+  { key: 'category', en: 'Category', ar: 'القسم' },
+  { key: 'spent', en: 'Total spent', ar: 'إجمالي المصروف', descending: true },
+  { key: 'last', en: 'Last bought', ar: 'آخر شراء', descending: true },
+];
+
+// The expense items (المصروفات العمومية): what is bought but never stock (cleaning supplies,
+// repairs, bills), each under a category that says where it counts in the profit and loss. They
+// never appear on the stock list or in recipes. One on an invoice is archived rather than
+// deleted, as a supplier is; either way it is asked first, in the row. To and from Excel, as the
+// raw materials are: the list exported, and a sheet imported, each row an item added or changed.
+@Component({
+  selector: 'app-expense-items-page',
+  imports: [
+    FilterSelect,
+    SearchField,
+    SortControl,
+    DatePipe,
+    FormsModule,
+    MatButtonModule,
+    MatCheckboxModule,
+    MatFormFieldModule,
+    MatIconModule,
+    MatInputModule,
+    MatProgressBarModule,
+    MatSelectModule,
+    MoneyPipe,
+    RouterLink,
+  ],
+  template: `
+    @if (loading()) {
+      <mat-progress-bar mode="indeterminate" />
+    } @else if (error()) {
+      <p class="error">{{ error() }}</p>
+    } @else {
+      <p class="note">
+        Expenses bought on purchase invoices beside the stock. Posted, they are only their cost: never counted, never in a recipe. Each
+        category's line takes them off the month's profit on the KPIs and the break-even worksheet.
+        <span class="inline-ar">بنود تُشترى ولا تدخل المخزون: تُسجل بتكلفتها فقط.</span>
+      </p>
+      <div class="toolbar smart">
+        <app-search-field [(value)]="search" placeholder="Name, Arabic name or category · الاسم أو القسم" />
+        <div class="pills">
+          <app-filter-select label="Category · القسم" icon="category" [options]="categoryFilters()" [(value)]="category" />
+          <app-sort-control [options]="sorts" [(sort)]="sort" />
+        </div>
+      </div>
+      <div class="toolbar">
+        <mat-checkbox [ngModel]="showArchived()" (ngModelChange)="showArchived.set($event)">
+          Show archived <span class="inline-ar">المؤرشفة</span>
+        </mat-checkbox>
+        <span class="spacer"></span>
+        <a mat-button routerLink="/costing/purchases/categories" [queryParams]="{ tab: 'expenses' }"><mat-icon>category</mat-icon> Categories <span class="inline-ar">الأقسام</span></a>
+        <button mat-stroked-button (click)="exportExcel()" [disabled]="busy()">
+          <mat-icon>download</mat-icon> Export Excel <span class="inline-ar">تصدير إلى إكسل</span>
+        </button>
+        <button mat-stroked-button (click)="importExcel()" [disabled]="busy()">
+          <mat-icon>upload_file</mat-icon> Import Excel <span class="inline-ar">استيراد من إكسل</span>
+        </button>
+        <button mat-flat-button (click)="add()"><mat-icon>add</mat-icon> Add expense item</button>
+      </div>
+      @if (busy()) {
+        <mat-progress-bar mode="indeterminate" />
+      }
+      <div class="table-wrap">
+        <table class="grid">
+          <thead>
+            <tr>
+              <th>Expense item<span class="ar">بند المصروف</span></th>
+              <th>Category<span class="ar">الفئة</span></th>
+              <th>Counted in<span class="ar">الوحدة</span></th>
+              <th class="num">Invoices<span class="ar">الفواتير</span></th>
+              <th class="num">Spent<span class="ar">إجمالي المصروف</span></th>
+              <th>Last invoice<span class="ar">آخر فاتورة</span></th>
+              <th class="num"><span class="visually-hidden">Actions</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            @for (s of shown(); track s.id) {
+              <tr [class.archived]="s.isArchived">
+                <td>
+                  {{ s.name }}
+                  @if (s.isArchived) {
+                    <span class="badge">Archived · مؤرشف</span>
+                  }
+                  @if (s.nameAr) {
+                    <span class="ar">{{ s.nameAr }}</span>
+                  }
+                </td>
+                <td>
+                  {{ s.category }}
+                  @if (s.misplaced) {
+                    <div class="misplaced" title="Filed in a raw materials category before the kinds were kept apart">In a raw materials category: move it</div>
+                  }
+                </td>
+                <td class="nowrap">{{ s.unit ?? '—' }}</td>
+                <td class="num">{{ s.invoices }}</td>
+                <td class="num">{{ s.postedTotal | money }}</td>
+                <td class="nowrap">{{ s.lastPostedAtUtc ? (s.lastPostedAtUtc | date: 'd MMM y') : '—' }}</td>
+                <td class="num actions">
+                  @if (s.isArchived) {
+                    <button mat-button (click)="restore(s)" [disabled]="saving()"><mat-icon>unarchive</mat-icon> Restore</button>
+                  } @else {
+                    <button mat-icon-button (click)="edit(s)" [attr.aria-label]="'Edit ' + s.name"><mat-icon>edit</mat-icon></button>
+                    <button mat-icon-button class="danger" (click)="confirming.set(s.id)" [disabled]="confirming() === s.id"
+                      [attr.aria-label]="'Delete ' + s.name">
+                      <mat-icon>delete</mat-icon>
+                    </button>
+                  }
+                </td>
+              </tr>
+              @if (confirming() === s.id) {
+                <tr class="confirm-row">
+                  <td colspan="7">
+                    <div class="confirm">
+                      <span class="ask">
+                        @if (s.invoices) {
+                          Archive {{ s.name }}? It is on {{ s.invoices }} {{ s.invoices === 1 ? 'invoice' : 'invoices' }}, so it is kept for them,
+                          and in the reports, and taken off the list for new ones. It can be restored.
+                        } @else {
+                          Delete {{ s.name }} for good? It is on no invoice.
+                        }
+                      </span>
+                      <span class="spacer"></span>
+                      <button mat-button (click)="confirming.set(null)" [disabled]="saving()">Cancel</button>
+                      <button mat-flat-button class="danger-fill" (click)="remove(s)" [disabled]="saving()">
+                        {{ s.invoices ? 'Archive' : 'Delete' }}
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              }
+            } @empty {
+              <tr>
+                <td colspan="7" class="muted">
+                  {{ items().length ? 'No expense item matches.' : 'No expense items yet. Add one here, such as Electricity or Cleaning supplies, or type a new name on an invoice.' }}
+                </td>
+              </tr>
+            }
+          </tbody>
+        </table>
+      </div>
+    }
+  `,
+  styleUrl: './costing.scss',
+  styles: `
+    .asset-kind {
+      min-width: 150px;
+      font: var(--mat-sys-body-medium);
+    }
+    .search {
+      min-width: 240px;
+    }
+    .misplaced {
+      font-size: 0.85em;
+      color: var(--mat-sys-error);
+    }
+        .badge {
+      margin-left: 6px;
+      padding: 1px 8px;
+      border-radius: 999px;
+      font: var(--mat-sys-label-small);
+      background: var(--mat-sys-surface-container-highest);
+      color: var(--mat-sys-on-surface-variant);
+    }
+    tr.archived td {
+      color: var(--mat-sys-on-surface-variant);
+    }
+    .actions,
+    .nowrap {
+      white-space: nowrap;
+    }
+    tr.confirm-row td {
+      background: var(--mat-sys-error-container);
+      color: var(--mat-sys-on-error-container);
+    }
+    .confirm {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+    }
+    .spacer {
+      flex: 1;
+    }
+    .danger {
+      color: var(--mat-sys-error);
+    }
+    .danger-fill:not(:disabled) {
+      background: var(--mat-sys-error);
+      color: var(--mat-sys-on-error);
+    }
+    .visually-hidden {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip: rect(0 0 0 0);
+    }
+  `,
+})
+export class ExpenseItemsPage {
+  private readonly api = inject(CostingApi);
+  private readonly dialog = inject(MatDialog);
+  private readonly notify = inject(NotifyService);
+
+  // All of them, archived too; the archived are shown only when asked for.
+  protected readonly items = signal<ExpenseItem[]>([]);
+  protected readonly loading = signal(true);
+  protected readonly saving = signal(false);
+  // An export being written.
+  protected readonly busy = signal(false);
+  protected readonly error = signal<string | null>(null);
+  protected readonly search = signal('');
+  protected readonly showArchived = signal(false);
+  // The item whose delete is being asked about.
+  protected readonly confirming = signal<string | null>(null);
+
+  protected readonly category = signal('');
+  protected readonly sorts = expenseSorts;
+  protected readonly sort = signal<SortState<ExpenseSort>>({ key: 'name', direction: 1 });
+
+  private readonly listed = computed(() => this.items().filter((s) => this.showArchived() || !s.isArchived));
+
+  protected readonly categoryFilters = computed<FilterOption[]>(() => {
+    const byId = new Map<string, FilterOption>();
+    for (const item of this.listed()) {
+      const entry = byId.get(item.categoryId) ?? { value: item.categoryId, label: item.categoryAr ? `${item.category} · ${item.categoryAr}` : item.category, count: 0 };
+      entry.count = (entry.count ?? 0) + 1;
+      byId.set(item.categoryId, entry);
+    }
+    return [{ value: '', label: 'All · الكل', count: this.listed().length }, ...[...byId.values()].sort((a, b) => a.label.localeCompare(b.label))];
+  });
+
+  protected readonly shown = computed(() => {
+    const found = this.listed().filter(
+      (s) => (!this.category() || s.categoryId === this.category()) && smartMatch(this.search(), s.name, s.nameAr, s.category, s.categoryAr, s.unit),
+    );
+    return sortItems(found, this.sort(), (s, key) => {
+      switch (key) {
+        case 'category':
+          return s.category;
+        case 'spent':
+          return s.postedTotal;
+        case 'last':
+          return s.lastPostedAtUtc;
+        default:
+          return s.name;
+      }
+    }, (s) => s.name);
+  });
+
+  constructor() {
+    void this.load();
+  }
+
+  protected async add(): Promise<void> {
+    if (await this.open({})) {
+      await this.load();
+    }
+  }
+
+  protected async exportExcel(): Promise<void> {
+    this.busy.set(true);
+    try {
+      saveBlob(await firstValueFrom(this.api.exportExpenseItems()), `expense-items-${todayIso()}.xlsx`);
+      this.notify.info('Expense items exported to Excel. · تم تصدير المصروفات إلى إكسل.');
+    } catch (error) {
+      this.notify.error(error, 'The expense items could not be exported. · تعذّر تصدير المصروفات.');
+    } finally {
+      this.busy.set(false);
+    }
+  }
+
+  // A sheet imported in the dialog, which says what it did; the list read again when it changed it.
+  protected async importExcel(): Promise<void> {
+    const data: SheetImportData = {
+      title: { en: 'Import expense items from Excel', ar: 'استيراد المصروفات العمومية من إكسل' },
+      noun: { one: 'expense item', many: 'expense items', ar: 'بند المصروف' },
+      rules: [
+        {
+          en: 'A name already on the list changes that expense item; a new name adds one.',
+          ar: 'الاسم الموجود يعدّل البند، والاسم الجديد يضيف بندًا.',
+        },
+        { en: 'A blank cell leaves that detail as it is. A new category is added as a general expenses one.', ar: 'الخلية الفارغة تترك البيان كما هو. القسم الجديد يُضاف كقسم مصروفات عمومية.' },
+        { en: 'What they cost is on the purchase invoices, never on the sheet.', ar: 'التكلفة تُسجل في فواتير الشراء وليس في الملف.' },
+      ],
+      templateName: 'expense-items-template.xlsx',
+      template: () => this.api.expenseItemsTemplate(),
+      upload: (file) => this.api.importExpenseItems(file),
+    };
+    const changed = await firstValueFrom(
+      this.dialog.open<SheetImportDialog, SheetImportData, boolean>(SheetImportDialog, { data, width: '760px', maxWidth: '96vw' }).afterClosed(),
+    );
+    if (changed) {
+      await this.load();
+    }
+  }
+
+  protected async edit(item: ExpenseItem): Promise<void> {
+    if (await this.open({ item })) {
+      await this.load();
+    }
+  }
+
+  protected async remove(item: ExpenseItem): Promise<void> {
+    this.saving.set(true);
+    try {
+      const { outcome } = await firstValueFrom(this.api.deleteExpenseItem(item.id));
+      this.notify.info(
+        outcome === 'Archived' ? `${item.name} is archived: kept on its invoices and in the reports, off the list for new ones.` : `${item.name} is deleted.`,
+      );
+      this.confirming.set(null);
+      await this.load();
+    } catch (error) {
+      this.notify.error(error, 'The expense item could not be removed.');
+    } finally {
+      this.saving.set(false);
+    }
+  }
+
+  protected async restore(item: ExpenseItem): Promise<void> {
+    this.saving.set(true);
+    try {
+      await firstValueFrom(this.api.restoreExpenseItem(item.id));
+      this.notify.info(`${item.name} is back on the list.`);
+      await this.load();
+    } catch (error) {
+      this.notify.error(error, 'The expense item could not be restored.');
+    } finally {
+      this.saving.set(false);
+    }
+  }
+
+  private async open(data: ExpenseItemDialogData): Promise<ExpenseItem | undefined> {
+    return firstValueFrom(
+      this.dialog.open<ExpenseItemDialog, ExpenseItemDialogData, ExpenseItem>(ExpenseItemDialog, { data, width: '480px' }).afterClosed(),
+    );
+  }
+
+  private async load(): Promise<void> {
+    try {
+      this.items.set(await firstValueFrom(this.api.expenseItems(true)));
+    } catch (error) {
+      this.error.set(errorMessage(error, 'The expense items could not be loaded.'));
+    } finally {
+      this.loading.set(false);
+    }
+  }
+}
+```
+
+
+> 📄 **`frontend/src/app/features/costing/expense-item-dialog.ts`** — 131 سطر
+
+```ts
+import { Component, inject, signal } from '@angular/core';
+import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
+import { MatButtonModule } from '@angular/material/button';
+import { MAT_DIALOG_DATA, MatDialogModule, MatDialogRef } from '@angular/material/dialog';
+import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatInputModule } from '@angular/material/input';
+import { firstValueFrom } from 'rxjs';
+import { CostingApi, ExpenseItem } from '../../core/costing/costing.api';
+import { errorMessage } from '../../core/http/error-message';
+import { PurchaseCategoryField } from './purchase-category-field';
+
+// One of: an expense item to change, a name typed on an invoice to add, or neither for a new one.
+export interface ExpenseItemDialogData {
+  item?: ExpenseItem;
+  name?: string;
+  // Opened from an invoice: the expense goes on the line once saved.
+  fromInvoice?: boolean;
+}
+
+// An expense item (المصروفات العمومية): something bought that is never stock, such as cleaning
+// supplies, a repair or a bill. Its name, its category, which says where it counts in the profit
+// and loss, and what a line of it is usually counted in. Closes with the item as the till saved
+// it; a refusal (the name already taken) keeps it open with all typed.
+@Component({
+  selector: 'app-expense-item-dialog',
+  imports: [MatButtonModule, MatDialogModule, MatFormFieldModule, MatInputModule, PurchaseCategoryField, ReactiveFormsModule],
+  template: `
+    <h2 mat-dialog-title>
+      @if (data.item) {
+        Edit expense item <span class="ar">تعديل بند مصروف</span>
+      } @else {
+        Add an expense item <span class="ar">إضافة بند مصروف</span>
+      }
+    </h2>
+    <mat-dialog-content>
+      <p class="hint">
+        @if (data.fromInvoice) {
+          Added now, it goes on this line of the invoice.
+        }
+        Never stock: not counted, not in recipes. Posted, an invoice records only what it cost.
+      </p>
+      <form [formGroup]="form" (ngSubmit)="save()" id="expense-item-form" class="form">
+        <mat-form-field>
+          <mat-label>Name · الاسم</mat-label>
+          <input matInput formControlName="name" maxlength="200" placeholder="Electricity" cdkFocusInitial />
+        </mat-form-field>
+        <mat-form-field>
+          <mat-label>Arabic name · الاسم بالعربية</mat-label>
+          <input matInput formControlName="nameAr" maxlength="200" dir="rtl" placeholder="الكهرباء" />
+        </mat-form-field>
+        <app-purchase-category-field formControlName="categoryId" kind="Expenses" hint="Its category says where it counts in the P&L." />
+        <mat-form-field>
+          <mat-label>Usually counted in · الوحدة</mat-label>
+          <input matInput formControlName="unit" maxlength="32" placeholder="bottle, visit, month" />
+          <mat-hint>Optional: a bill is just its amount.</mat-hint>
+        </mat-form-field>
+      </form>
+      @if (problem(); as p) {
+        <p class="error">{{ p }}</p>
+      }
+    </mat-dialog-content>
+    <mat-dialog-actions align="end">
+      <button mat-button mat-dialog-close [disabled]="saving()">Cancel</button>
+      <button mat-flat-button type="submit" form="expense-item-form" [disabled]="form.invalid || saving()">
+        {{ data.fromInvoice ? 'Add and use it' : 'Save' }}
+      </button>
+    </mat-dialog-actions>
+  `,
+  styles: `
+    .form {
+      display: grid;
+      gap: 8px;
+      min-width: min(400px, 80vw);
+    }
+    .ar {
+      direction: rtl;
+      unicode-bidi: isolate;
+      margin-left: 6px;
+      opacity: 0.75;
+      font-size: 0.8em;
+    }
+    .hint {
+      margin: 0 0 12px;
+      color: var(--mat-sys-on-surface-variant);
+    }
+    .error {
+      color: var(--mat-sys-error);
+    }
+  `,
+})
+export class ExpenseItemDialog {
+  private readonly api = inject(CostingApi);
+  private readonly ref = inject(MatDialogRef<ExpenseItemDialog, ExpenseItem>);
+  protected readonly data = inject<ExpenseItemDialogData>(MAT_DIALOG_DATA);
+
+  protected readonly saving = signal(false);
+  protected readonly problem = signal<string | null>(null);
+
+  protected readonly form = new FormGroup({
+    name: new FormControl((this.data.item?.name ?? this.data.name ?? '').trim(), {
+      nonNullable: true,
+      validators: [Validators.required, Validators.pattern(/\S/)],
+    }),
+    nameAr: new FormControl(this.data.item?.nameAr ?? '', { nonNullable: true }),
+    categoryId: new FormControl<string | null>(this.data.item?.categoryId ?? null),
+    unit: new FormControl(this.data.item?.unit ?? '', { nonNullable: true }),
+  });
+
+  // The id is made here for a new one: a retry after a lost answer adds it once.
+  private readonly id = this.data.item?.id ?? crypto.randomUUID();
+
+  protected async save(): Promise<void> {
+    if (this.form.invalid || this.saving()) {
+      return;
+    }
+    const v = this.form.getRawValue();
+    this.saving.set(true);
+    this.problem.set(null);
+    try {
+      this.ref.close(
+        await firstValueFrom(
+          this.api.saveExpenseItem(this.id, { name: v.name.trim(), nameAr: v.nameAr.trim() || null, categoryId: v.categoryId, unit: v.unit.trim() || null }),
+        ),
+      );
+    } catch (error) {
+      this.problem.set(errorMessage(error, 'The expense item could not be saved.'));
+    } finally {
+      this.saving.set(false);
+    }
+  }
+}
+```
+
+
+## 11. تقفيل اليوم (شرح مفصّل)
+
+### 11.1 `EndOfDayPage`
+
+- **اليوم:** من `?date=` أو اليوم التجاري من الخادم، ولا يتجاوز اليوم.
+- **الأقسام الستة** (الفصل 05): لكل نوع فاتورة نموذج `EodInvoiceForm` (الصورة من الكاميرا أو ملف، المورد، الإجمالي، ملاحظة) بمعرّف يُصنع مرة؛ ونماذج المدفوعات `EodPayoutForm`؛ وتقرير المبيعات (العُهدة، الكاش، الفيزا، الضريبة، الإلغاءات، صورة Z).
+- **بطاقة صافي الكاش في الدرج** تتحدث مع الكتابة: `العُهدة + الكاش + ضريبة الكاش − (نقدي + سداد + سلف)`، والفيزا خارجها.
+- **المراجعة** (`EndOfDaySummaryDialog`): تقرير ملخص قبل التسليم؛ لا تسليم بفاتورة أو دفعة مكتوبة لم تُضف، أو بلا مبيعات.
+- **بعد التسليم:** القسم مقفول، وما تحوّل لفواتير وقيود يظهر بحالته، وإعادة الفتح للمدير.
+
+> 📄 **`frontend/src/app/features/costing/end-of-day-page.ts`** — 1503 سطر
+
+```ts
+import { DatePipe } from '@angular/common';
+import { Component, computed, effect, inject, input, output, signal, untracked } from '@angular/core';
+import { FormsModule } from '@angular/forms';
+import { MatButtonModule } from '@angular/material/button';
+import { MatButtonToggleModule } from '@angular/material/button-toggle';
+import { MAT_DIALOG_DATA, MatDialog, MatDialogModule } from '@angular/material/dialog';
+import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatIconModule } from '@angular/material/icon';
+import { MatInputModule } from '@angular/material/input';
+import { MatProgressBarModule } from '@angular/material/progress-bar';
+import { ActivatedRoute, RouterLink } from '@angular/router';
+import { firstValueFrom } from 'rxjs';
+import { CostingApi } from '../../core/costing/costing.api';
+import { CostingAccess } from '../../core/costing/costing-tabs';
+import {
+  EndOfDay,
+  EndOfDayApi,
+  EndOfDayInvoice,
+  EndOfDayInvoiceKind,
+  EndOfDayPayout,
+  EndOfDayPayoutKind,
+  EndOfDayPhoto,
+  EndOfDaySales,
+  endOfDayStatusLabels,
+  netCash,
+  photoProblem,
+  shrinkPhoto,
+  voucherLabels,
+} from '../../core/costing/end-of-day.api';
+import { HrStaffApi } from '../../core/costing/hr-staff.api';
+import { MenuSalesApi } from '../../core/costing/menu-sales.api';
+import { Employee } from '../../core/costing/staff';
+import { errorMessage } from '../../core/http/error-message';
+import { MoneyPipe } from '../../core/ui/money.pipe';
+import { NotifyService } from '../../core/ui/notify.service';
+import { Company } from '../../core/settings/company';
+import { ItemPicker, PickItem } from '../shared/item-picker';
+import { Approvals } from './approvals';
+import { EodPayoutForm } from './end-of-day-payouts';
+import { PhotoSource, PhotoThumb, viewPhoto } from './end-of-day-photo';
+import { BusinessDay, Treasury } from './financials';
+
+const round = (n: number) => Math.round(n * 100) / 100;
+
+const sectionLabels: Record<EndOfDayInvoiceKind, { en: string; ar: string; count: { en: string; ar: string }; total: { en: string; ar: string } }> = {
+  Cash: {
+    en: 'Cash purchase & expense invoices',
+    ar: 'تسجيل فواتير مشتريات ومصروفات نقدية',
+    count: { en: 'Cash invoices count', ar: 'عدد الفواتير النقدية' },
+    total: { en: 'Total cash invoices amount', ar: 'إجمالي مبلغ الفواتير النقدية' },
+  },
+  Credit: {
+    en: 'Credit / on-account invoices',
+    ar: 'تسجيل فواتير آجل',
+    count: { en: 'Credit invoices count', ar: 'عدد الفواتير الآجل' },
+    total: { en: 'Total credit amount', ar: 'إجمالي مبلغ الآجل' },
+  },
+};
+
+const payoutSectionLabels: Record<
+  EndOfDayPayoutKind,
+  { step: number; en: string; ar: string; hint: string; hintAr: string; count: { en: string; ar: string }; total: { en: string; ar: string }; none: string }
+> = {
+  SupplierPayment: {
+    step: 4,
+    en: 'Supplier cash payments',
+    ar: 'إذن صرف مورد وإيصال السداد',
+    hint: 'Cash paid to a supplier out of the till against what they are owed, each with its receipt or cash-out voucher.',
+    hintAr: 'المبالغ المدفوعة نقداً للموردين من الكاش، مع صورة إيصال السداد أو إذن الصرف.',
+    count: { en: 'Supplier payments', ar: 'عدد أذونات الصرف' },
+    total: { en: 'Total paid to suppliers', ar: 'إجمالي المدفوع للموردين' },
+    none: 'No supplier was paid. · لا توجد مدفوعات للموردين.',
+  },
+  EmployeeAdvance: {
+    step: 5,
+    en: 'Employee cash advances',
+    ar: 'سلفيات الموظفين وإيصال الصرف',
+    hint: "Advances handed to staff out of the till, each with its signed receipt: deducted from their pay in this month's payroll.",
+    hintAr: 'السلفيات المصروفة للموظفين من الكاش، مع صورة إيصال الصرف الموقع، وتُخصم من راتب الشهر.',
+    count: { en: 'Advances', ar: 'عدد السلفيات' },
+    total: { en: 'Total advances', ar: 'إجمالي السلفيات' },
+    none: 'No advance was given. · لا توجد سلفيات.',
+  },
+};
+
+// One invoice as it is handed in, or changed: its photo (the camera, or a file), its supplier from
+// the list, the total written on it, and a short note. A new one is added with an id made here once,
+// so it is never added twice; then the form is empty for the next.
+@Component({
+  selector: 'app-eod-invoice-form',
+  imports: [FormsModule, ItemPicker, MatButtonModule, MatButtonToggleModule, MatFormFieldModule, MatIconModule, MatInputModule, MatProgressBarModule, PhotoThumb],
+  template: `
+    <div class="form" [class.editing]="!!invoice()">
+      <div class="photo">
+        <input #camera type="file" accept="image/*" capture="environment" hidden (change)="pick(camera)" [attr.aria-label]="label() + ', take a photo'" />
+        <input #upload type="file" accept="image/jpeg,image/png,image/webp,application/pdf" hidden (change)="pick(upload)"
+          [attr.aria-label]="label() + ', upload a file'" />
+        @if (source(); as s) {
+          <app-photo-thumb [source]="s" [fileName]="fileName()" [contentType]="file()?.type ?? invoice()?.photo?.contentType ?? null" />
+          <div class="photo-actions">
+            <button mat-button type="button" (click)="camera.click()" [disabled]="saving()"><mat-icon>photo_camera</mat-icon> Retake · إعادة</button>
+            <button mat-button type="button" (click)="upload.click()" [disabled]="saving()"><mat-icon>upload_file</mat-icon> Replace · استبدال</button>
+          </div>
+        } @else {
+          <button mat-stroked-button type="button" class="big" (click)="camera.click()" [disabled]="saving()">
+            <mat-icon>photo_camera</mat-icon> Take photo <span class="inline-ar">تصوير الفاتورة</span>
+          </button>
+          <button mat-stroked-button type="button" class="big" (click)="upload.click()" [disabled]="saving()">
+            <mat-icon>upload_file</mat-icon> Upload file <span class="inline-ar">رفع ملف</span>
+          </button>
+        }
+      </div>
+      <div class="fields">
+        @if (invoice()) {
+          <mat-button-toggle-group [value]="kind()" (change)="kind.set($event.value)" [attr.aria-label]="label() + ', paid'" hideSingleSelectionIndicator>
+            <mat-button-toggle value="Cash">Cash · نقدي</mat-button-toggle>
+            <mat-button-toggle value="Credit">On credit · آجل</mat-button-toggle>
+          </mat-button-toggle-group>
+        }
+        <app-item-picker [items]="suppliers()" [(value)]="supplierId" [label]="label() + ', supplier'" placeholder="Supplier · المورد" [disabled]="saving()" />
+        <mat-form-field subscriptSizing="dynamic" floatLabel="always">
+          <mat-label>Reported invoice total · إجمالي قيمة الفاتورة</mat-label>
+          <input matInput type="number" min="0" step="any" inputmode="decimal" [(ngModel)]="total" (ngModelChange)="touch()" placeholder="0.00"
+            data-western-digits [attr.aria-label]="label() + ', total'" />
+          <span matTextSuffix>&nbsp;{{ company.currency() }}</span>
+        </mat-form-field>
+        <mat-form-field subscriptSizing="dynamic">
+          <mat-label>Note (optional) · ملاحظة</mat-label>
+          <input matInput [(ngModel)]="note" (ngModelChange)="touch()" maxlength="200" [attr.aria-label]="label() + ', note'" />
+        </mat-form-field>
+      </div>
+      <div class="actions">
+        @if (invoice()) {
+          <button mat-button type="button" (click)="cancelled.emit()" [disabled]="saving()">Cancel · إلغاء</button>
+          <button mat-flat-button type="button" (click)="save()" [disabled]="saving()"><mat-icon>check</mat-icon> Save · حفظ</button>
+        } @else {
+          @if (dirty()) {
+            <button mat-button type="button" (click)="clear()" [disabled]="saving()">Clear · مسح</button>
+          }
+          <button mat-flat-button type="button" (click)="save()" [disabled]="saving()"><mat-icon>add</mat-icon> Add invoice · إضافة الفاتورة</button>
+        }
+      </div>
+      @if (saving()) {
+        <mat-progress-bar mode="indeterminate" />
+      }
+      @if (problem(); as p) {
+        <p class="error" role="alert">{{ p }}</p>
+      }
+    </div>
+  `,
+  styleUrl: './costing.scss',
+  styles: `
+    .form {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr);
+      gap: 10px 16px;
+      align-items: start;
+      padding: 12px;
+      border: 1px dashed var(--app-line-strong, #cbd5e1);
+      border-radius: 14px;
+      background: var(--mat-sys-surface-container-lowest);
+    }
+    .form.editing {
+      border-style: solid;
+      border-color: var(--mat-sys-primary);
+    }
+    .photo {
+      display: grid;
+      gap: 6px;
+      justify-items: start;
+      --thumb-size: 96px;
+    }
+    .photo-actions {
+      display: flex;
+      flex-wrap: wrap;
+    }
+    .big {
+      width: 100%;
+      min-height: 44px;
+      justify-content: flex-start;
+    }
+    .fields {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 8px 12px;
+      align-items: center;
+    }
+    .actions {
+      grid-column: 1 / -1;
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+    mat-progress-bar,
+    .error {
+      grid-column: 1 / -1;
+    }
+    @media (max-width: 599.98px) {
+      .form {
+        grid-template-columns: minmax(0, 1fr);
+      }
+      .photo {
+        grid-template-columns: auto minmax(0, 1fr);
+        align-items: center;
+      }
+      .photo .big {
+        grid-column: 1 / -1;
+      }
+      .actions button {
+        flex: 1;
+      }
+    }
+  `,
+})
+export class EodInvoiceForm {
+  private readonly api = inject(EndOfDayApi);
+  protected readonly company = inject(Company);
+
+  readonly date = input.required<string>();
+  readonly section = input.required<EndOfDayInvoiceKind>();
+  readonly suppliers = input.required<readonly PickItem[]>();
+  // The invoice being changed; none for a new one.
+  readonly invoice = input<EndOfDayInvoice | null>(null);
+  readonly saved = output<EndOfDay>();
+  readonly cancelled = output<void>();
+  // Something typed or chosen on a new one, not added yet.
+  readonly pendingChange = output<boolean>();
+
+  protected readonly kind = signal<EndOfDayInvoiceKind>('Cash');
+  protected readonly file = signal<File | null>(null);
+  protected readonly supplierId = signal<string | null>(null);
+  protected total: number | null = null;
+  protected note = '';
+  protected readonly saving = signal(false);
+  protected readonly problem = signal<string | null>(null);
+  private readonly version = signal(0);
+  private id = crypto.randomUUID();
+
+  protected readonly label = computed(() => (this.invoice() ? 'Invoice' : `New ${this.section() === 'Cash' ? 'cash' : 'credit'} invoice`));
+
+  // The photo chosen here, else the one handed in.
+  protected readonly source = computed<PhotoSource | null>(() => {
+    const [file, invoice, date] = [this.file(), this.invoice(), this.date()];
+    return file ?? (invoice ? () => this.api.photo(date, invoice.id) : null);
+  });
+  protected readonly fileName = computed(() => this.file()?.name ?? this.invoice()?.photo.fileName ?? '');
+
+  protected readonly dirty = computed(() => {
+    this.version();
+    return !!this.file() || !!this.supplierId() || !!this.total || !!this.note.trim();
+  });
+
+  // Filled from the invoice being changed, once: the day saved again elsewhere leaves what is typed.
+  private readonly invoiceId = computed(() => this.invoice()?.id ?? null);
+
+  constructor() {
+    effect(() => {
+      const [, section] = [this.invoiceId(), this.section()];
+      untracked(() => {
+        const invoice = this.invoice();
+        this.kind.set(invoice?.kind ?? section);
+        this.supplierId.set(invoice?.supplierId ?? null);
+        this.total = invoice?.reportedTotal ?? null;
+        this.note = invoice?.note ?? '';
+        this.file.set(null);
+        this.touch();
+      });
+    });
+    effect(() => {
+      const dirty = this.dirty();
+      if (!this.invoice()) {
+        untracked(() => this.pendingChange.emit(dirty));
+      }
+    });
+  }
+
+  protected touch(): void {
+    this.version.update((v) => v + 1);
+    this.problem.set(null);
+  }
+
+  // The camera's photo or the file chosen: lighter to send when it is a big photo.
+  protected async pick(input: HTMLInputElement): Promise<void> {
+    const chosen = input.files?.[0];
+    input.value = '';
+    if (!chosen) {
+      return;
+    }
+    const file = await shrinkPhoto(chosen);
+    const problem = photoProblem(file);
+    if (problem) {
+      this.problem.set(problem);
+      return;
+    }
+    this.file.set(file);
+    this.touch();
+  }
+
+  protected clear(): void {
+    this.file.set(null);
+    this.supplierId.set(null);
+    this.total = null;
+    this.note = '';
+    this.touch();
+  }
+
+  protected async save(): Promise<void> {
+    const invoice = this.invoice();
+    const total = Number(this.total);
+    const problem = !this.file() && !invoice
+      ? 'Photograph the invoice or attach its file. · صوّر الفاتورة أو أرفق ملفها.'
+      : !this.supplierId()
+        ? 'Choose the supplier from the list. · اختر المورد من القائمة.'
+        : !(total > 0)
+          ? "Enter the invoice's total. · أدخل إجمالي الفاتورة."
+          : null;
+    if (problem) {
+      this.problem.set(problem);
+      return;
+    }
+    this.saving.set(true);
+    this.problem.set(null);
+    const entry = { kind: this.kind(), supplierId: this.supplierId()!, reportedTotal: round(total), note: this.note.trim() || null };
+    try {
+      let day: EndOfDay;
+      if (!invoice) {
+        day = await firstValueFrom(this.api.addInvoice(this.date(), this.id, entry, this.file()!));
+        this.id = crypto.randomUUID();
+        this.clear();
+      } else {
+        day = await firstValueFrom(this.api.changeInvoice(this.date(), invoice.id, entry));
+        const file = this.file();
+        if (file) {
+          day = await firstValueFrom(this.api.replaceInvoicePhoto(this.date(), invoice.id, file));
+        }
+      }
+      this.saved.emit(day);
+    } catch (error) {
+      this.problem.set(errorMessage(error, 'The invoice could not be saved. · تعذر حفظ الفاتورة.'));
+    } finally {
+      this.saving.set(false);
+    }
+  }
+}
+
+export interface EndOfDaySummaryData {
+  day: EndOfDay;
+  // Whether the one handing it in enters the safe's entries at once (a manager).
+  canApprove?: boolean;
+}
+
+// The end of day summary report (تقرير ملخص تقفيل اليوم), before it is handed in: the cash purchases
+// and those on credit, each counted and added up, the suppliers paid and the advances, the day's
+// sales, what should be left in the drawer and what should reach the safe once all of it was paid
+// out. True once confirmed.
+@Component({
+  selector: 'app-end-of-day-summary',
+  imports: [DatePipe, MatButtonModule, MatDialogModule, MatIconModule, MoneyPipe],
+  template: `
+    <h2 mat-dialog-title>End of day summary report <span class="inline-ar">تقرير ملخص تقفيل اليوم</span></h2>
+    <mat-dialog-content>
+      @let d = data.day;
+      <p class="muted">{{ d.date | date: 'EEEE d MMMM y' }}</p>
+      <div class="blocks">
+        <div class="block">
+          <span class="label">Cash purchases <span class="inline-ar">المشتريات النقدية</span></span>
+          <strong>{{ d.cashInvoicesTotal | money }}</strong>
+          <small>{{ d.cashInvoices }} {{ d.cashInvoices === 1 ? 'invoice' : 'invoices' }} · فاتورة</small>
+        </div>
+        <div class="block">
+          <span class="label">Credit purchases <span class="inline-ar">مشتريات آجل</span></span>
+          <strong>{{ d.creditInvoicesTotal | money }}</strong>
+          <small>{{ d.creditInvoices }} {{ d.creditInvoices === 1 ? 'invoice' : 'invoices' }} · فاتورة</small>
+        </div>
+        <div class="block">
+          <span class="label">Paid to suppliers <span class="inline-ar">مدفوعات الموردين</span></span>
+          <strong>{{ d.supplierPaymentsTotal | money }}</strong>
+          <small>{{ d.supplierPayments }} {{ d.supplierPayments === 1 ? 'payment' : 'payments' }} · إذن صرف</small>
+        </div>
+        <div class="block">
+          <span class="label">Employee advances <span class="inline-ar">سلفيات الموظفين</span></span>
+          <strong>{{ d.advancesTotal | money }}</strong>
+          <small>{{ d.advances }} {{ d.advances === 1 ? 'advance' : 'advances' }} · سلفة</small>
+        </div>
+        <div class="block key">
+          <span class="label">Sales revenue <span class="inline-ar">إيراد المبيعات</span></span>
+          <strong>{{ d.totalRevenue | money }}</strong>
+          <small>cash + Visa + tax</small>
+        </div>
+      </div>
+      <dl class="breakdown">
+        <div><dt>Cash <span class="inline-ar">الكاش</span></dt><dd>{{ d.cashAmount ?? 0 | money }}</dd></div>
+        <div><dt>Visa / card <span class="inline-ar">الفيزا</span></dt><dd>{{ d.cardAmount ?? 0 | money }}</dd></div>
+        <div><dt>Tax collected <span class="inline-ar">الضريبة المحصلة</span></dt><dd>{{ d.taxAmount ?? 0 | money }}</dd></div>
+        <div class="line"><dt>Total revenue <span class="inline-ar">إجمالي الإيراد</span></dt><dd>{{ d.totalRevenue | money }}</dd></div>
+        <div><dt>Voids &amp; refunds <span class="inline-ar">الفويد والمرتجعات</span></dt><dd>{{ d.voidsAmount ?? 0 | money }}</dd></div>
+        <div><dt>Cash invoices paid out <span class="inline-ar">المدفوع للفواتير النقدية</span></dt><dd>({{ d.cashInvoicesTotal | money }})</dd></div>
+        <div class="line"><dt>Expected net cash after cash invoices <span class="inline-ar">صافي الكاش بعد الفواتير النقدية</span></dt>
+          <dd [class.negative]="d.cashAfterInvoices < 0">{{ d.cashAfterInvoices | money }}</dd></div>
+        <div><dt>Paid to suppliers <span class="inline-ar">مدفوعات الموردين</span></dt><dd>({{ d.supplierPaymentsTotal | money }})</dd></div>
+        <div><dt>Employee advances <span class="inline-ar">سلفيات الموظفين</span></dt><dd>({{ d.advancesTotal | money }})</dd></div>
+        <div class="total"><dt>Expected into the safe <span class="inline-ar">المتوقع توريده للخزنة</span>
+          <small class="muted">total revenue less all paid out of it</small></dt><dd>{{ d.expectedIntoSafe | money }}</dd></div>
+      </dl>
+      <dl class="breakdown till" aria-label="Net cash expected in till">
+        <div><dt>Opening float <span class="inline-ar">العهدة / الفكة</span></dt><dd>{{ d.openingFloat ?? 0 | money }}</dd></div>
+        <div><dt>Cash sales with their tax <span class="inline-ar">مبيعات الكاش بالضريبة</span></dt><dd>{{ d.cashSalesCollected | money }}</dd></div>
+        <div><dt>Paid out of the till <span class="inline-ar">المصروف من الكاش</span></dt><dd>({{ d.cashPaidOut | money }})</dd></div>
+        <div class="total"><dt>Net cash expected in till <span class="inline-ar">الصافي الفعلي المتبقي في الكاش</span>
+          <small class="muted">count the drawer against this: the Visa is not in it</small></dt>
+          <dd [class.negative]="d.netCashInTill < 0">{{ d.netCashInTill | money }}</dd></div>
+      </dl>
+      @if (d.cashAfterInvoices < 0) {
+        <p class="warn small">The cash invoices are {{ -d.cashAfterInvoices | money }} more than the day's cash. · الفواتير النقدية أكبر من الكاش.</p>
+      }
+      @if (d.supplierPayments + d.advances > 0) {
+        <p class="muted small">Submitted, each payment and advance goes to the safe out of the day's takings{{ canApprove ? '' : ', once a manager approves it' }}.
+          · عند الإرسال تُسجل المدفوعات والسلفيات في الخزنة{{ canApprove ? '' : ' بعد موافقة المدير' }}.</p>
+      }
+      @if (!d.salesPhoto) {
+        <p class="muted small">No photo of the Z report: it is optional. · لا توجد صورة لتقرير Z.</p>
+      }
+      <p class="note">Once submitted it is locked; a manager reopens it to change it. <span class="note-ar" lang="ar" dir="rtl">بعد الإرسال يُقفل اليوم، ويعيد المدير فتحه للتعديل.</span></p>
+    </mat-dialog-content>
+    <mat-dialog-actions align="end">
+      <button mat-button [mat-dialog-close]="false">Back · رجوع</button>
+      <button mat-flat-button [mat-dialog-close]="true"><mat-icon>task_alt</mat-icon> Confirm &amp; submit · تأكيد وإرسال التقفيل</button>
+    </mat-dialog-actions>
+  `,
+  styleUrl: './costing.scss',
+  styles: `
+    // The four ways money went out side by side, the revenue under them across.
+    .blocks {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+      margin: 4px 0 12px;
+    }
+    .block {
+      display: grid;
+      gap: 2px;
+      padding: 12px 14px;
+      border-radius: 14px;
+      border: 1px solid var(--app-line);
+      background: var(--mat-sys-surface-container-lowest);
+
+      .label {
+        font: var(--mat-sys-label-medium);
+        color: var(--mat-sys-on-surface-variant);
+      }
+      strong {
+        font: var(--mat-sys-title-medium);
+        font-weight: 700;
+        font-variant-numeric: tabular-nums;
+        white-space: nowrap;
+      }
+      &.key {
+        grid-column: 1 / -1;
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: baseline;
+        background: var(--mat-sys-secondary-container);
+        border-color: transparent;
+
+        strong {
+          grid-row: 1 / span 2;
+          grid-column: 2;
+          font: var(--mat-sys-title-large);
+          font-weight: 700;
+        }
+      }
+    }
+    .breakdown {
+      display: grid;
+      gap: 4px;
+      margin: 0 0 12px;
+      padding: 10px 12px;
+      border-radius: 10px;
+      background: var(--mat-sys-surface-container);
+
+      div {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+      }
+      dt,
+      dd {
+        margin: 0;
+      }
+      dd {
+        font-variant-numeric: tabular-nums;
+        white-space: nowrap;
+      }
+      .line {
+        padding-top: 4px;
+        border-top: 1px solid var(--mat-sys-outline-variant);
+        font-weight: 600;
+      }
+      .total {
+        padding: 6px 0;
+        border-top: 2px solid var(--mat-sys-outline-variant);
+        font-weight: 700;
+
+        small {
+          display: block;
+          font-weight: 400;
+        }
+      }
+      .negative {
+        color: var(--mat-sys-error);
+      }
+      &.till {
+        background: color-mix(in srgb, var(--app-ok, #2e7d32) 10%, var(--mat-sys-surface-container));
+      }
+    }
+    .warn {
+      color: var(--app-warn);
+    }
+    .small {
+      font-size: 0.85em;
+    }
+    @media (max-width: 599.98px) {
+      .blocks {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+  `,
+})
+export class EndOfDaySummaryDialog {
+  protected readonly data = inject<EndOfDaySummaryData>(MAT_DIALOG_DATA);
+  protected readonly canApprove = this.data.canApprove ?? false;
+}
+
+// The end of the day (تقفيل اليوم), as a branch closes it: the date, then the day's cash invoices
+// and those on credit, each photographed with its supplier and total; the cash paid out of the till
+// to suppliers and as advances to employees, each with its receipt; and the day's sales report with
+// the drawer's opening float, and below it the cash that should be left in the drawer (الصافي
+// الفعلي المتبقي في الكاش). Reviewed and submitted, it is locked: the daily batch of that date opens
+// with an invoice for each, its photo with it; each payment and advance goes to the safe (asked of
+// a manager when it is not one handing it in); the takings of the day come in from its sales.
+// Everything is kept as it is typed: an entry once added, the sales a moment after.
+@Component({
+  selector: 'app-end-of-day-page',
+  imports: [DatePipe, EodInvoiceForm, EodPayoutForm, FormsModule, MatButtonModule, MatFormFieldModule, MatIconModule, MatInputModule, MatProgressBarModule, MoneyPipe,
+    PhotoThumb, RouterLink],
+  template: `
+    <header class="head">
+      <div>
+        <h2>End of the day <span class="inline-ar">تقفيل اليوم</span></h2>
+        <p class="note">
+          Photograph each of the day's invoices with its supplier and total, cash and on credit, and each receipt for cash paid to a supplier or
+          advanced to an employee; enter the day's sales report and the drawer's float, and check the cash left against the drawer. Reviewed and
+          submitted, the daily batch of that date opens with an invoice for each, and each payment and advance goes to the safe.
+          <span class="note-ar" lang="ar" dir="rtl">صوّر فواتير اليوم وإيصالات المدفوعات والسلفيات، وسجّل ريبورت المبيعات والعهدة، وطابق الكاش المتبقي، ثم راجع وأرسل التقفيل.</span>
+        </p>
+      </div>
+    </header>
+
+    <section class="card step date-step" aria-label="Date">
+      <span class="step-no">1</span>
+      <mat-form-field subscriptSizing="dynamic">
+        <mat-label>Date · تاريخ اليوم</mat-label>
+        <input matInput type="date" [ngModel]="date()" (ngModelChange)="choose($event)" [max]="today()" aria-label="Date" />
+      </mat-form-field>
+      @if (day(); as d) {
+        <span class="tag" [class.ok]="d.status === 'Submitted'" [class.warn]="d.status === 'Draft'">
+          {{ statusLabels[d.status].en }}<span class="ar">{{ statusLabels[d.status].ar }}</span>
+        </span>
+        @if (d.status === 'Submitted') {
+          <span class="muted small">by {{ d.submittedBy }}, {{ d.submittedAtUtc | date: 'd MMM, HH:mm' }}</span>
+        } @else if (d.reopenedBy) {
+          <span class="muted small">reopened by {{ d.reopenedBy }}</span>
+        }
+      } @else if (!loading()) {
+        <span class="tag">Not started<span class="ar">لم يبدأ</span></span>
+      }
+      <span class="spacer"></span>
+      @if (day()?.status === 'Submitted') {
+        @if (canBatch()) {
+          <a mat-stroked-button [routerLink]="['/costing/purchases/batch']" [queryParams]="{ date: date() }">
+            <mat-icon>inventory</mat-icon> Daily batch <span class="inline-ar">يومية المشتريات</span>
+          </a>
+        }
+        @if (canTakings()) {
+          @if (day()!.takingsEntered === null) {
+            <button mat-stroked-button (click)="takings()"><mat-icon>savings</mat-icon> Takings in <span class="inline-ar">توريد الإيراد</span></button>
+          } @else {
+            <span class="tag ok">Takings in {{ day()!.takingsEntered! | money }}<span class="ar">تم التوريد</span></span>
+          }
+        }
+        @if (canReopen()) {
+          <button mat-button (click)="reopen()" [disabled]="busy()"><mat-icon>lock_open</mat-icon> Reopen · إعادة فتح</button>
+        }
+      }
+    </section>
+
+    @if (loading()) {
+      <mat-progress-bar mode="indeterminate" />
+    } @else if (error()) {
+      <p class="error">{{ error() }}</p>
+    } @else {
+      @for (kind of kinds; track kind) {
+        <section class="card step" [attr.aria-label]="sections[kind].en">
+          <h3><span class="step-no">{{ kind === 'Cash' ? 2 : 3 }}</span> {{ sections[kind].en }} <span class="inline-ar">{{ sections[kind].ar }}</span></h3>
+          <div class="invoices">
+            @for (inv of invoicesOf(kind); track inv.id; let i = $index) {
+              @if (editing() === inv.id && !locked()) {
+                <app-eod-invoice-form [date]="date()" [section]="kind" [suppliers]="suppliers()" [invoice]="inv" (saved)="saved($event)"
+                  (cancelled)="editing.set(null)" />
+              } @else {
+                <article class="invoice" [attr.aria-label]="sections[kind].en + ' ' + (i + 1)">
+                  <app-photo-thumb [source]="photoOf(inv.id, inv.photo)" [fileName]="inv.photo.fileName" [contentType]="inv.photo.contentType" />
+                  <div class="what">
+                    <strong dir="auto">{{ inv.supplier }}</strong>
+                    <span class="amount">{{ inv.reportedTotal | money }}</span>
+                    @if (inv.note) {
+                      <span class="muted small" dir="auto">{{ inv.note }}</span>
+                    }
+                    @if (inv.purchaseInvoiceId) {
+                      <a class="tag ok" [routerLink]="canBatch() ? ['/costing/purchases/invoices', inv.purchaseInvoiceId] : null">Posted<span class="ar">تم الترحيل</span></a>
+                    }
+                  </div>
+                  @if (!locked() && !inv.purchaseInvoiceId) {
+                    <div class="row-actions">
+                      <button mat-icon-button (click)="editing.set(inv.id)" [disabled]="busy()" [attr.aria-label]="'Change ' + inv.supplier + ' ' + (i + 1)" title="Change · تعديل">
+                        <mat-icon>edit</mat-icon>
+                      </button>
+                      <button mat-icon-button (click)="remove(inv)" [disabled]="busy()" [attr.aria-label]="'Take off ' + inv.supplier + ' ' + (i + 1)" title="Take off · حذف">
+                        <mat-icon>delete</mat-icon>
+                      </button>
+                    </div>
+                  }
+                </article>
+              }
+            } @empty {
+              @if (locked()) {
+                <p class="muted">None handed in. · لا توجد فواتير.</p>
+              }
+            }
+          </div>
+          @if (!locked()) {
+            <app-eod-invoice-form [date]="date()" [section]="kind" [suppliers]="suppliers()" (saved)="saved($event)" (pendingChange)="pendingIn(kind, $event)" />
+          }
+          <footer class="counter" aria-live="polite">
+            <span>{{ sections[kind].count.en }} <span class="inline-ar">{{ sections[kind].count.ar }}</span>: <strong>{{ countOf(kind) }}</strong></span>
+            <span>{{ sections[kind].total.en }} <span class="inline-ar">{{ sections[kind].total.ar }}</span>: <strong>{{ totalOf(kind) | money }}</strong></span>
+          </footer>
+        </section>
+      }
+
+      @for (kind of payoutKinds; track kind) {
+        <section class="card step" [attr.aria-label]="payoutSections[kind].en">
+          <h3><span class="step-no">{{ payoutSections[kind].step }}</span> {{ payoutSections[kind].en }} <span class="inline-ar">{{ payoutSections[kind].ar }}</span></h3>
+          <p class="section-hint muted small">{{ payoutSections[kind].hint }}<span class="line-ar" lang="ar" dir="rtl">{{ payoutSections[kind].hintAr }}</span></p>
+          <div class="invoices">
+            @for (p of payoutsOf(kind); track p.id; let i = $index) {
+              @if (editing() === p.id && !locked() && p.voucher === 'None') {
+                <app-eod-payout-form [date]="date()" [kind]="kind" [suppliers]="suppliers()" [employees]="employees()" [hrLinked]="hrLinked()" (staffAdded)="staffAdded($event)" [payout]="p" (saved)="saved($event)"
+                  (cancelled)="editing.set(null)" />
+              } @else {
+                <article class="payout" [attr.aria-label]="payoutSections[kind].en + ' ' + (i + 1)">
+                  <app-photo-thumb [source]="photoOf(p.id, p.receipt)" [fileName]="p.receipt.fileName" [contentType]="p.receipt.contentType" />
+                  <div class="what">
+                    <strong dir="auto">{{ p.payee }}</strong>
+                    <span class="amount">{{ p.amount | money }}</span>
+                    @if (p.note) {
+                      <span class="muted small" dir="auto">{{ p.note }}</span>
+                    }
+                    @if (vouchers[p.voucher]; as v) {
+                      <span class="tag" [class]="v.tone">{{ v.en }}<span class="ar">{{ v.ar }}</span></span>
+                    }
+                  </div>
+                  @if (!locked() && (p.voucher === 'None' || p.voucher === 'Refused')) {
+                    <div class="row-actions">
+                      @if (p.voucher === 'None') {
+                        <button mat-icon-button (click)="editing.set(p.id)" [disabled]="busy()" [attr.aria-label]="'Change ' + p.payee + ' ' + (i + 1)" title="Change · تعديل">
+                          <mat-icon>edit</mat-icon>
+                        </button>
+                      }
+                      <button mat-icon-button (click)="removePayout(p)" [disabled]="busy()" [attr.aria-label]="'Take off ' + p.payee + ' ' + (i + 1)" title="Take off · حذف">
+                        <mat-icon>delete</mat-icon>
+                      </button>
+                    </div>
+                  }
+                </article>
+              }
+            } @empty {
+              @if (locked()) {
+                <p class="muted">{{ payoutSections[kind].none }}</p>
+              }
+            }
+          </div>
+          @if (!locked()) {
+            <app-eod-payout-form [date]="date()" [kind]="kind" [suppliers]="suppliers()" [employees]="employees()" [hrLinked]="hrLinked()" (staffAdded)="staffAdded($event)" (saved)="saved($event)"
+              (pendingChange)="pendingIn(kind, $event)" />
+          }
+          <footer class="counter" aria-live="polite">
+            <span>{{ payoutSections[kind].count.en }} <span class="inline-ar">{{ payoutSections[kind].count.ar }}</span>: <strong>{{ payoutCount(kind) }}</strong></span>
+            <span>{{ payoutSections[kind].total.en }} <span class="inline-ar">{{ payoutSections[kind].total.ar }}</span>: <strong>{{ payoutTotal(kind) | money }}</strong></span>
+          </footer>
+        </section>
+      }
+
+      <section class="card step" aria-label="Daily sales report">
+        <h3><span class="step-no">6</span> Daily sales report / revenue <span class="inline-ar">تسجيل ريبورت المبيعات والإيراد</span></h3>
+        <div class="sales">
+          <mat-form-field subscriptSizing="dynamic" floatLabel="always">
+            <mat-label>Opening float · العهدة / الفكة</mat-label>
+            <input matInput type="number" min="0" step="any" inputmode="decimal" [ngModel]="sales().openingFloat" (ngModelChange)="setSale('openingFloat', $event)"
+              [disabled]="locked()" placeholder="0" data-western-digits aria-label="Opening float" />
+            <span matTextSuffix>&nbsp;{{ company.currency() }}</span>
+          </mat-form-field>
+          <mat-form-field subscriptSizing="dynamic" floatLabel="always">
+            <mat-label>Cash · إيراد الكاش</mat-label>
+            <input matInput type="number" min="0" step="any" inputmode="decimal" [ngModel]="sales().cashAmount" (ngModelChange)="setSale('cashAmount', $event)"
+              [disabled]="locked()" placeholder="0" data-western-digits aria-label="Cash" />
+            <span matTextSuffix>&nbsp;{{ company.currency() }}</span>
+          </mat-form-field>
+          <mat-form-field subscriptSizing="dynamic" floatLabel="always">
+            <mat-label>Visa / card · إيراد الفيزا</mat-label>
+            <input matInput type="number" min="0" step="any" inputmode="decimal" [ngModel]="sales().cardAmount" (ngModelChange)="setSale('cardAmount', $event)"
+              [disabled]="locked()" placeholder="0" data-western-digits aria-label="Visa" />
+            <span matTextSuffix>&nbsp;{{ company.currency() }}</span>
+          </mat-form-field>
+          <mat-form-field subscriptSizing="dynamic" floatLabel="always">
+            <mat-label>Tax collected · الضريبة المحصلة</mat-label>
+            <input matInput type="number" min="0" step="any" inputmode="decimal" [ngModel]="sales().taxAmount" (ngModelChange)="setSale('taxAmount', $event)"
+              [disabled]="locked()" placeholder="0" data-western-digits aria-label="Tax" />
+            <span matTextSuffix>&nbsp;{{ company.currency() }}</span>
+          </mat-form-field>
+          <mat-form-field subscriptSizing="dynamic" floatLabel="always">
+            <mat-label>Voids &amp; refunds · الفويد والمرتجعات</mat-label>
+            <input matInput type="number" min="0" step="any" inputmode="decimal" [ngModel]="sales().voidsAmount" (ngModelChange)="setSale('voidsAmount', $event)"
+              [disabled]="locked()" placeholder="0" data-western-digits aria-label="Voids" />
+            <span matTextSuffix>&nbsp;{{ company.currency() }}</span>
+          </mat-form-field>
+          <div class="revenue">
+            <span class="label">Total revenue · إجمالي الإيراد</span>
+            <strong>{{ totalRevenue() | money }}</strong>
+            <small class="muted">cash + Visa + tax</small>
+          </div>
+          <mat-form-field subscriptSizing="dynamic" class="wide">
+            <mat-label>Notes (void reasons) · ملاحظات</mat-label>
+            <input matInput [ngModel]="sales().notes" (ngModelChange)="setSale('notes', $event)" [disabled]="locked()" maxlength="500" aria-label="Sales notes" />
+          </mat-form-field>
+        </div>
+        <div class="z-photo">
+          <input #zCamera type="file" accept="image/*" capture="environment" hidden (change)="zPhoto(zCamera)" aria-label="Z report, take a photo" />
+          <input #zUpload type="file" accept="image/jpeg,image/png,image/webp,application/pdf" hidden (change)="zPhoto(zUpload)" aria-label="Z report, upload a file" />
+          <span class="label">Z-report photo (optional) · صورة تقرير Z</span>
+          @if (day()?.salesPhoto; as p) {
+            <app-photo-thumb [source]="photoOf(day()!.id, p)" [fileName]="p.fileName" [contentType]="p.contentType" />
+            @if (!locked()) {
+              <button mat-button (click)="dropZPhoto()" [disabled]="busy()"><mat-icon>close</mat-icon> Take off · حذف</button>
+            }
+          } @else if (!locked()) {
+            <button mat-stroked-button (click)="zCamera.click()" [disabled]="busy()"><mat-icon>photo_camera</mat-icon> Take photo · تصوير</button>
+            <button mat-stroked-button (click)="zUpload.click()" [disabled]="busy()"><mat-icon>upload_file</mat-icon> Upload · رفع</button>
+          } @else {
+            <span class="muted">—</span>
+          }
+          <span class="spacer"></span>
+          @if (!locked()) {
+            <span class="muted small" aria-live="polite">{{ salesState() }}</span>
+          }
+        </div>
+        @if (salesProblem(); as p) {
+          <p class="error" role="alert">{{ p }}</p>
+        }
+      </section>
+
+      <!-- The cash that should be in the drawer: counted against it -->
+      @let till = netCashInTill();
+      <section class="card till" [class.short]="till.net < 0" aria-label="Net cash expected in till">
+        <div class="till-head">
+          <mat-icon>point_of_sale</mat-icon>
+          <div>
+            <h3>Net cash expected in till <span class="inline-ar">الصافي الفعلي المتبقي في الكاش</span></h3>
+            <p class="muted small">Cash only: the Visa, Instapay and online takings never reach the drawer. Count the drawer against this.
+              <span class="line-ar" lang="ar" dir="rtl">الكاش فقط: الفيزا وإنستاباي والمدفوعات الإلكترونية لا تدخل الدرج.</span></p>
+          </div>
+          <strong class="till-net" aria-live="polite">{{ till.net | money }}</strong>
+        </div>
+        <dl class="till-sum">
+          <div><dt>Opening float <span class="inline-ar">العهدة</span></dt><dd>{{ till.float | money }}</dd></div>
+          <div class="plus"><dt>Cash sales <span class="inline-ar">مبيعات الكاش</span><small class="muted">with their tax, {{ till.cashTax | money }}</small></dt>
+            <dd>+ {{ till.collected | money }}</dd></div>
+          <div class="minus"><dt>Cash invoices <span class="inline-ar">الفواتير النقدية</span></dt><dd>− {{ totalOf('Cash') | money }}</dd></div>
+          <div class="minus"><dt>Supplier payments <span class="inline-ar">مدفوعات الموردين</span></dt><dd>− {{ payoutTotal('SupplierPayment') | money }}</dd></div>
+          <div class="minus"><dt>Employee advances <span class="inline-ar">السلفيات</span></dt><dd>− {{ payoutTotal('EmployeeAdvance') | money }}</dd></div>
+        </dl>
+        @if (till.net < 0) {
+          <p class="error small" role="status">More was paid out than the drawer took in: check the amounts. · المصروف أكبر من الكاش.</p>
+        }
+      </section>
+
+      @if (!locked()) {
+        <div class="submit-bar">
+          <span class="muted small">
+            {{ countOf('Cash') }} cash · {{ countOf('Credit') }} on credit · {{ payoutCount('SupplierPayment') }} paid · {{ payoutCount('EmployeeAdvance') }} advanced ·
+            revenue {{ totalRevenue() | money }} · in till {{ netCashInTill().net | money }}
+          </span>
+          <span class="spacer"></span>
+          <button mat-flat-button (click)="review()" [disabled]="busy()">
+            <mat-icon>fact_check</mat-icon> Review &amp; confirm <span class="inline-ar">مراجعة وتأكيد</span>
+          </button>
+        </div>
+        @if (reviewProblem(); as p) {
+          <p class="error" role="alert">{{ p }}</p>
+        }
+      }
+
+      @if (history().length) {
+        <section class="card history" aria-label="Recent days">
+          <h3>Recent days <span class="inline-ar">الأيام السابقة</span></h3>
+          <div class="table-wrap">
+            <table class="grid">
+              <thead>
+                <tr>
+                  <th>Date<span class="ar">التاريخ</span></th>
+                  <th>Status<span class="ar">الحالة</span></th>
+                  <th class="num">Cash invoices<span class="ar">نقدي</span></th>
+                  <th class="num">Credit<span class="ar">آجل</span></th>
+                  <th class="num">Revenue<span class="ar">الإيراد</span></th>
+                  <th class="num">Paid out<span class="ar">المدفوعات والسلف</span></th>
+                  <th class="num">Cash in till<span class="ar">الكاش المتبقي</span></th>
+                  <th class="num">Posted<span class="ar">المرحّل</span></th>
+                </tr>
+              </thead>
+              <tbody>
+                @for (h of history(); track h.id) {
+                  <tr [class.current]="h.date === date()" (click)="choose(h.date)" class="pick">
+                    <td>{{ h.date | date: 'EEE d MMM' }}</td>
+                    <td><span class="tag" [class.ok]="h.status === 'Submitted'" [class.warn]="h.status === 'Draft'">{{ statusLabels[h.status].en }}</span></td>
+                    <td class="num">{{ h.cashInvoices }} · {{ h.cashInvoicesTotal | money }}</td>
+                    <td class="num">{{ h.creditInvoices }} · {{ h.creditInvoicesTotal | money }}</td>
+                    <td class="num">{{ h.totalRevenue | money }}</td>
+                    <td class="num">{{ h.supplierPaymentsTotal + h.advancesTotal | money }}</td>
+                    <td class="num">{{ h.netCashInTill | money }}</td>
+                    <td class="num">{{ h.posted }} / {{ h.invoices.length }}</td>
+                  </tr>
+                }
+              </tbody>
+            </table>
+          </div>
+        </section>
+      }
+    }
+  `,
+  styleUrl: './costing.scss',
+  styles: `
+    .head h2 {
+      margin: 0 0 4px;
+      font: var(--mat-sys-headline-small);
+    }
+    .card {
+      margin: 0 0 14px;
+      padding: 14px 16px;
+      border: 1px solid var(--app-line);
+      border-radius: 16px;
+      background: var(--mat-sys-surface-container-lowest);
+      box-shadow: var(--app-card-shadow);
+
+      h3 {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 6px;
+        margin: 0 0 12px;
+        font: var(--mat-sys-title-medium);
+      }
+    }
+    .date-step {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px 12px;
+
+      .spacer {
+        flex: 1;
+      }
+    }
+    .step-no {
+      display: inline-grid;
+      place-items: center;
+      flex: none;
+      width: 26px;
+      height: 26px;
+      border-radius: 50%;
+      background: var(--mat-sys-primary);
+      color: var(--mat-sys-on-primary);
+      font: var(--mat-sys-label-large);
+    }
+    .invoices {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+      gap: 10px;
+      margin-bottom: 10px;
+
+      &:empty {
+        display: none;
+      }
+      app-eod-invoice-form {
+        grid-column: 1 / -1;
+      }
+    }
+    .invoice,
+    .payout {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      padding: 10px;
+      border: 1px solid var(--app-line);
+      border-radius: 14px;
+      background: var(--mat-sys-surface);
+    }
+    .invoices app-eod-payout-form {
+      grid-column: 1 / -1;
+    }
+    .section-hint {
+      margin: -6px 0 12px;
+    }
+    // Arabic on a line of its own under the English, as the page's notes have it.
+    .line-ar {
+      display: block;
+      margin-top: 2px;
+      text-align: right;
+      unicode-bidi: isolate;
+    }
+
+    // The cash that should be in the drawer: the day's figure that matters at the close.
+    .till {
+      border: 2px solid color-mix(in srgb, var(--app-ok, #2e7d32) 45%, transparent);
+      background: color-mix(in srgb, var(--app-ok, #2e7d32) 7%, var(--mat-sys-surface-container-lowest));
+
+      &.short {
+        border-color: color-mix(in srgb, var(--mat-sys-error) 55%, transparent);
+        background: color-mix(in srgb, var(--mat-sys-error) 6%, var(--mat-sys-surface-container-lowest));
+
+        .till-net {
+          color: var(--mat-sys-error);
+        }
+      }
+      h3 {
+        margin: 0 0 2px;
+      }
+      p {
+        margin: 0;
+      }
+    }
+    .till-head {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px 14px;
+
+      > mat-icon {
+        flex: none;
+        width: 32px;
+        height: 32px;
+        font-size: 32px;
+        color: var(--app-ok, #2e7d32);
+      }
+      > div {
+        flex: 1 1 260px;
+        min-width: 0;
+      }
+    }
+    .till-net {
+      margin-inline-start: auto;
+      font: var(--mat-sys-headline-medium);
+      font-weight: 800;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: -0.01em;
+      color: var(--app-ok, #2e7d32);
+    }
+    .till-sum {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 8px;
+      margin: 14px 0 0;
+
+      div {
+        display: grid;
+        gap: 2px;
+        padding: 8px 12px;
+        border-radius: 12px;
+        background: var(--mat-sys-surface-container-lowest);
+        border: 1px solid var(--app-line);
+      }
+      dt {
+        font: var(--mat-sys-label-medium);
+        color: var(--mat-sys-on-surface-variant);
+
+        small {
+          display: block;
+          font-weight: 400;
+        }
+      }
+      dd {
+        margin: 0;
+        font: var(--mat-sys-title-medium);
+        font-variant-numeric: tabular-nums;
+      }
+      .minus dd {
+        color: var(--mat-sys-error);
+      }
+    }
+    .what {
+      display: grid;
+      gap: 2px;
+      flex: 1;
+      min-width: 0;
+
+      strong {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .amount {
+        font: var(--mat-sys-title-medium);
+        font-variant-numeric: tabular-nums;
+      }
+      .tag {
+        justify-self: start;
+        text-decoration: none;
+      }
+    }
+    .row-actions {
+      display: flex;
+      flex-direction: column;
+    }
+    .counter {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px 24px;
+      margin-top: 12px;
+      padding: 10px 12px;
+      border-radius: 10px;
+      background: var(--mat-sys-surface-container);
+
+      strong {
+        font-variant-numeric: tabular-nums;
+      }
+    }
+    .sales {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 10px 12px;
+      align-items: center;
+
+      .wide {
+        grid-column: 1 / -1;
+      }
+    }
+    .revenue {
+      display: grid;
+      padding: 8px 12px;
+      border-radius: 12px;
+      background: var(--mat-sys-secondary-container);
+      color: var(--mat-sys-on-secondary-container);
+
+      .label {
+        font: var(--mat-sys-label-medium);
+      }
+      strong {
+        font: var(--mat-sys-title-large);
+        font-variant-numeric: tabular-nums;
+      }
+    }
+    .z-photo {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      margin-top: 12px;
+      --thumb-size: 56px;
+
+      .label {
+        font: var(--mat-sys-label-large);
+      }
+      .spacer {
+        flex: 1;
+      }
+    }
+    .submit-bar {
+      position: sticky;
+      bottom: 0;
+      z-index: 2;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px 12px;
+      margin: 0 0 14px;
+      padding: 10px 14px;
+      border: 1px solid var(--app-line);
+      border-radius: 16px;
+      background: color-mix(in srgb, var(--mat-sys-surface-container-lowest) 92%, transparent);
+      backdrop-filter: blur(6px);
+      box-shadow: var(--app-card-shadow);
+
+      .spacer {
+        flex: 1;
+      }
+    }
+    .history tr.pick {
+      cursor: pointer;
+    }
+    .history tr.current td {
+      background: var(--mat-sys-secondary-container);
+    }
+    .small {
+      font-size: 0.85em;
+    }
+    @media (max-width: 599.98px) {
+      .card {
+        padding: 12px;
+      }
+      .invoices {
+        grid-template-columns: minmax(0, 1fr);
+      }
+      .submit-bar button {
+        width: 100%;
+      }
+    }
+  `,
+})
+export class EndOfDayPage {
+  private readonly api = inject(EndOfDayApi);
+  protected readonly company = inject(Company);
+  private readonly costing = inject(CostingApi);
+  private readonly notify = inject(NotifyService);
+  private readonly dialog = inject(MatDialog);
+  private readonly businessDay = inject(BusinessDay);
+  private readonly treasury = inject(Treasury);
+  private readonly access = inject(CostingAccess);
+  private readonly approvals = inject(Approvals);
+  private readonly route = inject(ActivatedRoute);
+  private readonly menuSales = inject(MenuSalesApi);
+  private readonly hrStaff = inject(HrStaffApi);
+
+  protected readonly kinds: EndOfDayInvoiceKind[] = ['Cash', 'Credit'];
+  protected readonly sections = sectionLabels;
+  protected readonly payoutKinds: EndOfDayPayoutKind[] = ['SupplierPayment', 'EmployeeAdvance'];
+  protected readonly payoutSections = payoutSectionLabels;
+  protected readonly vouchers = voucherLabels;
+  protected readonly statusLabels = endOfDayStatusLabels;
+
+  protected readonly today = signal(todayIso());
+  protected readonly date = signal('');
+  protected readonly day = signal<EndOfDay | null>(null);
+  protected readonly loading = signal(true);
+  protected readonly error = signal<string | null>(null);
+  protected readonly busy = signal(false);
+  protected readonly suppliers = signal<PickItem[]>([]);
+  // The staff, those who left too (the day's advances name them); the form offers those still here.
+  protected readonly employees = signal<Employee[]>([]);
+  // The staff come from HR while it is linked: chosen from HR's, none added here.
+  protected readonly hrLinked = signal(false);
+  protected readonly history = signal<EndOfDay[]>([]);
+  protected readonly editing = signal<string | null>(null);
+  protected readonly reviewProblem = signal<string | null>(null);
+  // New invoices and payments typed or chosen and not added yet, by section.
+  private readonly pending = signal<Record<EndOfDayInvoiceKind | EndOfDayPayoutKind, boolean>>({
+    Cash: false, Credit: false, SupplierPayment: false, EmployeeAdvance: false,
+  });
+
+  protected readonly sales = signal<EndOfDaySales>(blankSales());
+  private readonly savedSales = signal<EndOfDaySales>(blankSales());
+  protected readonly savingSales = signal(false);
+  protected readonly salesProblem = signal<string | null>(null);
+  private salesTimer: ReturnType<typeof setTimeout> | null = null;
+  // Each photo fetched once: by what it is, so a replaced one is fetched again.
+  private readonly photos = new Map<string, PhotoSource>();
+
+  protected readonly locked = computed(() => this.day()?.status === 'Submitted');
+  protected readonly canBatch = computed(() => this.access.has('Purchases'));
+  protected readonly canTakings = computed(() => this.access.has('Financials'));
+  protected readonly canReopen = computed(() => this.approvals.canApprove());
+  protected readonly salesDirty = computed(() => !sameSales(this.sales(), this.savedSales()));
+  protected readonly totalRevenue = computed(() => {
+    const s = this.sales();
+    return round((Number(s.cashAmount) || 0) + (Number(s.cardAmount) || 0) + (Number(s.taxAmount) || 0));
+  });
+  // The cash that should be in the drawer, as the sales are typed: the float and the cash sales with
+  // their tax, less the cash invoices, the suppliers paid and the advances.
+  protected readonly netCashInTill = computed(() => {
+    const day = this.day();
+    const paidOut = day ? (day.cashInvoicesTotal ?? 0) + (day.supplierPaymentsTotal ?? 0) + (day.advancesTotal ?? 0) : 0;
+    return netCash(this.sales(), round(paidOut));
+  });
+  protected readonly salesState = computed(() =>
+    this.savingSales() ? 'Saving… · جارٍ الحفظ' : this.salesDirty() ? 'Not saved yet · لم يُحفظ' : this.day()?.netSales ? 'Saved · تم الحفظ' : '',
+  );
+
+  constructor() {
+    void this.start();
+  }
+
+  protected invoicesOf(kind: EndOfDayInvoiceKind): EndOfDayInvoice[] {
+    return (this.day()?.invoices ?? []).filter((i) => i.kind === kind);
+  }
+
+  protected countOf(kind: EndOfDayInvoiceKind): number {
+    const day = this.day();
+    return day ? (kind === 'Cash' ? day.cashInvoices : day.creditInvoices) : 0;
+  }
+
+  protected totalOf(kind: EndOfDayInvoiceKind): number {
+    const day = this.day();
+    return day ? (kind === 'Cash' ? day.cashInvoicesTotal : day.creditInvoicesTotal) : 0;
+  }
+
+  protected payoutsOf(kind: EndOfDayPayoutKind): EndOfDayPayout[] {
+    return (this.day()?.payouts ?? []).filter((p) => p.kind === kind);
+  }
+
+  protected payoutCount(kind: EndOfDayPayoutKind): number {
+    const day = this.day();
+    return day ? ((kind === 'SupplierPayment' ? day.supplierPayments : day.advances) ?? 0) : 0;
+  }
+
+  protected payoutTotal(kind: EndOfDayPayoutKind): number {
+    const day = this.day();
+    return day ? ((kind === 'SupplierPayment' ? day.supplierPaymentsTotal : day.advancesTotal) ?? 0) : 0;
+  }
+
+  protected photoOf(id: string, photo: EndOfDayPhoto): PhotoSource {
+    const date = this.date();
+    const key = `${date}/${id}/${photo.fileName}/${photo.bytes}`;
+    let source = this.photos.get(key);
+    if (!source) {
+      source = () => this.api.photo(date, id);
+      this.photos.set(key, source);
+    }
+    return source;
+  }
+
+  protected pendingIn(kind: EndOfDayInvoiceKind | EndOfDayPayoutKind, pending: boolean): void {
+    this.pending.update((p) => ({ ...p, [kind]: pending }));
+    if (!pending) {
+      this.reviewProblem.set(null);
+    }
+  }
+
+  protected async choose(date: string): Promise<void> {
+    if (!date || date === this.date()) {
+      return;
+    }
+    await this.flushSales();
+    this.date.set(date);
+    this.editing.set(null);
+    this.reviewProblem.set(null);
+    await this.load();
+  }
+
+  protected saved(day: EndOfDay): void {
+    this.editing.set(null);
+    this.show(day, false);
+    void this.loadHistory();
+  }
+
+  protected async remove(invoice: EndOfDayInvoice): Promise<void> {
+    await this.run(() => this.api.removeInvoice(this.date(), invoice.id), 'The invoice could not be taken off.');
+  }
+
+  protected async removePayout(payout: EndOfDayPayout): Promise<void> {
+    await this.run(() => this.api.removePayout(this.date(), payout.kind, payout.id), 'The payment could not be taken off.');
+  }
+
+  // A figure typed: kept a moment later, unless another follows.
+  protected setSale(field: keyof EndOfDaySales, value: number | string | null): void {
+    const cleaned = field === 'notes' ? ((value as string | null) ?? '') : value === '' || value === null ? null : Number(value);
+    this.sales.update((s) => ({ ...s, [field]: cleaned }));
+    this.salesProblem.set(null);
+    this.reviewProblem.set(null);
+    if (this.salesTimer) {
+      clearTimeout(this.salesTimer);
+    }
+    this.salesTimer = setTimeout(() => void this.flushSales(), 900);
+  }
+
+  protected async zPhoto(input: HTMLInputElement): Promise<void> {
+    const chosen = input.files?.[0];
+    input.value = '';
+    if (!chosen) {
+      return;
+    }
+    const file = await shrinkPhoto(chosen);
+    const problem = photoProblem(file);
+    if (problem) {
+      this.salesProblem.set(problem);
+      return;
+    }
+    await this.flushSales();
+    await this.run(() => this.api.attachSalesPhoto(this.date(), file), 'The photo could not be attached.');
+  }
+
+  protected async dropZPhoto(): Promise<void> {
+    await this.run(() => this.api.removeSalesPhoto(this.date()), 'The photo could not be taken off.');
+  }
+
+  // The summary first; confirmed there, handed in and locked.
+  protected async review(): Promise<void> {
+    this.reviewProblem.set(null);
+    if (!(await this.flushSales())) {
+      return;
+    }
+    const day = this.day();
+    const pending = this.pending();
+    const problem =
+      pending.Cash || pending.Credit
+        ? `An invoice is filled in ${pending.Cash ? 'under cash' : 'under credit'} but not added: add it, or clear it. · توجد فاتورة لم تُضف بعد.`
+        : pending.SupplierPayment || pending.EmployeeAdvance
+          ? `${pending.SupplierPayment ? 'A supplier payment' : 'An advance'} is filled in but not added: add it, or clear it. · يوجد مبلغ لم يُضف بعد.`
+        : this.editing()
+          ? 'Save or cancel the entry being changed. · احفظ التعديل أو ألغِه.'
+          : !day || day.netSales <= 0
+            ? "Enter the day's sales report: its cash or Visa takings. · أدخل ريبورت المبيعات: إيراد الكاش أو الفيزا."
+            : (day.taxAmount ?? 0) > day.netSales
+              ? "The tax collected cannot be more than the day's sales. · الضريبة لا تزيد عن إجمالي المبيعات."
+              : null;
+    if (problem) {
+      this.reviewProblem.set(problem);
+      return;
+    }
+    const confirmed = await firstValueFrom(
+      this.dialog
+        .open<EndOfDaySummaryDialog, EndOfDaySummaryData, boolean>(EndOfDaySummaryDialog, {
+          data: { day: day!, canApprove: this.approvals.canApprove() },
+          width: '680px',
+          maxWidth: '96vw',
+        })
+        .afterClosed(),
+    );
+    if (!confirmed) {
+      return;
+    }
+    if (await this.run(() => this.api.submit(this.date()), 'The end of day could not be submitted.')) {
+      const asked = (this.day()?.payouts ?? []).filter((p) => p.voucher === 'Requested').length;
+      this.notify.info(
+        `The end of day of ${this.date()} is submitted${asked ? `: ${asked} ${asked === 1 ? 'payment waits' : 'payments wait'} for a manager's approval` : ''}. · تم إرسال التقفيل.`,
+      );
+    }
+  }
+
+  protected async reopen(): Promise<void> {
+    if (await this.run(() => this.api.reopen(this.date()), 'The end of day could not be reopened.')) {
+      this.notify.info('Reopened: it can be changed and submitted again. · تم إعادة الفتح.');
+    }
+  }
+
+  // The day's takings on Financials, filled in from its sales report.
+  protected async takings(): Promise<void> {
+    if (await this.treasury.enter('RevenueTransfer', { revenueDate: this.date() })) {
+      await this.load();
+    }
+  }
+
+  // The sales as typed, kept: true once they are, or there was nothing to keep.
+  private async flushSales(): Promise<boolean> {
+    if (this.salesTimer) {
+      clearTimeout(this.salesTimer);
+      this.salesTimer = null;
+    }
+    if (!this.salesDirty() || this.locked() || !this.date()) {
+      return true;
+    }
+    const sales = this.sales();
+    if ([sales.cashAmount, sales.cardAmount, sales.taxAmount, sales.voidsAmount, sales.openingFloat].some((n) => n !== null && (!Number.isFinite(n) || n < 0))) {
+      this.salesProblem.set('The float, cash, Visa, tax and voids are zero or more. · المبالغ صفر أو أكثر.');
+      return false;
+    }
+    const date = this.date();
+    this.savingSales.set(true);
+    try {
+      const day = await firstValueFrom(this.api.saveSales(date, { ...sales, notes: sales.notes?.trim() || null }));
+      this.savedSales.set(sales);
+      if (this.date() === date) {
+        this.day.set(day);
+      }
+      void this.loadHistory();
+      return true;
+    } catch (error) {
+      this.salesProblem.set(errorMessage(error, 'The sales report could not be saved. · تعذر حفظ الريبورت.'));
+      return false;
+    } finally {
+      this.savingSales.set(false);
+    }
+  }
+
+  private async run(call: () => ReturnType<EndOfDayApi['submit']>, failed: string): Promise<boolean> {
+    this.busy.set(true);
+    try {
+      this.show(await firstValueFrom(call()), false);
+      void this.loadHistory();
+      return true;
+    } catch (error) {
+      this.notify.error(error, failed);
+      return false;
+    } finally {
+      this.busy.set(false);
+    }
+  }
+
+  // The day as the server has it; its sales into the fields unless some are being typed (keep).
+  private show(day: EndOfDay | null, replaceSales = true): void {
+    this.day.set(day);
+    const sales = day ? salesOf(day) : blankSales();
+    if (replaceSales || !this.salesDirty()) {
+      this.sales.set(sales);
+    }
+    this.savedSales.set(sales);
+  }
+
+  private async start(): Promise<void> {
+    const asked = this.route.snapshot.queryParamMap.get('date');
+    const today = await this.businessDay.today();
+    this.today.set(today);
+    this.date.set(asked && /^\d{4}-\d{2}-\d{2}$/.test(asked) && asked <= today ? asked : today);
+    try {
+      const suppliers = await firstValueFrom(this.costing.suppliers());
+      this.suppliers.set(
+        suppliers.map((s) => ({ id: s.id, name: s.name, kind: 'supplier' as const, detail: [s.contactPerson, s.phone].filter(Boolean).join(' · ') || null })),
+      );
+    } catch (error) {
+      this.error.set(errorMessage(error, 'The suppliers could not be loaded.'));
+    }
+    try {
+      const [staff, hr] = await Promise.all([
+        firstValueFrom(this.menuSales.staff()),
+        firstValueFrom(this.hrStaff.status()).catch(() => ({ linked: false, employeesSyncedAtUtc: null })),
+      ]);
+      this.employees.set(staff);
+      this.hrLinked.set(hr.linked);
+    } catch {
+      // No staff to choose from: an advance cannot be added, the rest of the day can.
+      this.employees.set([]);
+    }
+    await this.load();
+  }
+
+  // Someone added to the staff from an advance's form: on every form's list from now.
+  protected staffAdded(e: Employee): void {
+    this.employees.update((all) => [...all.filter((x) => x.id !== e.id), e]);
+  }
+
+  private async load(): Promise<void> {
+    const date = this.date();
+    this.loading.set(true);
+    try {
+      const day = await firstValueFrom(this.api.day(date));
+      if (this.date() === date) {
+        this.show(day);
+      }
+    } catch (error) {
+      this.error.set(errorMessage(error, 'The end of day could not be loaded.'));
+    } finally {
+      this.loading.set(false);
+    }
+    void this.loadHistory();
+  }
+
+  private async loadHistory(): Promise<void> {
+    const to = this.today();
+    try {
+      this.history.set(await firstValueFrom(this.api.days(addDays(to, -13), to)));
+    } catch {
+      this.history.set([]);
+    }
+  }
+}
+
+function blankSales(): EndOfDaySales {
+  return { cashAmount: null, cardAmount: null, taxAmount: null, voidsAmount: null, notes: '', openingFloat: null };
+}
+
+function salesOf(day: EndOfDay): EndOfDaySales {
+  return {
+    cashAmount: day.cashAmount, cardAmount: day.cardAmount, taxAmount: day.taxAmount, voidsAmount: day.voidsAmount, notes: day.notes ?? '',
+    openingFloat: day.openingFloat ?? null,
+  };
+}
+
+function sameSales(a: EndOfDaySales, b: EndOfDaySales): boolean {
+  return a.cashAmount === b.cashAmount && a.cardAmount === b.cardAmount && a.taxAmount === b.taxAmount && a.voidsAmount === b.voidsAmount
+    && a.openingFloat === b.openingFloat && (a.notes ?? '').trim() === (b.notes ?? '').trim();
+}
+
+function todayIso(): string {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+}
+
+function addDays(iso: string, days: number): string {
+  const d = new Date(`${iso}T12:00:00`);
+  d.setDate(d.getDate() + days);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+// The photo of a day handed in, over the page.
+export function viewEndOfDayPhoto(dialog: MatDialog, api: EndOfDayApi, date: string, photoId: string, fileName: string): void {
+  viewPhoto(dialog, () => api.photo(date, photoId), fileName);
+}
+```
+
+
+### 11.2 نماذج المدفوعات والصور
+
+`EodPayoutForm`: الإيصال (كاميرا بـ `capture="environment"` أو ملف)، المورد أو الموظف (من HR مع الربط "From HR"، وإضافة موظف جديد بدونه)، المبلغ، والملاحظة. و `end-of-day-photo.ts`: عرض الصور بالتوكن ونافذة الصورة. وتصغير الصور الكبيرة قبل الرفع (`shrinkPhoto`: أطول ضلع 2000 بكسل، جودة 0.85) في `end-of-day.api.ts`.
+
+> 📄 **`frontend/src/app/features/costing/end-of-day-payouts.ts`** — 387 سطر
+
+```ts
+import { Component, computed, effect, inject, input, output, signal, untracked } from '@angular/core';
+import { FormsModule } from '@angular/forms';
+import { MatButtonModule } from '@angular/material/button';
+import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatIconModule } from '@angular/material/icon';
+import { MatInputModule } from '@angular/material/input';
+import { MatProgressBarModule } from '@angular/material/progress-bar';
+import { firstValueFrom } from 'rxjs';
+import { EmployeePicker } from '../../core/costing/employee-picker';
+import { EndOfDay, EndOfDayApi, EndOfDayPayout, EndOfDayPayoutKind, photoProblem, shrinkPhoto } from '../../core/costing/end-of-day.api';
+import { HrStaffApi } from '../../core/costing/hr-staff.api';
+import { Employee } from '../../core/costing/staff';
+import { errorMessage } from '../../core/http/error-message';
+import { Company } from '../../core/settings/company';
+import { ItemPicker, PickItem } from '../shared/item-picker';
+import { PhotoSource, PhotoThumb } from './end-of-day-photo';
+
+const round = (n: number) => Math.round(n * 100) / 100;
+
+// What each kind of payment is called on its form.
+export const payoutFormLabels: Record<
+  EndOfDayPayoutKind,
+  { label: string; receipt: string; receiptAr: string; amount: string; add: string; noReceipt: string; noPayee: string; noAmount: string }
+> = {
+  SupplierPayment: {
+    label: 'supplier payment',
+    receipt: 'Payment receipt / cash-out voucher',
+    receiptAr: 'صورة إيصال سداد / إذن الصرف',
+    amount: 'Amount paid in cash · المبلغ المدفوع نقداً',
+    add: 'Add payment · إضافة السداد',
+    noReceipt: 'Photograph the payment receipt or attach its file. · صوّر إيصال السداد أو أرفق ملفه.',
+    noPayee: 'Choose the supplier from the list. · اختر المورد من القائمة.',
+    noAmount: 'Enter the amount paid. · أدخل المبلغ المدفوع.',
+  },
+  EmployeeAdvance: {
+    label: 'employee advance',
+    receipt: 'Signed advance receipt',
+    receiptAr: 'صورة إيصال صرف السلفة',
+    amount: 'Advance amount · مبلغ السلفة',
+    add: 'Add advance · إضافة السلفة',
+    noReceipt: 'Photograph the signed advance receipt or attach its file. · صوّر إيصال صرف السلفة أو أرفق ملفه.',
+    noPayee: 'Choose the employee from the list. · اختر الموظف من القائمة.',
+    noAmount: 'Enter the advance amount. · أدخل مبلغ السلفة.',
+  },
+};
+
+// One payment out of the till as it is handed in, or changed: its receipt (the camera, or a file),
+// who was paid (a supplier from the list, or an employee from the staff), the amount and a short
+// note. A new one is added with an id made here once, so it is never added twice; then the form is
+// empty for the next.
+@Component({
+  selector: 'app-eod-payout-form',
+  imports: [EmployeePicker, FormsModule, ItemPicker, MatButtonModule, MatFormFieldModule, MatIconModule, MatInputModule, MatProgressBarModule, PhotoThumb],
+  template: `
+    <div class="form" [class.editing]="!!payout()">
+      <div class="photo">
+        <input #camera type="file" accept="image/*" capture="environment" hidden (change)="pick(camera)" [attr.aria-label]="label() + ', take a photo'" />
+        <input #upload type="file" accept="image/jpeg,image/png,image/webp,application/pdf" hidden (change)="pick(upload)"
+          [attr.aria-label]="label() + ', upload a file'" />
+        <span class="receipt-label">{{ labels().receipt }}<span class="receipt-ar" lang="ar" dir="rtl">{{ labels().receiptAr }}</span></span>
+        @if (source(); as s) {
+          <app-photo-thumb [source]="s" [fileName]="fileName()" [contentType]="file()?.type ?? payout()?.receipt?.contentType ?? null" />
+          <div class="photo-actions">
+            <button mat-button type="button" (click)="camera.click()" [disabled]="saving()"><mat-icon>photo_camera</mat-icon> Retake · إعادة</button>
+            <button mat-button type="button" (click)="upload.click()" [disabled]="saving()"><mat-icon>upload_file</mat-icon> Replace · استبدال</button>
+          </div>
+        } @else {
+          <button mat-stroked-button type="button" class="big" (click)="camera.click()" [disabled]="saving()">
+            <mat-icon>photo_camera</mat-icon> Take photo <span class="inline-ar">تصوير الإيصال</span>
+          </button>
+          <button mat-stroked-button type="button" class="big" (click)="upload.click()" [disabled]="saving()">
+            <mat-icon>upload_file</mat-icon> Upload file <span class="inline-ar">رفع ملف</span>
+          </button>
+        }
+      </div>
+      <div class="fields">
+        @if (kind() === 'SupplierPayment') {
+          <app-item-picker [items]="suppliers()" [(value)]="payeeId" [label]="label() + ', supplier'" placeholder="Supplier · المورد" [disabled]="saving()" />
+        } @else {
+          <div class="employee">
+            <app-employee-picker [employees]="activeEmployees()" [(value)]="payeeId" label="Employee · الموظف" [ariaLabel]="label() + ', employee'" [fill]="true"
+              [disabled]="saving()" [hint]="hrLinked() ? 'From HR · من الموارد البشرية' : null"
+              [emptyLabel]="hrLinked() ? 'No employees from HR yet: sync them in Settings → HR Integration' : 'No staff yet: add one below'" />
+            @if (!hrLinked()) {
+              @if (adding()) {
+                <div class="add-staff">
+                  <mat-form-field subscriptSizing="dynamic">
+                    <mat-label>New staff member's name · اسم الموظف</mat-label>
+                    <input matInput [(ngModel)]="newName" maxlength="200" (keydown.enter)="$event.preventDefault(); addStaff()" [attr.aria-label]="label() + ', new staff member'" />
+                  </mat-form-field>
+                  <button mat-button type="button" (click)="adding.set(false)" [disabled]="saving()">Cancel</button>
+                  <button mat-stroked-button type="button" (click)="addStaff()" [disabled]="saving() || !newName.trim()"><mat-icon>person_add</mat-icon> Add · إضافة</button>
+                </div>
+              } @else {
+                <button mat-button type="button" class="add-link" (click)="adding.set(true)" [disabled]="saving()">
+                  <mat-icon>person_add</mat-icon> New staff member · موظف جديد
+                </button>
+              }
+            }
+          </div>
+        }
+        <mat-form-field subscriptSizing="dynamic" floatLabel="always">
+          <mat-label>{{ labels().amount }}</mat-label>
+          <input matInput type="number" min="0" step="any" inputmode="decimal" [(ngModel)]="amount" (ngModelChange)="touch()" placeholder="0.00"
+            data-western-digits [attr.aria-label]="label() + ', amount'" />
+          <span matTextSuffix>&nbsp;{{ company.currency() }}</span>
+        </mat-form-field>
+        <mat-form-field subscriptSizing="dynamic">
+          <mat-label>Note (optional) · ملاحظة</mat-label>
+          <input matInput [(ngModel)]="note" (ngModelChange)="touch()" maxlength="200" [attr.aria-label]="label() + ', note'" />
+        </mat-form-field>
+      </div>
+      <div class="actions">
+        @if (payout()) {
+          <button mat-button type="button" (click)="cancelled.emit()" [disabled]="saving()">Cancel · إلغاء</button>
+          <button mat-flat-button type="button" (click)="save()" [disabled]="saving()"><mat-icon>check</mat-icon> Save · حفظ</button>
+        } @else {
+          @if (dirty()) {
+            <button mat-button type="button" (click)="clear()" [disabled]="saving()">Clear · مسح</button>
+          }
+          <button mat-flat-button type="button" (click)="save()" [disabled]="saving()"><mat-icon>add</mat-icon> {{ labels().add }}</button>
+        }
+      </div>
+      @if (saving()) {
+        <mat-progress-bar mode="indeterminate" />
+      }
+      @if (problem(); as p) {
+        <p class="error" role="alert">{{ p }}</p>
+      }
+    </div>
+  `,
+  styleUrl: './costing.scss',
+  styles: `
+    .form {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr);
+      gap: 10px 16px;
+      align-items: start;
+      padding: 12px;
+      border: 1px dashed var(--app-line-strong, #cbd5e1);
+      border-radius: 14px;
+      background: var(--mat-sys-surface-container-lowest);
+    }
+    .form.editing {
+      border-style: solid;
+      border-color: var(--mat-sys-primary);
+    }
+    .photo {
+      display: grid;
+      gap: 6px;
+      justify-items: start;
+      max-width: 240px;
+      --thumb-size: 96px;
+    }
+    .receipt-label {
+      display: grid;
+      font: var(--mat-sys-label-medium);
+      color: var(--mat-sys-on-surface-variant);
+    }
+    .receipt-ar {
+      unicode-bidi: isolate;
+      opacity: 0.85;
+    }
+    .photo-actions {
+      display: flex;
+      flex-wrap: wrap;
+    }
+    .big {
+      width: 100%;
+      min-height: 44px;
+      justify-content: flex-start;
+    }
+    .fields {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 8px 12px;
+      align-items: center;
+    }
+    .actions {
+      grid-column: 1 / -1;
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+    .employee {
+      display: grid;
+      gap: 4px;
+      min-width: 0;
+    }
+    .add-staff {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px;
+
+      mat-form-field {
+        flex: 1 1 180px;
+      }
+    }
+    .add-link {
+      justify-self: start;
+    }
+    mat-progress-bar,
+    .error {
+      grid-column: 1 / -1;
+    }
+    @media (max-width: 599.98px) {
+      .form {
+        grid-template-columns: minmax(0, 1fr);
+      }
+      .photo {
+        max-width: none;
+        grid-template-columns: auto minmax(0, 1fr);
+        align-items: center;
+      }
+      .receipt-label,
+      .photo .big {
+        grid-column: 1 / -1;
+      }
+      .actions button {
+        flex: 1;
+      }
+    }
+  `,
+})
+export class EodPayoutForm {
+  private readonly api = inject(EndOfDayApi);
+  private readonly hrStaff = inject(HrStaffApi);
+  protected readonly company = inject(Company);
+
+  readonly date = input.required<string>();
+  readonly kind = input.required<EndOfDayPayoutKind>();
+  readonly suppliers = input<readonly PickItem[]>([]);
+  readonly employees = input<Employee[]>([]);
+  // The staff come from HR: chosen from HR's, none added here.
+  readonly hrLinked = input(false);
+  // Someone added to the staff from here, while HR is not linked.
+  readonly staffAdded = output<Employee>();
+  // The payment being changed; none for a new one.
+  readonly payout = input<EndOfDayPayout | null>(null);
+  readonly saved = output<EndOfDay>();
+  readonly cancelled = output<void>();
+  // Something typed or chosen on a new one, not added yet.
+  readonly pendingChange = output<boolean>();
+
+  protected readonly file = signal<File | null>(null);
+  protected readonly payeeId = signal<string | null>(null);
+  protected amount: number | null = null;
+  protected note = '';
+  protected readonly saving = signal(false);
+  protected readonly problem = signal<string | null>(null);
+  private readonly version = signal(0);
+  private id = crypto.randomUUID();
+
+  protected readonly labels = computed(() => payoutFormLabels[this.kind()]);
+  protected readonly label = computed(() => (this.payout() ? 'Payment' : `New ${this.labels().label}`));
+  // Who can be advanced now: those still on the staff, and the one already chosen.
+  protected readonly activeEmployees = computed(() =>
+    [...this.employees(), ...this.added().filter((a) => !this.employees().some((e) => e.id === a.id))].filter(
+      (e) => e.isActive || e.id === this.payout()?.employeeId,
+    ),
+  );
+  protected readonly adding = signal(false);
+  protected newName = '';
+  private readonly added = signal<Employee[]>([]);
+
+  // The receipt chosen here, else the one handed in.
+  protected readonly source = computed<PhotoSource | null>(() => {
+    const [file, payout, date] = [this.file(), this.payout(), this.date()];
+    return file ?? (payout ? () => this.api.photo(date, payout.id) : null);
+  });
+  protected readonly fileName = computed(() => this.file()?.name ?? this.payout()?.receipt.fileName ?? '');
+
+  protected readonly dirty = computed(() => {
+    this.version();
+    return !!this.file() || !!this.payeeId() || !!this.amount || !!this.note.trim();
+  });
+
+  // Filled from the payment being changed, once: the day saved again elsewhere leaves what is typed.
+  private readonly payoutId = computed(() => this.payout()?.id ?? null);
+
+  constructor() {
+    effect(() => {
+      this.payoutId();
+      untracked(() => {
+        const payout = this.payout();
+        this.payeeId.set(payout ? (payout.supplierId ?? payout.employeeId) : null);
+        this.amount = payout?.amount ?? null;
+        this.note = payout?.note ?? '';
+        this.file.set(null);
+        this.touch();
+      });
+    });
+    effect(() => {
+      const dirty = this.dirty();
+      if (!this.payout()) {
+        untracked(() => this.pendingChange.emit(dirty));
+      }
+    });
+  }
+
+  protected touch(): void {
+    this.version.update((v) => v + 1);
+    this.problem.set(null);
+  }
+
+  // The camera's photo or the file chosen: lighter to send when it is a big photo.
+  protected async pick(input: HTMLInputElement): Promise<void> {
+    const chosen = input.files?.[0];
+    input.value = '';
+    if (!chosen) {
+      return;
+    }
+    const file = await shrinkPhoto(chosen);
+    const problem = photoProblem(file);
+    if (problem) {
+      this.problem.set(problem);
+      return;
+    }
+    this.file.set(file);
+    this.touch();
+  }
+
+  // Someone not on the staff yet, added by name and chosen; the same name again is the one there is.
+  protected async addStaff(): Promise<void> {
+    const name = this.newName.trim();
+    if (!name) {
+      return;
+    }
+    this.saving.set(true);
+    this.problem.set(null);
+    try {
+      const made = await firstValueFrom(this.hrStaff.addLocal(crypto.randomUUID(), name, null));
+      this.added.update((all) => [...all.filter((e) => e.id !== made.id), made]);
+      this.payeeId.set(made.id);
+      this.staffAdded.emit(made);
+      this.newName = '';
+      this.adding.set(false);
+      this.touch();
+    } catch (error) {
+      this.problem.set(errorMessage(error, 'They could not be added to the staff. · تعذر إضافة الموظف.'));
+    } finally {
+      this.saving.set(false);
+    }
+  }
+
+  protected clear(): void {
+    this.file.set(null);
+    this.payeeId.set(null);
+    this.amount = null;
+    this.note = '';
+    this.touch();
+  }
+
+  protected async save(): Promise<void> {
+    const payout = this.payout();
+    const amount = Number(this.amount);
+    const labels = this.labels();
+    const problem = !this.file() && !payout ? labels.noReceipt : !this.payeeId() ? labels.noPayee : !(amount > 0) ? labels.noAmount : null;
+    if (problem) {
+      this.problem.set(problem);
+      return;
+    }
+    this.saving.set(true);
+    this.problem.set(null);
+    const entry = { payeeId: this.payeeId()!, amount: round(amount), note: this.note.trim() || null };
+    try {
+      let day: EndOfDay;
+      if (!payout) {
+        day = await firstValueFrom(this.api.addPayout(this.date(), this.kind(), this.id, entry, this.file()!));
+        this.id = crypto.randomUUID();
+        this.clear();
+      } else {
+        day = await firstValueFrom(this.api.changePayout(this.date(), this.kind(), payout.id, entry));
+        const file = this.file();
+        if (file) {
+          day = await firstValueFrom(this.api.replacePayoutReceipt(this.date(), this.kind(), payout.id, file));
+        }
+      }
+      this.saved.emit(day);
+    } catch (error) {
+      this.problem.set(errorMessage(error, 'The payment could not be saved. · تعذر حفظ المبلغ.'));
+    } finally {
+      this.saving.set(false);
+    }
+  }
+}
+```
+
+
+> 📄 **`frontend/src/app/features/costing/end-of-day-photo.ts`** — 373 سطر
+
+```ts
+import { Component, DestroyRef, ElementRef, computed, effect, inject, input, signal, untracked, viewChild } from '@angular/core';
+import { MatButtonModule } from '@angular/material/button';
+import { MAT_DIALOG_DATA, MatDialog, MatDialogModule } from '@angular/material/dialog';
+import { MatIconModule } from '@angular/material/icon';
+import { MatProgressBarModule } from '@angular/material/progress-bar';
+import { DomSanitizer, SafeResourceUrl } from '@angular/platform-browser';
+import { Observable, firstValueFrom } from 'rxjs';
+import { errorMessage } from '../../core/http/error-message';
+import { saveBlob } from '../../core/ui/save-blob';
+
+// How a photo is fetched, or the file chosen on this device.
+export type PhotoSource = (() => Observable<Blob>) | File;
+
+async function blobOf(source: PhotoSource): Promise<Blob> {
+  return source instanceof File ? source : firstValueFrom(source());
+}
+
+const zoomSteps = [0.5, 0.75, 1, 1.5, 2, 3, 4];
+
+// A photo handed in, shown to be read and typed from: as wide as where it is shown, zoomed in and
+// out, dragged about when it is bigger, a quarter turn at a time for one taken sideways; full size
+// over the page, or saved. A PDF in the browser's own viewer.
+@Component({
+  selector: 'app-photo-viewer',
+  imports: [MatButtonModule, MatIconModule, MatProgressBarModule],
+  template: `
+    <div class="bar">
+      <span class="name" [title]="fileName()">{{ fileName() }}</span>
+      @if (image()) {
+        <button mat-icon-button (click)="zoomBy(-1)" [disabled]="zoom() <= steps[0]" title="Zoom out · تصغير" aria-label="Zoom out"><mat-icon>zoom_out</mat-icon></button>
+        <span class="level">{{ zoom() * 100 }}%</span>
+        <button mat-icon-button (click)="zoomBy(1)" [disabled]="zoom() >= steps[steps.length - 1]" title="Zoom in · تكبير" aria-label="Zoom in"><mat-icon>zoom_in</mat-icon></button>
+        <button mat-icon-button (click)="zoom.set(1)" title="Fit the width · ملء العرض" aria-label="Fit the width"><mat-icon>fit_screen</mat-icon></button>
+        <button mat-icon-button (click)="turn()" title="Turn · تدوير" aria-label="Turn a quarter"><mat-icon>rotate_right</mat-icon></button>
+      }
+      @if (large()) {
+        <button mat-icon-button (click)="openLarge()" title="Full size · عرض كامل" aria-label="Full size"><mat-icon>open_in_full</mat-icon></button>
+      }
+      <button mat-icon-button (click)="download()" [disabled]="!blob()" title="Download · تنزيل" aria-label="Download"><mat-icon>download</mat-icon></button>
+    </div>
+    @if (error()) {
+      <p class="error">{{ error() }}</p>
+    } @else if (image(); as src) {
+      <div #stage class="stage" [class.dragging]="dragging()" (pointerdown)="grab($event)" (pointermove)="drag($event)" (pointerup)="drop($event)"
+        (pointercancel)="drop($event)">
+        <img [src]="src" [alt]="fileName()" [style.width.%]="zoom() * 100" draggable="false" />
+      </div>
+    } @else if (document(); as src) {
+      <iframe class="stage" [src]="src" [title]="fileName()"></iframe>
+    } @else {
+      <mat-progress-bar mode="indeterminate" />
+    }
+  `,
+  styles: `
+    :host {
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      border: 1px solid var(--app-line, #e2e8f0);
+      border-radius: 12px;
+      background: var(--mat-sys-surface-container-low);
+      overflow: hidden;
+    }
+    .bar {
+      display: flex;
+      align-items: center;
+      gap: 0;
+      padding: 0 4px 0 12px;
+      border-bottom: 1px solid var(--app-line, #e2e8f0);
+      background: var(--mat-sys-surface-container-lowest);
+    }
+    .name {
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font: var(--mat-sys-label-medium);
+      color: var(--mat-sys-on-surface-variant);
+    }
+    .level {
+      min-width: 40px;
+      text-align: center;
+      font: var(--mat-sys-label-small);
+      font-variant-numeric: tabular-nums;
+    }
+    /* As tall as where it is shown says: --viewer-height, 520px unless said. */
+    .stage {
+      display: block;
+      width: 100%;
+      height: var(--viewer-height, 520px);
+      overflow: auto;
+      border: 0;
+      cursor: grab;
+      touch-action: pan-x pan-y;
+      background: repeating-conic-gradient(var(--mat-sys-surface-container) 0% 25%, transparent 0% 50%) 0 0 / 16px 16px;
+    }
+    .stage.dragging {
+      cursor: grabbing;
+    }
+    img {
+      display: block;
+      max-width: none;
+      margin: 0 auto;
+      user-select: none;
+    }
+    .error {
+      padding: 12px;
+      color: var(--mat-sys-error);
+    }
+  `,
+})
+export class PhotoViewer {
+  private readonly sanitizer = inject(DomSanitizer);
+  private readonly dialog = inject(MatDialog);
+
+  readonly source = input.required<PhotoSource>();
+  readonly fileName = input.required<string>();
+  // Offers to open it full size over the page; not from there.
+  readonly large = input(true);
+
+  protected readonly steps = zoomSteps;
+  protected readonly zoom = signal(1);
+  protected readonly image = signal<string | null>(null);
+  protected readonly document = signal<SafeResourceUrl | null>(null);
+  protected readonly error = signal<string | null>(null);
+  protected readonly blob = signal<Blob | null>(null);
+  protected readonly dragging = signal(false);
+  private readonly stage = viewChild<ElementRef<HTMLElement>>('stage');
+  private readonly urls: string[] = [];
+  private turns = 0;
+  private from: { x: number; y: number; left: number; top: number } | null = null;
+
+  constructor() {
+    effect(() => {
+      const source = this.source();
+      untracked(() => void this.load(source));
+    });
+    inject(DestroyRef).onDestroy(() => this.release());
+  }
+
+  protected zoomBy(step: number): void {
+    const at = zoomSteps.indexOf(this.zoom());
+    this.zoom.set(zoomSteps[Math.min(zoomSteps.length - 1, Math.max(0, (at < 0 ? 2 : at) + step))]);
+  }
+
+  // A quarter turn clockwise, drawn again upright: the page around it lays it out as it now is.
+  protected async turn(): Promise<void> {
+    const blob = this.blob();
+    if (!blob) {
+      return;
+    }
+    this.turns = (this.turns + 1) % 4;
+    try {
+      this.image.set(this.turns === 0 ? this.urls[0] : await this.turned(blob, this.turns));
+    } catch {
+      // A browser that cannot draw it: left as it was.
+    }
+  }
+
+  protected openLarge(): void {
+    this.dialog.open<PhotoDialog, PhotoDialogData>(PhotoDialog, {
+      data: { source: this.source(), fileName: this.fileName() },
+      width: '96vw',
+      maxWidth: '1200px',
+    });
+  }
+
+  protected download(): void {
+    const blob = this.blob();
+    if (blob) {
+      saveBlob(blob, this.fileName());
+    }
+  }
+
+  // Dragged about with a finger or the mouse, when it is bigger than where it is shown.
+  protected grab(event: PointerEvent): void {
+    const stage = this.stage()?.nativeElement;
+    if (!stage || event.button !== 0 || event.pointerType === 'touch') {
+      return;
+    }
+    this.from = { x: event.clientX, y: event.clientY, left: stage.scrollLeft, top: stage.scrollTop };
+    stage.setPointerCapture?.(event.pointerId);
+    this.dragging.set(true);
+  }
+
+  protected drag(event: PointerEvent): void {
+    const stage = this.stage()?.nativeElement;
+    if (!stage || !this.from) {
+      return;
+    }
+    stage.scrollLeft = this.from.left - (event.clientX - this.from.x);
+    stage.scrollTop = this.from.top - (event.clientY - this.from.y);
+  }
+
+  protected drop(event: PointerEvent): void {
+    if (!this.from) {
+      return;
+    }
+    this.from = null;
+    this.dragging.set(false);
+    const stage = this.stage()?.nativeElement;
+    if (stage?.hasPointerCapture?.(event.pointerId)) {
+      stage.releasePointerCapture(event.pointerId);
+    }
+  }
+
+  private async load(source: PhotoSource): Promise<void> {
+    this.release();
+    this.image.set(null);
+    this.document.set(null);
+    this.error.set(null);
+    this.zoom.set(1);
+    this.turns = 0;
+    try {
+      const blob = await blobOf(source);
+      this.blob.set(blob);
+      const url = this.keep(URL.createObjectURL(blob));
+      if (blob.type.startsWith('image/')) {
+        this.image.set(url);
+      } else {
+        // A PDF, checked by its first bytes when it was handed in, in the browser's own viewer.
+        this.document.set(this.sanitizer.bypassSecurityTrustResourceUrl(url));
+      }
+    } catch (error) {
+      this.error.set(errorMessage(error, 'The photo could not be loaded. · تعذر تحميل الصورة.'));
+    }
+  }
+
+  private async turned(blob: Blob, turns: number): Promise<string> {
+    const bitmap = await createImageBitmap(blob);
+    const sideways = turns % 2 === 1;
+    const canvas = document.createElement('canvas');
+    canvas.width = sideways ? bitmap.height : bitmap.width;
+    canvas.height = sideways ? bitmap.width : bitmap.height;
+    const context = canvas.getContext('2d')!;
+    context.translate(canvas.width / 2, canvas.height / 2);
+    context.rotate((turns * Math.PI) / 2);
+    context.drawImage(bitmap, -bitmap.width / 2, -bitmap.height / 2);
+    bitmap.close();
+    const drawn = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.9));
+    if (!drawn) {
+      throw new Error('Not drawn');
+    }
+    return this.keep(URL.createObjectURL(drawn));
+  }
+
+  private keep(url: string): string {
+    this.urls.push(url);
+    return url;
+  }
+
+  private release(): void {
+    this.urls.splice(0).forEach((url) => URL.revokeObjectURL(url));
+  }
+}
+
+export interface PhotoDialogData {
+  source: PhotoSource;
+  fileName: string;
+}
+
+// The photo alone, over the page, as tall as the window lets it.
+@Component({
+  selector: 'app-photo-dialog',
+  imports: [MatButtonModule, MatDialogModule, PhotoViewer],
+  template: `
+    <mat-dialog-content>
+      <app-photo-viewer [source]="data.source" [fileName]="data.fileName" [large]="false" />
+    </mat-dialog-content>
+    <mat-dialog-actions align="end">
+      <button mat-flat-button mat-dialog-close>Close · إغلاق</button>
+    </mat-dialog-actions>
+  `,
+  styles: `
+    app-photo-viewer {
+      --viewer-height: calc(100vh - 190px);
+    }
+  `,
+})
+export class PhotoDialog {
+  protected readonly data = inject<PhotoDialogData>(MAT_DIALOG_DATA);
+}
+
+export function viewPhoto(dialog: MatDialog, source: PhotoSource, fileName: string): void {
+  dialog.open<PhotoDialog, PhotoDialogData>(PhotoDialog, { data: { source, fileName }, width: '96vw', maxWidth: '1200px' });
+}
+
+// A photo as a small square to tap: the picture itself, or a PDF's icon. Tapped, it opens full size.
+@Component({
+  selector: 'app-photo-thumb',
+  imports: [MatIconModule],
+  template: `
+    <button type="button" class="thumb" (click)="open()" [title]="fileName()" [attr.aria-label]="'View ' + fileName()">
+      @if (url(); as src) {
+        <img [src]="src" alt="" />
+      } @else {
+        <mat-icon>{{ pdf() ? 'picture_as_pdf' : 'image' }}</mat-icon>
+      }
+    </button>
+  `,
+  styles: `
+    :host {
+      display: block;
+      flex: none;
+    }
+    .thumb {
+      display: grid;
+      place-items: center;
+      width: var(--thumb-size, 72px);
+      height: var(--thumb-size, 72px);
+      padding: 0;
+      border: 1px solid var(--app-line, #e2e8f0);
+      border-radius: 10px;
+      background: var(--mat-sys-surface-container);
+      overflow: hidden;
+      cursor: zoom-in;
+      color: var(--mat-sys-on-surface-variant);
+    }
+    img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+  `,
+})
+export class PhotoThumb {
+  private readonly dialog = inject(MatDialog);
+
+  readonly source = input.required<PhotoSource>();
+  readonly fileName = input.required<string>();
+  readonly contentType = input<string | null>(null);
+
+  protected readonly url = signal<string | null>(null);
+  protected readonly pdf = computed(() => (this.contentType() ?? '').includes('pdf') || this.fileName().toLowerCase().endsWith('.pdf'));
+  private made: string | null = null;
+
+  constructor() {
+    effect(() => {
+      const [source, pdf] = [this.source(), this.pdf()];
+      untracked(() => void this.load(source, pdf));
+    });
+    inject(DestroyRef).onDestroy(() => this.release());
+  }
+
+  protected open(): void {
+    viewPhoto(this.dialog, this.source(), this.fileName());
+  }
+
+  private async load(source: PhotoSource, pdf: boolean): Promise<void> {
+    this.release();
+    this.url.set(null);
+    if (pdf) {
+      return;
+    }
+    try {
+      const blob = await blobOf(source);
+      if (blob.type.startsWith('image/')) {
+        this.made = URL.createObjectURL(blob);
+        this.url.set(this.made);
+      }
+    } catch {
+      // The icon instead.
+    }
+  }
+
+  private release(): void {
+    if (this.made) {
+      URL.revokeObjectURL(this.made);
+      this.made = null;
+    }
+  }
+}
+```
+
+
+## 12. المبيعات
+
+`SalesPage`: ملخصات الأيام وأصنافها. و `DailySalesDialog`: إدخال ملخص اليوم بأكواد المنيو (`"6101-2 · Margherita (Large)"`) بأسعاره، و `DailySalesImportDialog` من شيت العمودين.
+
+> 📄 **`frontend/src/app/features/costing/sales-page.ts`** — 278 سطر
+
+```ts
+import { DatePipe } from '@angular/common';
+import { Component, computed, inject, signal } from '@angular/core';
+import { FormsModule } from '@angular/forms';
+import { MatButtonModule } from '@angular/material/button';
+import { MatDialog } from '@angular/material/dialog';
+import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatIconModule } from '@angular/material/icon';
+import { MatInputModule } from '@angular/material/input';
+import { MatProgressBarModule } from '@angular/material/progress-bar';
+import { MatTooltipModule } from '@angular/material/tooltip';
+import { firstValueFrom } from 'rxjs';
+import { AuthService } from '../../core/auth/auth.service';
+import { Permissions } from '../../core/auth/permissions';
+import { MenuSalesApi, SalesReceipt, SalesReport } from '../../core/costing/menu-sales.api';
+import { errorMessage } from '../../core/http/error-message';
+import { Company } from '../../core/settings/company';
+import { MoneyPipe } from '../../core/ui/money.pipe';
+import { NotifyService } from '../../core/ui/notify.service';
+import { Approvals } from './approvals';
+import { DailySalesDialog, DailySalesDialogData, DailySalesImportDialog } from './daily-sales-dialogs';
+import { BusinessDay } from './financials';
+
+// How many of a day's items show before "more".
+const shownLines = 6;
+
+// Sales (المبيعات): what each day sold, for its stock and its food cost only. A day's sales summary,
+// each item and how many, entered by hand or imported from the day's sheet; each item takes its
+// stock by its recipe as it is recorded, and the theoretical cost and the variance read it at the
+// menu's prices. The day's money is its takings, on Financials. A day entered by mistake is voided,
+// by a manager or on their approval, its stock all put back, and entered again.
+@Component({
+  selector: 'app-sales-page',
+  imports: [DatePipe, FormsModule, MatButtonModule, MatFormFieldModule, MatIconModule, MatInputModule, MatProgressBarModule, MatTooltipModule, MoneyPipe],
+  template: `
+    <div class="toolbar no-print">
+      <mat-form-field subscriptSizing="dynamic" class="day">
+        <mat-label>From · من</mat-label>
+        <input matInput type="date" [ngModel]="from()" (ngModelChange)="pick($event, to())" aria-label="From" />
+      </mat-form-field>
+      <mat-form-field subscriptSizing="dynamic" class="day">
+        <mat-label>To · إلى</mat-label>
+        <input matInput type="date" [ngModel]="to()" (ngModelChange)="pick(from(), $event)" aria-label="To" />
+      </mat-form-field>
+      <span class="spacer"></span>
+      @if (canChange) {
+        <button mat-stroked-button (click)="importDay()"><mat-icon>upload_file</mat-icon> Import a day <span class="inline-ar">استيراد يوم</span></button>
+        <button mat-flat-button (click)="enterDay()"><mat-icon>add</mat-icon> Daily sales summary <span class="inline-ar">ملخص المبيعات اليومية</span></button>
+      }
+    </div>
+
+    @if (loading()) {
+      <mat-progress-bar mode="indeterminate" />
+    } @else if (error(); as message) {
+      <p class="error">{{ message }}</p>
+    } @else if (report(); as r) {
+      <div class="tiles">
+        <div class="tile key">
+          <span class="label">Days entered · الأيام المسجلة</span>
+          <strong>{{ days() }}</strong>
+        </div>
+        <div class="tile">
+          <span class="label">Items sold · الكميات المباعة</span>
+          <strong>{{ r.totals.items }}</strong>
+        </div>
+        <div class="tile">
+          <span class="label">At menu prices · بأسعار المنيو</span>
+          <strong>{{ r.totals.subtotal | money }}</strong>
+          <small class="muted">before tax: for the food cost</small>
+        </div>
+      </div>
+
+      <div class="table-wrap">
+        <table class="grid" aria-label="Sales">
+          <thead>
+            <tr>
+              <th>Day<span class="ar">اليوم</span></th>
+              <th>Items sold<span class="ar">الأصناف المباعة</span></th>
+              <th class="num">Quantity<span class="ar">الكمية</span></th>
+              <th class="num">At menu prices<span class="ar">بأسعار المنيو</span></th>
+              <th><span class="visually-hidden">Actions</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            @for (s of r.receipts; track s.id) {
+              <tr [class.voided]="s.voidedAtUtc">
+                <td class="nowrap">
+                  <strong>{{ s.businessDate | date: 'EEE d MMM' }}</strong>
+                  <div class="muted small">
+                    {{ s.source === 'DailySummary' ? 'Daily summary' : s.reference ? 'Bill ' + s.reference : 'Bill' }} · {{ s.enteredBy }}
+                  </div>
+                  @if (s.voidedAtUtc) {
+                    <span class="tag bad">Voided<span class="ar">ملغاة</span></span>
+                  } @else if (approvals.pendingFor(s.id)) {
+                    <span class="pending-badge">Void requested<span class="ar">طلب إلغاء</span></span>
+                  }
+                </td>
+                <td>
+                  @for (l of linesOf(s); track l.publicId) {
+                    <div class="small line" [class.off]="!l.onBill">
+                      {{ l.quantity }} × {{ l.menuItemName }}{{ l.variantName ? ' (' + l.variantName + ')' : '' }}
+                    </div>
+                  }
+                  @if (s.lines.length > shownLines) {
+                    <button mat-button class="more" (click)="toggle(s.id)">
+                      {{ open().has(s.id) ? 'Fewer' : '+' + (s.lines.length - shownLines) + ' more' }}
+                    </button>
+                  }
+                </td>
+                <td class="num">{{ quantityOf(s) }}</td>
+                <td class="num">{{ s.subtotal | money }}</td>
+                <td class="num actions">
+                  @if (canChange && !s.voidedAtUtc && !approvals.pendingFor(s.id)) {
+                    <button mat-icon-button (click)="voidSale(s)" [attr.aria-label]="'Void the sales of ' + s.businessDate" matTooltip="Void · إلغاء">
+                      <mat-icon>undo</mat-icon>
+                    </button>
+                  }
+                </td>
+              </tr>
+            } @empty {
+              <tr>
+                <td colspan="5" class="empty">
+                  No sales in these days. Enter a day's sales summary, or import the day's sheet.
+                  <span class="note-ar" lang="ar" dir="rtl">لا توجد مبيعات في هذه الأيام. أدخل ملخص مبيعات اليوم أو استورد ملف اليوم.</span>
+                </td>
+              </tr>
+            }
+          </tbody>
+        </table>
+      </div>
+      <p class="note">
+        Sales are for stock and food cost only: each item sold takes its stock by its recipe, and the food cost reads it at the menu's prices.
+        The day's money (cash, card, tax and voids) is its takings, on Financials. A day entered by mistake is voided, on a manager's say, its
+        stock put back, and entered again.
+        <span class="note-ar" lang="ar" dir="rtl">المبيعات لخصم المخزون وحساب التكلفة فقط: كل صنف مباع يخصم المخزون بوصفته. أما الكاش والفيزا والضريبة والفويد فتُسجل في توريد الإيراد بالماليات. اليوم المسجل بالخطأ يُلغى بموافقة المدير ويعود مخزونه ثم يُسجل من جديد.</span>
+      </p>
+    }
+  `,
+  styleUrl: './costing.scss',
+  styles: `
+    .day {
+      width: 170px;
+    }
+    tr.voided td {
+      opacity: 0.6;
+    }
+    .line.off {
+      opacity: 0.7;
+    }
+    .more {
+      --mat-text-button-container-height: 28px;
+      padding: 0 4px;
+      font-size: 0.85em;
+    }
+    .small {
+      font-size: 0.85em;
+    }
+    .bad {
+      color: var(--mat-sys-error);
+    }
+  `,
+})
+export class SalesPage {
+  private readonly company = inject(Company);
+  private readonly api = inject(MenuSalesApi);
+  private readonly dialog = inject(MatDialog);
+  private readonly notify = inject(NotifyService);
+  private readonly businessDay = inject(BusinessDay);
+  protected readonly approvals = inject(Approvals);
+  protected readonly canChange = inject(AuthService).can(Permissions.InventoryManage);
+  protected readonly shownLines = shownLines;
+
+  protected readonly from = signal('');
+  protected readonly to = signal('');
+  protected readonly report = signal<SalesReport | null>(null);
+  protected readonly loading = signal(true);
+  protected readonly error = signal<string | null>(null);
+  // The days whose every item is shown.
+  protected readonly open = signal(new Set<string>());
+
+  // Days with sales standing, voided ones left out.
+  protected readonly days = computed(() => new Set((this.report()?.receipts ?? []).filter((r) => !r.voidedAtUtc).map((r) => r.businessDate)).size);
+
+  constructor() {
+    void (async () => {
+      const today = await this.businessDay.today();
+      const weekAgo = new Date(`${today}T12:00:00`);
+      weekAgo.setDate(weekAgo.getDate() - 6);
+      this.to.set(today);
+      this.from.set(weekAgo.toISOString().slice(0, 10));
+      await this.load();
+    })();
+    void this.approvals.refresh();
+  }
+
+  protected pick(from: string, to: string): void {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(from) && /^\d{4}-\d{2}-\d{2}$/.test(to) && from <= to) {
+      this.from.set(from);
+      this.to.set(to);
+      void this.load();
+    }
+  }
+
+  protected linesOf(sale: SalesReceipt) {
+    return this.open().has(sale.id) ? sale.lines : sale.lines.slice(0, shownLines);
+  }
+
+  protected quantityOf(sale: SalesReceipt): number {
+    return sale.lines.filter((l) => l.onBill).reduce((sum, l) => sum + l.quantity, 0);
+  }
+
+  protected toggle(id: string): void {
+    this.open.update((open) => {
+      const next = new Set(open);
+      if (!next.delete(id)) {
+        next.add(id);
+      }
+      return next;
+    });
+  }
+
+  protected async enterDay(): Promise<void> {
+    const menu = await firstValueFrom(this.api.menu());
+    if (!menu.items.some((i) => !i.isDeleted)) {
+      this.notify.error(null, 'The menu has no items yet: add them on Menu, or put recipes on it from Recipes. · أضف أصنافًا للمنيو أولًا.');
+      return;
+    }
+    const sale = await firstValueFrom(
+      this.dialog
+        .open<DailySalesDialog, DailySalesDialogData, SalesReceipt>(DailySalesDialog, {
+          data: { menu, today: await this.businessDay.today() },
+          width: '760px',
+          maxWidth: '96vw',
+          // A day's items take a while to type: only Cancel or Save closes it.
+          disableClose: true,
+        })
+        .afterClosed(),
+    );
+    if (sale) {
+      this.notify.info(
+        `Sales of ${sale.businessDate} saved: ${this.quantityOf(sale)} sold, ${this.company.money(sale.subtotal)} at menu prices, their stock taken.`,
+      );
+      await this.load();
+    }
+  }
+
+  protected async importDay(): Promise<void> {
+    const imported = await firstValueFrom(
+      this.dialog
+        .open<DailySalesImportDialog, { today: string }, boolean>(DailySalesImportDialog, {
+          data: { today: await this.businessDay.today() },
+          width: '640px',
+          maxWidth: '96vw',
+        })
+        .afterClosed(),
+    );
+    if (imported) {
+      await this.load();
+    }
+  }
+
+  protected async voidSale(sale: SalesReceipt): Promise<void> {
+    const what = sale.source === 'DailySummary' || !sale.reference ? `the sales of ${sale.businessDate}` : `sale ${sale.reference}`;
+    if ((await this.approvals.delete('Sale', sale.id, what)) === 'Applied') {
+      await this.load();
+    }
+  }
+
+  private async load(): Promise<void> {
+    try {
+      this.report.set(await firstValueFrom(this.api.sales(this.from(), this.to())));
+      this.error.set(null);
+    } catch (error) {
+      this.error.set(errorMessage(error, 'The sales could not be loaded.'));
+    } finally {
+      this.loading.set(false);
+    }
+  }
+}
+```
+
+
+> 📄 **`frontend/src/app/features/costing/daily-sales-dialogs.ts`** — 405 سطر
+
+```ts
+import { Component, computed, inject, signal } from '@angular/core';
+import { FormsModule } from '@angular/forms';
+import { MatButtonModule } from '@angular/material/button';
+import { MAT_DIALOG_DATA, MatDialogModule, MatDialogRef } from '@angular/material/dialog';
+import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatIconModule } from '@angular/material/icon';
+import { MatInputModule } from '@angular/material/input';
+import { MatProgressBarModule } from '@angular/material/progress-bar';
+import { firstValueFrom } from 'rxjs';
+import { DailySalesImportResult, Menu, MenuSalesApi, SalesReceipt } from '../../core/costing/menu-sales.api';
+import { Company } from '../../core/settings/company';
+import { GridKeys } from '../shared/grid-keys';
+import { ItemPicker, PickItem } from '../shared/item-picker';
+import { errorMessage } from '../../core/http/error-message';
+import { MoneyPipe } from '../../core/ui/money.pipe';
+import { NotifyService } from '../../core/ui/notify.service';
+import { saveBlob } from '../../core/ui/save-blob';
+
+// What a day's sales are entered against: each item, and each size of one sold by size, by its
+// code as the day's sheet lists it ("6101-2 · Margherita (Large)"), at the menu's price.
+export interface SaleOption {
+  label: string;
+  menuItemId: number;
+  variantId: number | null;
+  price: number;
+  // Its code ("6101", "6101-2") and its names, as they may be typed.
+  code: string;
+  names: string[];
+}
+
+const key = (text: string) => text.trim().replace(/\s+/g, ' ').toLowerCase();
+
+export function saleOptions(menu: Menu): SaleOption[] {
+  return menu.items
+    .filter((i) => !i.isDeleted)
+    .sort((a, b) => a.id - b.id)
+    .flatMap((item): SaleOption[] =>
+      item.sizes.length
+        ? item.sizes.map((s) => ({
+            label: `${item.id}-${s.id} · ${item.name} (${s.name})`,
+            menuItemId: item.id,
+            variantId: s.id,
+            price: s.price,
+            code: `${item.id}-${s.id}`,
+            names: [`${item.name} (${s.name})`, ...(item.nameAr ? [`${item.nameAr} (${s.nameAr ?? s.name})`] : [])],
+          }))
+        : [{ label: `${item.id} · ${item.name}`, menuItemId: item.id, variantId: null, price: item.price, code: `${item.id}`, names: [item.name, ...(item.nameAr ? [item.nameAr] : [])] }],
+    );
+}
+
+// The option typed: by its label as the list offers it, its code, or a name only one has.
+export function findOption(options: SaleOption[], text: string): SaleOption | null {
+  const typed = key(text);
+  if (!typed) {
+    return null;
+  }
+  const exact = options.find((o) => key(o.label) === typed || o.code === typed);
+  if (exact) {
+    return exact;
+  }
+  const named = options.filter((o) => o.names.some((n) => key(n) === typed));
+  return named.length === 1 ? named[0] : null;
+}
+
+export interface DailySalesDialogData {
+  menu: Menu;
+  // The business day: the latest a day's sales can be of.
+  today: string;
+}
+
+interface Row {
+  // The option chosen, by its code ("6101-2").
+  key: string | null;
+  quantity: number | null;
+}
+
+// The day's sales summary (ملخص المبيعات اليومية), entered by hand: the day, and each item sold and
+// how many, the item found as it is typed from the menu's list. No bills, times or money: the
+// day's money is its takings, on Financials. Closes with the summary recorded, its stock taken.
+@Component({
+  selector: 'app-daily-sales-dialog',
+  imports: [FormsModule, GridKeys, ItemPicker, MatButtonModule, MatDialogModule, MatFormFieldModule, MatIconModule, MatInputModule, MoneyPipe],
+  template: `
+    <h2 mat-dialog-title>Daily sales summary <span class="inline-ar">ملخص المبيعات اليومية</span></h2>
+    <mat-dialog-content>
+      <p class="note">
+        Each item sold that day and how many: each takes its stock by its recipe. No bills or money here: the day's cash, card and tax are its
+        takings, on Financials.
+        <span class="note-ar" lang="ar" dir="rtl">كل صنف مباع في اليوم وكميته، ويخصم المخزون بوصفته. لا فواتير ولا مبالغ هنا: الكاش والفيزا والضريبة تُسجل في توريد الإيراد بالماليات.</span>
+      </p>
+      <mat-form-field class="day">
+        <mat-label>Date · التاريخ</mat-label>
+        <input matInput type="date" [(ngModel)]="date" (ngModelChange)="touch()" [max]="data.today" required aria-label="Date" />
+      </mat-form-field>
+      <div class="table-wrap">
+        <table class="grid rows" appGridKeys (appGridKeysAppend)="add()">
+          <thead>
+            <tr>
+              <th>Item<span class="ar">الصنف</span></th>
+              <th class="num">Quantity sold<span class="ar">الكمية المباعة</span></th>
+              <th class="num">At menu price<span class="ar">بسعر المنيو</span></th>
+              <th><span class="visually-hidden">Remove</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            @for (row of rows(); track $index; let i = $index) {
+              <tr>
+                <td class="item">
+                  <app-item-picker [items]="pickItems" [value]="row.key" (valueChange)="row.key = $event; touch()" [label]="'Item ' + (i + 1)"
+                    placeholder="Code or name · الكود أو الاسم" />
+                </td>
+                <td class="num">
+                  <input class="cell qty" type="number" min="1" step="1" [(ngModel)]="row.quantity" (ngModelChange)="touch()"
+                    [attr.aria-label]="'Quantity sold ' + (i + 1)" [class.missing]="row.key && !validQuantity(row)" />
+                </td>
+                <td class="num">{{ optionOf(row) && validQuantity(row) ? (optionOf(row)!.price * row.quantity! | money) : '—' }}</td>
+                <td class="num">
+                  <button mat-icon-button type="button" (click)="remove(i)" [disabled]="rows().length === 1" [attr.aria-label]="'Remove item ' + (i + 1)">
+                    <mat-icon>close</mat-icon>
+                  </button>
+                </td>
+              </tr>
+            }
+          </tbody>
+        </table>
+      </div>
+      <button mat-button type="button" (click)="add()"><mat-icon>add</mat-icon> Add an item <span class="inline-ar">إضافة صنف</span></button>
+      @if (problem(); as p) {
+        <p class="warn">{{ p }}</p>
+      }
+      @if (error(); as message) {
+        <p class="error" role="alert">{{ message }}</p>
+      }
+    </mat-dialog-content>
+    <mat-dialog-actions align="end">
+      <span class="muted totals">{{ totals().items }} items · {{ totals().sold }} sold · {{ totals().value | money }} at menu prices</span>
+      <span class="spacer"></span>
+      <button mat-button type="button" mat-dialog-close [disabled]="saving()">Cancel <span class="inline-ar">إلغاء</span></button>
+      <button mat-flat-button type="button" (click)="save()" [disabled]="saving() || !!problem()">
+        <mat-icon>save</mat-icon> Save the day <span class="inline-ar">حفظ</span>
+      </button>
+    </mat-dialog-actions>
+  `,
+  styleUrl: './costing.scss',
+  styles: `
+    .day {
+      width: 220px;
+    }
+    .item {
+      min-width: 260px;
+    }
+    .cell {
+      width: 100%;
+      min-width: 200px;
+      padding: 6px 8px;
+      border: 1px solid var(--app-line);
+      border-radius: 8px;
+      background: var(--mat-sys-surface);
+      color: inherit;
+      font: inherit;
+    }
+    .cell.qty {
+      width: 96px;
+      min-width: 0;
+      text-align: end;
+    }
+    .cell.missing {
+      border-color: var(--mat-sys-error);
+    }
+    .spacer {
+      flex: 1;
+    }
+    .totals {
+      font-size: 0.9em;
+    }
+  `,
+})
+export class DailySalesDialog {
+  protected readonly data = inject<DailySalesDialogData>(MAT_DIALOG_DATA);
+  private readonly ref = inject<MatDialogRef<DailySalesDialog, SalesReceipt>>(MatDialogRef);
+  private readonly api = inject(MenuSalesApi);
+
+  private readonly company = inject(Company);
+  protected readonly options = saleOptions(this.data.menu);
+  // As the picker offers them: by code, with the category and the menu's price.
+  protected readonly pickItems: PickItem[] = this.options.map((o) => ({
+    id: o.code, name: o.names[0], code: o.code, kind: 'menu', detail: this.data.menu.items.find((i) => i.id === o.menuItemId)?.category ?? null,
+    cost: this.company.money(o.price), keywords: o.names,
+  }));
+  // A retry after a lost answer reaches the same summary.
+  private readonly id = crypto.randomUUID();
+  protected date = this.data.today;
+  protected readonly rows = signal<Row[]>([{ key: null, quantity: null }]);
+  protected readonly saving = signal(false);
+  protected readonly error = signal<string | null>(null);
+  // Bumped as a row is typed into.
+  private readonly version = signal(0);
+
+  // The rows filled in, each found on the menu with how many.
+  private readonly filled = computed(() => {
+    this.version();
+    return this.rows().filter((r) => r.key || r.quantity !== null);
+  });
+
+  protected readonly totals = computed(() => {
+    const good = this.filled().filter((r) => this.optionOf(r) && this.validQuantity(r));
+    return {
+      items: new Set(good.map((r) => this.optionOf(r)!.code)).size,
+      sold: good.reduce((sum, r) => sum + r.quantity!, 0),
+      value: good.reduce((sum, r) => sum + this.optionOf(r)!.price * r.quantity!, 0),
+    };
+  });
+
+  // What stops it being saved, said plainly in both languages.
+  protected readonly problem = computed(() => {
+    const rows = this.filled();
+    if (!this.date) {
+      return 'Choose the date. · اختر التاريخ.';
+    }
+    if (this.date > this.data.today) {
+      return 'That day has not come yet. · هذا اليوم لم يأتِ بعد.';
+    }
+    if (rows.length === 0) {
+      return 'Add at least one item sold. · أضف صنفًا مباعًا واحدًا على الأقل.';
+    }
+    if (rows.some((r) => !this.optionOf(r))) {
+      return 'Choose the item for each quantity from the list. · اختر الصنف لكل كمية من القائمة.';
+    }
+    if (rows.some((r) => !this.validQuantity(r))) {
+      return 'Each quantity sold is a whole number, 1 or more. · الكمية رقم صحيح 1 أو أكثر.';
+    }
+    return null;
+  });
+
+  protected touch(): void {
+    this.version.update((v) => v + 1);
+  }
+
+  protected optionOf(row: Row): SaleOption | null {
+    return row.key ? (this.options.find((o) => o.code === row.key) ?? null) : null;
+  }
+
+  protected validQuantity(row: Row): boolean {
+    return row.quantity !== null && Number.isInteger(Number(row.quantity)) && Number(row.quantity) >= 1;
+  }
+
+  protected add(): void {
+    this.rows.update((rows) => [...rows, { key: null, quantity: null }]);
+  }
+
+  protected remove(index: number): void {
+    this.rows.update((rows) => rows.filter((_, i) => i !== index));
+  }
+
+  protected async save(): Promise<void> {
+    if (this.problem()) {
+      return;
+    }
+    this.saving.set(true);
+    this.error.set(null);
+    try {
+      const lines = this.filled().map((r) => {
+        const option = this.optionOf(r)!;
+        return { menuItemId: option.menuItemId, variantId: option.variantId, quantity: Number(r.quantity) };
+      });
+      this.ref.close(await firstValueFrom(this.api.recordDailySales(this.id, this.date, lines)));
+    } catch (error) {
+      this.error.set(errorMessage(error, 'The day could not be saved. · تعذّر حفظ اليوم.'));
+    } finally {
+      this.saving.set(false);
+    }
+  }
+}
+
+// The day's sheet imported (استيراد مبيعات اليوم): the day chosen here, the sheet two columns, an
+// item from the menu's list and how many sold. Says what was recorded and each row left out and
+// why; closes with true when the day was recorded.
+@Component({
+  selector: 'app-daily-sales-import-dialog',
+  imports: [FormsModule, MatButtonModule, MatDialogModule, MatFormFieldModule, MatIconModule, MatInputModule, MatProgressBarModule, MoneyPipe],
+  template: `
+    <h2 mat-dialog-title>Import a day's sales <span class="inline-ar">استيراد مبيعات يوم</span></h2>
+    <mat-dialog-content>
+      @if (result(); as r) {
+        @if (r.saleId) {
+          <p class="note" role="status">
+            <strong>{{ r.items }} items, {{ r.quantity }} sold, {{ r.value | money }} at menu prices</strong>, recorded for {{ r.date }}: each took its
+            stock by its recipe.
+            <span class="note-ar" lang="ar" dir="rtl">تم تسجيل مبيعات اليوم وخصم المخزون بالوصفات.</span>
+          </p>
+        } @else {
+          <p class="warn" role="status">Nothing on the sheet could be read: nothing was recorded. · لم يُسجل شيء.</p>
+        }
+        @if (r.skipped.length) {
+          <h3>{{ r.skipped.length }} {{ r.skipped.length === 1 ? 'row' : 'rows' }} left out <span class="inline-ar">صفوف لم تُستورد</span></h3>
+          <ul class="skipped">
+            @for (s of r.skipped; track s.row) {
+              <li>
+                <strong>Row {{ s.row }}{{ s.name ? ' · ' + s.name : '' }}</strong>: {{ s.reason }}
+                @if (s.reasonAr) {
+                  <div class="reason-ar" lang="ar" dir="rtl">{{ s.reasonAr }}</div>
+                }
+              </li>
+            }
+          </ul>
+        }
+      } @else {
+        <p class="note">
+          Two columns: the item, chosen from the menu's list, and how many sold. One sheet for each day, chosen here.
+          <span class="note-ar" lang="ar" dir="rtl">عمودان: الصنف من قائمة المنيو والكمية المباعة. ملف لكل يوم، ويُختار التاريخ هنا.</span>
+        </p>
+        <div class="row">
+          <mat-form-field class="day">
+            <mat-label>Date · التاريخ</mat-label>
+            <input matInput type="date" [(ngModel)]="date" [max]="data.today" required aria-label="Date" />
+          </mat-form-field>
+          <button mat-stroked-button type="button" (click)="template()"><mat-icon>download</mat-icon> Template <span class="inline-ar">النموذج</span></button>
+        </div>
+        <button mat-flat-button type="button" (click)="picker.click()" [disabled]="busy() || !date || date > data.today">
+          <mat-icon>upload_file</mat-icon> Choose the sheet <span class="inline-ar">اختر الملف</span>
+        </button>
+        <input #picker type="file" accept=".xlsx" (change)="chosen($event)" hidden aria-label="The day's sheet" />
+        @if (busy()) {
+          <mat-progress-bar mode="indeterminate" />
+        }
+      }
+      @if (error(); as message) {
+        <p class="error" role="alert">{{ message }}</p>
+      }
+    </mat-dialog-content>
+    <mat-dialog-actions align="end">
+      @if (result()) {
+        <button mat-flat-button type="button" (click)="close()">Done <span class="inline-ar">تم</span></button>
+      } @else {
+        <button mat-button type="button" mat-dialog-close>Cancel <span class="inline-ar">إلغاء</span></button>
+      }
+    </mat-dialog-actions>
+  `,
+  styleUrl: './costing.scss',
+  styles: `
+    .row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 12px;
+    }
+    .day {
+      width: 220px;
+    }
+    .skipped li {
+      margin-bottom: 6px;
+    }
+    .reason-ar {
+      color: var(--mat-sys-on-surface-variant);
+    }
+    h3 {
+      margin: 12px 0 6px;
+      font: var(--mat-sys-title-small);
+    }
+  `,
+})
+export class DailySalesImportDialog {
+  protected readonly data = inject<{ today: string }>(MAT_DIALOG_DATA);
+  private readonly ref = inject<MatDialogRef<DailySalesImportDialog, boolean>>(MatDialogRef);
+  private readonly api = inject(MenuSalesApi);
+  private readonly notify = inject(NotifyService);
+
+  protected date = this.data.today;
+  protected readonly busy = signal(false);
+  protected readonly error = signal<string | null>(null);
+  protected readonly result = signal<DailySalesImportResult | null>(null);
+
+  protected async template(): Promise<void> {
+    try {
+      saveBlob(await firstValueFrom(this.api.dailySalesTemplate()), 'daily-sales-template.xlsx');
+    } catch (error) {
+      this.notify.error(error, 'The template could not be downloaded. · تعذّر تنزيل النموذج.');
+    }
+  }
+
+  protected async chosen(event: Event): Promise<void> {
+    const input = event.target as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = '';
+    if (file) {
+      await this.import(file);
+    }
+  }
+
+  protected async import(file: File): Promise<void> {
+    this.busy.set(true);
+    this.error.set(null);
+    try {
+      this.result.set(await firstValueFrom(this.api.importDailySales(this.date, file)));
+    } catch (error) {
+      this.error.set(errorMessage(error, 'The sheet could not be imported. · تعذّر استيراد الملف.'));
+    } finally {
+      this.busy.set(false);
+    }
+  }
+
+  protected close(): void {
+    this.ref.close(!!this.result()?.saleId);
+  }
+}
+```
+
+
+## 13. الجرد
+
+`CountsPage`: المسودة الحالية (إن وجدت) والجرود المرحّلة، وزرّان للبدء: افتتاحي ودوري. و `CountSheetPage`: ورقة العد بالأقسام، **حفظ تلقائي** بعد آخر إدخال بمهلة قصيرة ("طويلة بما يكفي لكتابة رقم، قصيرة بما لا يضيع شيء إن وُضع التابلت")، وتغيير النوع، وقيمة المسودة بأسعار اليوم، والترحيل.
+
+> 📄 **`frontend/src/app/features/costing/counts-page.ts`** — 265 سطر
+
+```ts
+import { DatePipe } from '@angular/common';
+import { Component, computed, inject, signal } from '@angular/core';
+import { MatButtonModule } from '@angular/material/button';
+import { MatIconModule } from '@angular/material/icon';
+import { MatProgressBarModule } from '@angular/material/progress-bar';
+import { MatTooltipModule } from '@angular/material/tooltip';
+import { Router, RouterLink } from '@angular/router';
+import { firstValueFrom } from 'rxjs';
+import { CostingApi, ApprovalRequest, StockCountKind, StockCountSummary, countKindLabels } from '../../core/costing/costing.api';
+import { errorMessage } from '../../core/http/error-message';
+import { Approvals, pendingLabel } from './approvals';
+import { FilterOption, FilterSelect } from '../shared/filter-select';
+import { SearchField } from '../shared/search-field';
+import { SortOption, SortState, smartMatch, sortItems } from '../shared/smart-search';
+import { SortControl } from '../shared/sort-control';
+
+type CountSort = 'date' | 'materials';
+
+const countSorts: SortOption<CountSort>[] = [
+  { key: 'date', en: 'Date', ar: 'التاريخ', descending: true },
+  { key: 'materials', en: 'Materials counted', ar: 'عدد الخامات', descending: true },
+];
+
+// Physical counts of the stores: the one being filled in, if any, and the posted ones. The
+// variance report measures between two posted counts, so the stores are counted at the same
+// point each week, with the kitchen closed. The first, when costing starts, is the opening stock
+// (جرد افتتاحي): where stock begins, with no shortage or surplus; every one after is periodic
+// (جرد دوري), what it finds against the records a shortage or a surplus.
+@Component({
+  selector: 'app-counts-page',
+  imports: [DatePipe, FilterSelect, MatButtonModule, MatIconModule, MatProgressBarModule, MatTooltipModule, RouterLink, SearchField, SortControl],
+  template: `
+    <div class="kinds">
+      <p class="note">
+        <strong>Opening stock</strong><span class="inline-ar">جرد افتتاحي</span>: once, when you start. It sets where each material's stock begins, at the cost it has, with
+        no shortage or surplus and nothing in the profit.
+        <span class="note-ar" lang="ar" dir="rtl">مرة واحدة عند البدء: يحدد رصيد البداية لكل خامة بتكلفتها، بلا عجز أو زيادة ولا أثر على الأرباح.</span>
+      </p>
+      <p class="note">
+        <strong>Periodic count</strong><span class="inline-ar">جرد دوري</span>: every week, at the same point, with the kitchen closed. What it finds against the records
+        is a shortage or a surplus, and the variance report measures between counts.
+        <span class="note-ar" lang="ar" dir="rtl">أسبوعيًا في نفس التوقيت والمطبخ مغلق: الفرق عن الرصيد الدفتري عجز أو زيادة، ويقيس تقرير الانحراف بين جردين.</span>
+      </p>
+    </div>
+    @if (loading()) {
+      <mat-progress-bar mode="indeterminate" />
+    } @else if (error()) {
+      <p class="error">{{ error() }}</p>
+    } @else {
+      <div class="toolbar">
+        @if (draft(); as d) {
+          <span>
+            <strong>{{ d.startedBy || 'Someone' }}</strong> started a count at {{ d.startedAtUtc | date: 'd MMM, HH:mm' }}:
+            {{ d.materials }} {{ d.materials === 1 ? 'material' : 'materials' }} counted so far.
+          </span>
+          <span class="kind" [class.opening]="d.kind === 'Opening'">{{ kindLabels[d.kind].en }}<span class="ar">{{ kindLabels[d.kind].ar }}</span></span>
+          <a mat-flat-button [routerLink]="['/costing/counts', d.id]"><mat-icon>edit_note</mat-icon> Continue the count</a>
+        } @else if (posted().length === 0) {
+          <button mat-flat-button (click)="start('Opening')"><mat-icon>inventory</mat-icon> Opening stock <span class="inline-ar">جرد افتتاحي</span></button>
+          <button mat-stroked-button (click)="start('Periodic')"><mat-icon>add</mat-icon> Periodic count <span class="inline-ar">جرد دوري</span></button>
+        } @else {
+          <button mat-flat-button (click)="start('Periodic')"><mat-icon>add</mat-icon> Periodic count <span class="inline-ar">جرد دوري</span></button>
+          <button mat-stroked-button (click)="start('Opening')" matTooltip="For materials never counted yet: a material is opened once">
+            <mat-icon>inventory</mat-icon> Opening stock <span class="inline-ar">جرد افتتاحي</span>
+          </button>
+        }
+        <span class="spacer"></span>
+        @if (posted().length >= 2 && hasPeriodic()) {
+          <a mat-button routerLink="/costing/reports/variance"><mat-icon>compare_arrows</mat-icon> Variance since the last count</a>
+        }
+      </div>
+      @if (done().length > 1) {
+        <div class="toolbar smart">
+          <app-search-field [(value)]="search" placeholder="Who started or posted it · بواسطة" />
+          <div class="pills">
+            <app-filter-select label="Type · النوع" icon="inventory" [options]="kindFilters()" [(value)]="kind" />
+            <app-filter-select label="Status · الحالة" icon="flag" [options]="statusFilters()" [(value)]="status" />
+            <app-sort-control [options]="sorts" [(sort)]="sort" />
+          </div>
+        </div>
+      }
+      <div class="table-wrap">
+        <table class="grid">
+          <thead>
+            <tr>
+              <th>Posted<span class="ar">تاريخ الترحيل</span></th>
+              <th>Type<span class="ar">نوع الجرد</span></th>
+              <th>By<span class="ar">بواسطة</span></th>
+              <th class="num">Materials counted<span class="ar">الخامات المجرودة</span></th>
+              <th class="num"><span class="visually-hidden">Actions</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            @for (count of shownDone(); track count.id) {
+              <tr class="clickable" [class.voided]="count.status === 'Voided'" [class.pending-deletion]="!!pendingOf(count)" (click)="open(count)">
+                <td>
+                  {{ count.postedAtUtc | date: 'EEE d MMM y, HH:mm' }}
+                  @if (count.status === 'Voided') {
+                    <div><span class="voided-badge">Voided<span class="ar">ملغى</span></span>
+                      <span class="muted small"> by {{ count.voidedBy }}, {{ count.voidedAtUtc | date: 'd MMM' }}</span></div>
+                  } @else if (pendingOf(count); as p) {
+                    <div><span class="pending-badge">{{ pendingLabel(p).en }}<span class="ar">{{ pendingLabel(p).ar }}</span></span>
+                      <span class="muted small"> by {{ p.requestedBy }}</span></div>
+                  }
+                </td>
+                <td>
+                  <span class="kind" [class.opening]="count.kind === 'Opening'">{{ kindLabels[count.kind].en }}<span class="ar">{{ kindLabels[count.kind].ar }}</span></span>
+                </td>
+                <td>{{ count.postedBy }}</td>
+                <td class="num">{{ count.materials }}</td>
+                <td class="num" (click)="$event.stopPropagation()">
+                  @if (count.status === 'Posted') {
+                    @if (pendingOf(count)) {
+                      <mat-icon class="locked" matTooltip="Waiting for a manager's approval" aria-label="Locked: deletion requested">lock_clock</mat-icon>
+                    } @else {
+                      <button mat-icon-button class="danger" (click)="remove(count)" matTooltip="Delete (void)" aria-label="Delete this count">
+                        <mat-icon>delete</mat-icon>
+                      </button>
+                    }
+                  }
+                </td>
+              </tr>
+            } @empty {
+              <tr>
+                <td colspan="5" class="muted">
+                  No counts posted yet. Start with the opening stock: what is on the shelves now, where the next count is measured from.
+                  <span class="inline-ar">ابدأ بالجرد الافتتاحي.</span>
+                </td>
+              </tr>
+            }
+          </tbody>
+        </table>
+      </div>
+    }
+  `,
+  styleUrl: './costing.scss',
+  styles: `
+    .kinds {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 8px;
+
+      .note {
+        margin: 0;
+      }
+    }
+    .kind {
+      display: inline-block;
+      padding: 2px 10px;
+      border-radius: 12px;
+      background: var(--mat-sys-surface-container-high);
+      font: var(--mat-sys-label-medium);
+      white-space: nowrap;
+
+      .ar {
+        display: inline;
+        margin-left: 6px;
+      }
+      &.opening {
+        background: var(--mat-sys-tertiary-container);
+        color: var(--mat-sys-on-tertiary-container);
+      }
+    }
+    .danger {
+      color: var(--mat-sys-error);
+    }
+    .small {
+      font-size: 0.85em;
+    }
+    tr.voided td {
+      color: var(--mat-sys-on-surface-variant);
+    }
+    .visually-hidden {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip: rect(0 0 0 0);
+    }
+  `,
+})
+export class CountsPage {
+  protected readonly pendingLabel = pendingLabel;
+  protected readonly kindLabels = countKindLabels;
+  private readonly api = inject(CostingApi);
+  private readonly router = inject(Router);
+  private readonly approvals = inject(Approvals);
+
+  protected readonly counts = signal<StockCountSummary[]>([]);
+  protected readonly loading = signal(true);
+  protected readonly error = signal<string | null>(null);
+
+  protected readonly draft = computed(() => this.counts().find((c) => c.status === 'Draft') ?? null);
+  protected readonly posted = computed(() => this.counts().filter((c) => c.status === 'Posted'));
+  // The variance report ends at a periodic count.
+  protected readonly hasPeriodic = computed(() => this.posted().some((c) => c.kind === 'Periodic'));
+  // Posted, and voided since: kept, marked so.
+  protected readonly done = computed(() => this.counts().filter((c) => c.status !== 'Draft'));
+
+  protected readonly search = signal('');
+  protected readonly kind = signal('');
+  protected readonly status = signal('');
+  protected readonly sorts = countSorts;
+  protected readonly sort = signal<SortState<CountSort>>({ key: 'date', direction: -1 });
+
+  protected readonly kindFilters = computed<FilterOption[]>(() => [
+    { value: '', label: 'All · الكل', count: this.done().length },
+    ...(['Periodic', 'Opening'] as const).map((k) => ({
+      value: k, label: `${countKindLabels[k].en} · ${countKindLabels[k].ar}`, count: this.done().filter((c) => c.kind === k).length,
+    })),
+  ]);
+
+  protected readonly statusFilters = computed<FilterOption[]>(() => [
+    { value: '', label: 'All · الكل', count: this.done().length },
+    { value: 'Posted', label: 'Posted · مُرحّل', count: this.done().filter((c) => c.status === 'Posted').length },
+    { value: 'Voided', label: 'Voided · ملغى', count: this.done().filter((c) => c.status === 'Voided').length },
+  ]);
+
+  protected readonly shownDone = computed(() =>
+    sortItems(
+      this.done().filter(
+        (c) => (!this.kind() || c.kind === this.kind()) && (!this.status() || c.status === this.status()) && smartMatch(this.search(), c.startedBy, c.postedBy),
+      ),
+      this.sort(),
+      (c, key) => (key === 'materials' ? c.materials : c.postedAtUtc),
+    ),
+  );
+
+  constructor() {
+    void this.load();
+  }
+
+  // A new count's id is made here; it is saved, of its kind, on its first entry.
+  protected start(kind: StockCountKind): void {
+    void this.router.navigate(['/costing/counts', crypto.randomUUID()], { queryParams: { kind } });
+  }
+
+  protected open(count: StockCountSummary): void {
+    void this.router.navigate(['/costing/counts', count.id]);
+  }
+
+  protected pendingOf(count: StockCountSummary): ApprovalRequest | undefined {
+    return this.approvals.pendingFor(count.id);
+  }
+
+  // Voided for a manager (its adjustments undone); asked of one for anyone else.
+  protected async remove(count: StockCountSummary): Promise<void> {
+    const day = new Date(count.postedAtUtc!).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+    const what = count.kind === 'Opening' ? `the opening stock of ${day}` : `the count of ${day}`;
+    if ((await this.approvals.delete('StockCount', count.id, what)) === 'Applied') {
+      await this.load();
+    }
+  }
+
+  private async load(): Promise<void> {
+    void this.approvals.refresh();
+    try {
+      this.counts.set(await firstValueFrom(this.api.stockCounts()));
+    } catch (error) {
+      this.error.set(errorMessage(error, 'The stock counts could not be loaded.'));
+    } finally {
+      this.loading.set(false);
+    }
+  }
+}
+```
+
+
+> 📄 **`frontend/src/app/features/costing/count-sheet-page.ts`** — 595 سطر
+
+```ts
+import { DatePipe, DecimalPipe } from '@angular/common';
+import { Component, DestroyRef, computed, effect, inject, input, signal, untracked } from '@angular/core';
+import { FormsModule } from '@angular/forms';
+import { MatButtonModule } from '@angular/material/button';
+import { MatButtonToggleModule } from '@angular/material/button-toggle';
+import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatIconModule } from '@angular/material/icon';
+import { MatInputModule } from '@angular/material/input';
+import { MatProgressBarModule } from '@angular/material/progress-bar';
+import { Router, RouterLink } from '@angular/router';
+import { firstValueFrom } from 'rxjs';
+import { CostingApi, MaterialCost, StockCount, StockCountKind, countKindLabels, countUnit, recipeCostOf } from '../../core/costing/costing.api';
+import { errorMessage } from '../../core/http/error-message';
+import { MoneyPipe } from '../../core/ui/money.pipe';
+import { NotifyService } from '../../core/ui/notify.service';
+
+interface Section {
+  category: string;
+  materials: MaterialCost[];
+}
+
+// How long after the last entry the draft is saved: long enough to type a number, short enough
+// that a tablet put down loses nothing.
+const autosaveAfterMs = 1500;
+
+// One count sheet. A draft is filled in shelf by shelf, in kg, litres and pieces, and saves
+// itself as it goes; an empty field is not counted, which is not the same as 0. It does not
+// show what the records expect: the counter counts the shelf rather than confirming a number.
+// Posted, it shows what was counted against what the records said, and what the difference was worth.
+//
+// Periodic (جرد دوري) or the opening stock (جرد افتتاحي), chosen as it starts and changeable while
+// a draft. The opening stock is where stock begins: as it is filled in it shows what it is worth at
+// today's costs, and posted, what each material opened at, with no difference beside it.
+@Component({
+  selector: 'app-count-sheet-page',
+  imports: [
+    DatePipe,
+    DecimalPipe,
+    FormsModule,
+    MatButtonModule,
+    MatButtonToggleModule,
+    MatFormFieldModule,
+    MatIconModule,
+    MatInputModule,
+    MatProgressBarModule,
+    MoneyPipe,
+    RouterLink,
+  ],
+  template: `
+    <div class="toolbar no-print">
+      <a mat-button routerLink="/costing/counts"><mat-icon>arrow_back</mat-icon> All counts</a>
+      <span class="spacer"></span>
+      @if (posted()) {
+        <button mat-button (click)="print()"><mat-icon>print</mat-icon> Print</button>
+      }
+    </div>
+    @if (loading()) {
+      <mat-progress-bar mode="indeterminate" />
+    } @else if (error()) {
+      <p class="error">{{ error() }}</p>
+    } @else if (posted(); as count) {
+      <h2 class="title">
+        {{ kindLabels[count.kind].en }}, posted {{ count.postedAtUtc | date: 'EEE d MMM y, HH:mm' }}
+        <span class="inline-ar">{{ kindLabels[count.kind].ar }} مُرحّل</span>
+      </h2>
+      <p class="muted">Started by {{ count.startedBy }}, posted by {{ count.postedBy }}.</p>
+      @if (count.status === 'Voided') {
+        <p class="note">
+          <span class="voided-badge">Voided<span class="ar">ملغى</span></span>
+          {{ count.voidedAtUtc | date: 'd MMM y, HH:mm' }} by {{ count.voidedBy }}: its adjustments were undone, and the variance report no
+          longer measures from it.
+        </p>
+      }
+      @if (count.kind === 'Opening') {
+        <div class="table-wrap">
+          <table class="grid opening">
+            <thead>
+              <tr>
+                <th>Code<span class="ar">الكود</span></th>
+                <th>Material<span class="ar">الخامة</span></th>
+                <th class="num">Opened at<span class="ar">رصيد البداية</span></th>
+                <th class="num">Cost<span class="ar">التكلفة</span></th>
+                <th class="num">Worth<span class="ar">القيمة</span></th>
+              </tr>
+            </thead>
+            <tbody>
+              @for (row of openingRows(); track row.id) {
+                <tr>
+                  <td class="code">{{ row.code ?? '' }}</td>
+                  <td>{{ row.name }}</td>
+                  <td class="num">{{ row.counted | number: '1.0-3' }} {{ row.unit }}</td>
+                  <td class="num">{{ row.cost === null ? '—' : (row.cost | money) + ' / ' + row.unit }}</td>
+                  <td class="num">{{ row.worth === null ? 'No price' : (row.worth | money) }}</td>
+                </tr>
+              }
+            </tbody>
+            <tfoot>
+              <tr>
+                <td colspan="4">Opening stock value · قيمة المخزون الافتتاحي</td>
+                <td class="num">{{ openingTotal() | money }}</td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+        @if (openingUnpriced(); as n) {
+          <p class="warn">
+            {{ n === 1 ? '1 material has' : n + ' materials have' }} no price: its stock is set, its worth unknown until it is priced.
+            <span class="note-ar" lang="ar" dir="rtl">خامات بلا سعر: رصيدها مُسجل وقيمتها غير معروفة حتى تُسعّر.</span>
+          </p>
+        }
+        <p class="note">
+          This is where stock begins, at the cost each has: no shortage or surplus was recorded, and nothing went into the profit. The first
+          periodic count is measured from it.
+          <span class="note-ar" lang="ar" dir="rtl">هذا رصيد البداية بتكلفة كل خامة: لا عجز ولا زيادة ولا أثر على الأرباح، ويُقاس أول جرد دوري منه.</span>
+        </p>
+      } @else {
+        <div class="table-wrap">
+          <table class="grid">
+            <thead>
+              <tr>
+                <th>Code<span class="ar">الكود</span></th>
+                <th>Material<span class="ar">الخامة</span></th>
+                <th class="num">Counted<span class="ar">المجرود</span></th>
+                <th class="num">Records said<span class="ar">الرصيد الدفتري</span></th>
+                <th class="num">Difference<span class="ar">الفرق</span></th>
+                <th class="num">Worth<span class="ar">القيمة</span></th>
+              </tr>
+            </thead>
+            <tbody>
+              @for (row of postedRows(); track row.id) {
+                <tr [class.deficit]="row.difference < 0" [class.surplus]="row.difference > 0">
+                  <td class="code">{{ row.code ?? '' }}</td>
+                  <td>{{ row.name }}</td>
+                  <td class="num">{{ row.counted | number: '1.0-3' }} {{ row.unit }}</td>
+                  <td class="num">{{ row.book | number: '1.0-3' }} {{ row.unit }}</td>
+                  <td class="num">{{ row.difference > 0 ? '+' : '' }}{{ row.difference | number: '1.0-3' }} {{ row.unit }}</td>
+                  <td class="num">{{ row.value === null ? 'No price' : (row.value | money) }}</td>
+                </tr>
+              }
+            </tbody>
+            <tfoot>
+              <tr>
+                <td colspan="5">Net difference · صافي الفرق</td>
+                <td class="num">{{ postedTotal() | money }}</td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+        <p class="note">
+          Stock was set to what was counted. Why the records were out is in the
+          <a routerLink="/costing/reports/variance">variance report</a>, which sets it against sales, deliveries and waste.
+        </p>
+      }
+    } @else {
+      <div class="kind-choice">
+        <mat-button-toggle-group [value]="kind()" (change)="chooseKind($event.value)" aria-label="Kind of count" hideSingleSelectionIndicator>
+          <mat-button-toggle value="Opening">Opening stock <span class="inline-ar">جرد افتتاحي</span></mat-button-toggle>
+          <mat-button-toggle value="Periodic">Periodic count <span class="inline-ar">جرد دوري</span></mat-button-toggle>
+        </mat-button-toggle-group>
+        @if (kind() === 'Opening') {
+          <p class="note kind-note">
+            Where each material's stock begins, at the cost it has: no shortage or surplus is recorded, and nothing goes into the profit. A
+            material is opened once; a prep item never made is valued by its recipe.
+            <span class="note-ar" lang="ar" dir="rtl">رصيد البداية لكل خامة بتكلفتها: لا يُسجل عجز أو زيادة ولا أثر على الأرباح. تُجرد الخامة افتتاحيًا مرة واحدة، والمصنّع الذي لم يُصنع بعد يُقيّم بوصفته.</span>
+          </p>
+        } @else {
+          <p class="note kind-note">
+            What you count is set against the records: the difference is a shortage or a surplus, in the variance report and the month's cost.
+            <span class="note-ar" lang="ar" dir="rtl">يُقارن المجرود بالرصيد الدفتري: الفرق عجز أو زيادة يظهر في تقرير الانحراف وتكلفة الشهر.</span>
+          </p>
+        }
+      </div>
+      <div class="toolbar sticky">
+        <mat-form-field subscriptSizing="dynamic">
+          <mat-label>Find · بحث</mat-label>
+          <input matInput [ngModel]="search()" (ngModelChange)="search.set($event)" />
+        </mat-form-field>
+        <span class="progress">
+          {{ countedCount() }} of {{ materials().length }} counted<span class="muted"> (empty is not counted, 0 is none left)</span>
+          @if (kind() === 'Opening') {
+            <span class="worth">
+              · worth {{ draftValue().value | money }} at today's costs
+              @if (draftValue().unpriced) {
+                <span class="muted">({{ draftValue().unpriced }} with no price)</span>
+              }
+              <span class="inline-ar">القيمة بتكلفة اليوم</span>
+            </span>
+          }
+          <span class="muted save-state">· {{ saveState() }}</span>
+        </span>
+        <span class="spacer"></span>
+        @if (confirming() === 'post') {
+          <span>
+            @if (kind() === 'Opening') {
+              Open the stock of {{ countedCount() }} {{ countedCount() === 1 ? 'material' : 'materials' }} at what was counted, with no shortage or
+              surplus?
+            } @else {
+              Set stock to what was counted for {{ countedCount() }} {{ countedCount() === 1 ? 'material' : 'materials' }}?
+            }
+            @if (materials().length - countedCount() > 0) {
+              {{ materials().length - countedCount() }} not counted keep their stock.
+            }
+          </span>
+          <button mat-button (click)="confirming.set(null)">Keep counting</button>
+          <button mat-flat-button (click)="post()" [disabled]="busy()">{{ kind() === 'Opening' ? 'Post the opening stock' : 'Post the count' }}</button>
+        } @else if (confirming() === 'discard') {
+          <span>Throw this count away?</span>
+          <button mat-button (click)="confirming.set(null)">Keep it</button>
+          <button mat-flat-button class="danger" (click)="discard()" [disabled]="busy()">Discard</button>
+        } @else {
+          @if (saved()) {
+            <button mat-button (click)="confirming.set('discard')"><mat-icon>delete</mat-icon> Discard</button>
+          }
+          <button mat-flat-button (click)="confirming.set('post')" [disabled]="countedCount() === 0 || busy()">
+            <mat-icon>fact_check</mat-icon> {{ kind() === 'Opening' ? 'Post the opening stock' : 'Post the count' }}
+          </button>
+        }
+      </div>
+      @if (problem(); as p) {
+        <p class="error">{{ p }}</p>
+      }
+      @for (section of sections(); track section.category) {
+        <h3 class="category">{{ section.category }}</h3>
+        <div class="sheet">
+          @for (m of section.materials; track m.id) {
+            <label class="item" [class.done]="isCounted(m.id)">
+              <span class="name">
+                {{ m.name }}
+                @if (m.code) {
+                  <small class="muted">{{ m.code }}</small>
+                }
+              </span>
+              <mat-form-field subscriptSizing="dynamic" class="qty">
+                <input matInput type="number" min="0" step="any" inputmode="decimal" placeholder="—"
+                  [ngModel]="counted()[m.id]" (ngModelChange)="enter(m.id, $event)" [attr.aria-label]="m.name + ', counted in ' + unitOf(m)" />
+                <span matTextSuffix>&nbsp;{{ unitOf(m) }}</span>
+              </mat-form-field>
+            </label>
+          }
+        </div>
+      } @empty {
+        <p class="note">No raw materials match.</p>
+      }
+    }
+  `,
+  styleUrl: './costing.scss',
+  styles: `
+    .kind-choice {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 8px;
+
+      .kind-note {
+        flex: 1 1 320px;
+        margin: 0;
+      }
+    }
+    .worth {
+      margin-inline-start: 4px;
+    }
+    .title {
+      margin: 0 0 4px;
+      font: var(--mat-sys-title-large);
+    }
+    .sticky {
+      position: sticky;
+      top: 64px;
+      z-index: 2;
+      padding: 8px 0;
+      background: var(--mat-sys-surface);
+    }
+    .progress {
+      font: var(--mat-sys-title-small);
+    }
+    .category {
+      margin: 16px 0 8px;
+      font: var(--mat-sys-title-small);
+      color: var(--mat-sys-on-surface-variant);
+    }
+    .sheet {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 8px;
+    }
+    .item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 6px 6px 6px 12px;
+      border-radius: 12px;
+      border: 1px solid var(--mat-sys-outline-variant);
+      background: var(--mat-sys-surface);
+
+      &.done {
+        border-color: var(--mat-sys-primary);
+      }
+      .name {
+        display: grid;
+      }
+    }
+    .qty {
+      width: 150px;
+      flex: none;
+    }
+    .danger {
+      --mat-button-filled-container-color: var(--mat-sys-error);
+      --mat-button-filled-label-text-color: var(--mat-sys-on-error);
+    }
+  `,
+})
+export class CountSheetPage {
+  private readonly api = inject(CostingApi);
+  private readonly notify = inject(NotifyService);
+  private readonly router = inject(Router);
+  protected readonly kindLabels = countKindLabels;
+
+  // From the route: /costing/counts/:id. A new count's id, before its first save, finds nothing.
+  readonly id = input.required<string>();
+  // From the query: the kind a new count starts as (?kind=Opening).
+  readonly kindParam = input<string | undefined>(undefined, { alias: 'kind' });
+  protected readonly kind = signal<StockCountKind>('Periodic');
+
+  protected readonly materials = signal<MaterialCost[]>([]);
+  protected readonly count = signal<StockCount | null>(null);
+  protected readonly loading = signal(true);
+  protected readonly busy = signal(false);
+  protected readonly error = signal<string | null>(null);
+  protected readonly problem = signal<string | null>(null);
+  protected readonly confirming = signal<'post' | 'discard' | null>(null);
+  protected readonly search = signal('');
+
+  // By material id, in kg, litres or pieces; null or absent is not counted.
+  protected readonly counted = signal<Record<string, number | null>>({});
+  // Whether the draft exists on the server yet.
+  protected readonly saved = signal(false);
+  protected readonly saveState = signal('Nothing entered yet');
+
+  // Posted, or voided since: either way read-only.
+  protected readonly posted = computed(() => (this.count() && this.count()!.status !== 'Draft' ? this.count() : null));
+
+  protected readonly countedCount = computed(() => Object.values(this.counted()).filter((v) => this.valid(v)).length);
+
+  protected readonly sections = computed<Section[]>(() => {
+    const needle = this.search().trim().toLowerCase();
+    const shown = this.materials().filter((m) => !needle || [m.name, m.code, m.category].some((v) => v?.toLowerCase().includes(needle)));
+    const byCategory = new Map<string, MaterialCost[]>();
+    for (const m of shown) {
+      const category = m.category ?? 'Other · أخرى';
+      byCategory.set(category, [...(byCategory.get(category) ?? []), m]);
+    }
+    return [...byCategory.entries()]
+      .sort(([a], [b]) => (a.startsWith('Other') ? 1 : b.startsWith('Other') ? -1 : a.localeCompare(b)))
+      .map(([category, materials]) => ({ category, materials }));
+  });
+
+  protected readonly postedRows = computed(() => {
+    const count = this.posted();
+    if (!count) {
+      return [];
+    }
+    return count.lines
+      .map((line) => {
+        const m = this.materials().find((x) => x.id === line.rawMaterialId);
+        const unit = m ? countUnit(m.unit, m.purchaseUnitSize) : { label: '', size: 1 };
+        const difference = line.countedQuantity - (line.bookQuantity ?? 0);
+        return {
+          id: line.rawMaterialId,
+          code: m?.code ?? null,
+          name: m?.name ?? 'A removed material',
+          unit: unit.label,
+          counted: line.countedQuantity / unit.size,
+          book: (line.bookQuantity ?? 0) / unit.size,
+          difference: difference / unit.size,
+          value: line.unitCost === null ? null : difference * line.unitCost,
+        };
+      })
+      .sort((a, b) => Math.abs(b.value ?? 0) - Math.abs(a.value ?? 0));
+  });
+
+  protected readonly postedTotal = computed(() => this.postedRows().reduce((sum, r) => sum + (r.value ?? 0), 0));
+
+  // The opening stock posted: each material at what it was counted at, and the cost it opened at.
+  protected readonly openingRows = computed(() => {
+    const count = this.posted();
+    if (!count) {
+      return [];
+    }
+    return count.lines
+      .map((line) => {
+        const m = this.materials().find((x) => x.id === line.rawMaterialId);
+        const unit = m ? countUnit(m.unit, m.purchaseUnitSize) : { label: '', size: 1 };
+        return {
+          id: line.rawMaterialId,
+          code: m?.code ?? null,
+          name: m?.name ?? 'A removed material',
+          unit: unit.label,
+          counted: line.countedQuantity / unit.size,
+          cost: line.unitCost === null ? null : line.unitCost * unit.size,
+          worth: line.unitCost === null ? null : line.countedQuantity * line.unitCost,
+        };
+      })
+      .sort((a, b) => (b.worth ?? -1) - (a.worth ?? -1) || a.name.localeCompare(b.name));
+  });
+
+  protected readonly openingTotal = computed(() => this.openingRows().reduce((sum, r) => sum + (r.worth ?? 0), 0));
+  protected readonly openingUnpriced = computed(() => this.openingRows().filter((r) => r.worth === null).length);
+
+  // An opening stock being filled in, at today's costs: a prep item never made at its recipe's.
+  protected readonly draftValue = computed(() => {
+    const byId = new Map(this.materials().map((m) => [m.id, m]));
+    let value = 0;
+    let unpriced = 0;
+    for (const [id, quantity] of Object.entries(this.counted())) {
+      const m = byId.get(id);
+      if (!m || !this.valid(quantity)) {
+        continue;
+      }
+      const cost = recipeCostOf(m);
+      if (cost === null) {
+        unpriced++;
+      } else {
+        value += quantity * this.sizeOf(m) * cost;
+      }
+    }
+    return { value, unpriced };
+  });
+
+  private saveTimer: ReturnType<typeof setTimeout> | null = null;
+  private saving: Promise<void> | null = null;
+  private dirty = false;
+
+  constructor() {
+    effect(() => {
+      const id = this.id();
+      untracked(() => void this.load(id));
+    });
+    // Leaving with entries not yet saved: saved on the way out.
+    inject(DestroyRef).onDestroy(() => {
+      if (this.dirty) {
+        void this.saveNow();
+      }
+    });
+  }
+
+  protected unitOf(material: MaterialCost): string {
+    return countUnit(material.unit, material.purchaseUnitSize).label;
+  }
+
+  protected isCounted(id: string): boolean {
+    return this.valid(this.counted()[id]);
+  }
+
+  protected enter(id: string, value: number | null | string): void {
+    const quantity = value === '' || value === null ? null : Number(value);
+    this.counted.update((counted) => ({ ...counted, [id]: quantity }));
+    this.problem.set(null);
+    this.dirty = true;
+    this.saveState.set('Not saved yet');
+    if (this.saveTimer) {
+      clearTimeout(this.saveTimer);
+    }
+    this.saveTimer = setTimeout(() => void this.saveNow(), autosaveAfterMs);
+  }
+
+  // Told it is the other kind: saved so, if it is saved already; else its first save says it.
+  protected chooseKind(kind: StockCountKind): void {
+    if (kind === this.kind()) {
+      return;
+    }
+    this.kind.set(kind);
+    this.problem.set(null);
+    if (this.saved() || this.countedCount() > 0) {
+      this.dirty = true;
+      this.saveState.set('Not saved yet');
+      void this.saveNow();
+    }
+  }
+
+  protected async post(): Promise<void> {
+    this.busy.set(true);
+    this.problem.set(null);
+    try {
+      await this.saveNow();
+      if (this.problem()) {
+        return;
+      }
+      const count = await firstValueFrom(this.api.postStockCount(this.id()));
+      this.count.set(count);
+      this.confirming.set(null);
+      this.notify.info(
+        count.kind === 'Opening'
+          ? 'Opening stock posted: stock starts from what was counted. · تم ترحيل الجرد الافتتاحي.'
+          : 'Count posted: stock is set to what was counted.',
+      );
+    } catch (error) {
+      this.problem.set(errorMessage(error, 'The count could not be posted.'));
+    } finally {
+      this.busy.set(false);
+    }
+  }
+
+  protected async discard(): Promise<void> {
+    this.busy.set(true);
+    try {
+      this.cancelAutosave();
+      await firstValueFrom(this.api.discardStockCount(this.id()));
+      this.notify.info('Count discarded.');
+      void this.router.navigate(['/costing/counts']);
+    } catch (error) {
+      this.problem.set(errorMessage(error, 'The count could not be discarded.'));
+    } finally {
+      this.busy.set(false);
+    }
+  }
+
+  protected print(): void {
+    window.print();
+  }
+
+  // Saves the sheet as it stands. One save at a time; entries made during it are saved after.
+  private async saveNow(): Promise<void> {
+    this.cancelAutosave();
+    if (this.saving) {
+      await this.saving;
+      if (!this.dirty) {
+        return;
+      }
+    }
+    if (!this.dirty && this.saved()) {
+      return;
+    }
+    this.saving = this.send();
+    try {
+      await this.saving;
+    } finally {
+      this.saving = null;
+    }
+  }
+
+  private async send(): Promise<void> {
+    const materials = new Map(this.materials().map((m) => [m.id, m]));
+    const lines = Object.entries(this.counted())
+      .filter(([id, v]) => this.valid(v) && materials.has(id))
+      .map(([id, v]) => ({ rawMaterialId: id, countedQuantity: Math.round(v! * this.sizeOf(materials.get(id)!) * 1000) / 1000 }));
+    this.dirty = false;
+    this.saveState.set('Saving…');
+    try {
+      await firstValueFrom(this.api.saveStockCount(this.id(), lines, this.kind()));
+      this.saved.set(true);
+      this.saveState.set(`Saved ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`);
+    } catch (error) {
+      this.dirty = true;
+      this.saveState.set('Not saved');
+      this.problem.set(errorMessage(error, 'The count could not be saved. Your entries are still here; they are saved with the next one.'));
+    }
+  }
+
+  private cancelAutosave(): void {
+    if (this.saveTimer) {
+      clearTimeout(this.saveTimer);
+      this.saveTimer = null;
+    }
+  }
+
+  private sizeOf(material: MaterialCost): number {
+    return countUnit(material.unit, material.purchaseUnitSize).size;
+  }
+
+  private valid(value: number | null | undefined): value is number {
+    return typeof value === 'number' && Number.isFinite(value) && value >= 0;
+  }
+
+  private async load(id: string): Promise<void> {
+    this.error.set(null);
+    try {
+      const [materials, count] = await Promise.all([firstValueFrom(this.api.materials()), firstValueFrom(this.api.stockCount(id))]);
+      this.materials.set(materials);
+      this.count.set(count);
+      this.saved.set(count !== null);
+      this.kind.set(count?.kind ?? (this.kindParam() === 'Opening' ? 'Opening' : 'Periodic'));
+      const units = new Map(materials.map((m) => [m.id, this.sizeOf(m)]));
+      this.counted.set(Object.fromEntries((count?.lines ?? []).map((l) => [l.rawMaterialId, l.countedQuantity / (units.get(l.rawMaterialId) ?? 1)])));
+      if (count) {
+        this.saveState.set('Saved');
+      }
+    } catch (error) {
+      this.error.set(errorMessage(error, 'The count could not be loaded.'));
+    } finally {
+      this.loading.set(false);
+    }
+  }
+}
+```
+
+
+## 14. الهالك والكسر
+
+`WastePage`: الهالك (خامات تالفة بسبب: تخرج من المخزون) والكسر (مستهلكات: تكلفة على اليوم)، وإلغاؤهما بموافقة.
+
+> 📄 **`frontend/src/app/features/costing/waste-page.ts`** — 558 سطر
+
+```ts
+import { DatePipe, DecimalPipe } from '@angular/common';
+import { Component, computed, inject, signal } from '@angular/core';
+import { FormsModule } from '@angular/forms';
+import { MatButtonModule } from '@angular/material/button';
+import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatIconModule } from '@angular/material/icon';
+import { MatInputModule } from '@angular/material/input';
+import { MatProgressBarModule } from '@angular/material/progress-bar';
+import { MatSelectModule } from '@angular/material/select';
+import { MatTooltipModule } from '@angular/material/tooltip';
+import { firstValueFrom } from 'rxjs';
+import { CostingApi, ApprovalRequest, MaterialCost, SpoilageEntry, countUnit } from '../../core/costing/costing.api';
+import { EmployeePicker } from '../../core/costing/employee-picker';
+import { BreakageEntry, MenuSalesApi } from '../../core/costing/menu-sales.api';
+import { Employee } from '../../core/costing/staff';
+import { errorMessage } from '../../core/http/error-message';
+import { MoneyPipe } from '../../core/ui/money.pipe';
+import { NotifyService } from '../../core/ui/notify.service';
+import { Approvals } from './approvals';
+import { BusinessDay } from './financials';
+import { FilterOption, FilterSelect } from '../shared/filter-select';
+import { SearchField } from '../shared/search-field';
+import { SortOption, SortState, smartMatch, sortItems } from '../shared/smart-search';
+import { SortControl } from '../shared/sort-control';
+import { GridKeys } from '../shared/grid-keys';
+import { MaterialPicker } from './material-picker';
+
+type WasteSort = 'date' | 'worth';
+
+const wasteSorts: SortOption<WasteSort>[] = [
+  { key: 'date', en: 'Date', ar: 'التاريخ', descending: true },
+  { key: 'worth', en: 'Worth', ar: 'القيمة', descending: true },
+];
+
+interface Line {
+  rawMaterialId: string | null;
+  quantity: number | null;
+  reason: string;
+  other: string;
+}
+
+// Raw stock thrown away: expired, spoiled, dropped. Recorded, it takes the stock off and the
+// variance report sets it against the shortfall, so a loss with a reason is not mistaken for
+// one without. Dishes voided after the kitchen made them are recorded by their sale's void.
+// Below, the breakage (الكسر): plates, glasses and other consumables broken, at their cost, entered
+// here; no stock moves. Voided, as the waste is, through a manager.
+@Component({
+  selector: 'app-waste-page',
+  imports: [
+    FilterSelect,
+    GridKeys,
+    MaterialPicker,
+    SearchField,
+    SortControl,
+    DatePipe,
+    DecimalPipe,
+    EmployeePicker,
+    FormsModule,
+    MatButtonModule,
+    MatFormFieldModule,
+    MatIconModule,
+    MatInputModule,
+    MatProgressBarModule,
+    MatSelectModule,
+    MatTooltipModule,
+    MoneyPipe,
+  ],
+  template: `
+    <p class="note">
+      Record raw stock thrown away, with why. A dish voided after the kitchen made it is recorded by the void.
+      <span class="inline-ar">سجّل الخامات التالفة وسببها.</span>
+    </p>
+    @if (loading()) {
+      <mat-progress-bar mode="indeterminate" />
+    } @else if (error()) {
+      <p class="error">{{ error() }}</p>
+    } @else {
+      <div class="table-wrap">
+        <table class="grid" appGridKeys (appGridKeysAppend)="add()">
+          <thead>
+            <tr>
+              <th>Material<span class="ar">الخامة</span></th>
+              <th class="num">Quantity<span class="ar">الكمية</span></th>
+              <th>Why<span class="ar">السبب</span></th>
+              <th class="num">Worth<span class="ar">القيمة</span></th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            @for (line of lines(); track $index; let i = $index) {
+              <tr>
+                <td>
+                  <app-material-picker class="material" [materials]="materials()" [value]="line.rawMaterialId"
+                    (valueChange)="change(i, { rawMaterialId: $event })" [label]="'Material, line ' + (i + 1)" />
+                </td>
+                <td class="num">
+                  <mat-form-field subscriptSizing="dynamic" class="small">
+                    <input matInput type="number" min="0" step="any" [ngModel]="line.quantity" (ngModelChange)="change(i, { quantity: $event })" [attr.aria-label]="'Quantity, line ' + (i + 1)" />
+                    <span matTextSuffix>&nbsp;{{ unitOf(line) }}</span>
+                  </mat-form-field>
+                </td>
+                <td>
+                  <mat-form-field subscriptSizing="dynamic" class="reason">
+                    <mat-select [ngModel]="line.reason" (ngModelChange)="change(i, { reason: $event })" [aria-label]="'Why, line ' + (i + 1)">
+                      @for (r of reasons; track r.en) {
+                        <mat-option [value]="r.en">{{ r.en }} · {{ r.ar }}</mat-option>
+                      }
+                    </mat-select>
+                  </mat-form-field>
+                  @if (line.reason === 'Other') {
+                    <mat-form-field subscriptSizing="dynamic" class="reason">
+                      <input matInput maxlength="200" placeholder="What happened" [ngModel]="line.other" (ngModelChange)="change(i, { other: $event })" [attr.aria-label]="'What happened, line ' + (i + 1)" />
+                    </mat-form-field>
+                  }
+                </td>
+                <td class="num">{{ worth(line) === null ? '' : (worth(line) | money) }}</td>
+                <td>
+                  <button mat-icon-button (click)="remove(i)" [disabled]="lines().length === 1" aria-label="Remove line"><mat-icon>delete</mat-icon></button>
+                </td>
+              </tr>
+            }
+          </tbody>
+          <tfoot>
+            <tr>
+              <td><button mat-button (click)="add()"><mat-icon>add</mat-icon> Add line</button></td>
+              <td colspan="2"></td>
+              <td class="num">{{ total() | money }}</td>
+              <td></td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+      <div class="toolbar actions">
+        <span class="spacer"></span>
+        <button mat-flat-button (click)="save()" [disabled]="!ready() || saving()"><mat-icon>delete_sweep</mat-icon> Record waste</button>
+      </div>
+
+      <h2 class="recent">Last 30 days <span class="inline-ar">آخر ٣٠ يومًا</span></h2>
+      <div class="toolbar smart">
+        <app-search-field [(value)]="historySearch" placeholder="Material or who recorded it · الخامة أو المسجل" />
+        <div class="pills">
+          <app-filter-select label="Why · السبب" icon="help" [options]="reasonFilters()" [(value)]="historyReason" />
+          <app-sort-control [options]="wasteSorts" [(sort)]="historySort" />
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table class="grid">
+          <thead>
+            <tr>
+              <th>When<span class="ar">التاريخ</span></th>
+              <th>Material<span class="ar">الخامة</span></th>
+              <th class="num">Quantity<span class="ar">الكمية</span></th>
+              <th>Why<span class="ar">السبب</span></th>
+              <th>By<span class="ar">بواسطة</span></th>
+              <th class="num">Worth<span class="ar">القيمة</span></th>
+              <th class="num"><span class="visually-hidden">Actions</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            @for (entry of shownRecent(); track entry.spoilageId) {
+              @for (l of entry.lines; track l.rawMaterialId; let first = $first) {
+                <tr [class.pending-deletion]="!!pendingOf(entry)">
+                  <td>
+                    @if (first) {
+                      {{ entry.recordedAtUtc | date: 'd MMM, HH:mm' }}
+                      @if (pendingOf(entry); as p) {
+                        <div><span class="pending-badge">Deletion requested<span class="ar">طلب حذف</span></span></div>
+                        <div class="muted note-small">by {{ p.requestedBy }}</div>
+                      }
+                    }
+                  </td>
+                  <td>{{ l.material }}</td>
+                  <td class="num">{{ l.quantity / unitFor(l).size | number: '1.0-3' }} {{ unitFor(l).label }}</td>
+                  <td>{{ l.reason }}</td>
+                  <td>{{ first ? entry.recordedBy : '' }}</td>
+                  <td class="num">{{ l.value === null ? 'No price' : (l.value | money) }}</td>
+                  <td class="num">
+                    @if (first) {
+                      @if (pendingOf(entry)) {
+                        <mat-icon class="locked" matTooltip="Waiting for a manager's approval" aria-label="Locked: deletion requested">lock_clock</mat-icon>
+                      } @else {
+                        <button mat-icon-button class="danger" (click)="voidEntry(entry)" matTooltip="Delete (void)" aria-label="Delete this waste entry">
+                          <mat-icon>delete</mat-icon>
+                        </button>
+                      }
+                    }
+                  </td>
+                </tr>
+              }
+            } @empty {
+              <tr><td colspan="7" class="muted">Nothing recorded.</td></tr>
+            }
+          </tbody>
+          @if (recent().length) {
+            <tfoot>
+              <tr>
+                <td colspan="5">Total · الإجمالي</td>
+                <td class="num">{{ recentTotal() | money }}</td>
+                <td></td>
+              </tr>
+            </tfoot>
+          }
+        </table>
+      </div>
+
+      <h2 class="recent">Breakage, last 30 days <span class="inline-ar">الكسر</span></h2>
+      <p class="muted tiny">Plates, glasses and other consumables broken, at their cost: a cost of the day, no stock moves.</p>
+      <form class="breakage-form" (ngSubmit)="recordBreakage()" aria-label="Record breakage">
+        <mat-form-field subscriptSizing="dynamic" class="what">
+          <mat-label>What broke · الصنف</mat-label>
+          <input matInput name="bDescription" [(ngModel)]="breakageDraft.description" maxlength="150" required />
+        </mat-form-field>
+        <mat-form-field subscriptSizing="dynamic" class="small">
+          <mat-label>How many · العدد</mat-label>
+          <input matInput type="number" min="1" step="1" name="bQuantity" [(ngModel)]="breakageDraft.quantity" required />
+        </mat-form-field>
+        <mat-form-field subscriptSizing="dynamic" class="small">
+          <mat-label>A piece's cost · تكلفة القطعة</mat-label>
+          <input matInput type="number" min="0" step="0.01" name="bCost" [(ngModel)]="breakageDraft.unitCost" />
+        </mat-form-field>
+        <app-employee-picker [employees]="activeStaff()" [(value)]="breakageDraft.employeeId" [none]="true" noneLabel="No one · لا أحد"
+          label="Whose · بواسطة من" ariaLabel="Who broke it" />
+        <mat-form-field subscriptSizing="dynamic" class="reason">
+          <mat-label>Notes · ملاحظات</mat-label>
+          <input matInput name="bNotes" [(ngModel)]="breakageDraft.notes" maxlength="300" />
+        </mat-form-field>
+        <button mat-flat-button type="submit" [disabled]="savingBreakage() || !breakageDraft.description.trim() || !(breakageDraft.quantity >= 1)">
+          <mat-icon>add</mat-icon> Record breakage <span class="inline-ar">تسجيل كسر</span>
+        </button>
+      </form>
+      <div class="table-wrap">
+        <table class="grid" aria-label="Breakage">
+          <thead>
+            <tr>
+              <th>Day<span class="ar">اليوم</span></th>
+              <th>What broke<span class="ar">الصنف</span></th>
+              <th class="num">How many<span class="ar">العدد</span></th>
+              <th>Who broke it<span class="ar">بواسطة من</span></th>
+              <th class="num">Cost<span class="ar">التكلفة</span></th>
+              <th>By<span class="ar">بواسطة</span></th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            @for (b of breakage(); track b.id) {
+              <tr [class.voided]="b.isVoided">
+                <td class="nowrap">{{ b.businessDate | date: 'd MMM' }}</td>
+                <td>
+                  <strong>{{ b.description }}</strong>
+                  @if (b.notes) {
+                    <div class="muted tiny">{{ b.notes }}</div>
+                  }
+                </td>
+                <td class="num">{{ b.quantity }}</td>
+                <td>{{ b.employeeName ?? '—' }}</td>
+                <td class="num">{{ b.unitCost === null ? 'Cost not known' : (b.cost | money) }}</td>
+                <td class="muted tiny">{{ b.recordedBy }}</td>
+                <td class="actions">
+                  @if (b.isVoided) {
+                    <span class="muted tiny">Voided · ملغي</span>
+                  } @else if (approvals.pendingFor(b.id); as request) {
+                    <span class="pending-badge">Void requested<span class="ar">طلب إلغاء</span></span>
+                  } @else {
+                    <button mat-icon-button (click)="voidBreakage(b)" [attr.aria-label]="'Void the breakage of ' + b.description" matTooltip="Void · إلغاء">
+                      <mat-icon>undo</mat-icon>
+                    </button>
+                  }
+                </td>
+              </tr>
+            } @empty {
+              <tr><td colspan="7" class="muted">Nothing broken.</td></tr>
+            }
+          </tbody>
+          @if (breakage().length) {
+            <tfoot>
+              <tr>
+                <td colspan="4">Total · الإجمالي</td>
+                <td class="num">{{ breakageTotal() | money }}</td>
+                <td colspan="2"></td>
+              </tr>
+            </tfoot>
+          }
+        </table>
+      </div>
+    }
+  `,
+  styleUrl: './costing.scss',
+  styles: `
+    .breakage-form {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      margin: 8px 0 12px;
+    }
+    .breakage-form .what {
+      min-width: 200px;
+    }
+    .material {
+      min-width: 200px;
+      width: 100%;
+    }
+    .small {
+      width: 140px;
+    }
+    .reason {
+      width: 220px;
+    }
+    .actions {
+      margin-top: 12px;
+    }
+    .recent {
+      margin: 24px 0 8px;
+      font: var(--mat-sys-title-medium);
+    }
+    .tiny {
+      font-size: 0.85em;
+    }
+    .nowrap {
+      white-space: nowrap;
+    }
+    tr.voided td {
+      text-decoration: line-through;
+      color: var(--mat-sys-on-surface-variant);
+    }
+    .danger {
+      color: var(--mat-sys-error);
+    }
+    .note-small {
+      font-size: 0.85em;
+    }
+    .visually-hidden {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip: rect(0 0 0 0);
+    }
+  `,
+})
+export class WastePage {
+  private readonly api = inject(CostingApi);
+  private readonly notify = inject(NotifyService);
+  protected readonly approvals = inject(Approvals);
+  private readonly businessDay = inject(BusinessDay);
+
+  protected readonly reasons = [
+    { en: 'Expired', ar: 'منتهي الصلاحية' },
+    { en: 'Spoiled', ar: 'تالف' },
+    { en: 'Dropped or broken', ar: 'سقط أو انكسر' },
+    { en: 'Damaged packaging', ar: 'تلف العبوة' },
+    { en: 'Other', ar: 'أخرى' },
+  ];
+
+  protected readonly materials = signal<MaterialCost[]>([]);
+  protected readonly recent = signal<SpoilageEntry[]>([]);
+  protected readonly loading = signal(true);
+  protected readonly saving = signal(false);
+  protected readonly error = signal<string | null>(null);
+  protected readonly lines = signal<Line[]>([this.blank()]);
+
+  // One entry, one id: a retry after a lost answer records it once. A new one after each save.
+  private spoilageId = crypto.randomUUID();
+
+  protected readonly total = computed(() => this.lines().reduce((sum, l) => sum + (this.worth(l) ?? 0), 0));
+  protected readonly recentTotal = computed(() =>
+    this.shownRecent().reduce((sum, e) => sum + e.lines.reduce((lines, l) => lines + (l.value ?? 0), 0), 0),
+  );
+
+  // The history as searched: each entry with only its lines that match, by material or who recorded
+  // it, and the reason chosen; by date or by what its lines were worth.
+  protected readonly historySearch = signal('');
+  protected readonly historyReason = signal('');
+  protected readonly wasteSorts = wasteSorts;
+  protected readonly historySort = signal<SortState<WasteSort>>({ key: 'date', direction: -1 });
+
+  protected readonly reasonFilters = computed<FilterOption[]>(() => {
+    const lines = this.recent().flatMap((e) => e.lines);
+    const known = new Set(this.reasons.map((r) => r.en));
+    return [
+      { value: '', label: 'All · الكل', count: lines.length },
+      ...this.reasons.filter((r) => r.en !== 'Other').map((r) => ({ value: r.en, label: `${r.en} · ${r.ar}`, count: lines.filter((l) => l.reason === r.en).length })),
+      { value: 'Other', label: 'Other · أخرى', count: lines.filter((l) => !known.has(l.reason ?? '') || l.reason === 'Other').length },
+    ];
+  });
+
+  protected readonly shownRecent = computed(() => {
+    const reason = this.historyReason();
+    const known = new Set(this.reasons.map((r) => r.en).filter((r) => r !== 'Other'));
+    const entries = this.recent()
+      .map((e) => ({
+        ...e,
+        lines: e.lines.filter(
+          (l) =>
+            smartMatch(this.historySearch(), l.material, l.reason, e.recordedBy) &&
+            (!reason || (reason === 'Other' ? !known.has(l.reason ?? '') : l.reason === reason)),
+        ),
+      }))
+      .filter((e) => e.lines.length > 0);
+    return sortItems(entries, this.historySort(), (e, key) =>
+      key === 'worth' ? e.lines.reduce((sum, l) => sum + (l.value ?? 0), 0) : e.recordedAtUtc,
+    );
+  });
+  private readonly menuSales = inject(MenuSalesApi);
+  protected readonly breakage = signal<BreakageEntry[]>([]);
+  protected readonly staff = signal<Employee[]>([]);
+  protected readonly activeStaff = computed(() => this.staff().filter((e) => e.isActive));
+  protected readonly savingBreakage = signal(false);
+  protected breakageDraft = this.blankBreakage();
+  // One entry, one id: a retry after a lost answer records it once.
+  private breakageId = crypto.randomUUID();
+  protected readonly breakageTotal = computed(() => this.breakage().filter((b) => !b.isVoided).reduce((sum, b) => sum + b.cost, 0));
+
+  protected readonly ready = computed(() => {
+    const lines = this.lines();
+    const ids = lines.map((l) => l.rawMaterialId);
+    return (
+      lines.every((l) => l.rawMaterialId && (l.quantity ?? 0) > 0 && this.reasonOf(l)) && new Set(ids).size === ids.length
+    );
+  });
+
+  constructor() {
+    void this.load();
+  }
+
+  protected unitOf(line: Line): string {
+    const material = this.material(line);
+    return material ? countUnit(material.unit, material.purchaseUnitSize).label : '';
+  }
+
+  // At today's average cost, as the server will value it.
+  protected worth(line: Line): number | null {
+    const material = this.material(line);
+    if (!material || material.costPerUnit === null || !line.quantity) {
+      return null;
+    }
+    return line.quantity * countUnit(material.unit, material.purchaseUnitSize).size * material.costPerUnit;
+  }
+
+  protected change(index: number, patch: Partial<Line>): void {
+    this.lines.update((lines) => lines.map((line, i) => (i === index ? { ...line, ...patch } : line)));
+  }
+
+  protected add(): void {
+    this.lines.update((lines) => [...lines, this.blank()]);
+  }
+
+  protected remove(index: number): void {
+    this.lines.update((lines) => lines.filter((_, i) => i !== index));
+  }
+
+  protected async save(): Promise<void> {
+    if (!this.ready()) {
+      return;
+    }
+    this.saving.set(true);
+    try {
+      const lines = this.lines().map((l) => ({
+        rawMaterialId: l.rawMaterialId!,
+        quantity: l.quantity! * countUnit(this.material(l)!.unit, this.material(l)!.purchaseUnitSize).size,
+        reason: this.reasonOf(l),
+      }));
+      await firstValueFrom(this.api.recordSpoilage(this.spoilageId, lines));
+      this.notify.info('Waste recorded.');
+      this.lines.set([this.blank()]);
+      this.spoilageId = crypto.randomUUID();
+      await this.load();
+    } catch (error) {
+      this.notify.error(error, 'The waste could not be recorded.');
+    } finally {
+      this.saving.set(false);
+    }
+  }
+
+  protected unitFor(line: { unit: MaterialCost['unit']; purchaseUnitSize: number }): { label: string; size: number } {
+    return countUnit(line.unit, line.purchaseUnitSize);
+  }
+
+  protected async recordBreakage(): Promise<void> {
+    const draft = this.breakageDraft;
+    if (!draft.description.trim() || !(draft.quantity >= 1)) {
+      return;
+    }
+    this.savingBreakage.set(true);
+    try {
+      await firstValueFrom(this.menuSales.recordBreakage({
+        id: this.breakageId, date: await this.businessDay.today(), description: draft.description.trim(), quantity: draft.quantity,
+        unitCost: draft.unitCost === null || draft.unitCost === undefined || `${draft.unitCost}` === '' ? null : Number(draft.unitCost),
+        employeeId: draft.employeeId, notes: draft.notes.trim() || null,
+      }));
+      this.notify.info('Breakage recorded.');
+      this.breakageDraft = this.blankBreakage();
+      this.breakageId = crypto.randomUUID();
+      await this.load();
+    } catch (error) {
+      this.notify.error(error, 'The breakage could not be recorded.');
+    } finally {
+      this.savingBreakage.set(false);
+    }
+  }
+
+  // Voided for a manager; asked of one for anyone else.
+  protected async voidBreakage(entry: BreakageEntry): Promise<void> {
+    if ((await this.approvals.delete('Breakage', entry.id, `the breakage of ${entry.quantity} × ${entry.description}`)) === 'Applied') {
+      await this.load();
+    }
+  }
+
+  private blankBreakage(): { description: string; quantity: number; unitCost: number | null; employeeId: string | null; notes: string } {
+    return { description: '', quantity: 1, unitCost: null, employeeId: null, notes: '' };
+  }
+
+  private reasonOf(line: Line): string {
+    return line.reason === 'Other' ? line.other.trim() : line.reason;
+  }
+
+  private material(line: Line): MaterialCost | undefined {
+    return this.materials().find((m) => m.id === line.rawMaterialId);
+  }
+
+  private blank(): Line {
+    return { rawMaterialId: null, quantity: null, reason: 'Expired', other: '' };
+  }
+
+  protected pendingOf(entry: SpoilageEntry): ApprovalRequest | undefined {
+    return this.approvals.pendingFor(entry.spoilageId);
+  }
+
+  // Voided for a manager (its stock goes back); asked of one for anyone else.
+  protected async voidEntry(entry: SpoilageEntry): Promise<void> {
+    const what = `the waste of ${new Date(entry.recordedAtUtc).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}`;
+    if ((await this.approvals.delete('Waste', entry.spoilageId, what)) === 'Applied') {
+      await this.load();
+    }
+  }
+
+  private async load(): Promise<void> {
+    this.error.set(null);
+    void this.approvals.refresh();
+    try {
+      const [materials, recent] = await Promise.all([firstValueFrom(this.api.materials()), firstValueFrom(this.api.spoilage(30))]);
+      this.materials.set(materials);
+      this.recent.set(recent);
+    } catch (error) {
+      this.error.set(errorMessage(error, 'The waste could not be loaded.'));
+    } finally {
+      this.loading.set(false);
+    }
+    // Apart, so the spoilage stands without it.
+    try {
+      const [breakage, staff] = await Promise.all([firstValueFrom(this.menuSales.breakage(30)), firstValueFrom(this.menuSales.staff())]);
+      this.breakage.set(breakage);
+      this.staff.set(staff);
+    } catch {
+      this.breakage.set([]);
+    }
+  }
+}
+```
+
+
+[الفصل التالي: شاشات الماليات والتقارير والنشر →](09-frontend-financials-reports-and-deployment.md)
