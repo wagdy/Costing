@@ -80,6 +80,77 @@ export interface MaterialPurchaseHistory {
   unpricedLines: number;
 }
 
+// ---- The item's stock card (كارتة الصنف / حركة الصنف) ----
+
+export type StockCardMovementType = 'Opening' | 'Purchases' | 'Production' | 'Sales' | 'Waste' | 'CountAdjustment';
+export type StockCardSourceKind = 'PurchaseInvoice' | 'ProductionOrder' | 'StockCount' | 'SalesReceipt' | 'Spoilage';
+export type StockMovementReason =
+  | 'Sale'
+  | 'Waste'
+  | 'VoidReturn'
+  | 'Purchase'
+  | 'CountAdjustment'
+  | 'Spoilage'
+  | 'ProductionInput'
+  | 'ProductionOutput'
+  | 'OpeningStock';
+
+export const stockCardTypes: { type: StockCardMovementType; en: string; ar: string }[] = [
+  { type: 'Opening', en: 'Opening', ar: 'افتتاحي' },
+  { type: 'Purchases', en: 'Purchases', ar: 'مشتريات' },
+  { type: 'Production', en: 'Production', ar: 'إنتاج' },
+  { type: 'Sales', en: 'Sales', ar: 'مبيعات' },
+  { type: 'Waste', en: 'Waste', ar: 'هالك' },
+  { type: 'CountAdjustment', en: 'Count adjustment', ar: 'تسوية جرد' },
+];
+
+// One movement, oldest first: in or out in the purchase unit, the balance after it, its price and the
+// moving average it left, per purchase unit. sourceId opens its record (the receipt, not its line).
+export interface StockCardLine {
+  movementId: string;
+  date: string;
+  occurredAtUtc: string;
+  reason: StockMovementReason;
+  type: StockCardMovementType;
+  isReversal: boolean;
+  sourceKind: StockCardSourceKind;
+  sourceId: string;
+  hasSource: boolean;
+  sourceDate: string | null;
+  reference: string;
+  details: string | null;
+  quantityIn: number;
+  quantityOut: number;
+  balance: number;
+  unitCost: number | null;
+  value: number | null;
+  averageCostAfter: number | null;
+  recordedBy: string | null;
+}
+
+export interface StockCard {
+  rawMaterialId: string;
+  code: string | null;
+  material: string;
+  isPrepItem: boolean;
+  unit: UnitOfMeasure;
+  purchaseUnit: string;
+  purchaseUnitSize: number;
+  from: string;
+  to: string;
+  type: StockCardMovementType | null;
+  openingBalance: number;
+  openingAverageCost: number | null;
+  totalIn: number;
+  totalOut: number;
+  closingBalance: number;
+  closingAverageCost: number | null;
+  closingValue: number | null;
+  onHand: number;
+  averageCost: number | null;
+  lines: StockCardLine[];
+}
+
 export interface RecipeCostLine {
   rawMaterialId: string;
   code: string | null;
@@ -1382,6 +1453,18 @@ export class CostingApi {
 
   materialPurchases(id: string): Observable<MaterialPurchaseHistory> {
     return this.http.get<MaterialPurchaseHistory>(`/api/costing/materials/${id}/purchases`);
+  }
+
+  stockCard(id: string, from: string, to: string, type: StockCardMovementType | null = null): Observable<StockCard> {
+    const params: Record<string, string> = { from, to };
+    if (type) params['type'] = type;
+    return this.http.get<StockCard>(`/api/costing/materials/${id}/stock-card`, { params });
+  }
+
+  stockCardSheet(id: string, from: string, to: string, type: StockCardMovementType | null = null): Observable<Blob> {
+    const params: Record<string, string> = { from, to };
+    if (type) params['type'] = type;
+    return this.http.get(`/api/costing/materials/${id}/stock-card/sheet`, { params, responseType: 'blob' });
   }
 
   materialUsage(id: string): Observable<MaterialUsage> {

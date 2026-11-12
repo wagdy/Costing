@@ -1,5 +1,5 @@
 import { DatePipe, DecimalPipe } from '@angular/common';
-import { Component, computed, inject, signal } from '@angular/core';
+import { Component, computed, inject, input, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
 import { MatFormFieldModule } from '@angular/material/form-field';
@@ -159,7 +159,7 @@ interface Line {
           <tbody>
             @for (entry of shownRecent(); track entry.spoilageId) {
               @for (l of entry.lines; track l.rawMaterialId; let first = $first) {
-                <tr [class.pending-deletion]="!!pendingOf(entry)">
+                <tr [class.pending-deletion]="!!pendingOf(entry)" [class.focused]="entry.spoilageId === spoilage()" [attr.id]="first ? 'spoilage-' + entry.spoilageId : null">
                   <td>
                     @if (first) {
                       {{ entry.recordedAtUtc | date: 'd MMM, HH:mm' }}
@@ -286,6 +286,9 @@ interface Line {
   `,
   styleUrl: './costing.scss',
   styles: `
+    tr.focused td {
+      background: color-mix(in srgb, var(--mat-sys-primary) 10%, transparent);
+    }
     .breakage-form {
       display: flex;
       flex-wrap: wrap;
@@ -351,6 +354,9 @@ export class WastePage {
     { en: 'Damaged packaging', ar: 'تلف العبوة' },
     { en: 'Other', ar: 'أخرى' },
   ];
+
+  // Opened from a stock card: the entry it names, marked, the history reaching back a year for it.
+  readonly spoilage = input<string | undefined>(undefined);
 
   protected readonly materials = signal<MaterialCost[]>([]);
   protected readonly recent = signal<SpoilageEntry[]>([]);
@@ -538,9 +544,13 @@ export class WastePage {
     this.error.set(null);
     void this.approvals.refresh();
     try {
-      const [materials, recent] = await Promise.all([firstValueFrom(this.api.materials()), firstValueFrom(this.api.spoilage(30))]);
+      const focus = this.spoilage();
+      const [materials, recent] = await Promise.all([firstValueFrom(this.api.materials()), firstValueFrom(this.api.spoilage(focus ? 366 : 30))]);
       this.materials.set(materials);
       this.recent.set(recent);
+      if (focus) {
+        setTimeout(() => document.getElementById(`spoilage-${focus}`)?.scrollIntoView({ block: 'center' }));
+      }
     } catch (error) {
       this.error.set(errorMessage(error, 'The waste could not be loaded.'));
     } finally {

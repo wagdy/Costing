@@ -733,7 +733,7 @@ public static class DependencyInjection
 
 البنية التحتية: كل "منفذ" يُربط بتطبيقه. `Singleton` للساعة وملف الشركة والتشفير؛ `Scoped` لكل ما يلمس `CostingDbContext`؛ `RetryOnConflictBehavior` يلف كل أمر؛ و `AddHttpClient` + `AddHostedService<HrSyncWorker>` للربط مع HR.
 
-> 📄 **`backend/src/Costing.Infrastructure/DependencyInjection.cs`** — 118 سطر
+> 📄 **`backend/src/Costing.Infrastructure/DependencyInjection.cs`** — 119 سطر
 
 ```csharp
 using MediatR;
@@ -847,6 +847,7 @@ public static class DependencyInjection
         services.AddScoped<PurchaseSpendingService>();
         services.AddScoped<TreasuryService>();
         services.AddScoped<IntelligenceService>();
+        services.AddScoped<StockCardService>();
 
         // The system's users.
         services.AddScoped<UserDirectory>();
@@ -1516,12 +1517,14 @@ Costing/
                     RetryOnConflictBehavior.cs
                 Reports/
                     BreakEvenService.cs
+                    CostingService.MenuEngineering.cs
                     CostingService.cs
                     CostingTables.cs
                     IntelligenceService.cs
                     KpiService.cs
                     PurchaseSpendingService.cs
                     SalesLedger.cs
+                    StockCardService.cs
                     TreasuryService.cs
                     VarianceService.cs
         tests/
@@ -1686,6 +1689,9 @@ Costing/
                         form-checks.ts
                         funding-page.spec.ts
                         funding-page.ts
+                        info-tip.spec.ts
+                        info-tip.ts
+                        info-tips.ts
                         intelligence-shell.ts
                         intelligence.spec.ts
                         invoice-lines.spec.ts
@@ -1707,6 +1713,7 @@ Costing/
                         material-picker.ts
                         materials-page.spec.ts
                         materials-page.ts
+                        menu-engineering-page.ts
                         menu-page.spec.ts
                         menu-page.ts
                         order-planner-page.ts
@@ -1762,6 +1769,8 @@ Costing/
                         spending-pie.ts
                         staff-page.spec.ts
                         staff-page.ts
+                        stock-card-dialog.spec.ts
+                        stock-card-dialog.ts
                         supplier-debts-page.spec.ts
                         supplier-debts-page.ts
                         supplier-dialog.spec.ts

@@ -15,6 +15,7 @@ import { errorMessage } from '../../core/http/error-message';
 import { Company } from '../../core/settings/company';
 import { MoneyPipe } from '../../core/ui/money.pipe';
 import { NotifyService } from '../../core/ui/notify.service';
+import { InfoTip } from './info-tip';
 
 type Row = { label: string; ar: string; value: (c: BreakEvenColumn) => number | null; indent?: boolean; strong?: boolean; percent?: boolean; profit?: boolean };
 
@@ -41,7 +42,7 @@ const chart = { width: 680, height: 320, left: 78, right: 16, top: 16, bottom: 4
 // the same costs, at the same cost of sales ratio. The chart shows where sales meet total costs.
 @Component({
   selector: 'app-break-even-page',
-  imports: [DecimalPipe, FormsModule, MatButtonModule, MatFormFieldModule, MatIconModule, MatInputModule, MatProgressBarModule, MoneyPipe, RouterLink],
+  imports: [InfoTip, DecimalPipe, FormsModule, MatButtonModule, MatFormFieldModule, MatIconModule, MatInputModule, MatProgressBarModule, MoneyPipe, RouterLink],
   template: `
     <div class="toolbar">
       <mat-form-field subscriptSizing="dynamic">
@@ -65,11 +66,8 @@ const chart = { width: 680, height: 320, left: 78, right: 16, top: 16, bottom: 4
       <p class="error">{{ error() }}</p>
     } @else if (sheet(); as s) {
       <header class="report-head">
-        <h2>Break-even analysis and scenario worksheet <span class="inline-ar">تحليل نقطة التعادل والسيناريوهات</span></h2>
-        <div class="muted">
-          Income statement from {{ s.days }} {{ s.days === 1 ? 'day' : 'days' }} of sales, {{ s.from }} to {{ s.to }}, at a year's pace
-          (weekly × 52); costs from the months' entered costs × 12.
-        </div>
+        <h2>Break-even analysis and scenario worksheet <span class="inline-ar">تحليل نقطة التعادل والسيناريوهات</span> <app-info-tip tip="breakEven" /></h2>
+        <div class="muted">{{ s.days }} {{ s.days === 1 ? 'day' : 'days' }} of sales, {{ s.from }} to {{ s.to }}</div>
       </header>
 
       @if (s.monthsWithoutCosts.length) {

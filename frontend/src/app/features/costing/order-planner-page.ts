@@ -17,6 +17,8 @@ import { saveBlob } from '../../core/ui/save-blob';
 import { FilterOption, FilterSelect } from '../shared/filter-select';
 import { SearchField } from '../shared/search-field';
 import { smartMatch } from '../shared/smart-search';
+import { InfoTip } from './info-tip';
+import { StockCardButton } from './stock-card-dialog';
 
 const dishKey = (d: { menuItemId: number; variantId: number | null }) => `${d.menuItemId}-${d.variantId ?? ''}`;
 
@@ -39,8 +41,10 @@ const dishKey = (d: { menuItemId: number; variantId: number | null }) => `${d.me
     MatIconModule,
     MatInputModule,
     MatProgressBarModule,
+    InfoTip,
     MoneyPipe,
     SearchField,
+    StockCardButton,
   ],
   template: `
     <section class="controls" aria-label="What the order is planned from">
@@ -140,23 +144,23 @@ const dishKey = (d: { menuItemId: number; variantId: number | null }) => `${d.me
     } @else if (plan(); as p) {
       <div class="tiles">
         <div class="tile key">
-          <span class="label">Approved order · الطلبية المعتمدة</span>
+          <span class="label">Approved order · الطلبية المعتمدة <app-info-tip tip="orderApproved" /></span>
           <strong>{{ approvedTotal() | money }}</strong>
-          <small class="muted">{{ approvedLines() }} {{ approvedLines() === 1 ? 'material' : 'materials' }} · estimated at the latest net prices</small>
+          <small class="chip">{{ approvedLines() }} {{ approvedLines() === 1 ? 'material' : 'materials' }}</small>
         </div>
         <div class="tile">
-          <span class="label">Suggested · المقترح</span>
+          <span class="label">Suggested · المقترح <app-info-tip tip="orderSuggested" /></span>
           <strong>{{ p.estimatedTotal | money }}</strong>
-          <small class="muted">{{ p.toOrder }} to order</small>
+          <small class="chip">{{ p.toOrder }} to order</small>
         </div>
         <div class="tile">
-          <span class="label">Below reorder level · تحت حد الطلب</span>
+          <span class="label">Below reorder level · تحت حد الطلب <app-info-tip tip="orderBelowReorder" /></span>
           <strong [class.loss]="p.belowReorder > 0">{{ p.belowReorder }}</strong>
         </div>
         <div class="tile">
-          <span class="label">Planned from · مبني على</span>
+          <span class="label">Planned from · مبني على <app-info-tip tip="orderPlannedFrom" /></span>
           <strong>{{ p.coverageDays }} days</strong>
-          <small class="muted">ahead, from the sales of {{ p.lookbackFrom | date: 'd MMM' }} – {{ p.lookbackTo | date: 'd MMM' }}</small>
+          <small class="chip">{{ p.lookbackFrom | date: 'd MMM' }} – {{ p.lookbackTo | date: 'd MMM' }}</small>
         </div>
       </div>
       @if (p.noPrice.length) {
@@ -184,10 +188,10 @@ const dishKey = (d: { menuItemId: number; variantId: number | null }) => `${d.me
             <tr>
               <th>Material<span class="ar">الخامة</span></th>
               <th class="num">On hand<span class="ar">الرصيد المتاح</span></th>
-              <th class="num">A day<span class="ar">متوسط الاستهلاك اليومي</span></th>
-              <th class="num">Expected<span class="ar">الاستهلاك المتوقع</span></th>
+              <th class="num">A day <app-info-tip tip="orderDaily" /><span class="ar">متوسط الاستهلاك اليومي</span></th>
+              <th class="num">Expected <app-info-tip tip="orderExpected" /><span class="ar">الاستهلاك المتوقع</span></th>
               <th class="num">Reorder level<span class="ar">حد الطلب</span></th>
-              <th class="num">Suggested<span class="ar">الكمية المرشحة</span></th>
+              <th class="num">Suggested <app-info-tip tip="orderSuggestedQty" /><span class="ar">الكمية المرشحة</span></th>
               <th class="num">Approved<span class="ar">الكمية المعتمدة</span></th>
               <th class="num">Estimated cost<span class="ar">التكلفة التقديرية</span></th>
             </tr>
@@ -197,6 +201,7 @@ const dishKey = (d: { menuItemId: number; variantId: number | null }) => `${d.me
               <tr [class.below]="line.belowReorder">
                 <td>
                   <strong>{{ line.material }}</strong>
+                  <app-stock-card-button [id]="line.rawMaterialId" [name]="line.material" />
                   <div class="muted small">
                     {{ line.code ? line.code + ' · ' : '' }}{{ line.category ?? 'Uncategorized' }}{{ line.supplier ? ' · ' + line.supplier : '' }}
                   </div>
@@ -227,12 +232,6 @@ const dishKey = (d: { menuItemId: number; variantId: number | null }) => `${d.me
           </tfoot>
         </table>
       </div>
-      <p class="note small">
-        Expected usage: the dishes' expected sales over the days covered, through the recipes and the prep items (each ingredient as purchased,
-        its yield allowed for), the prep items on hand used first. Suggested = expected + reorder level − on hand, never below nothing, rounded up
-        to whole purchase units; costed at the latest net price paid.
-        <span class="note-ar" lang="ar" dir="rtl">الكمية المرشحة = الاستهلاك المتوقع + حد الطلب − الرصيد، مقربة لأعلى لوحدة الشراء.</span>
-      </p>
     }
   `,
   styleUrl: './costing.scss',

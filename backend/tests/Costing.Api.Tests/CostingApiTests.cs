@@ -91,6 +91,11 @@ public class CostingApiTests
         // The intelligence reports: costs, so not the storekeeper's.
         Assert.Equal(HttpStatusCode.OK, await Get(controller, "/api/costing/intelligence/abc?from=2026-10-01&to=2026-10-31"));
         Assert.Equal(HttpStatusCode.Forbidden, await Get(storekeeper, "/api/costing/intelligence/abc?from=2026-10-01&to=2026-10-31"));
+        // A material's stock card wherever its stock is worked: the storekeeper's Materials too.
+        var flour = (await Json(await manager.PostAsJsonAsync("/api/inventory/raw-materials", new { name = "Flour", unit = "Gram" }, Cancel))).GetProperty("id").GetGuid();
+        Assert.Equal(HttpStatusCode.OK, await Get(storekeeper, $"/api/costing/materials/{flour}/stock-card"));
+        Assert.Equal(HttpStatusCode.OK, await Get(accountant, $"/api/costing/materials/{flour}/stock-card"));
+        Assert.Equal(HttpStatusCode.Forbidden, await Get(storekeeper, "/api/costing/intelligence/menu-engineering?from=2026-10-01&to=2026-10-31"));
         // Everyone's materials list; the counts the storekeeper's.
         Assert.Equal(HttpStatusCode.OK, await Get(storekeeper, "/api/inventory/raw-materials"));
         Assert.Equal(HttpStatusCode.OK, await Get(storekeeper, "/api/inventory/stock-counts"));
@@ -667,7 +672,7 @@ public class CostingApiTests
         }, Cancel))).GetProperty("id").GetGuid();
         var period = $"from={Iso(today.AddDays(-6))}&to={Iso(today)}";
 
-        foreach (var report in new[] { "prices", "consumption", "abc" })
+        foreach (var report in new[] { "prices", "consumption", "abc", "menu-engineering" })
         {
             Assert.True((await manager.GetAsync($"/api/costing/intelligence/{report}?{period}", Cancel)).IsSuccessStatusCode, report);
             var sheet = await manager.GetAsync($"/api/costing/intelligence/{report}/sheet?{period}", Cancel);
@@ -693,6 +698,29 @@ public class CostingApiTests
         }
         Assert.Equal(HttpStatusCode.UnprocessableEntity,
             (await manager.PostAsJsonAsync("/api/costing/intelligence/orders", new { lookbackDays = 0, coverageDays = 7 }, Cancel)).StatusCode);
+
+        // The flour's stock card: 10 kg bought at 30 a kilo, its balance and average after; of one kind,
+        // and as a workbook. The days the wrong way round are refused.
+        await Json(await manager.PostAsJsonAsync("/api/inventory/purchases", new
+        {
+            purchaseId = Guid.NewGuid(), lines = new[] { new { rawMaterialId = flour, quantity = 10_000, cost = 300 } },
+        }, Cancel));
+        var card = await Json(await manager.GetAsync($"/api/costing/materials/{flour}/stock-card?{period}", Cancel));
+        var moved = card.GetProperty("lines").EnumerateArray().Single();
+        Assert.Equal(("Purchases", "PurchaseInvoice", 10m, 10m, 30m),
+            (moved.GetProperty("type").GetString(), moved.GetProperty("sourceKind").GetString(), moved.GetProperty("quantityIn").GetDecimal(),
+                moved.GetProperty("balance").GetDecimal(), moved.GetProperty("averageCostAfter").GetDecimal()));
+        // Received on the spot: an invoice with no number of its own, which opens from the card.
+        Assert.Equal(("Invoice, no number · فاتورة بدون رقم", true), (moved.GetProperty("reference").GetString(), moved.GetProperty("hasSource").GetBoolean()));
+        Assert.Equal((0m, 10m, 10m), (card.GetProperty("openingBalance").GetDecimal(), card.GetProperty("totalIn").GetDecimal(), card.GetProperty("closingBalance").GetDecimal()));
+        var sales = await Json(await manager.GetAsync($"/api/costing/materials/{flour}/stock-card?{period}&type=Sales", Cancel));
+        Assert.Empty(sales.GetProperty("lines").EnumerateArray());
+        var cardSheet = await manager.GetAsync($"/api/costing/materials/{flour}/stock-card/sheet?{period}", Cancel);
+        using (var book = new XLWorkbook(await cardSheet.Content.ReadAsStreamAsync(Cancel)))
+            Assert.Equal(10d, book.Worksheet("Stock card").Cell(7, 7).GetDouble());
+        Assert.Equal(HttpStatusCode.UnprocessableEntity,
+            (await manager.GetAsync($"/api/costing/materials/{flour}/stock-card?from={Iso(today)}&to={Iso(today.AddDays(-1))}", Cancel)).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await manager.GetAsync($"/api/costing/materials/{Guid.NewGuid()}/stock-card", Cancel)).StatusCode);
     }
 
     // The end of the day handed in by a branch that works that page alone: its invoices with their

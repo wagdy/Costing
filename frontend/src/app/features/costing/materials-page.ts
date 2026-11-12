@@ -18,6 +18,8 @@ import { Approvals, pendingLabel } from './approvals';
 import { saveBlob } from '../../core/ui/save-blob';
 import { MaterialDialog, MaterialDialogResult } from './material-dialog';
 import { MaterialHistoryDialog } from './material-history-dialog';
+import { InfoTip } from './info-tip';
+import { showStockCard } from './stock-card-dialog';
 import { SheetImportData, SheetImportDialog } from './sheet-import-dialog';
 import { todayIso } from './financials';
 import { FilterOption, FilterSelect } from '../shared/filter-select';
@@ -49,6 +51,7 @@ const unitGroups: Record<UnitOfMeasure, string> = { Gram: 'Weight · وزن', Mi
     DatePipe,
     DecimalPipe,
     FilterSelect,
+    InfoTip,
     FormsModule,
     MatButtonModule,
     MatFormFieldModule,
@@ -100,12 +103,12 @@ const unitGroups: Record<UnitOfMeasure, string> = { Gram: 'Weight · وزن', Mi
               <th>Material<span class="ar">الخامة</span></th>
               <th>Category<span class="ar">الفئة</span></th>
               <th>Bought by<span class="ar">وحدة الشراء</span></th>
-              <th class="num">AP$ / unit<span class="ar">تكلفة الشراء</span></th>
-              <th class="num">Yield %<span class="ar">نسبة الصافي</span></th>
-              <th class="num">EP$ / unit<span class="ar">تكلفة الصافي</span></th>
+              <th class="num">AP$ / unit <app-info-tip tip="apUnit" /><span class="ar">تكلفة الشراء</span></th>
+              <th class="num">Yield % <app-info-tip tip="yieldPercent" /><span class="ar">نسبة الصافي</span></th>
+              <th class="num">EP$ / unit <app-info-tip tip="epUnit" /><span class="ar">تكلفة الصافي</span></th>
               <th class="num">On hand<span class="ar">الرصيد</span></th>
-              <th class="num">Stock value<span class="ar">قيمة المخزون</span></th>
-              <th class="num">Last price paid<span class="ar">آخر سعر</span></th>
+              <th class="num">Stock value <app-info-tip tip="stockValue" /><span class="ar">قيمة المخزون</span></th>
+              <th class="num">Last price paid <app-info-tip tip="lastPrice" /><span class="ar">آخر سعر</span></th>
               <th class="num"><span class="visually-hidden">Actions</span></th>
             </tr>
           </thead>
@@ -145,8 +148,11 @@ const unitGroups: Record<UnitOfMeasure, string> = { Gram: 'Weight · وزن', Mi
                 <td class="num">{{ m.stockValue === null ? '' : (m.stockValue | money) }}</td>
                 <td class="num">{{ m.lastPurchaseCostPerPurchaseUnit === null ? '' : (m.lastPurchaseCostPerPurchaseUnit | money) }}</td>
                 <td class="num actions" (click)="$event.stopPropagation()">
+                  <button mat-icon-button (click)="stockCard(m)" matTooltip="Stock card · كارتة الصنف" [attr.aria-label]="'Stock card of ' + m.name">
+                    <mat-icon>receipt_long</mat-icon>
+                  </button>
                   @if (m.kind !== 'Prep') {
-                    <button mat-icon-button (click)="history(m)" matTooltip="Purchase history · كارت الصنف" [attr.aria-label]="'Purchase history of ' + m.name">
+                    <button mat-icon-button (click)="history(m)" matTooltip="Purchase history · سجل المشتريات" [attr.aria-label]="'Purchase history of ' + m.name">
                       <mat-icon>history</mat-icon>
                     </button>
                   }
@@ -275,6 +281,11 @@ export class MaterialsPage {
 
   protected pendingOf(material: MaterialCost): ApprovalRequest | undefined {
     return this.approvals.pendingFor(material.id);
+  }
+
+  // Every movement of its stock, the balance and the average after each, each opening its record.
+  protected stockCard(material: MaterialCost): void {
+    showStockCard(this.dialog, material);
   }
 
   // Every invoice line that bought it, to hold against the paper invoices.

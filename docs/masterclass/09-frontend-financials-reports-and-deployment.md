@@ -4455,8 +4455,11 @@ export class TaxServicePage {
 - `OrderPlannerPage`: أيام النظر للخلف، أيام التغطية، النمو، أو رقم لكل طبق؛ ثم ما يُصنع من المصنعات وما يُطلب من الخامات بوحدات شراء كاملة، وورقة الطلب.
 - `ConsumptionPage`: الفعلي مقابل النظري لكل خامة بحكم السماحية، و "مبيع بلا وصفة".
 - `AbcPage`: A/B/C وأيام الكفاية وخطر النفاد.
+- `MenuEngineeringPage`: هندسة المنيو: مصفوفة الأرباع الأربعة (النجوم، خيول العمل، الألغاز، الأصناف الضعيفة) بأطباق كل ربع، و (ⓘ) كل ربع يقول ما العمل معه، ثم الجدول: نسبة المبيعات، متوسط السعر، تكلفة الحصة ونسبتها، الهامش وإجماليه، والسعر المقترح للنسبة المستهدفة (بالكهرماني إن كان فوق السعر الحالي). فلتر قسم المنيو يعيد الحساب على القسم وحده.
 
-> 📄 **`frontend/src/app/core/costing/intelligence.api.ts`** — 278 سطر
+وفي كل هذه الشاشات (وتقارير الإنفاق والخزنة والفروقات والـ KPIs وبطاقة الوصفة) البطاقة **عنوان ورقم وشارة قصيرة** فقط؛ المعادلات التي كانت تحت البطاقات وفي ذيل الصفحة انتقلت إلى (ⓘ) بجانب العنوان (الفصل 08). واسم الخامة في جداول التحليلات بجانبه زر كارتة الصنف على فترة التقرير، و "آخر سعر صافي" في انحراف الأسعار يفتح فاتورته وسطرها مُعلَّم.
+
+> 📄 **`frontend/src/app/core/costing/intelligence.api.ts`** — 355 سطر
 
 ```ts
 import { HttpClient } from '@angular/common/http';
@@ -4510,6 +4513,8 @@ export interface PriceVarianceRow {
   latestSupplier: string | null;
   supplierIds: string[];
   affected: PriceImpactLine[];
+  // The invoice of the latest price, to open it.
+  latestInvoiceId: string | null;
 }
 
 export interface PriceVarianceReport {
@@ -4689,6 +4694,69 @@ export const evaluationLabels: Record<VarianceEvaluation, { en: string; ar: stri
   SharedCost: { en: 'Shared cost', ar: 'تكلفة مشتركة' },
 };
 
+// ---- Menu engineering (هندسة المنيو والربحية) ----
+
+export type MenuClass = 'Star' | 'Plowhorse' | 'Puzzle' | 'Dog';
+export type MenuCostStatus = 'WithinTarget' | 'AboveTarget' | 'NoRecipe' | 'MissingPrices' | 'NoPrice';
+
+// A dish sold in the period: its menu mix, average net price, food cost a portion and its share of
+// the price, its contribution margin and in all, where that places it, and the price that would bring
+// it to the food cost target. One with no recipe or no price is not placed (menuClass null).
+export interface MenuEngineeringRow {
+  itemCode: string;
+  menuItemId: number;
+  variantId: number | null;
+  menuItem: string;
+  menuItemAr: string | null;
+  category: string;
+  quantitySold: number;
+  menuMixPercent: number | null;
+  netSales: number;
+  averagePrice: number | null;
+  foodCostPerPortion: number | null;
+  foodCostPercent: number | null;
+  contributionMargin: number | null;
+  totalContribution: number | null;
+  popular: boolean;
+  profitable: boolean;
+  class: MenuClass | null;
+  suggestedPrice: number | null;
+  status: MenuCostStatus;
+}
+
+export interface MenuClassSummary {
+  class: MenuClass;
+  items: number;
+  quantitySold: number;
+  contribution: number;
+  contributionSharePercent: number | null;
+}
+
+export interface MenuEngineeringReport {
+  from: string;
+  to: string;
+  category: string | null;
+  foodCostTargetPercent: number;
+  items: number;
+  quantitySold: number;
+  netSales: number;
+  totalContribution: number;
+  averageContribution: number | null;
+  popularityThresholdPercent: number | null;
+  foodCostPercent: number | null;
+  classes: MenuClassSummary[];
+  rows: MenuEngineeringRow[];
+  unclassified: number;
+  categories: string[];
+}
+
+export const menuClassLabels: Record<MenuClass, { en: string; ar: string; icon: string; action: string; actionAr: string }> = {
+  Star: { en: 'Stars', ar: 'النجوم', icon: 'star', action: 'Keep and feature', actionAr: 'حافظ عليها وأبرزها' },
+  Plowhorse: { en: 'Plowhorses', ar: 'خيول العمل', icon: 'agriculture', action: 'Reprice or cut cost', actionAr: 'ارفع السعر أو خفّض التكلفة' },
+  Puzzle: { en: 'Puzzles', ar: 'الألغاز', icon: 'extension', action: 'Promote and reposition', actionAr: 'روّج لها وغيّر مكانها' },
+  Dog: { en: 'Dogs', ar: 'الأصناف الضعيفة', icon: 'trending_down', action: 'Rework or remove', actionAr: 'أعد تصميمها أو احذفها' },
+};
+
 // Filtering a sheet as the screen does: one category, one supplier, the words typed.
 export interface PriceSheetFilter {
   categoryId?: string | null;
@@ -4736,11 +4804,23 @@ export class IntelligenceApi {
   abcSheet(from: string, to: string): Observable<Blob> {
     return this.http.get('/api/costing/intelligence/abc/sheet', { params: { from, to }, responseType: 'blob' });
   }
+
+  menuEngineering(from: string, to: string, category: string | null = null): Observable<MenuEngineeringReport> {
+    return this.http.get<MenuEngineeringReport>('/api/costing/intelligence/menu-engineering', { params: menuParams(from, to, category) });
+  }
+
+  menuEngineeringSheet(from: string, to: string, category: string | null = null): Observable<Blob> {
+    return this.http.get('/api/costing/intelligence/menu-engineering/sheet', { params: menuParams(from, to, category), responseType: 'blob' });
+  }
+}
+
+function menuParams(from: string, to: string, category: string | null): Record<string, string> {
+  return category ? { from, to, category } : { from, to };
 }
 ```
 
 
-> 📄 **`frontend/src/app/features/costing/intelligence-shell.ts`** — 24 سطر
+> 📄 **`frontend/src/app/features/costing/intelligence-shell.ts`** — 26 سطر
 
 ```ts
 import { Component } from '@angular/core';
@@ -4749,7 +4829,8 @@ import { SubNav, SubNavTab } from '../shared/sub-nav';
 
 // Material & demand intelligence (تحليلات الخامات والطلبيات): what the purchase prices did and what
 // that does to the dishes; what to order for the days ahead; what was used against what the sales
-// should have taken; and which materials hold the money, and how long the stock lasts.
+// should have taken; which materials hold the money, and how long the stock lasts; and which dishes
+// earn their place on the menu.
 @Component({
   selector: 'app-intelligence-shell',
   imports: [RouterOutlet, SubNav],
@@ -4765,20 +4846,23 @@ export class IntelligenceShell {
     { path: 'orders', icon: 'shopping_basket', en: 'Smart order planner', ar: 'تخطيط الطلبيات' },
     { path: 'consumption', icon: 'compare_arrows', en: 'Theoretical vs actual', ar: 'النظري مقابل الفعلي' },
     { path: 'abc', icon: 'stacked_bar_chart', en: 'ABC & days on hand', ar: 'تصنيف ABC وكفاية المخزون' },
+    { path: 'menu', icon: 'grid_view', en: 'Menu engineering', ar: 'هندسة المنيو والربحية' },
   ];
 }
 ```
 
 
-> 📄 **`frontend/src/app/features/costing/price-variance-page.ts`** — 329 سطر
+> 📄 **`frontend/src/app/features/costing/price-variance-page.ts`** — 372 سطر
 
 ```ts
 import { DatePipe, DecimalPipe } from '@angular/common';
 import { Component, computed, effect, inject, signal, untracked } from '@angular/core';
 import { MatButtonModule } from '@angular/material/button';
+import { MatDialog } from '@angular/material/dialog';
 import { MatIconModule } from '@angular/material/icon';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { firstValueFrom } from 'rxjs';
+import { CostingAccess } from '../../core/costing/costing-tabs';
 import { IntelligenceApi, PriceVarianceReport, PriceVarianceRow } from '../../core/costing/intelligence.api';
 import { errorMessage } from '../../core/http/error-message';
 import { MoneyPipe } from '../../core/ui/money.pipe';
@@ -4789,6 +4873,9 @@ import { SearchField } from '../shared/search-field';
 import { SortOption, SortState, smartMatch, sortItems } from '../shared/smart-search';
 import { SortControl } from '../shared/sort-control';
 import { PeriodBar, periodDays } from './period-bar';
+import { InfoTip } from './info-tip';
+import { showInvoice } from './invoice-view-dialog';
+import { StockCardButton } from './stock-card-dialog';
 
 type PriceSort = 'impact' | 'change' | 'material';
 
@@ -4805,7 +4892,20 @@ const sorts: SortOption<PriceSort>[] = [
 // and food cost.
 @Component({
   selector: 'app-price-variance-page',
-  imports: [DatePipe, DecimalPipe, FilterSelect, MatButtonModule, MatIconModule, MatProgressBarModule, MoneyPipe, PeriodBar, SearchField, SortControl],
+  imports: [
+    DatePipe,
+    DecimalPipe,
+    FilterSelect,
+    InfoTip,
+    MatButtonModule,
+    MatIconModule,
+    MatProgressBarModule,
+    MoneyPipe,
+    PeriodBar,
+    SearchField,
+    SortControl,
+    StockCardButton,
+  ],
   template: `
     <div class="toolbar">
       <app-period-bar [(from)]="from" [(to)]="to" />
@@ -4820,29 +4920,29 @@ const sorts: SortOption<PriceSort>[] = [
     } @else if (report(); as r) {
       <div class="tiles">
         <div class="tile key">
-          <span class="label">Financial impact · الأثر المالي للانحراف</span>
+          <span class="label">Financial impact · الأثر المالي للانحراف <app-info-tip tip="ppvImpact" /></span>
           <strong [class.loss]="r.totalImpact > 0" [class.gain]="r.totalImpact < 0">{{ r.totalImpact | money }}</strong>
-          <small class="muted">(latest − baseline) × bought, every material</small>
         </div>
         <div class="tile">
-          <span class="label">Prices up · ارتفاع</span>
+          <span class="label">Prices up · ارتفاع <app-info-tip tip="ppvRising" /></span>
           <strong class="loss">{{ r.rising }}</strong>
-          <small class="muted">{{ r.increases | money }} more paid</small>
+          <small class="chip">+{{ r.increases | money }}</small>
         </div>
         <div class="tile">
-          <span class="label">Prices down · انخفاض</span>
+          <span class="label">Prices down · انخفاض <app-info-tip tip="ppvFalling" /></span>
           <strong class="gain">{{ r.falling }}</strong>
-          <small class="muted">{{ (r.decreases ? -r.decreases : 0) | money }} saved</small>
+          <small class="chip">−{{ (r.decreases ? -r.decreases : 0) | money }}</small>
         </div>
         <div class="tile">
-          <span class="label">Dishes affected · الأطباق المتأثرة</span>
+          <span class="label">Dishes affected · الأطباق المتأثرة <app-info-tip tip="ppvDishes" /></span>
           <strong>{{ r.affectedDishes }}</strong>
-          <small class="muted">by a price that went up</small>
         </div>
         <div class="tile">
-          <span class="label">Largest rise · أعلى ارتفاع</span>
+          <span class="label">Largest rise · أعلى ارتفاع <app-info-tip tip="ppvLargest" /></span>
           <strong>{{ r.largestRisePercent === null ? '—' : '+' + (r.largestRisePercent | number: '1.1-1') + '%' }}</strong>
-          <small class="muted">{{ r.largestRise ?? 'No price went up' }}</small>
+          @if (r.largestRise) {
+            <small class="chip">{{ r.largestRise }}</small>
+          }
         </div>
       </div>
 
@@ -4860,11 +4960,11 @@ const sorts: SortOption<PriceSort>[] = [
           <thead>
             <tr>
               <th>Material<span class="ar">الخامة</span></th>
-              <th class="num">Baseline avg<span class="ar">متوسط السعر السابق</span></th>
-              <th class="num">Latest net<span class="ar">آخر سعر شراء صافي</span></th>
-              <th class="num">Change<span class="ar">فرق السعر ونسبة التغير</span></th>
+              <th class="num">Baseline avg <app-info-tip tip="baselineAvg" /><span class="ar">متوسط السعر السابق</span></th>
+              <th class="num">Latest net <app-info-tip tip="latestNet" /><span class="ar">آخر سعر شراء صافي</span></th>
+              <th class="num">Change <app-info-tip tip="ppvChange" /><span class="ar">فرق السعر ونسبة التغير</span></th>
               <th class="num">Bought<span class="ar">الكمية المشتراة</span></th>
-              <th class="num">Impact<span class="ar">الأثر المالي</span></th>
+              <th class="num">Impact <app-info-tip tip="ppvLineImpact" /><span class="ar">الأثر المالي</span></th>
               <th class="num">Recipes<span class="ar">الوصفات المتأثرة</span></th>
             </tr>
           </thead>
@@ -4875,10 +4975,20 @@ const sorts: SortOption<PriceSort>[] = [
                 <td>
                   <mat-icon class="chevron">{{ isOpen(row) ? 'expand_less' : 'expand_more' }}</mat-icon>
                   <strong>{{ row.material }}</strong>
+                  <app-stock-card-button [id]="row.rawMaterialId" [name]="row.material" [from]="from()" [to]="to()" />
                   <div class="muted small">{{ row.code ? row.code + ' · ' : '' }}per {{ row.purchaseUnit }}{{ row.category ? ' · ' + row.category : '' }}</div>
                 </td>
                 <td class="num">{{ row.baselineCost === null ? '—' : (row.baselineCost | money) }}</td>
-                <td class="num">{{ row.latestCost === null ? '—' : (row.latestCost | money) }}</td>
+                <td class="num">
+                  @if (row.latestCost !== null && row.latestInvoiceId && canOpenInvoices()) {
+                    <button type="button" class="price-link" (click)="openInvoice(row); $event.stopPropagation()" (keydown.enter)="$event.stopPropagation()"
+                      [attr.aria-label]="'Open the invoice of the latest price of ' + row.material">
+                      {{ row.latestCost | money }}
+                    </button>
+                  } @else {
+                    {{ row.latestCost === null ? '—' : (row.latestCost | money) }}
+                  }
+                </td>
                 <td class="num" [class.loss]="(row.unitVariance ?? 0) > 0" [class.gain]="(row.unitVariance ?? 0) < 0">
                   {{ row.unitVariance === null ? '—' : (row.unitVariance > 0 ? '+' : '') + (row.unitVariance | money) }}
                   @if (row.changePercent !== null) {
@@ -4948,16 +5058,20 @@ const sorts: SortOption<PriceSort>[] = [
           </tbody>
         </table>
       </div>
-      <p class="note small">
-        Baseline: the moving average each material came in with, from its stock ledger before the first day. Latest: the last net price paid
-        in the period, after the invoice's discounts. A dish's food cost moves by the change in its portion's cost over its menu price; a prep
-        item's, over what it costs now.
-        <span class="note-ar" lang="ar" dir="rtl">السعر السابق: متوسط التكلفة قبل الفترة. آخر سعر: صافي آخر فاتورة بعد الخصم.</span>
-      </p>
     }
   `,
   styleUrl: './costing.scss',
   styles: `
+    .price-link {
+      padding: 0;
+      border: 0;
+      background: none;
+      font: inherit;
+      color: var(--mat-sys-primary);
+      text-decoration: underline;
+      text-underline-offset: 2px;
+      cursor: pointer;
+    }
     .loss {
       color: var(--mat-sys-error);
     }
@@ -5005,6 +5119,10 @@ const sorts: SortOption<PriceSort>[] = [
 export class PriceVariancePage {
   private readonly api = inject(IntelligenceApi);
   private readonly notify = inject(NotifyService);
+  private readonly dialog = inject(MatDialog);
+  private readonly access = inject(CostingAccess);
+  // The invoices open where their tab is.
+  protected readonly canOpenInvoices = computed(() => this.access.has('Purchases'));
 
   protected readonly from = signal(periodDays('month').from);
   protected readonly to = signal(periodDays('month').to);
@@ -5064,6 +5182,13 @@ export class PriceVariancePage {
     return this.opened().has(row.rawMaterialId);
   }
 
+  // The invoice of the latest price, its line for this material marked.
+  protected openInvoice(row: PriceVarianceRow): void {
+    if (row.latestInvoiceId) {
+      showInvoice(this.dialog, row.latestInvoiceId, row.rawMaterialId);
+    }
+  }
+
   protected toggle(row: PriceVarianceRow): void {
     this.opened.update((opened) => {
       const next = new Set(opened);
@@ -5105,7 +5230,7 @@ export class PriceVariancePage {
 ```
 
 
-> 📄 **`frontend/src/app/features/costing/order-planner-page.ts`** — 476 سطر
+> 📄 **`frontend/src/app/features/costing/order-planner-page.ts`** — 475 سطر
 
 ```ts
 import { DatePipe, DecimalPipe } from '@angular/common';
@@ -5127,6 +5252,8 @@ import { saveBlob } from '../../core/ui/save-blob';
 import { FilterOption, FilterSelect } from '../shared/filter-select';
 import { SearchField } from '../shared/search-field';
 import { smartMatch } from '../shared/smart-search';
+import { InfoTip } from './info-tip';
+import { StockCardButton } from './stock-card-dialog';
 
 const dishKey = (d: { menuItemId: number; variantId: number | null }) => `${d.menuItemId}-${d.variantId ?? ''}`;
 
@@ -5149,8 +5276,10 @@ const dishKey = (d: { menuItemId: number; variantId: number | null }) => `${d.me
     MatIconModule,
     MatInputModule,
     MatProgressBarModule,
+    InfoTip,
     MoneyPipe,
     SearchField,
+    StockCardButton,
   ],
   template: `
     <section class="controls" aria-label="What the order is planned from">
@@ -5250,23 +5379,23 @@ const dishKey = (d: { menuItemId: number; variantId: number | null }) => `${d.me
     } @else if (plan(); as p) {
       <div class="tiles">
         <div class="tile key">
-          <span class="label">Approved order · الطلبية المعتمدة</span>
+          <span class="label">Approved order · الطلبية المعتمدة <app-info-tip tip="orderApproved" /></span>
           <strong>{{ approvedTotal() | money }}</strong>
-          <small class="muted">{{ approvedLines() }} {{ approvedLines() === 1 ? 'material' : 'materials' }} · estimated at the latest net prices</small>
+          <small class="chip">{{ approvedLines() }} {{ approvedLines() === 1 ? 'material' : 'materials' }}</small>
         </div>
         <div class="tile">
-          <span class="label">Suggested · المقترح</span>
+          <span class="label">Suggested · المقترح <app-info-tip tip="orderSuggested" /></span>
           <strong>{{ p.estimatedTotal | money }}</strong>
-          <small class="muted">{{ p.toOrder }} to order</small>
+          <small class="chip">{{ p.toOrder }} to order</small>
         </div>
         <div class="tile">
-          <span class="label">Below reorder level · تحت حد الطلب</span>
+          <span class="label">Below reorder level · تحت حد الطلب <app-info-tip tip="orderBelowReorder" /></span>
           <strong [class.loss]="p.belowReorder > 0">{{ p.belowReorder }}</strong>
         </div>
         <div class="tile">
-          <span class="label">Planned from · مبني على</span>
+          <span class="label">Planned from · مبني على <app-info-tip tip="orderPlannedFrom" /></span>
           <strong>{{ p.coverageDays }} days</strong>
-          <small class="muted">ahead, from the sales of {{ p.lookbackFrom | date: 'd MMM' }} – {{ p.lookbackTo | date: 'd MMM' }}</small>
+          <small class="chip">{{ p.lookbackFrom | date: 'd MMM' }} – {{ p.lookbackTo | date: 'd MMM' }}</small>
         </div>
       </div>
       @if (p.noPrice.length) {
@@ -5294,10 +5423,10 @@ const dishKey = (d: { menuItemId: number; variantId: number | null }) => `${d.me
             <tr>
               <th>Material<span class="ar">الخامة</span></th>
               <th class="num">On hand<span class="ar">الرصيد المتاح</span></th>
-              <th class="num">A day<span class="ar">متوسط الاستهلاك اليومي</span></th>
-              <th class="num">Expected<span class="ar">الاستهلاك المتوقع</span></th>
+              <th class="num">A day <app-info-tip tip="orderDaily" /><span class="ar">متوسط الاستهلاك اليومي</span></th>
+              <th class="num">Expected <app-info-tip tip="orderExpected" /><span class="ar">الاستهلاك المتوقع</span></th>
               <th class="num">Reorder level<span class="ar">حد الطلب</span></th>
-              <th class="num">Suggested<span class="ar">الكمية المرشحة</span></th>
+              <th class="num">Suggested <app-info-tip tip="orderSuggestedQty" /><span class="ar">الكمية المرشحة</span></th>
               <th class="num">Approved<span class="ar">الكمية المعتمدة</span></th>
               <th class="num">Estimated cost<span class="ar">التكلفة التقديرية</span></th>
             </tr>
@@ -5307,6 +5436,7 @@ const dishKey = (d: { menuItemId: number; variantId: number | null }) => `${d.me
               <tr [class.below]="line.belowReorder">
                 <td>
                   <strong>{{ line.material }}</strong>
+                  <app-stock-card-button [id]="line.rawMaterialId" [name]="line.material" />
                   <div class="muted small">
                     {{ line.code ? line.code + ' · ' : '' }}{{ line.category ?? 'Uncategorized' }}{{ line.supplier ? ' · ' + line.supplier : '' }}
                   </div>
@@ -5337,12 +5467,6 @@ const dishKey = (d: { menuItemId: number; variantId: number | null }) => `${d.me
           </tfoot>
         </table>
       </div>
-      <p class="note small">
-        Expected usage: the dishes' expected sales over the days covered, through the recipes and the prep items (each ingredient as purchased,
-        its yield allowed for), the prep items on hand used first. Suggested = expected + reorder level − on hand, never below nothing, rounded up
-        to whole purchase units; costed at the latest net price paid.
-        <span class="note-ar" lang="ar" dir="rtl">الكمية المرشحة = الاستهلاك المتوقع + حد الطلب − الرصيد، مقربة لأعلى لوحدة الشراء.</span>
-      </p>
     }
   `,
   styleUrl: './costing.scss',
@@ -5587,7 +5711,7 @@ export class OrderPlannerPage {
 ```
 
 
-> 📄 **`frontend/src/app/features/costing/consumption-page.ts`** — 279 سطر
+> 📄 **`frontend/src/app/features/costing/consumption-page.ts`** — 288 سطر
 
 ```ts
 import { DecimalPipe } from '@angular/common';
@@ -5606,6 +5730,8 @@ import { SearchField } from '../shared/search-field';
 import { SortOption, SortState, smartMatch, sortItems } from '../shared/smart-search';
 import { SortControl } from '../shared/sort-control';
 import { PeriodBar, periodDays } from './period-bar';
+import { InfoTip } from './info-tip';
+import { StockCardButton } from './stock-card-dialog';
 
 type ConsumptionSort = 'cost' | 'percent' | 'material';
 
@@ -5622,7 +5748,19 @@ const sorts: SortOption<ConsumptionSort>[] = [
 // waste not recorded, over-portioning, or stock walking out.
 @Component({
   selector: 'app-consumption-page',
-  imports: [DecimalPipe, FilterSelect, MatButtonModule, MatIconModule, MatProgressBarModule, MoneyPipe, PeriodBar, SearchField, SortControl],
+  imports: [
+    DecimalPipe,
+    FilterSelect,
+    InfoTip,
+    MatButtonModule,
+    MatIconModule,
+    MatProgressBarModule,
+    MoneyPipe,
+    PeriodBar,
+    SearchField,
+    SortControl,
+    StockCardButton,
+  ],
   template: `
     <div class="toolbar">
       <app-period-bar [(from)]="from" [(to)]="to" />
@@ -5637,24 +5775,24 @@ const sorts: SortOption<ConsumptionSort>[] = [
     } @else if (report(); as r) {
       <div class="tiles">
         <div class="tile key">
-          <span class="label">Unexplained variance · قيمة الانحراف غير المبرر</span>
+          <span class="label">Unexplained variance · قيمة الانحراف غير المبرر <app-info-tip tip="unexplainedVariance" /></span>
           <strong [class.loss]="r.unexplainedValue > 0">{{ r.unexplainedValue | money }}</strong>
-          <small class="muted">at the average cost now</small>
         </div>
         <div class="tile">
-          <span class="label">High-loss materials · خامات بفاقد مرتفع</span>
+          <span class="label">High-loss materials · خامات بفاقد مرتفع <app-info-tip tip="highLoss" /></span>
           <strong [class.loss]="r.highLoss > 0">{{ r.highLoss }}</strong>
-          <small class="muted">more than {{ r.tolerancePercent }}% over the recipes</small>
+          <small class="chip">&gt; {{ r.tolerancePercent }}%</small>
         </div>
         <div class="tile">
-          <span class="label">Theoretical usage · الاستهلاك النظري</span>
+          <span class="label">Theoretical usage · الاستهلاك النظري <app-info-tip tip="theoreticalUsage" /></span>
           <strong>{{ r.theoreticalValue | money }}</strong>
-          <small class="muted">what the sales should have taken</small>
         </div>
         <div class="tile">
-          <span class="label">Actual usage · الاستهلاك الفعلي</span>
+          <span class="label">Actual usage · الاستهلاك الفعلي <app-info-tip tip="actualUsage" /></span>
           <strong>{{ r.actualValue | money }}</strong>
-          <small class="muted">what left the stores</small>
+          @if (r.theoreticalValue > 0) {
+            <small class="chip">{{ (r.actualValue / r.theoreticalValue) * 100 | number: '1.0-1' }}% of theoretical</small>
+          }
         </div>
       </div>
       @if (r.soldWithoutRecipe.length) {
@@ -5683,10 +5821,10 @@ const sorts: SortOption<ConsumptionSort>[] = [
               <th class="num">Purchases<span class="ar">المشتريات</span></th>
               <th class="num">Logged waste<span class="ar">الهالك المسجل</span></th>
               <th class="num">Closing<span class="ar">آخر المدة</span></th>
-              <th class="num">Actual<span class="ar">الاستهلاك الفعلي</span></th>
-              <th class="num">Theoretical<span class="ar">الاستهلاك النظري</span></th>
-              <th class="num">Unexplained<span class="ar">الانحراف غير المبرر</span></th>
-              <th class="num">Variance cost<span class="ar">قيمة الانحراف</span></th>
+              <th class="num">Actual <app-info-tip tip="actualUsage" /><span class="ar">الاستهلاك الفعلي</span></th>
+              <th class="num">Theoretical <app-info-tip tip="theoreticalUsage" /><span class="ar">الاستهلاك النظري</span></th>
+              <th class="num">Unexplained <app-info-tip tip="theoreticalVsActual" /><span class="ar">الانحراف غير المبرر</span></th>
+              <th class="num">Variance cost <app-info-tip tip="unexplainedVariance" /><span class="ar">قيمة الانحراف</span></th>
             </tr>
           </thead>
           <tbody>
@@ -5694,6 +5832,7 @@ const sorts: SortOption<ConsumptionSort>[] = [
               <tr [class.high-loss]="row.evaluation === 'Unfavourable'">
                 <td>
                   <strong>{{ row.material }}</strong>
+                  <app-stock-card-button [id]="row.rawMaterialId" [name]="row.material" [from]="from()" [to]="to()" />
                   <div class="muted small">{{ row.code ? row.code + ' · ' : '' }}in {{ row.purchaseUnit }}{{ row.category ? ' · ' + row.category : '' }}</div>
                   <span class="evaluation" [class]="row.evaluation">{{ labels[row.evaluation].en }}<span class="ar">{{ labels[row.evaluation].ar }}</span></span>
                 </td>
@@ -5730,12 +5869,6 @@ const sorts: SortOption<ConsumptionSort>[] = [
           </tfoot>
         </table>
       </div>
-      <p class="note small">
-        Actual = opening + purchases − logged waste − closing, the stock book either side of the period (an opening count in it is where its
-        stock began). Theoretical = each dish sold × its recipe as purchased, through the prep items, plus what is still held in the prep items
-        made from it. A prep item's logged waste counts as its ingredients'. Unexplained = actual − theoretical, at the average cost now.
-        <span class="note-ar" lang="ar" dir="rtl">الفعلي = أول المدة + المشتريات − الهالك المسجل − آخر المدة. النظري = المبيعات × الوصفة.</span>
-      </p>
     }
   `,
   styleUrl: './costing.scss',
@@ -5872,7 +6005,7 @@ export class ConsumptionPage {
 ```
 
 
-> 📄 **`frontend/src/app/features/costing/abc-page.ts`** — 281 سطر
+> 📄 **`frontend/src/app/features/costing/abc-page.ts`** — 296 سطر
 
 ```ts
 import { DecimalPipe } from '@angular/common';
@@ -5891,6 +6024,9 @@ import { SearchField } from '../shared/search-field';
 import { SortOption, SortState, smartMatch, sortItems } from '../shared/smart-search';
 import { SortControl } from '../shared/sort-control';
 import { PeriodBar, periodDays } from './period-bar';
+import { InfoTip } from './info-tip';
+import { InfoTipKey } from './info-tips';
+import { StockCardButton } from './stock-card-dialog';
 
 type AbcSort = 'value' | 'days' | 'stock' | 'material';
 
@@ -5901,10 +6037,10 @@ const sorts: SortOption<AbcSort>[] = [
   { key: 'material', en: 'Material', ar: 'الخامة' },
 ];
 
-const classLabels: Record<AbcClass, { en: string; ar: string; hint: string }> = {
-  A: { en: 'Class A', ar: 'الفئة A', hint: 'Top 75% of what was used: control daily' },
-  B: { en: 'Class B', ar: 'الفئة B', hint: 'The next 15%: control weekly' },
-  C: { en: 'Class C', ar: 'الفئة C', hint: 'The last 10%: bulk, low cost' },
+const classLabels: Record<AbcClass, { en: string; ar: string; tip: InfoTipKey }> = {
+  A: { en: 'Class A', ar: 'الفئة A', tip: 'classA' },
+  B: { en: 'Class B', ar: 'الفئة B', tip: 'classB' },
+  C: { en: 'Class C', ar: 'الفئة C', tip: 'classC' },
 };
 
 // ABC classification & days on hand (تصنيف ABC وكفاية المخزون): each bought material by what the
@@ -5914,7 +6050,19 @@ const classLabels: Record<AbcClass, { en: string; ar: string; hint: string }> = 
 // with nothing used of it in the period, dead stock, the cash it ties up.
 @Component({
   selector: 'app-abc-page',
-  imports: [DecimalPipe, FilterSelect, MatButtonModule, MatIconModule, MatProgressBarModule, MoneyPipe, PeriodBar, SearchField, SortControl],
+  imports: [
+    DecimalPipe,
+    FilterSelect,
+    InfoTip,
+    MatButtonModule,
+    MatIconModule,
+    MatProgressBarModule,
+    MoneyPipe,
+    PeriodBar,
+    SearchField,
+    SortControl,
+    StockCardButton,
+  ],
   template: `
     <div class="toolbar">
       <app-period-bar [(from)]="from" [(to)]="to" />
@@ -5930,20 +6078,24 @@ const classLabels: Record<AbcClass, { en: string; ar: string; hint: string }> = 
       <div class="tiles">
         @for (c of r.classes; track c.class) {
           <div class="tile" [class.key]="c.class === 'A'">
-            <span class="label"><span class="abc" [class]="c.class">{{ c.class }}</span> {{ classes[c.class].en }} · {{ classes[c.class].ar }}</span>
+            <span class="label">
+              <span class="abc" [class]="c.class">{{ c.class }}</span> {{ classes[c.class].en }} · {{ classes[c.class].ar }}
+              <app-info-tip [tip]="classes[c.class].tip" />
+            </span>
             <strong>{{ c.materials }}</strong>
-            <small class="muted">{{ c.value | money }} · {{ c.sharePercent | number: '1.1-1' }}% of what was used</small>
+            <small class="chip">{{ c.value | money }} · {{ c.sharePercent | number: '1.1-1' }}%</small>
           </div>
         }
         <div class="tile">
-          <span class="label">Stockout risk · خطر النفاد</span>
+          <span class="label">Stockout risk · خطر النفاد <app-info-tip tip="stockoutRisk" /></span>
           <strong [class.loss]="r.stockoutRisks > 0">{{ r.stockoutRisks }}</strong>
-          <small class="muted">less than 2 days on hand</small>
         </div>
         <div class="tile">
-          <span class="label">Dead / slow stock · مخزون راكد</span>
+          <span class="label">Dead / slow stock · مخزون راكد <app-info-tip tip="deadStock" /></span>
           <strong [class.warn]="r.deadStock > 0">{{ r.deadStock }}</strong>
-          <small class="muted">{{ r.deadStockValue | money }} tied up, nothing used in {{ r.days }} days</small>
+          @if (r.deadStockValue) {
+            <small class="chip">{{ r.deadStockValue | money }}</small>
+          }
         </div>
       </div>
 
@@ -5960,15 +6112,15 @@ const classLabels: Record<AbcClass, { en: string; ar: string; hint: string }> = 
         <table class="grid abc-table">
           <thead>
             <tr>
-              <th>Class<span class="ar">الفئة</span></th>
+              <th>Class A / B / C <app-info-tip tip="classA" /><span class="ar">الفئة</span></th>
               <th>Material<span class="ar">الخامة</span></th>
               <th class="num">Used<span class="ar">الاستهلاك</span></th>
-              <th class="num">Worth<span class="ar">القيمة</span></th>
-              <th class="num">Share<span class="ar">النسبة · التراكمي</span></th>
+              <th class="num">Worth <app-info-tip tip="abcWorth" /><span class="ar">القيمة</span></th>
+              <th class="num">Share <app-info-tip tip="abcShare" /><span class="ar">النسبة · التراكمي</span></th>
               <th class="num">On hand<span class="ar">الرصيد</span></th>
               <th class="num">A day<span class="ar">يوميًا</span></th>
-              <th class="num">Days on hand<span class="ar">أيام الكفاية</span></th>
-              <th>Flag<span class="ar">تنبيه</span></th>
+              <th class="num">Days on hand <app-info-tip tip="daysOnHand" /><span class="ar">أيام الكفاية</span></th>
+              <th>Stockout risk / Dead stock <app-info-tip tip="stockoutRisk" /> <app-info-tip tip="deadStock" /><span class="ar">تنبيه</span></th>
             </tr>
           </thead>
           <tbody>
@@ -5977,6 +6129,7 @@ const classLabels: Record<AbcClass, { en: string; ar: string; hint: string }> = 
                 <td><span class="abc" [class]="row.class">{{ row.class }}</span></td>
                 <td>
                   <strong>{{ row.material }}</strong>
+                  <app-stock-card-button [id]="row.rawMaterialId" [name]="row.material" [from]="from()" [to]="to()" />
                   <div class="muted small">{{ row.code ? row.code + ' · ' : '' }}in {{ row.purchaseUnit }}{{ row.category ? ' · ' + row.category : '' }}</div>
                 </td>
                 <td class="num">{{ row.consumption | number: '1.0-3' }}</td>
@@ -6013,11 +6166,6 @@ const classLabels: Record<AbcClass, { en: string; ar: string; hint: string }> = 
           </tfoot>
         </table>
       </div>
-      <p class="note small">
-        Used: sold, made into prep items, wasted, or short at a count, valued at the cost when it happened. Classes by the running share of that
-        worth: A to 75%, B to 90%, C the rest. Days on hand = on hand ÷ used a day over the period's days so far.
-        <span class="note-ar" lang="ar" dir="rtl">أيام الكفاية = الرصيد ÷ متوسط الاستهلاك اليومي.</span>
-      </p>
     }
   `,
   styleUrl: './costing.scss',
@@ -6159,6 +6307,500 @@ export class AbcPage {
 ```
 
 
+> 📄 **`frontend/src/app/features/costing/menu-engineering-page.ts`** — 488 سطر
+
+```ts
+import { DecimalPipe } from '@angular/common';
+import { Component, computed, effect, inject, signal, untracked } from '@angular/core';
+import { FormsModule } from '@angular/forms';
+import { MatButtonModule } from '@angular/material/button';
+import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatIconModule } from '@angular/material/icon';
+import { MatProgressBarModule } from '@angular/material/progress-bar';
+import { MatSelectModule } from '@angular/material/select';
+import { firstValueFrom } from 'rxjs';
+import { IntelligenceApi, MenuClass, MenuEngineeringReport, MenuEngineeringRow, menuClassLabels } from '../../core/costing/intelligence.api';
+import { errorMessage } from '../../core/http/error-message';
+import { MoneyPipe } from '../../core/ui/money.pipe';
+import { NotifyService } from '../../core/ui/notify.service';
+import { saveBlob } from '../../core/ui/save-blob';
+import { FilterOption, FilterSelect } from '../shared/filter-select';
+import { SearchField } from '../shared/search-field';
+import { SortOption, SortState, smartMatch, sortItems } from '../shared/smart-search';
+import { SortControl } from '../shared/sort-control';
+import { InfoTip } from './info-tip';
+import { InfoTipKey } from './info-tips';
+import { PeriodBar, periodDays } from './period-bar';
+
+type MenuSort = 'contribution' | 'sold' | 'margin' | 'foodCost' | 'dish';
+
+const sorts: SortOption<MenuSort>[] = [
+  { key: 'contribution', en: 'Total contribution', ar: 'إجمالي المساهمة', descending: true },
+  { key: 'sold', en: 'Sold', ar: 'المباع', descending: true },
+  { key: 'margin', en: 'Margin a portion', ar: 'هامش الحصة', descending: true },
+  { key: 'foodCost', en: 'Food cost %', ar: 'نسبة التكلفة', descending: true },
+  { key: 'dish', en: 'Dish', ar: 'الصنف' },
+];
+
+// The quadrants as the matrix lays them out: popular on top, profitable on the left.
+const quadrants: { class: MenuClass; tip: InfoTipKey }[] = [
+  { class: 'Star', tip: 'meStar' },
+  { class: 'Plowhorse', tip: 'mePlowhorse' },
+  { class: 'Puzzle', tip: 'mePuzzle' },
+  { class: 'Dog', tip: 'meDog' },
+];
+
+// How many dishes a quadrant names before "+ n more".
+const named = 6;
+
+// Menu engineering & profitability (هندسة المنيو والربحية): each dish the period sold, by how popular
+// it was (its menu mix against 70% of an even share) and how much it left after its food cost (its
+// contribution margin against the average): Stars, Plowhorses, Puzzles and Dogs, as a matrix and a
+// table, with the price that would bring each to the food cost target. One menu category at a time
+// compares like with like; dishes with no recipe or no price are listed, not placed.
+@Component({
+  selector: 'app-menu-engineering-page',
+  imports: [
+    DecimalPipe,
+    FilterSelect,
+    FormsModule,
+    InfoTip,
+    MatButtonModule,
+    MatFormFieldModule,
+    MatIconModule,
+    MatProgressBarModule,
+    MatSelectModule,
+    MoneyPipe,
+    PeriodBar,
+    SearchField,
+    SortControl,
+  ],
+  template: `
+    <div class="toolbar">
+      <app-period-bar [(from)]="from" [(to)]="to" />
+      <mat-form-field subscriptSizing="dynamic" class="category">
+        <mat-label>Menu category · قسم المنيو</mat-label>
+        <mat-select [ngModel]="category()" (ngModelChange)="category.set($event)" aria-label="Menu category">
+          <mat-option [value]="null">The whole menu · المنيو كله</mat-option>
+          @for (c of categories(); track c) {
+            <mat-option [value]="c">{{ c }}</mat-option>
+          }
+        </mat-select>
+      </mat-form-field>
+      <span class="spacer"></span>
+      <button mat-stroked-button (click)="download()" [disabled]="!report()"><mat-icon>download</mat-icon> Excel</button>
+    </div>
+    @if (loading()) {
+      <mat-progress-bar mode="indeterminate" />
+    }
+    @if (error()) {
+      <p class="error">{{ error() }}</p>
+    } @else if (report(); as r) {
+      <div class="tiles">
+        <div class="tile key">
+          <span class="label">Total contribution · إجمالي المساهمة <app-info-tip tip="totalContribution" /></span>
+          <strong>{{ r.totalContribution | money }}</strong>
+          <small class="chip">{{ r.items }} {{ r.items === 1 ? 'dish' : 'dishes' }}</small>
+        </div>
+        <div class="tile">
+          <span class="label">Average margin · متوسط الهامش <app-info-tip tip="averageContribution" /></span>
+          <strong>{{ r.averageContribution === null ? '—' : (r.averageContribution | money) }}</strong>
+        </div>
+        <div class="tile">
+          <span class="label">Popularity threshold · حد الشعبية <app-info-tip tip="popularityThreshold" /></span>
+          <strong>{{ r.popularityThresholdPercent === null ? '—' : (r.popularityThresholdPercent | number: '1.0-2') + '%' }}</strong>
+        </div>
+        <div class="tile">
+          <span class="label">Food cost % · نسبة التكلفة <app-info-tip tip="meFoodCost" /></span>
+          <strong [class.loss]="(r.foodCostPercent ?? 0) > r.foodCostTargetPercent">
+            {{ r.foodCostPercent === null ? '—' : (r.foodCostPercent | number: '1.1-1') + '%' }}
+          </strong>
+          <small class="chip">target {{ r.foodCostTargetPercent | number: '1.0-1' }}%</small>
+        </div>
+      </div>
+
+      <section class="matrix" aria-label="Menu engineering matrix">
+        <div class="axis y" aria-hidden="true">Popularity · الشعبية ↑</div>
+        <div class="axis x" aria-hidden="true">← Higher margin · هامش أعلى</div>
+        @for (q of quadrants; track q.class) {
+          @let summary = classSummary(r, q.class);
+          @let dishes = dishesOf(q.class);
+          <article class="quadrant" [class]="q.class" [class.chosen]="klass() === q.class">
+            <header>
+              <mat-icon aria-hidden="true">{{ labels[q.class].icon }}</mat-icon>
+              <h3>{{ labels[q.class].en }} · <span lang="ar">{{ labels[q.class].ar }}</span></h3>
+              <app-info-tip [tip]="q.tip" />
+              <span class="spacer"></span>
+              <strong class="count">{{ summary?.items ?? 0 }}</strong>
+            </header>
+            @if (summary && summary.items) {
+              <small class="chip">{{ summary.contribution | money }}{{ summary.contributionSharePercent === null ? '' : ' · ' + (summary.contributionSharePercent | number: '1.0-1') + '%' }}</small>
+            }
+            <ul class="names">
+              @for (d of dishes.slice(0, named); track d.itemCode) {
+                <li>{{ d.menuItem }}</li>
+              }
+              @if (dishes.length > named) {
+                <li class="more">+ {{ dishes.length - named }} more</li>
+              }
+              @if (!dishes.length) {
+                <li class="none">None · لا يوجد</li>
+              }
+            </ul>
+            <button mat-button class="show" (click)="klass.set(klass() === q.class ? '' : q.class)" [attr.aria-pressed]="klass() === q.class">
+              {{ klass() === q.class ? 'Show all · الكل' : 'Show these · عرضها' }}
+            </button>
+          </article>
+        }
+      </section>
+
+      <div class="toolbar smart">
+        <app-search-field [(value)]="search" placeholder="Dish or code · الصنف أو الكود" />
+        <div class="pills">
+          <app-filter-select label="Class · التصنيف" icon="grid_view" [options]="classFilters()" [(value)]="klass" />
+          <app-sort-control [options]="sorts" [(sort)]="sort" />
+        </div>
+      </div>
+
+      <div class="table-wrap">
+        <table class="grid menu-table">
+          <thead>
+            <tr>
+              <th>Class<span class="ar">التصنيف</span></th>
+              <th>Dish<span class="ar">الصنف</span></th>
+              <th class="num">Sold<span class="ar">المباع</span></th>
+              <th class="num">Menu mix <app-info-tip tip="menuMix" /><span class="ar">نسبة المبيعات</span></th>
+              <th class="num">Avg price<span class="ar">متوسط السعر</span></th>
+              <th class="num">Food cost <app-info-tip tip="meFoodCost" /><span class="ar">التكلفة · النسبة</span></th>
+              <th class="num">Margin <app-info-tip tip="contributionMargin" /><span class="ar">هامش المساهمة</span></th>
+              <th class="num">Total <app-info-tip tip="totalContribution" /><span class="ar">إجمالي المساهمة</span></th>
+              <th class="num">Suggested price <app-info-tip tip="suggestedPrice" /><span class="ar">السعر المقترح</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            @for (row of shown(); track row.itemCode) {
+              <tr [class]="row.class ?? 'unplaced'">
+                <td>
+                  @if (row.class) {
+                    <span class="class-tag" [class]="row.class">
+                      <mat-icon aria-hidden="true">{{ labels[row.class].icon }}</mat-icon> {{ labels[row.class].en }} <span class="ar">{{ labels[row.class].ar }}</span>
+                    </span>
+                  } @else {
+                    <span class="class-tag unplaced">{{ row.status === 'NoRecipe' ? 'No recipe · بدون وصفة' : 'No price · بدون سعر' }}</span>
+                  }
+                </td>
+                <td>
+                  <strong>{{ row.menuItem }}</strong>
+                  @if (row.menuItemAr) {
+                    <span class="ar">{{ row.menuItemAr }}</span>
+                  }
+                  <div class="muted small">{{ row.itemCode }}{{ row.category ? ' · ' + row.category : '' }}</div>
+                </td>
+                <td class="num">{{ row.quantitySold | number: '1.0-3' }}</td>
+                <td class="num" [class.strong]="row.popular">{{ row.menuMixPercent === null ? '—' : (row.menuMixPercent | number: '1.1-2') + '%' }}</td>
+                <td class="num">{{ row.averagePrice === null ? '—' : (row.averagePrice | money) }}</td>
+                <td class="num">
+                  {{ row.foodCostPerPortion === null ? '—' : (row.foodCostPerPortion | money) }}
+                  @if (row.foodCostPercent !== null) {
+                    <div class="small" [class.loss]="row.foodCostPercent > r.foodCostTargetPercent">{{ row.foodCostPercent | number: '1.1-1' }}%</div>
+                  }
+                </td>
+                <td class="num" [class.strong]="row.profitable">{{ row.contributionMargin === null ? '—' : (row.contributionMargin | money) }}</td>
+                <td class="num"><strong>{{ row.totalContribution === null ? '—' : (row.totalContribution | money) }}</strong></td>
+                <td class="num">
+                  @if (row.suggestedPrice === null) {
+                    —
+                  } @else {
+                    <span [class.raise]="row.averagePrice !== null && row.suggestedPrice > row.averagePrice">{{ row.suggestedPrice | money }}</span>
+                    @if (row.averagePrice !== null && row.suggestedPrice > row.averagePrice) {
+                      <div class="small raise">+{{ row.suggestedPrice - row.averagePrice | money }}</div>
+                    }
+                  }
+                </td>
+              </tr>
+            } @empty {
+              <tr><td colspan="9" class="muted">No dish sold in these days{{ search() || klass() ? ' matches' : '' }}.</td></tr>
+            }
+          </tbody>
+        </table>
+      </div>
+    }
+  `,
+  styleUrl: './costing.scss',
+  styles: `
+    .category {
+      width: 230px;
+    }
+    .loss {
+      color: var(--mat-sys-error);
+    }
+    .small {
+      font-size: 0.85em;
+    }
+    td.strong {
+      font-weight: 600;
+    }
+    .raise {
+      color: var(--app-warn);
+    }
+    .matrix {
+      display: grid;
+      grid-template-columns: auto 1fr 1fr;
+      grid-template-rows: auto auto auto;
+      gap: 10px;
+      margin: 4px 0 16px;
+    }
+    .axis {
+      font: var(--mat-sys-label-small);
+      color: var(--mat-sys-on-surface-variant);
+    }
+    .axis.y {
+      grid-row: 1 / span 2;
+      grid-column: 1;
+      writing-mode: vertical-rl;
+      transform: rotate(180deg);
+      text-align: center;
+    }
+    .axis.x {
+      grid-row: 3;
+      grid-column: 2 / span 2;
+      text-align: center;
+    }
+    .quadrant {
+      display: grid;
+      align-content: start;
+      gap: 6px;
+      padding: 12px 14px;
+      border-radius: 16px;
+      border: 1px solid var(--app-line);
+      background: var(--mat-sys-surface-container-lowest);
+      box-shadow: var(--app-card-shadow);
+
+      header {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      h3 {
+        margin: 0;
+        font: var(--mat-sys-title-small);
+      }
+      .count {
+        font: var(--mat-sys-headline-small);
+      }
+      .chip {
+        justify-self: start;
+        padding: 1px 8px;
+        border-radius: 999px;
+        font: var(--mat-sys-label-small);
+        background: color-mix(in srgb, var(--mat-sys-on-surface) 7%, transparent);
+      }
+      .names {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+
+        li {
+          padding: 1px 8px;
+          border-radius: 8px;
+          font: var(--mat-sys-body-small);
+          background: var(--mat-sys-surface-container-high);
+        }
+        .more,
+        .none {
+          background: none;
+          color: var(--mat-sys-on-surface-variant);
+        }
+      }
+      .show {
+        justify-self: start;
+      }
+      &.chosen {
+        outline: 2px solid var(--mat-sys-primary);
+      }
+      &.Star {
+        grid-row: 1;
+        grid-column: 2;
+        border-top: 4px solid #4f46e5;
+      }
+      &.Plowhorse {
+        grid-row: 1;
+        grid-column: 3;
+        border-top: 4px solid #0d9488;
+      }
+      &.Puzzle {
+        grid-row: 2;
+        grid-column: 2;
+        border-top: 4px solid #d97706;
+      }
+      &.Dog {
+        grid-row: 2;
+        grid-column: 3;
+        border-top: 4px solid #94a3b8;
+      }
+    }
+    .class-tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 0 8px;
+      border-radius: 999px;
+      font: var(--mat-sys-label-small);
+      line-height: 22px;
+      white-space: nowrap;
+      background: var(--mat-sys-surface-container-high);
+
+      mat-icon {
+        width: 14px;
+        height: 14px;
+        font-size: 14px;
+      }
+      .ar {
+        display: inline;
+        margin-inline-start: 4px;
+      }
+      &.Star {
+        background: color-mix(in srgb, #4f46e5 14%, transparent);
+        color: #4338ca;
+      }
+      &.Plowhorse {
+        background: color-mix(in srgb, #0d9488 14%, transparent);
+        color: #0f766e;
+      }
+      &.Puzzle {
+        background: color-mix(in srgb, #d97706 16%, transparent);
+        color: #b45309;
+      }
+      &.Dog {
+        background: color-mix(in srgb, #64748b 16%, transparent);
+        color: #475569;
+      }
+      &.unplaced {
+        color: var(--mat-sys-on-surface-variant);
+      }
+    }
+    @media (max-width: 720px) {
+      .matrix {
+        grid-template-columns: 1fr;
+      }
+      .axis {
+        display: none;
+      }
+      .quadrant.Star,
+      .quadrant.Plowhorse,
+      .quadrant.Puzzle,
+      .quadrant.Dog {
+        grid-row: auto;
+        grid-column: auto;
+      }
+    }
+  `,
+})
+export class MenuEngineeringPage {
+  private readonly api = inject(IntelligenceApi);
+  private readonly notify = inject(NotifyService);
+  protected readonly labels = menuClassLabels;
+  protected readonly quadrants = quadrants;
+  protected readonly named = named;
+
+  protected readonly from = signal(periodDays('month').from);
+  protected readonly to = signal(periodDays('month').to);
+  protected readonly category = signal<string | null>(null);
+  protected readonly report = signal<MenuEngineeringReport | null>(null);
+  protected readonly loading = signal(false);
+  protected readonly error = signal<string | null>(null);
+  // Every category sold in the period, whichever is chosen.
+  protected readonly categories = signal<string[]>([]);
+
+  protected readonly search = signal('');
+  protected readonly klass = signal('');
+  protected readonly sorts = sorts;
+  protected readonly sort = signal<SortState<MenuSort>>({ key: 'contribution', direction: -1 });
+
+  protected readonly classFilters = computed<FilterOption[]>(() => {
+    const rows = this.report()?.rows ?? [];
+    return [
+      { value: '', label: 'All · الكل', count: rows.length },
+      ...quadrants.map((q) => ({
+        value: q.class,
+        label: `${menuClassLabels[q.class].en} · ${menuClassLabels[q.class].ar}`,
+        count: rows.filter((r) => r.class === q.class).length,
+      })),
+      { value: 'none', label: 'Not placed · غير مصنف', count: rows.filter((r) => r.class === null).length },
+    ];
+  });
+
+  protected readonly shown = computed(() =>
+    sortItems(
+      (this.report()?.rows ?? []).filter(
+        (r) =>
+          (!this.klass() || (this.klass() === 'none' ? r.class === null : r.class === this.klass())) &&
+          smartMatch(this.search(), r.menuItem, r.menuItemAr, r.itemCode, r.category),
+      ),
+      this.sort(),
+      (r, key) =>
+        key === 'contribution'
+          ? r.totalContribution
+          : key === 'sold'
+            ? r.quantitySold
+            : key === 'margin'
+              ? r.contributionMargin
+              : key === 'foodCost'
+                ? r.foodCostPercent
+                : r.menuItem,
+      (r) => r.menuItem,
+    ),
+  );
+
+  constructor() {
+    effect(() => {
+      const [from, to, category] = [this.from(), this.to(), this.category()];
+      untracked(() => void this.load(from, to, category));
+    });
+  }
+
+  protected classSummary(report: MenuEngineeringReport, menuClass: MenuClass) {
+    return report.classes.find((c) => c.class === menuClass) ?? null;
+  }
+
+  // A quadrant's dishes, the most contributing first.
+  protected dishesOf(menuClass: MenuClass): MenuEngineeringRow[] {
+    return (this.report()?.rows ?? [])
+      .filter((r) => r.class === menuClass)
+      .sort((a, b) => (b.totalContribution ?? 0) - (a.totalContribution ?? 0));
+  }
+
+  protected async download(): Promise<void> {
+    try {
+      saveBlob(
+        await firstValueFrom(this.api.menuEngineeringSheet(this.from(), this.to(), this.category())),
+        `menu-engineering-${this.from()}-to-${this.to()}.xlsx`,
+      );
+    } catch (error) {
+      this.notify.error(error, 'The sheet could not be downloaded.');
+    }
+  }
+
+  private async load(from: string, to: string, category: string | null): Promise<void> {
+    this.loading.set(true);
+    this.error.set(null);
+    try {
+      const report = await firstValueFrom(this.api.menuEngineering(from, to, category));
+      this.report.set(report);
+      this.categories.set(report.categories);
+    } catch (error) {
+      this.error.set(errorMessage(error, 'Menu engineering could not be worked out.'));
+    } finally {
+      this.loading.set(false);
+    }
+  }
+}
+```
+
+
 ## 3. التقارير
 
 - `SpendingPage` + `SpendingPie`: أين ذهب المال: ثلاث فطائر (مخزون مقابل مصروفات، ثم كل منهما بالفئة)، ثم عمود لكل فئة. (`SpendingPie` رسم SVG يدوي بلا مكتبة رسوم.)
@@ -6216,6 +6858,7 @@ import { CategorySpending, CostingApi, SpendingReport, expenseLineLabels } from 
 import { errorMessage } from '../../core/http/error-message';
 import { Company } from '../../core/settings/company';
 import { MoneyPipe } from '../../core/ui/money.pipe';
+import { InfoTip } from './info-tip';
 import { PieSlice, SpendingPie, pieColors } from './spending-pie';
 
 type Period = 'month' | 'last-month' | 'quarter' | 'year' | 'custom';
@@ -6227,6 +6870,7 @@ type Period = 'month' | 'last-month' | 'quarter' | 'year' | 'custom';
 @Component({
   selector: 'app-spending-page',
   imports: [
+    InfoTip,
     DatePipe,
     DecimalPipe,
     FormsModule,
@@ -6271,21 +6915,19 @@ type Period = 'month' | 'last-month' | 'quarter' | 'year' | 'custom';
       </header>
       <div class="tiles">
         <div class="tile">
-          <span class="label">Total spent · إجمالي المشتريات</span>
+          <span class="label">Total spent · إجمالي المشتريات <app-info-tip tip="totalSpent" /></span>
           <strong>{{ r.total | money }}</strong>
         </div>
         <div class="tile">
-          <span class="label"><span class="swatch stock"></span>Into stock · خامات</span>
+          <span class="label"><span class="swatch stock"></span>Into stock · خامات <app-info-tip tip="stockSpend" /></span>
           <strong>{{ r.inventory | money }}</strong>
-          <small class="muted">cost of sales as the recipes use it</small>
         </div>
         <div class="tile">
-          <span class="label"><span class="swatch expense"></span>Expenses · مصروفات</span>
+          <span class="label"><span class="swatch expense"></span>Expenses · مصروفات <app-info-tip tip="expenseSpend" /></span>
           <strong>{{ r.expenses | money }}</strong>
-          <small class="muted">overheads in the KPIs' profit and loss</small>
         </div>
         <div class="tile">
-          <span class="label">Invoices · الفواتير</span>
+          <span class="label">Invoices · الفواتير <app-info-tip tip="invoices" /></span>
           <strong>{{ r.invoices }}</strong>
         </div>
       </div>
@@ -6371,7 +7013,7 @@ type Period = 'month' | 'last-month' | 'quarter' | 'year' | 'custom';
                 <th class="num">Into stock<span class="ar">خامات</span></th>
                 <th class="num">Expenses<span class="ar">مصروفات</span></th>
                 <th class="num">Total<span class="ar">الإجمالي</span></th>
-                <th class="num">Share<span class="ar">النسبة</span></th>
+                <th class="num">Share <app-info-tip tip="categoryShare" /><span class="ar">النسبة</span></th>
               </tr>
             </thead>
             <tbody>
@@ -7121,7 +7763,7 @@ function round(value: number): number {
 ```
 
 
-> 📄 **`frontend/src/app/features/costing/treasury-page.ts`** — 506 سطر
+> 📄 **`frontend/src/app/features/costing/treasury-page.ts`** — 505 سطر
 
 ```ts
 import { DatePipe } from '@angular/common';
@@ -7137,6 +7779,7 @@ import { firstValueFrom } from 'rxjs';
 import { CostingApi, TreasuryAnalytics, TreasuryFlowLine } from '../../core/costing/costing.api';
 import { errorMessage } from '../../core/http/error-message';
 import { MoneyPipe } from '../../core/ui/money.pipe';
+import { InfoTip } from './info-tip';
 import { isoDay } from './financials';
 import { PieSlice, SpendingPie } from './spending-pie';
 
@@ -7151,6 +7794,7 @@ type Period = 'month' | 'last-month' | 'quarter' | 'year' | 'custom';
 @Component({
   selector: 'app-treasury-page',
   imports: [
+    InfoTip,
     DatePipe,
     FormsModule,
     MatButtonModule,
@@ -7197,26 +7841,23 @@ type Period = 'month' | 'last-month' | 'quarter' | 'year' | 'custom';
       </header>
       <div class="tiles">
         <div class="tile">
-          <span class="label">Opening balance · الرصيد الافتتاحي</span>
+          <span class="label">Opening balance · الرصيد الافتتاحي <app-info-tip tip="openingBalance" /></span>
           <strong>{{ r.openingBalance | money }}</strong>
-          <small class="muted">brought forward</small>
         </div>
         <div class="tile">
-          <span class="label">Total in · إجمالي الوارد</span>
+          <span class="label">Total in · إجمالي الوارد <app-info-tip tip="totalIn" /></span>
           <strong class="in">{{ r.totalIn | money }}</strong>
-          <small class="muted">with the opening balance</small>
         </div>
         <div class="tile">
-          <span class="label">Total out · إجمالي المنصرف</span>
+          <span class="label">Total out · إجمالي المنصرف <app-info-tip tip="totalOut" /></span>
           <strong class="out">{{ r.totalOut | money }}</strong>
         </div>
         <div class="tile">
-          <span class="label">Net cash flow · صافي التدفق النقدي</span>
+          <span class="label">Net cash flow · صافي التدفق النقدي <app-info-tip tip="netCashFlow" /></span>
           <strong [class.negative]="r.netFlow < 0">{{ r.netFlow | money }}</strong>
-          <small class="muted">in less out, in these days</small>
         </div>
         <div class="tile key">
-          <span class="label">Closing balance · الرصيد الختامي</span>
+          <span class="label">Closing balance · الرصيد الختامي <app-info-tip tip="closingBalance" /></span>
           <strong [class.negative]="r.closingBalance < 0">{{ r.closingBalance | money }}</strong>
         </div>
       </div>
@@ -7633,7 +8274,7 @@ export class TreasuryPage {
 ```
 
 
-> 📄 **`frontend/src/app/features/costing/theoretical-page.ts`** — 739 سطر
+> 📄 **`frontend/src/app/features/costing/theoretical-page.ts`** — 741 سطر
 
 ```ts
 import { DatePipe, DecimalPipe } from '@angular/common';
@@ -7660,6 +8301,7 @@ import {
 import { errorMessage } from '../../core/http/error-message';
 import { MoneyPipe } from '../../core/ui/money.pipe';
 import { NotifyService } from '../../core/ui/notify.service';
+import { InfoTip } from './info-tip';
 
 // A group of the sales sheet: a recipe category, or the prep items.
 interface SheetGroup {
@@ -7674,6 +8316,7 @@ interface SheetGroup {
 @Component({
   selector: 'app-theoretical-page',
   imports: [
+    InfoTip,
     DatePipe,
     DecimalPipe,
     FormsModule,
@@ -7854,8 +8497,8 @@ interface SheetGroup {
               <th class="num">Quantity sold<span class="ar">الكمية المباعة</span></th>
               <th class="num">Net sales<span class="ar">صافي المبيعات</span></th>
               <th class="num">Recipe cost / unit<span class="ar">تكلفة الوصفة/وحدة</span></th>
-              <th class="num">Theoretical cost<span class="ar">التكلفة النظرية</span></th>
-              <th class="num">Food cost %<span class="ar">نسبة تكلفة الطعام</span></th>
+              <th class="num">Theoretical cost <app-info-tip tip="theoreticalCost" /><span class="ar">التكلفة النظرية</span></th>
+              <th class="num">Food cost % <app-info-tip tip="foodCostPercent" /><span class="ar">نسبة تكلفة الطعام</span></th>
               <th>Status<span class="ar">الحالة</span></th>
             </tr>
           </thead>
@@ -8378,7 +9021,7 @@ export class TheoreticalPage {
 ```
 
 
-> 📄 **`frontend/src/app/features/costing/variance-page.ts`** — 390 سطر
+> 📄 **`frontend/src/app/features/costing/variance-page.ts`** — 404 سطر
 
 ```ts
 import { DatePipe, DecimalPipe } from '@angular/common';
@@ -8401,6 +9044,8 @@ import {
 } from '../../core/costing/costing.api';
 import { errorMessage } from '../../core/http/error-message';
 import { MoneyPipe } from '../../core/ui/money.pipe';
+import { InfoTip } from './info-tip';
+import { StockCardButton } from './stock-card-dialog';
 
 // Pillar 3: what left the stores between two counts against what the recipes say the sales
 // took. Red is a shortfall beyond the tolerance (waste, theft, over-portioning, a recipe written
@@ -8408,7 +9053,20 @@ import { MoneyPipe } from '../../core/ui/money.pipe';
 // Quantities are as bought, before trimming, and valued at the average purchase cost.
 @Component({
   selector: 'app-variance-page',
-  imports: [DatePipe, DecimalPipe, FormsModule, MatButtonModule, MatFormFieldModule, MatIconModule, MatProgressBarModule, MatSelectModule, MoneyPipe, RouterLink],
+  imports: [
+    DatePipe,
+    DecimalPipe,
+    FormsModule,
+    InfoTip,
+    MatButtonModule,
+    MatFormFieldModule,
+    MatIconModule,
+    MatProgressBarModule,
+    MatSelectModule,
+    MoneyPipe,
+    RouterLink,
+    StockCardButton,
+  ],
   template: `
     <div class="toolbar">
       <mat-form-field subscriptSizing="dynamic">
@@ -8454,27 +9112,27 @@ import { MoneyPipe } from '../../core/ui/money.pipe';
 
       <div class="figures">
         <div class="box" [class.deficit]="r.netVarianceValue > 0" [class.surplus]="r.netVarianceValue < 0">
-          <span class="label">Net variance<span class="ar">صافي قيمة الانحراف</span></span>
+          <span class="label">Net variance <app-info-tip tip="netVariance" /><span class="ar">صافي قيمة الانحراف</span></span>
           <strong>{{ r.netVarianceValue | money }}</strong>
-          <small class="muted">{{ r.netVarianceValue > 0 ? 'more used than the recipes say' : r.netVarianceValue < 0 ? 'less used than the recipes say' : 'as the recipes say' }}</small>
         </div>
         <div class="box">
-          <span class="label">Recorded waste<span class="ar">الهالك المسجل</span></span>
+          <span class="label">Recorded waste <app-info-tip tip="recordedWaste" /><span class="ar">الهالك المسجل</span></span>
           <strong>{{ r.recordedWasteValue | money }}</strong>
         </div>
         <div class="box" [class.deficit]="r.unexplainedValue > 0" [class.surplus]="r.unexplainedValue < 0">
-          <span class="label">Unexplained<span class="ar">غير مبرر</span></span>
+          <span class="label">Unexplained <app-info-tip tip="unexplainedBetweenCounts" /><span class="ar">غير مبرر</span></span>
           <strong>{{ r.unexplainedValue | money }}</strong>
-          <small class="muted">not covered by recorded waste</small>
         </div>
         <div class="box" [class.deficit]="r.unfavourableCount > 0">
-          <span class="label">Unfavourable materials<span class="ar">خامات غير مواتية</span></span>
+          <span class="label">Unfavourable materials <app-info-tip tip="unfavourable" /><span class="ar">خامات غير مواتية</span></span>
           <strong>{{ r.unfavourableCount }} of {{ r.rows.length }}</strong>
         </div>
         <div class="box">
-          <span class="label">Largest variance<span class="ar">أكبر انحراف نسبي</span></span>
+          <span class="label">Largest variance <app-info-tip tip="largestVariance" /><span class="ar">أكبر انحراف نسبي</span></span>
           <strong>{{ r.largestRelativePercent === null ? '—' : (r.largestRelativePercent | number: '1.1-1') + '%' }}</strong>
-          <small class="muted">{{ r.largestRelativeMaterial ?? '' }}</small>
+          @if (r.largestRelativeMaterial) {
+            <small class="chip">{{ r.largestRelativeMaterial }}</small>
+          }
         </div>
       </div>
 
@@ -8487,15 +9145,15 @@ import { MoneyPipe } from '../../core/ui/money.pipe';
               <th class="num">Opening<span class="ar">رصيد أول</span></th>
               <th class="num">Received<span class="ar">الوارد</span></th>
               <th class="num">Waste<span class="ar">الهالك</span></th>
-              <th class="num">Standard usage<span class="ar">الاستهلاك المعياري</span></th>
+              <th class="num">Standard usage <app-info-tip tip="standardUsage" /><span class="ar">الاستهلاك المعياري</span></th>
               <th class="num">Expected closing<span class="ar">المتوقع</span></th>
               <th class="num">Closing count<span class="ar">رصيد آخر</span></th>
-              <th class="num">Actual usage<span class="ar">الاستهلاك الفعلي</span></th>
+              <th class="num">Actual usage <app-info-tip tip="actualUsage" /><span class="ar">الاستهلاك الفعلي</span></th>
               <th class="num">Variance<span class="ar">الانحراف</span></th>
               <th class="num">%<span class="ar">النسبة</span></th>
               <th class="num">Unit cost<span class="ar">تكلفة الوحدة</span></th>
               <th class="num">Variance value<span class="ar">قيمة الانحراف</span></th>
-              <th class="num">Unexplained<span class="ar">غير مبرر</span></th>
+              <th class="num">Unexplained <app-info-tip tip="unexplainedBetweenCounts" /><span class="ar">غير مبرر</span></th>
               <th class="eval-col">Evaluation<span class="ar">التقييم</span></th>
             </tr>
           </thead>
@@ -8503,7 +9161,10 @@ import { MoneyPipe } from '../../core/ui/money.pipe';
             @for (row of r.rows; track row.rawMaterialId) {
               <tr [class.deficit]="row.evaluation === 'Unfavourable'" [class.surplus]="row.evaluation === 'Favourable'">
                 <td class="code">{{ row.code ?? '' }}</td>
-                <td>{{ row.material }}</td>
+                <td>
+                  {{ row.material }}
+                  <app-stock-card-button [id]="row.rawMaterialId" [name]="row.material" />
+                </td>
                 <td class="num">{{ qty(row, row.opening) }}</td>
                 <td class="num">{{ qty(row, row.received) }}</td>
                 <td class="num">
@@ -8575,10 +9236,6 @@ import { MoneyPipe } from '../../core/ui/money.pipe';
         @if (sharedRows(r)) {
           <p class="note">Shared costs, such as frying oil, are in no recipe: their usage is shown, but left out of the totals.</p>
         }
-        <p class="note">
-          Variance = actual usage − standard usage, and includes recorded waste; unexplained is what remains once the waste is taken out.
-          Quantities are as bought, before trimming.
-        </p>
       </div>
     }
   `,
@@ -8789,11 +9446,24 @@ import { RouterLink } from '@angular/router';
 import { firstValueFrom } from 'rxjs';
 import { AuthService } from '../../core/auth/auth.service';
 import { Permissions } from '../../core/auth/permissions';
-import { CostingApi, Kpi, KpiReport, MonthlyExpenses, expenseLineLabels, kpiLabels } from '../../core/costing/costing.api';
+import { CostingApi, Kpi, KpiKey, KpiReport, MonthlyExpenses, expenseLineLabels, kpiLabels } from '../../core/costing/costing.api';
 import { errorMessage } from '../../core/http/error-message';
 import { Company } from '../../core/settings/company';
 import { MoneyPipe } from '../../core/ui/money.pipe';
 import { NotifyService } from '../../core/ui/notify.service';
+import { InfoTip } from './info-tip';
+import { InfoTipKey } from './info-tips';
+
+// Each KPI's (ⓘ): what it says and how it is worked out.
+const kpiTips: Record<KpiKey, InfoTipKey> = {
+  FoodCost: 'kpiFoodCost',
+  BeverageCost: 'kpiBeverageCost',
+  LabourCost: 'kpiLabourCost',
+  AverageCheck: 'kpiAverageCheck',
+  SalesPerLabourHour: 'kpiSalesPerLabourHour',
+  GrossProfitMargin: 'kpiGrossProfitMargin',
+  NetProfitMargin: 'kpiNetProfitMargin',
+};
 
 type Tone = 'ok' | 'bad' | 'check' | 'none';
 
@@ -8812,7 +9482,7 @@ const expenseFields: { key: keyof MonthlyExpenses; en: string; ar: string; hours
 // here. A KPI missing what it needs says so, never 0.
 @Component({
   selector: 'app-kpis-page',
-  imports: [DecimalPipe, FormsModule, MatButtonModule, MatFormFieldModule, MatIconModule, MatInputModule, MatProgressBarModule, MoneyPipe, RouterLink],
+  imports: [DecimalPipe, FormsModule, InfoTip, MatButtonModule, MatFormFieldModule, MatIconModule, MatInputModule, MatProgressBarModule, MoneyPipe, RouterLink],
   template: `
     <div class="toolbar">
       <mat-form-field subscriptSizing="dynamic">
@@ -8841,7 +9511,7 @@ const expenseFields: { key: keyof MonthlyExpenses; en: string; ar: string; hours
         @for (k of r.kpis; track k.key) {
           <div class="kpi" [class]="tone(k)">
             <div class="name">
-              {{ labels[k.key].en }}
+              {{ labels[k.key].en }} <app-info-tip [tip]="kpiTips[k.key]" />
               <span class="ar">{{ labels[k.key].ar }}</span>
             </div>
             @if (k.value !== null) {
@@ -8882,7 +9552,6 @@ const expenseFields: { key: keyof MonthlyExpenses; en: string; ar: string; hours
             @if (tone(k) === 'check') {
               <div class="range">{{ lowHint(k) }}</div>
             }
-            <div class="formula muted">{{ labels[k.key].formula }}<span class="ar">{{ labels[k.key].formulaAr }}</span></div>
           </div>
         }
       </div>
@@ -8900,7 +9569,7 @@ const expenseFields: { key: keyof MonthlyExpenses; en: string; ar: string; hours
 
       <div class="columns">
         <section>
-          <h3>The month <span class="inline-ar">قائمة الدخل</span></h3>
+          <h3>The month <span class="inline-ar">قائمة الدخل</span> <app-info-tip tip="incomeStatement" /></h3>
           <div class="table-wrap">
             <table class="grid statement">
               <tbody>
@@ -8975,16 +9644,9 @@ const expenseFields: { key: keyof MonthlyExpenses; en: string; ar: string; hours
               </tbody>
             </table>
           </div>
-          <p class="note small">
-            Revenue is the month's net sales: its takings, cash and Visa before the tax collected on them, which is owed to the tax authority
-            and never profit (gross takings = net sales + tax). Food and beverage sales share it as the month's sales are, at the menu's prices.
-            Food and beverage cost: what the sales took by their recipes, with shared costs such as frying oil on the meals. Losses are counted
-            against food. Expenses on the month's posted purchase invoices are taken off on their category's line, with what is entered by hand.
-            @if (r.statement.voids) {
-              Voids and refunds on the days: {{ r.statement.voids | money }}, already out of the takings.
-            }
-            <span class="note-ar" lang="ar" dir="rtl">الإيراد = صافي المبيعات (الكاش + الفيزا − الضريبة). الضريبة المحصلة التزام على المطعم وليست ربحًا.</span>
-          </p>
+          @if (r.statement.voids) {
+            <p class="note small">Voids and refunds on the days: {{ r.statement.voids | money }}, already out of the takings.</p>
+          }
           @if (r.statement.loggedExpenses?.length) {
             <div class="logged">
               <strong>From purchase invoices · من فواتير المشتريات</strong>
@@ -9033,8 +9695,7 @@ const expenseFields: { key: keyof MonthlyExpenses; en: string; ar: string; hours
         </section>
       </div>
 
-      <h3>Item profitability <span class="inline-ar">ربحية العنصر</span></h3>
-      <p class="note small">Selling price − ingredient cost, over what was sold this month. The most profitable first.</p>
+      <h3>Item profitability <span class="inline-ar">ربحية العنصر</span> <app-info-tip tip="dishProfit" /></h3>
       <div class="table-wrap">
         <table class="grid">
           <thead>
@@ -9046,7 +9707,7 @@ const expenseFields: { key: keyof MonthlyExpenses; en: string; ar: string; hours
               <th class="num">Ingredient cost<span class="ar">تكلفة المكونات</span></th>
               <th class="num">Profit<span class="ar">الربح</span></th>
               <th class="num">Profit per item<span class="ar">ربح الوحدة</span></th>
-              <th class="num">Margin<span class="ar">الهامش</span></th>
+              <th class="num">Margin <app-info-tip tip="dishProfit" /><span class="ar">الهامش</span></th>
             </tr>
           </thead>
           <tbody>
@@ -9114,13 +9775,8 @@ const expenseFields: { key: keyof MonthlyExpenses; en: string; ar: string; hours
       .status {
         font: var(--mat-sys-label-large);
       }
-      .range,
-      .formula {
+      .range {
         font: var(--mat-sys-body-small);
-      }
-      .formula {
-        margin-top: auto;
-        padding-top: 6px;
       }
       &.ok {
         border-color: var(--app-ok);
@@ -9207,6 +9863,7 @@ export class KpisPage {
   private readonly notify = inject(NotifyService);
 
   protected readonly labels = kpiLabels;
+  protected readonly kpiTips = kpiTips;
   protected readonly fields = expenseFields;
   protected readonly canEdit = computed(() => this.auth.can(Permissions.InventoryManage));
   protected readonly thisMonth = KpisPage.monthOf(new Date());
@@ -9350,7 +10007,7 @@ export class KpisPage {
 ```
 
 
-> 📄 **`frontend/src/app/features/costing/break-even-page.ts`** — 477 سطر
+> 📄 **`frontend/src/app/features/costing/break-even-page.ts`** — 475 سطر
 
 ```ts
 import { DecimalPipe } from '@angular/common';
@@ -9370,6 +10027,7 @@ import { errorMessage } from '../../core/http/error-message';
 import { Company } from '../../core/settings/company';
 import { MoneyPipe } from '../../core/ui/money.pipe';
 import { NotifyService } from '../../core/ui/notify.service';
+import { InfoTip } from './info-tip';
 
 type Row = { label: string; ar: string; value: (c: BreakEvenColumn) => number | null; indent?: boolean; strong?: boolean; percent?: boolean; profit?: boolean };
 
@@ -9396,7 +10054,7 @@ const chart = { width: 680, height: 320, left: 78, right: 16, top: 16, bottom: 4
 // the same costs, at the same cost of sales ratio. The chart shows where sales meet total costs.
 @Component({
   selector: 'app-break-even-page',
-  imports: [DecimalPipe, FormsModule, MatButtonModule, MatFormFieldModule, MatIconModule, MatInputModule, MatProgressBarModule, MoneyPipe, RouterLink],
+  imports: [InfoTip, DecimalPipe, FormsModule, MatButtonModule, MatFormFieldModule, MatIconModule, MatInputModule, MatProgressBarModule, MoneyPipe, RouterLink],
   template: `
     <div class="toolbar">
       <mat-form-field subscriptSizing="dynamic">
@@ -9420,11 +10078,8 @@ const chart = { width: 680, height: 320, left: 78, right: 16, top: 16, bottom: 4
       <p class="error">{{ error() }}</p>
     } @else if (sheet(); as s) {
       <header class="report-head">
-        <h2>Break-even analysis and scenario worksheet <span class="inline-ar">تحليل نقطة التعادل والسيناريوهات</span></h2>
-        <div class="muted">
-          Income statement from {{ s.days }} {{ s.days === 1 ? 'day' : 'days' }} of sales, {{ s.from }} to {{ s.to }}, at a year's pace
-          (weekly × 52); costs from the months' entered costs × 12.
-        </div>
+        <h2>Break-even analysis and scenario worksheet <span class="inline-ar">تحليل نقطة التعادل والسيناريوهات</span> <app-info-tip tip="breakEven" /></h2>
+        <div class="muted">{{ s.days }} {{ s.days === 1 ? 'day' : 'days' }} of sales, {{ s.from }} to {{ s.to }}</div>
       </header>
 
       @if (s.monthsWithoutCosts.length) {
@@ -14424,7 +15079,7 @@ public static class TestMenu
 ```
 
 
-> 📄 **`backend/tests/Costing.Infrastructure.Tests/IntelligenceTests.cs`** — 148 سطر
+> 📄 **`backend/tests/Costing.Infrastructure.Tests/IntelligenceTests.cs`** — 255 سطر
 
 ```csharp
 using ClosedXML.Excel;
@@ -14573,6 +15228,113 @@ public class IntelligenceTests
             // Its first row of figures, under the header.
             Assert.NotEmpty(book.Worksheet(1).Row(5).CellsUsed());
         }
+
+        // ---- The tomatoes' stock card over the ten days: 10 kg in at 20, 5 kg at 25 (the average
+        // 21.67), 2 kg into the sauce, 0.5 kg spoiled, 0.5 kg short at the count: 12 kg left, 260 worth.
+        // The average after the second delivery is the card's own; the ones after, as the ledger kept
+        // them, to six places a gram.
+        var cards = node.Service<StockCardService>(scope);
+        var card = await cards.GetAsync(tomatoes, today.AddDays(-10), today, null, ct);
+        Assert.Equal((0m, (decimal?)null, 15m, 3m, 12m, (decimal?)21.667m, (decimal?)260m, 12m, "kg"),
+            (card.OpeningBalance, card.OpeningAverageCost, card.TotalIn, card.TotalOut, card.ClosingBalance, card.ClosingAverageCost, card.ClosingValue,
+                card.OnHand, card.PurchaseUnit));
+        Assert.Equal(
+            [
+                (StockCardMovementType.Purchases, StockCardSourceKind.PurchaseInvoice, 10m, 0m, 10m, (decimal?)20m, (decimal?)20m),
+                (StockCardMovementType.Purchases, StockCardSourceKind.PurchaseInvoice, 5m, 0m, 15m, 25m, 21.6667m),
+                (StockCardMovementType.Production, StockCardSourceKind.ProductionOrder, 0m, 2m, 13m, 21.667m, 21.667m),
+                (StockCardMovementType.Waste, StockCardSourceKind.Spoilage, 0m, 0.5m, 12.5m, 21.667m, 21.667m),
+                (StockCardMovementType.CountAdjustment, StockCardSourceKind.StockCount, 0m, 0.5m, 12m, 21.667m, 21.667m),
+            ],
+            card.Lines.Select(l => (l.Type, l.SourceKind, l.QuantityIn, l.QuantityOut, l.Balance, l.UnitCost, l.AverageCostAfter)));
+        // Each line names its record and opens it: the invoice of its paper date, from its supplier;
+        // the batch of sauce; why the tomatoes were thrown away.
+        Assert.Equal((first, (DateOnly?)today.AddDays(-10), "Invoice, no number · فاتورة بدون رقم", "Nile Farms", 200m),
+            (card.Lines[0].SourceId, card.Lines[0].SourceDate, card.Lines[0].Reference, card.Lines[0].Details, card.Lines[0].Value));
+        Assert.Equal(("Production batch · تشغيلة إنتاج", "Batch: 2 kg of Pizza sauce", -43.33m), (card.Lines[2].Reference, card.Lines[2].Details, card.Lines[2].Value));
+        Assert.Equal(("Spoilage · تالف", "Rotten", "Omar"), (card.Lines[3].Reference, card.Lines[3].Details, card.Lines[3].RecordedBy));
+        Assert.Equal("Stock count · جرد", card.Lines[4].Reference);
+
+        // From yesterday: it opens with the first delivery's 10 kg at 20. Purchases only: two lines,
+        // the balance still the ledger's.
+        var since = await cards.GetAsync(tomatoes, yesterday, today, StockCardMovementType.Purchases, ct);
+        Assert.Equal((10m, (decimal?)20m, 5m, 3m, 12m), (since.OpeningBalance, since.OpeningAverageCost, since.TotalIn, since.TotalOut, since.ClosingBalance));
+        Assert.Equal([(5m, 15m)], since.Lines.Select(l => (l.QuantityIn, l.Balance)));
+        // The sauce's card: made, then sold through the burgers, the day's sales summary its record.
+        var sauceCard = await cards.GetAsync(sauce, yesterday, today, null, ct);
+        Assert.Equal(
+            [(StockCardMovementType.Production, 2m, 0m, 2m), (StockCardMovementType.Sales, 0m, 1.5m, 0.5m)],
+            sauceCard.Lines.Select(l => (l.Type, l.QuantityIn, l.QuantityOut, l.Balance)));
+        var sold = sauceCard.Lines[1];
+        Assert.Equal((StockCardSourceKind.SalesReceipt, (DateOnly?)yesterday, "Daily sales summary · ملخص المبيعات اليومية", "15 × Burger"),
+            (sold.SourceKind, sold.SourceDate, sold.Reference, sold.Details));
+        Assert.True(await node.Db(db => db.SalesReceipts.AnyAsync(r => r.Id == sold.SourceId, ct)));
+        await Assert.ThrowsAsync<Costing.Domain.Common.DomainException>(() => cards.GetAsync(tomatoes, today, yesterday, null, ct));
+        using (var book = new XLWorkbook(StockCardWorkbook.Build(card)))
+        {
+            var sheet = book.Worksheet("Stock card");
+            Assert.Equal(("Opening balance · رصيد أول المدة", "Closing balance · رصيد آخر المدة", 12d),
+                (sheet.Cell(5, 2).GetString(), sheet.Cell(11, 2).GetString(), sheet.Cell(11, 7).GetDouble()));
+        }
+
+        // The latest price's invoice, to open from the price variance.
+        Assert.NotNull(tomato.LatestInvoiceId);
+        Assert.NotEqual(first, tomato.LatestInvoiceId);
+    }
+
+    // Four dishes sold, a hundred in all: two popular (above 70% of an even 25% mix, 17.5%), two
+    // not; the average margin, weighted by what sold, 63.50. Lemonade has no recipe, so no place.
+    [Fact]
+    public async Task Menu_engineering_places_each_dish_by_its_popularity_and_margin()
+    {
+        await using var node = await TestSystem.StartAsync();
+        Assert.True(await TestSystem.WaitFor(() => node.Db(db => db.MenuItems.AnyAsync())));
+        var ct = TestContext.Current.CancellationToken;
+        using var scope = node.Scope();
+        var costing = node.Service<CostingService>(scope);
+        var today = node.Service<IntelligenceService>(scope).Today;
+        await node.Db(db => db.Database.ExecuteSqlRawAsync("""
+            INSERT INTO costing."MenuItems" ("Id", "Name", "Category", "Price", "IsAvailable", "IsPriceBasedOnAddons", "IsDeleted", "AddOnIds") VALUES
+                (30, 'Steak', 'Mains', 300, true, false, false, ARRAY[]::integer[]),
+                (31, 'Fries', 'Mains', 40, true, false, false, ARRAY[]::integer[]),
+                (32, 'Soup', 'Mains', 50, true, false, false, ARRAY[]::integer[]);
+            """, ct));
+
+        async Task<Guid> Piece(string name, decimal cost) =>
+            (await node.Send(new CreateRawMaterialCommand(name, UnitOfMeasure.Piece, PurchaseUnit: "piece", PurchaseUnitSize: 1, CostPerPurchaseUnit: cost))).Id;
+        await node.Send(new SetRecipeCommand(RecipeTargetKind.MenuItem, TestMenu.Burger, null, [new(await Piece("Patty", 20), 1)]));
+        await node.Send(new SetRecipeCommand(RecipeTargetKind.MenuItem, 30, null, [new(await Piece("Steak cut", 150), 1)]));
+        await node.Send(new SetRecipeCommand(RecipeTargetKind.MenuItem, 31, null, [new(await Piece("Potato portion", 10), 1)]));
+        await node.Send(new SetRecipeCommand(RecipeTargetKind.MenuItem, 32, null, [new(await Piece("Soup base", 30), 1)]));
+        await node.Send(new RecordDailySalesCommand(Guid.NewGuid(), today,
+            [new(TestMenu.Burger, null, 40), new(30, null, 5), new(31, null, 50), new(32, null, 5), new(TestMenu.Lemonade, null, 10)], "Omar"));
+        Assert.True(await TestSystem.WaitFor(async () => await node.Db(db => db.StockMovements.CountAsync(m => m.Reason == StockMovementReason.Sale)) == 4));
+
+        var report = await costing.GetMenuEngineeringAsync(today, today, null, ct);
+        Assert.Equal((4, 100m, 8_550m, 6_350m, (decimal?)63.5m, (decimal?)17.5m, 30m, 1),
+            (report.Items, report.QuantitySold, report.NetSales, report.TotalContribution, report.AverageContribution, report.PopularityThresholdPercent,
+                report.FoodCostTargetPercent, report.Unclassified));
+        Assert.Equal(
+            [
+                ("Burger", (MenuClass?)MenuClass.Star, (decimal?)40m, (decimal?)100m, (decimal?)16.7m, (decimal?)66.67m),
+                ("Fries", MenuClass.Plowhorse, 50m, 30m, 25m, 33.33m),
+                ("Steak", MenuClass.Puzzle, 5m, 150m, 50m, 500m),
+                ("Soup", MenuClass.Dog, 5m, 20m, 60m, 100m),
+                ("Lemonade", null, null, null, null, null),
+            ],
+            report.Rows.Select(r => (r.MenuItem, r.Class, r.MenuMixPercent, r.ContributionMargin, r.FoodCostPercent, r.SuggestedPrice)));
+        Assert.Equal((CostStatus.AboveTarget, CostStatus.NoRecipe), (report.Rows[3].Status, report.Rows[4].Status));
+        Assert.Equal(
+            [(MenuClass.Star, 1, 4_000m), (MenuClass.Plowhorse, 1, 1_500m), (MenuClass.Puzzle, 1, 750m), (MenuClass.Dog, 1, 100m)],
+            report.Classes.Select(c => (c.Class, c.Items, c.Contribution)));
+        Assert.Equal(["Drinks", "Mains"], report.Categories);
+
+        // The drinks alone: nothing with a recipe to place.
+        var drinks = await costing.GetMenuEngineeringAsync(today, today, "drinks", ct);
+        Assert.Equal((0, (decimal?)null, 1), (drinks.Items, drinks.PopularityThresholdPercent, drinks.Unclassified));
+        await Assert.ThrowsAsync<Costing.Domain.Common.DomainException>(() => costing.GetMenuEngineeringAsync(today, today.AddDays(-1), null, ct));
+        using var book = new XLWorkbook(IntelligenceWorkbooks.MenuEngineering(report));
+        Assert.Equal("Star · نجم", book.Worksheet("Menu engineering").Cell(5, 1).GetString());
     }
 }
 ```

@@ -11,9 +11,13 @@ import { InvoiceView } from './invoice-view';
 
 export interface InvoiceViewData {
   invoiceId: string;
+  // From a stock card: the material whose line is marked.
+  highlightMaterialId?: string | null;
 }
 
-// The history's Show: one invoice, read-only, over the list, so the place in it is kept.
+// The history's Show: one invoice, read-only, over the list, so the place in it is kept. From a
+// stock card, its material's line marked, and how to put a wrong one right: correct the invoice,
+// which voids it and posts the corrected one in its place, so the stock and the average follow.
 @Component({
   selector: 'app-invoice-view-dialog',
   imports: [InvoiceView, MatButtonModule, MatDialogModule, MatIconModule, MatProgressBarModule, RouterLink],
@@ -26,7 +30,17 @@ export interface InvoiceViewData {
       @if (error()) {
         <p class="error">{{ error() }}</p>
       } @else if (invoice(); as inv) {
-        <app-invoice-view [invoice]="inv" />
+        @if (data.highlightMaterialId && inv.status === 'Posted') {
+          <p class="fix" role="note">
+            <mat-icon aria-hidden="true">build</mat-icon>
+            <span>
+              A wrong quantity, unit or price on the marked line? Correct the invoice (Edit): it is voided and re-entered as corrected, and
+              the stock and its average cost follow.
+              <span class="inline-ar">لتصحيح الكمية أو السعر: عدّل الفاتورة، فتُلغى ويُعاد إدخالها مصححة.</span>
+            </span>
+          </p>
+        }
+        <app-invoice-view [invoice]="inv" [highlight]="data.highlightMaterialId ?? null" />
       } @else if (loading()) {
         <mat-progress-bar mode="indeterminate" />
       } @else {
@@ -50,6 +64,20 @@ export interface InvoiceViewData {
     }
     .error {
       color: var(--mat-sys-error);
+    }
+    .fix {
+      display: flex;
+      align-items: flex-start;
+      gap: 6px;
+      margin: 0 0 12px;
+      padding: 8px 12px;
+      border-radius: 10px;
+      background: color-mix(in srgb, var(--mat-sys-primary) 8%, transparent);
+      font: var(--mat-sys-body-small);
+
+      mat-icon {
+        flex: none;
+      }
     }
   `,
 })
@@ -78,9 +106,9 @@ export class InvoiceViewDialog {
 
 // Focus on the dialog itself: on its first button or the paper's viewer, it would open
 // scrolled past the supplier and the lines.
-export function showInvoice(dialog: MatDialog, invoiceId: string): void {
+export function showInvoice(dialog: MatDialog, invoiceId: string, highlightMaterialId: string | null = null): void {
   dialog.open<InvoiceViewDialog, InvoiceViewData>(InvoiceViewDialog, {
-    data: { invoiceId },
+    data: highlightMaterialId ? { invoiceId, highlightMaterialId } : { invoiceId },
     width: '1000px',
     maxWidth: '95vw',
     autoFocus: 'dialog',

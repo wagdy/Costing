@@ -1,10 +1,13 @@
+import { A11yModule } from '@angular/cdk/a11y';
+import { CdkConnectedOverlay, CdkOverlayOrigin, ConnectedPosition } from '@angular/cdk/overlay';
 import { DecimalPipe } from '@angular/common';
 import { Component, computed, inject, signal } from '@angular/core';
-import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { takeUntilDestroyed, toSignal } from '@angular/core/rxjs-interop';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
 import { MAT_DIALOG_DATA, MatDialogModule, MatDialogRef } from '@angular/material/dialog';
 import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatIconModule } from '@angular/material/icon';
 import { MatInputModule } from '@angular/material/input';
 import { MatSelectModule } from '@angular/material/select';
 import { firstValueFrom, merge } from 'rxjs';
@@ -32,7 +35,20 @@ const many: Record<UnitOfMeasure, string> = { Gram: 'g', Millilitre: 'ml', Piece
 // everything recorded is restated by it, on a manager's say. A prep item keeps its unit.
 @Component({
   selector: 'app-material-dialog',
-  imports: [DecimalPipe, MatButtonModule, MatDialogModule, MatFormFieldModule, MatInputModule, MatSelectModule, PurchaseCategoryField, ReactiveFormsModule],
+  imports: [
+    A11yModule,
+    CdkConnectedOverlay,
+    CdkOverlayOrigin,
+    DecimalPipe,
+    MatButtonModule,
+    MatDialogModule,
+    MatFormFieldModule,
+    MatIconModule,
+    MatInputModule,
+    MatSelectModule,
+    PurchaseCategoryField,
+    ReactiveFormsModule,
+  ],
   template: `
     <h2 mat-dialog-title>{{ data ? 'Change ' + data.name : 'New raw material' }}</h2>
     <mat-dialog-content>
@@ -121,8 +137,58 @@ const many: Record<UnitOfMeasure, string> = { Gram: 'g', Millilitre: 'ml', Piece
         <mat-form-field>
           <mat-label>Yield % · نسبة الصافي</mat-label>
           <input matInput type="number" min="1" max="100" step="any" formControlName="yield" />
-          <mat-hint>Usable after trimming</mat-hint>
+          <button
+            mat-icon-button
+            matSuffix
+            type="button"
+            cdkOverlayOrigin
+            #yieldOrigin="cdkOverlayOrigin"
+            (click)="calculating.set(!calculating())"
+            [attr.aria-expanded]="calculating()"
+            aria-label="Calculate from weight · احسب من الوزن"
+            title="Calculate from weight · احسب من الوزن"
+          >
+            <mat-icon>calculate</mat-icon>
+          </button>
+          <mat-hint>{{ epHint() ?? 'Usable after trimming' }}</mat-hint>
         </mat-form-field>
+        <ng-template
+          cdkConnectedOverlay
+          [cdkConnectedOverlayOrigin]="yieldOrigin"
+          [cdkConnectedOverlayOpen]="calculating()"
+          [cdkConnectedOverlayPositions]="yieldPositions"
+          [cdkConnectedOverlayViewportMargin]="12"
+          (overlayOutsideClick)="calculating.set(false)"
+          (overlayKeydown)="$event.key === 'Escape' && calculating.set(false)"
+          (detach)="calculating.set(false)"
+        >
+          <section class="yield-calc" role="dialog" aria-label="Calculate yield from weight · احسب نسبة الصافي من الوزن" cdkTrapFocus [cdkTrapFocusAutoCapture]="true">
+            <h3>Calculate from weight · <span lang="ar">احسب من الوزن</span></h3>
+            <p class="muted">Weigh it as bought, then again cleaned and ready to cook, in the same unit. · <span lang="ar">بنفس الوحدة للوزنين.</span></p>
+            <mat-form-field subscriptSizing="dynamic">
+              <mat-label>Gross weight · الوزن القائم</mat-label>
+              <input matInput type="number" min="0" step="any" [value]="gross() ?? ''" (input)="gross.set(number($event))" aria-label="Gross weight, as bought" />
+            </mat-form-field>
+            <mat-form-field subscriptSizing="dynamic">
+              <mat-label>Net usable weight · الوزن الصافي بعد التنظيف</mat-label>
+              <input matInput type="number" min="0" step="any" [value]="net() ?? ''" (input)="net.set(number($event))" aria-label="Net usable weight, after cleaning" />
+            </mat-form-field>
+            @if (calculated(); as c) {
+              <dl class="result">
+                <div><dt>Yield % · نسبة الصافي</dt><dd>{{ c.yield | number: '1.0-2' }}%</dd></div>
+                @if (c.ep !== null) {
+                  <div><dt>EP$ / {{ form.value.purchaseUnit || 'unit' }} · تكلفة الصافي</dt><dd>{{ company.money(c.ep, 2, 4) }}</dd></div>
+                }
+              </dl>
+            } @else if (gross() !== null && net() !== null) {
+              <p class="error" role="alert">The net weight is more than nothing and at most the gross. · الصافي أكبر من صفر ولا يزيد عن القائم.</p>
+            }
+            <div class="actions">
+              <button mat-button type="button" (click)="calculating.set(false)">Cancel</button>
+              <button mat-flat-button type="button" [disabled]="!calculated()" (click)="useYield()">Use this yield · استخدم النسبة</button>
+            </div>
+          </section>
+        </ng-template>
         <mat-form-field>
           <mat-label>Reorder at ({{ form.value.purchaseUnit || 'units' }}) · حد الطلب</mat-label>
           <input matInput type="number" min="0" step="any" formControlName="reorderAt" />
@@ -173,6 +239,48 @@ const many: Record<UnitOfMeasure, string> = { Gram: 'g', Millilitre: 'ml', Piece
     .muted {
       color: var(--mat-sys-on-surface-variant);
     }
+    .yield-calc {
+      display: grid;
+      gap: 8px;
+      width: min(340px, calc(100vw - 32px));
+      padding: 14px 16px;
+      border-radius: 14px;
+      border: 1px solid var(--mat-sys-outline-variant);
+      background: var(--mat-sys-surface-container-lowest);
+      box-shadow: 0 8px 28px rgb(15 23 42 / 18%);
+
+      h3 {
+        margin: 0;
+        font: var(--mat-sys-title-small);
+      }
+      p {
+        margin: 0;
+        font: var(--mat-sys-body-small);
+      }
+      .result {
+        display: grid;
+        gap: 4px;
+        margin: 0;
+
+        div {
+          display: flex;
+          justify-content: space-between;
+          gap: 8px;
+        }
+        dt {
+          color: var(--mat-sys-on-surface-variant);
+        }
+        dd {
+          margin: 0;
+          font-weight: 600;
+        }
+      }
+      .actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 8px;
+      }
+    }
     @media (max-width: 560px) {
       .form {
         grid-template-columns: 1fr;
@@ -182,6 +290,15 @@ const many: Record<UnitOfMeasure, string> = { Gram: 'g', Millilitre: 'ml', Piece
 })
 export class MaterialDialog {
   protected readonly company = inject(Company);
+
+  // The yield worked out from two weighings: as bought (gross) and cleaned, ready to use (net).
+  protected readonly calculating = signal(false);
+  protected readonly gross = signal<number | null>(null);
+  protected readonly net = signal<number | null>(null);
+  protected readonly yieldPositions: ConnectedPosition[] = [
+    { originX: 'end', originY: 'bottom', overlayX: 'end', overlayY: 'top', offsetY: 4 },
+    { originX: 'end', originY: 'top', overlayX: 'end', overlayY: 'bottom', offsetY: -4 },
+  ];
   protected readonly data = inject<MaterialCost | null>(MAT_DIALOG_DATA);
   private readonly ref = inject(MatDialogRef<MaterialDialog, MaterialDialogResult>);
   private readonly api = inject(CostingApi);
@@ -216,6 +333,26 @@ export class MaterialDialog {
   });
 
   protected readonly unit = signal<UnitOfMeasure>(this.data?.unit ?? 'Gram');
+
+  private readonly values = toSignal(this.form.valueChanges, { initialValue: this.form.value });
+  // Net ÷ gross, and what a usable purchase unit costs at it: AP$ ÷ yield.
+  protected readonly calculated = computed(() => {
+    const [gross, net] = [this.gross(), this.net()];
+    if (gross === null || net === null || !(gross > 0) || !(net > 0) || net > gross) {
+      return null;
+    }
+    const yieldPercent = Math.round((net / gross) * 10000) / 100;
+    const cost = this.values().cost;
+    return { yield: yieldPercent, ep: cost != null && cost >= 0 ? cost / (yieldPercent / 100) : null };
+  });
+  // The yield field's hint: the EP$ it gives the AP$ above, once both are there.
+  protected readonly epHint = computed(() => {
+    const v = this.values();
+    if (v.cost == null || v.cost < 0 || !v.yield || v.yield <= 0 || v.yield > 100) {
+      return null;
+    }
+    return `EP$ ${this.company.money(v.cost / (v.yield / 100), 2, 4)} / ${v.purchaseUnit || 'unit'} · تكلفة الصافي`;
+  });
   protected readonly changingUnit = computed(() => !!this.data && this.unit() !== this.data.unit);
   protected readonly usage = signal<MaterialUsage | null>(null);
   protected readonly usageError = signal<string | null>(null);
@@ -293,6 +430,20 @@ export class MaterialDialog {
     } else {
       // Its price and reorder level were in the old unit: given again for the new one.
       this.form.patchValue({ cost: null, reorderAt: 0 });
+    }
+  }
+
+  protected number(event: Event): number | null {
+    const value = (event.target as HTMLInputElement).value;
+    return value === '' ? null : Number(value);
+  }
+
+  protected useYield(): void {
+    const c = this.calculated();
+    if (c) {
+      this.form.controls.yield.setValue(c.yield);
+      this.form.controls.yield.markAsDirty();
+      this.calculating.set(false);
     }
   }
 

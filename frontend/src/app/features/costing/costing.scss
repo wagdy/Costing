@@ -343,6 +343,10 @@ tr.pending-deletion td {
   box-shadow: var(--app-card-shadow);
 
   .label {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 2px;
     font: var(--mat-sys-label-medium);
     color: var(--mat-sys-on-surface-variant);
   }

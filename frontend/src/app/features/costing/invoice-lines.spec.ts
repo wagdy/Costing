@@ -168,3 +168,64 @@ describe('an invoice’s discounts', () => {
     el.remove();
   });
 });
+
+// The price guardrail (تنبيه السعر): a line's price per purchase unit more than 25% from the
+// material's average now is flagged where it is typed, most often a quantity in the wrong unit. It
+// warns; the invoice is still saved as entered.
+describe('an invoice line’s price against the average', () => {
+  const pricedTomatoes = { ...tomatoes, costPerPurchaseUnit: 20 } as MaterialCost;
+  const unpricedOil = { ...oil, costPerPurchaseUnit: null } as MaterialCost;
+
+  async function render() {
+    TestBed.configureTestingModule({
+      providers: [
+        { provide: CostingApi, useValue: { materials: () => of([pricedTomatoes, unpricedOil]), suppliers: () => of([]), expenseItems: () => of([]) } },
+        { provide: MatDialog, useValue: { open: vi.fn() } },
+        { provide: NotifyService, useValue: { info: vi.fn(), error: vi.fn() } },
+      ],
+    });
+    const fixture = TestBed.createComponent(Host);
+    await fixture.componentInstance.catalog.load();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    return { fixture, el: fixture.nativeElement as HTMLElement, editor: fixture.componentInstance.editor };
+  }
+
+  function line(material: MaterialCost, quantity: number, cost: number | null): InvoiceLine {
+    return { entry: material, itemType: 'Inventory', rawMaterialId: material.id, expenseItemId: null, quantity, unitSize: null, unitLabel: '', cost, discount: 0 };
+  }
+
+  it('flags a price more than 25% either way from the average now, and lets the invoice be saved', async () => {
+    const { fixture, el, editor } = await render();
+    // 5 kg for 150: 30 a kg against 20, +50%; 5 kg for 110: 22, +10%; 5 kg for 50: 10, −50%.
+    editor.lines.set([line(pricedTomatoes, 5, 150), line(pricedTomatoes, 5, 110), line(pricedTomatoes, 5, 50), line(unpricedOil, 10, 400)]);
+    editor.touch();
+    fixture.detectChanges();
+
+    expect(editor.lines().map((l) => editor.priceDeviation(l))).toEqual([50, null, -50, null]);
+    const alerts = [...el.querySelectorAll('tbody tr')].map((r) => r.querySelector('.price-alert'));
+    expect(alerts.map((a) => (a ? [text(a.querySelector('[lang="ar"]')!), text(a.querySelector('.en')!)] : null))).toEqual([
+      ['تنبيه: السعر يختلف بـ +50% عن المتوسط الحالي - تأكد من الوحدة!', '+50% from the average now: check the unit.'],
+      null,
+      ['تنبيه: السعر يختلف بـ -50% عن المتوسط الحالي - تأكد من الوحدة!', '-50% from the average now: check the unit.'],
+      null,
+    ]);
+    expect(alerts[0]!.getAttribute('role')).toBe('status');
+    // Never in the way: every line goes as entered.
+    expect(editor.toSave().map((l) => l.cost)).toEqual([150, 110, 50, 400]);
+  });
+
+  it('says nothing within 25%, or with no price to compare', async () => {
+    const { fixture, el, editor } = await render();
+    editor.lines.set([line(pricedTomatoes, 4, 100), line(pricedTomatoes, 5, null)]);
+    editor.touch();
+    fixture.detectChanges();
+    // 25 a kg is +25% exactly: within.
+    expect(editor.lines().map((l) => editor.priceDeviation(l))).toEqual([null, null]);
+    // 5000 typed for 5 kg: 0.025 a kg, −99.9%, not −100%.
+    editor.lines.set([line(pricedTomatoes, 5000, 125)]);
+    expect(editor.priceDeviation(editor.lines()[0])).toBe(-99.9);
+    expect(el.querySelector('.price-alert')).toBeNull();
+  });
+});
+

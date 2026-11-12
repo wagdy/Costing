@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using Costing.Domain.Access;
 using Costing.Domain.Recipes;
 using Costing.Api.Auth;
+using Costing.Infrastructure.Excel;
 using Costing.Infrastructure.Reports;
 
 namespace Costing.Api.Controllers;
@@ -15,7 +16,7 @@ namespace Costing.Api.Controllers;
 [Authorize(Policy = Permissions.InventoryView)]
 public sealed class CostingController(
     CostingService costing, VarianceService variance, KpiService kpis, BreakEvenService breakEven, PurchaseSpendingService spending,
-    TreasuryService treasury, MediatR.ISender sender, Costing.Application.Common.IBusinessCalendar calendar) : ControllerBase
+    TreasuryService treasury, StockCardService stockCard, MediatR.ISender sender, Costing.Application.Common.IBusinessCalendar calendar) : ControllerBase
 {
     // Raw materials with their costs: what each costs per purchase unit, the last price paid, and
     // the stock's value.
@@ -30,6 +31,27 @@ public sealed class CostingController(
     [CostingTab(CostingTabs.Materials | CostingTabs.Recipes | CostingTabs.Purchases | CostingTabs.Counts | CostingTabs.Waste | CostingTabs.Production | CostingTabs.Reports)]
     public Task<MaterialPurchaseHistory> GetMaterialPurchases(Guid materialId, CancellationToken cancellationToken) =>
         spending.MaterialHistoryAsync(materialId, cancellationToken);
+
+    // A material's stock card (كارتة الصنف / حركة الصنف): every movement over the period, its running
+    // balance and moving average, each with the record that made it; of one kind only when asked.
+    [HttpGet("materials/{materialId:guid}/stock-card")]
+    [CostingTab(StockCardTabs)]
+    public Task<StockCard> GetStockCard(
+        Guid materialId, [FromQuery] DateOnly? from, [FromQuery] DateOnly? to, [FromQuery] StockCardMovementType? type, CancellationToken cancellationToken) =>
+        stockCard.GetAsync(materialId, from, to, type, cancellationToken);
+
+    [HttpGet("materials/{materialId:guid}/stock-card/sheet")]
+    [CostingTab(StockCardTabs)]
+    public async Task<IActionResult> GetStockCardSheet(
+        Guid materialId, [FromQuery] DateOnly? from, [FromQuery] DateOnly? to, [FromQuery] StockCardMovementType? type, CancellationToken cancellationToken)
+    {
+        var card = await stockCard.GetAsync(materialId, from, to, type, cancellationToken);
+        return File(StockCardWorkbook.Build(card), ReportWorkbook.ContentType, $"stock-card-{card.Code ?? "material"}-{card.From:yyyy-MM-dd}-to-{card.To:yyyy-MM-dd}.xlsx");
+    }
+
+    // Wherever a material is shown with its stock or its price.
+    private const CostingTabs StockCardTabs = CostingTabs.Materials | CostingTabs.Recipes | CostingTabs.Purchases | CostingTabs.Counts | CostingTabs.Waste
+        | CostingTabs.Production | CostingTabs.Reports | CostingTabs.Intelligence;
 
     // Every dish, size and add-on with its cost per portion and food cost %.
     [HttpGet("menu")]

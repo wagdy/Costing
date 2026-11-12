@@ -11,6 +11,7 @@ import { firstValueFrom } from 'rxjs';
 import { CostingApi, TreasuryAnalytics, TreasuryFlowLine } from '../../core/costing/costing.api';
 import { errorMessage } from '../../core/http/error-message';
 import { MoneyPipe } from '../../core/ui/money.pipe';
+import { InfoTip } from './info-tip';
 import { isoDay } from './financials';
 import { PieSlice, SpendingPie } from './spending-pie';
 
@@ -25,6 +26,7 @@ type Period = 'month' | 'last-month' | 'quarter' | 'year' | 'custom';
 @Component({
   selector: 'app-treasury-page',
   imports: [
+    InfoTip,
     DatePipe,
     FormsModule,
     MatButtonModule,
@@ -71,26 +73,23 @@ type Period = 'month' | 'last-month' | 'quarter' | 'year' | 'custom';
       </header>
       <div class="tiles">
         <div class="tile">
-          <span class="label">Opening balance · الرصيد الافتتاحي</span>
+          <span class="label">Opening balance · الرصيد الافتتاحي <app-info-tip tip="openingBalance" /></span>
           <strong>{{ r.openingBalance | money }}</strong>
-          <small class="muted">brought forward</small>
         </div>
         <div class="tile">
-          <span class="label">Total in · إجمالي الوارد</span>
+          <span class="label">Total in · إجمالي الوارد <app-info-tip tip="totalIn" /></span>
           <strong class="in">{{ r.totalIn | money }}</strong>
-          <small class="muted">with the opening balance</small>
         </div>
         <div class="tile">
-          <span class="label">Total out · إجمالي المنصرف</span>
+          <span class="label">Total out · إجمالي المنصرف <app-info-tip tip="totalOut" /></span>
           <strong class="out">{{ r.totalOut | money }}</strong>
         </div>
         <div class="tile">
-          <span class="label">Net cash flow · صافي التدفق النقدي</span>
+          <span class="label">Net cash flow · صافي التدفق النقدي <app-info-tip tip="netCashFlow" /></span>
           <strong [class.negative]="r.netFlow < 0">{{ r.netFlow | money }}</strong>
-          <small class="muted">in less out, in these days</small>
         </div>
         <div class="tile key">
-          <span class="label">Closing balance · الرصيد الختامي</span>
+          <span class="label">Closing balance · الرصيد الختامي <app-info-tip tip="closingBalance" /></span>
           <strong [class.negative]="r.closingBalance < 0">{{ r.closingBalance | money }}</strong>
         </div>
       </div>

@@ -28,6 +28,7 @@ import { FilterOption, FilterSelect } from '../shared/filter-select';
 import { SearchField } from '../shared/search-field';
 import { SortOption, SortState, smartMatch } from '../shared/smart-search';
 import { SortControl } from '../shared/sort-control';
+import { InfoTip } from './info-tip';
 
 // What the table shows: the recipes (all, on the menu, off it), the menu items still without
 // one, or the deleted ones.
@@ -55,6 +56,7 @@ const recipeSorts: SortOption<RecipeSort>[] = [
 @Component({
   selector: 'app-recipes-page',
   imports: [
+    InfoTip,
     DatePipe,
     DecimalPipe,
     FilterSelect,
@@ -161,10 +163,10 @@ const recipeSorts: SortOption<RecipeSort>[] = [
               <th class="num">Portions<span class="ar">الحصص</span></th>
               <th class="num">Price<span class="ar">السعر</span></th>
               <th class="num" [attr.aria-sort]="ariaSort('cost')">
-                <button class="sort" (click)="sortBy('cost')">Cost per portion {{ arrow('cost') }}</button><span class="ar">تكلفة الحصة</span>
+                <button class="sort" (click)="sortBy('cost')">Cost per portion {{ arrow('cost') }}</button> <app-info-tip tip="costPerPortion" /><span class="ar">تكلفة الحصة</span>
               </th>
               <th class="num" [attr.aria-sort]="ariaSort('foodCost')">
-                <button class="sort" (click)="sortBy('foodCost')">Food cost % {{ arrow('foodCost') }}</button><span class="ar">نسبة التكلفة</span>
+                <button class="sort" (click)="sortBy('foodCost')">Food cost % {{ arrow('foodCost') }}</button> <app-info-tip tip="foodCostPercent" /><span class="ar">نسبة التكلفة</span>
               </th>
               <th>Status<span class="ar">الحالة</span></th>
               <th class="num"><span class="visually-hidden">Actions</span></th>

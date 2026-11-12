@@ -194,7 +194,7 @@ public sealed record SaveSharedCostRequest(string Name, Guid? RawMaterialId, dec
 // report (Pillar 2). Costs come from the stock module: each material's weighted average cost,
 // and the cost each sale's stock movements recorded when they happened. Prices are the menu's,
 // which are before tax, so net sales need no VAT taken off.
-public sealed class CostingService(CostingDbContext db, IBusinessCalendar clock, SalesLedger ledger)
+public sealed partial class CostingService(CostingDbContext db, IBusinessCalendar clock, SalesLedger ledger)
 {
     // ---- Materials ----
 

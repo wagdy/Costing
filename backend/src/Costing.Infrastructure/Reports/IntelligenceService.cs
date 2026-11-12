@@ -37,7 +37,7 @@ public sealed record PriceImpactLine(
 // One material over the period: the moving average it came in with (Baseline), the latest net price
 // paid for it, by how much and what share that moved, what was bought, and the financial impact of
 // the change on it: (latest − baseline) × bought. The dishes and prep items it goes into, and who
-// sold it last.
+// sold it last, and the invoice of that latest price.
 public sealed record PriceVarianceRow(
     Guid RawMaterialId,
     string? Code,
@@ -57,7 +57,8 @@ public sealed record PriceVarianceRow(
     Guid? LatestSupplierId,
     string? LatestSupplier,
     IReadOnlyList<Guid> SupplierIds,
-    IReadOnlyList<PriceImpactLine> Affected);
+    IReadOnlyList<PriceImpactLine> Affected,
+    Guid? LatestInvoiceId = null);
 
 public sealed record PriceVarianceReport(
     DateOnly From,
@@ -289,7 +290,7 @@ public sealed class IntelligenceService(CostingDbContext db, IBusinessCalendar c
                 Quantity(quantity / size), Money(change * quantity), lines.Select(p => p.InvoiceId).Distinct().Count(),
                 latest?.Date, latest?.SupplierId, latest?.SupplierId is { } s ? suppliers.GetValueOrDefault(s) : null,
                 lines.Where(p => p.SupplierId is not null).Select(p => p.SupplierId!.Value).Distinct().ToList(),
-                change is { } delta && delta != 0 ? Affected(catalog, material, delta) : []));
+                change is { } delta && delta != 0 ? Affected(catalog, material, delta) : [], latest?.InvoiceId));
         }
 
         rows = rows.OrderByDescending(r => Math.Abs(r.Impact ?? 0)).ThenBy(r => r.Material).ToList();

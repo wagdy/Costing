@@ -18,6 +18,8 @@ import {
 } from '../../core/costing/costing.api';
 import { errorMessage } from '../../core/http/error-message';
 import { MoneyPipe } from '../../core/ui/money.pipe';
+import { InfoTip } from './info-tip';
+import { StockCardButton } from './stock-card-dialog';
 
 // Pillar 3: what left the stores between two counts against what the recipes say the sales
 // took. Red is a shortfall beyond the tolerance (waste, theft, over-portioning, a recipe written
@@ -25,7 +27,20 @@ import { MoneyPipe } from '../../core/ui/money.pipe';
 // Quantities are as bought, before trimming, and valued at the average purchase cost.
 @Component({
   selector: 'app-variance-page',
-  imports: [DatePipe, DecimalPipe, FormsModule, MatButtonModule, MatFormFieldModule, MatIconModule, MatProgressBarModule, MatSelectModule, MoneyPipe, RouterLink],
+  imports: [
+    DatePipe,
+    DecimalPipe,
+    FormsModule,
+    InfoTip,
+    MatButtonModule,
+    MatFormFieldModule,
+    MatIconModule,
+    MatProgressBarModule,
+    MatSelectModule,
+    MoneyPipe,
+    RouterLink,
+    StockCardButton,
+  ],
   template: `
     <div class="toolbar">
       <mat-form-field subscriptSizing="dynamic">
@@ -71,27 +86,27 @@ import { MoneyPipe } from '../../core/ui/money.pipe';
 
       <div class="figures">
         <div class="box" [class.deficit]="r.netVarianceValue > 0" [class.surplus]="r.netVarianceValue < 0">
-          <span class="label">Net variance<span class="ar">صافي قيمة الانحراف</span></span>
+          <span class="label">Net variance <app-info-tip tip="netVariance" /><span class="ar">صافي قيمة الانحراف</span></span>
           <strong>{{ r.netVarianceValue | money }}</strong>
-          <small class="muted">{{ r.netVarianceValue > 0 ? 'more used than the recipes say' : r.netVarianceValue < 0 ? 'less used than the recipes say' : 'as the recipes say' }}</small>
         </div>
         <div class="box">
-          <span class="label">Recorded waste<span class="ar">الهالك المسجل</span></span>
+          <span class="label">Recorded waste <app-info-tip tip="recordedWaste" /><span class="ar">الهالك المسجل</span></span>
           <strong>{{ r.recordedWasteValue | money }}</strong>
         </div>
         <div class="box" [class.deficit]="r.unexplainedValue > 0" [class.surplus]="r.unexplainedValue < 0">
-          <span class="label">Unexplained<span class="ar">غير مبرر</span></span>
+          <span class="label">Unexplained <app-info-tip tip="unexplainedBetweenCounts" /><span class="ar">غير مبرر</span></span>
           <strong>{{ r.unexplainedValue | money }}</strong>
-          <small class="muted">not covered by recorded waste</small>
         </div>
         <div class="box" [class.deficit]="r.unfavourableCount > 0">
-          <span class="label">Unfavourable materials<span class="ar">خامات غير مواتية</span></span>
+          <span class="label">Unfavourable materials <app-info-tip tip="unfavourable" /><span class="ar">خامات غير مواتية</span></span>
           <strong>{{ r.unfavourableCount }} of {{ r.rows.length }}</strong>
         </div>
         <div class="box">
-          <span class="label">Largest variance<span class="ar">أكبر انحراف نسبي</span></span>
+          <span class="label">Largest variance <app-info-tip tip="largestVariance" /><span class="ar">أكبر انحراف نسبي</span></span>
           <strong>{{ r.largestRelativePercent === null ? '—' : (r.largestRelativePercent | number: '1.1-1') + '%' }}</strong>
-          <small class="muted">{{ r.largestRelativeMaterial ?? '' }}</small>
+          @if (r.largestRelativeMaterial) {
+            <small class="chip">{{ r.largestRelativeMaterial }}</small>
+          }
         </div>
       </div>
 
@@ -104,15 +119,15 @@ import { MoneyPipe } from '../../core/ui/money.pipe';
               <th class="num">Opening<span class="ar">رصيد أول</span></th>
               <th class="num">Received<span class="ar">الوارد</span></th>
               <th class="num">Waste<span class="ar">الهالك</span></th>
-              <th class="num">Standard usage<span class="ar">الاستهلاك المعياري</span></th>
+              <th class="num">Standard usage <app-info-tip tip="standardUsage" /><span class="ar">الاستهلاك المعياري</span></th>
               <th class="num">Expected closing<span class="ar">المتوقع</span></th>
               <th class="num">Closing count<span class="ar">رصيد آخر</span></th>
-              <th class="num">Actual usage<span class="ar">الاستهلاك الفعلي</span></th>
+              <th class="num">Actual usage <app-info-tip tip="actualUsage" /><span class="ar">الاستهلاك الفعلي</span></th>
               <th class="num">Variance<span class="ar">الانحراف</span></th>
               <th class="num">%<span class="ar">النسبة</span></th>
               <th class="num">Unit cost<span class="ar">تكلفة الوحدة</span></th>
               <th class="num">Variance value<span class="ar">قيمة الانحراف</span></th>
-              <th class="num">Unexplained<span class="ar">غير مبرر</span></th>
+              <th class="num">Unexplained <app-info-tip tip="unexplainedBetweenCounts" /><span class="ar">غير مبرر</span></th>
               <th class="eval-col">Evaluation<span class="ar">التقييم</span></th>
             </tr>
           </thead>
@@ -120,7 +135,10 @@ import { MoneyPipe } from '../../core/ui/money.pipe';
             @for (row of r.rows; track row.rawMaterialId) {
               <tr [class.deficit]="row.evaluation === 'Unfavourable'" [class.surplus]="row.evaluation === 'Favourable'">
                 <td class="code">{{ row.code ?? '' }}</td>
-                <td>{{ row.material }}</td>
+                <td>
+                  {{ row.material }}
+                  <app-stock-card-button [id]="row.rawMaterialId" [name]="row.material" />
+                </td>
                 <td class="num">{{ qty(row, row.opening) }}</td>
                 <td class="num">{{ qty(row, row.received) }}</td>
                 <td class="num">
@@ -192,10 +210,6 @@ import { MoneyPipe } from '../../core/ui/money.pipe';
         @if (sharedRows(r)) {
           <p class="note">Shared costs, such as frying oil, are in no recipe: their usage is shown, but left out of the totals.</p>
         }
-        <p class="note">
-          Variance = actual usage − standard usage, and includes recorded waste; unexplained is what remains once the waste is taken out.
-          Quantities are as bought, before trimming.
-        </p>
       </div>
     }
   `,

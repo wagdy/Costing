@@ -65,7 +65,7 @@ describe('a material’s purchase history', () => {
     const { el } = await render();
 
     expect(materialPurchases).toHaveBeenCalledWith('tomatoes');
-    expect(text(el.querySelector('h2')!)).toBe('Tomatoes · Purchase history كارت الصنف');
+    expect(text(el.querySelector('h2')!)).toBe('Tomatoes · Purchase history سجل المشتريات');
     const rows = [...el.querySelectorAll('tbody tr')].map((r) => [...r.querySelectorAll('td')].slice(0, 6).map(cell));
     expect(rows).toEqual([
       ['17 Oct 2026', 'Nile Farms', 'F-2', '1 kg 1,000 g', '', 'No price'],

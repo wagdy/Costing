@@ -437,7 +437,7 @@ export const appConfig: ApplicationConfig = {
 
 كل قسم بـ `canActivate: [costingTabGuard('Materials')]` و `loadComponent` كسول، والأقسام الفرعية (الوصفات، المشتريات، الماليات، التقارير، التحليلات) كأبناء لـ Shell خاص بها، والمسار الفارغ يفتح أول قسم يملكه المستخدم.
 
-> 📄 **`frontend/src/app/app.routes.ts`** — 276 سطر
+> 📄 **`frontend/src/app/app.routes.ts`** — 277 سطر
 
 ```ts
 import { Routes } from '@angular/router';
@@ -542,6 +542,7 @@ const costingChildren: Routes = [
       { path: 'orders', loadComponent: () => import('./features/costing/order-planner-page').then((m) => m.OrderPlannerPage) },
       { path: 'consumption', loadComponent: () => import('./features/costing/consumption-page').then((m) => m.ConsumptionPage) },
       { path: 'abc', loadComponent: () => import('./features/costing/abc-page').then((m) => m.AbcPage) },
+      { path: 'menu', loadComponent: () => import('./features/costing/menu-engineering-page').then((m) => m.MenuEngineeringPage) },
     ],
   },
   {
@@ -1309,7 +1310,7 @@ function insert(field: HTMLInputElement, text: string): void {
 
 `costing.api.ts`: أكبر ملف: كل الأنواع والنداءات لـ `api/costing` و `api/inventory` و `api/financials` (الخامات، التكاليف، الوصفات، المصنعات، الإنتاج، المشتريات، الجرد، الهالك، الخزنة، التقارير، الموافقات…). الأنواع تطابق DTOs الـ API، والـ enums كـ union types، وقواميس التسميات ثنائية اللغة (`Record<Kind, { en; ar }>`) تجبر TypeScript على تسمية كل حالة.
 
-> 📄 **`frontend/src/app/core/costing/costing.api.ts`** — 2356 سطر
+> 📄 **`frontend/src/app/core/costing/costing.api.ts`** — 2439 سطر
 
 ```ts
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
@@ -1392,6 +1393,77 @@ export interface MaterialPurchaseHistory {
   total: number;
   averagePerPurchaseUnit: number | null;
   unpricedLines: number;
+}
+
+// ---- The item's stock card (كارتة الصنف / حركة الصنف) ----
+
+export type StockCardMovementType = 'Opening' | 'Purchases' | 'Production' | 'Sales' | 'Waste' | 'CountAdjustment';
+export type StockCardSourceKind = 'PurchaseInvoice' | 'ProductionOrder' | 'StockCount' | 'SalesReceipt' | 'Spoilage';
+export type StockMovementReason =
+  | 'Sale'
+  | 'Waste'
+  | 'VoidReturn'
+  | 'Purchase'
+  | 'CountAdjustment'
+  | 'Spoilage'
+  | 'ProductionInput'
+  | 'ProductionOutput'
+  | 'OpeningStock';
+
+export const stockCardTypes: { type: StockCardMovementType; en: string; ar: string }[] = [
+  { type: 'Opening', en: 'Opening', ar: 'افتتاحي' },
+  { type: 'Purchases', en: 'Purchases', ar: 'مشتريات' },
+  { type: 'Production', en: 'Production', ar: 'إنتاج' },
+  { type: 'Sales', en: 'Sales', ar: 'مبيعات' },
+  { type: 'Waste', en: 'Waste', ar: 'هالك' },
+  { type: 'CountAdjustment', en: 'Count adjustment', ar: 'تسوية جرد' },
+];
+
+// One movement, oldest first: in or out in the purchase unit, the balance after it, its price and the
+// moving average it left, per purchase unit. sourceId opens its record (the receipt, not its line).
+export interface StockCardLine {
+  movementId: string;
+  date: string;
+  occurredAtUtc: string;
+  reason: StockMovementReason;
+  type: StockCardMovementType;
+  isReversal: boolean;
+  sourceKind: StockCardSourceKind;
+  sourceId: string;
+  hasSource: boolean;
+  sourceDate: string | null;
+  reference: string;
+  details: string | null;
+  quantityIn: number;
+  quantityOut: number;
+  balance: number;
+  unitCost: number | null;
+  value: number | null;
+  averageCostAfter: number | null;
+  recordedBy: string | null;
+}
+
+export interface StockCard {
+  rawMaterialId: string;
+  code: string | null;
+  material: string;
+  isPrepItem: boolean;
+  unit: UnitOfMeasure;
+  purchaseUnit: string;
+  purchaseUnitSize: number;
+  from: string;
+  to: string;
+  type: StockCardMovementType | null;
+  openingBalance: number;
+  openingAverageCost: number | null;
+  totalIn: number;
+  totalOut: number;
+  closingBalance: number;
+  closingAverageCost: number | null;
+  closingValue: number | null;
+  onHand: number;
+  averageCost: number | null;
+  lines: StockCardLine[];
 }
 
 export interface RecipeCostLine {
@@ -2696,6 +2768,18 @@ export class CostingApi {
 
   materialPurchases(id: string): Observable<MaterialPurchaseHistory> {
     return this.http.get<MaterialPurchaseHistory>(`/api/costing/materials/${id}/purchases`);
+  }
+
+  stockCard(id: string, from: string, to: string, type: StockCardMovementType | null = null): Observable<StockCard> {
+    const params: Record<string, string> = { from, to };
+    if (type) params['type'] = type;
+    return this.http.get<StockCard>(`/api/costing/materials/${id}/stock-card`, { params });
+  }
+
+  stockCardSheet(id: string, from: string, to: string, type: StockCardMovementType | null = null): Observable<Blob> {
+    const params: Record<string, string> = { from, to };
+    if (type) params['type'] = type;
+    return this.http.get(`/api/costing/materials/${id}/stock-card/sheet`, { params, responseType: 'blob' });
   }
 
   materialUsage(id: string): Observable<MaterialUsage> {
@@ -6375,7 +6459,7 @@ tr.pending-deletion td {
 
 `styles.scss`: Material 3 بألوان Slate & Indigo (لون واحد عميق لما يُختار ويُنفَّذ، ورماديات لكل ما هو ساكن)، وخط النظام بدل خط ويب (يعمل بلا إنترنت).
 
-> 📄 **`frontend/src/styles.scss`** — 359 سطر
+> 📄 **`frontend/src/styles.scss`** — 413 سطر
 
 ```scss
 @use '@angular/material' as mat;
@@ -6735,6 +6819,60 @@ table.grid {
     min-height: 36px;
     color: var(--app-slate-500);
     font: var(--mat-sys-body-small);
+  }
+}
+
+// A figure's one short count or share beside it, on a costing tile or box (costing.scss): no
+// formula, that is its (ⓘ)'s.
+.tile .chip,
+.box .chip {
+  justify-self: start;
+  align-self: flex-start;
+  max-width: 100%;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font: var(--mat-sys-label-small);
+  background: color-mix(in srgb, var(--mat-sys-on-surface) 7%, transparent);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+// A figure's explanation (InfoTip), in the overlay: its title, then what it is and how it is worked
+// out, the Arabic first and right to left, the English formula in a quieter mono line.
+.info-pop {
+  max-width: min(380px, calc(100vw - 32px));
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--app-line, var(--mat-sys-outline-variant));
+  background: var(--mat-sys-surface-container-lowest);
+  color: var(--mat-sys-on-surface);
+  box-shadow: 0 8px 28px rgb(15 23 42 / 18%);
+  font: var(--mat-sys-body-small);
+  line-height: 1.5;
+
+  .info-pop-title {
+    margin: 0 0 6px;
+    font: var(--mat-sys-title-small);
+  }
+  section + section {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--app-line, var(--mat-sys-outline-variant));
+  }
+  h4 {
+    margin: 0 0 2px;
+    font: var(--mat-sys-label-medium);
+    color: var(--mat-sys-primary);
+  }
+  p {
+    margin: 0 0 2px;
+  }
+  p[dir='rtl'] {
+    text-align: right;
+  }
+  .formula {
+    color: var(--mat-sys-on-surface-variant);
   }
 }
 ```
@@ -7167,6 +7305,771 @@ nav {
 
 `CostingShell`: الأقسام الجانبية **من الصلاحيات** (`computed`)، بمجموعاتها. و `costing.scss` أنماط شاشات التكاليف، و `FormChecks` نسخة شاشات التكاليف (تشير لـ "الفاتورة 2، البند 3: أدخل الكمية")، و `PeriodBar` شريط الفترة: فترات جاهزة كأزرار، أو من/إلى بتاريخين (من لا يتجاوز إلى).
 
+**`InfoTip` (ⓘ):** البطاقات والأعمدة تعرض **الرقم فقط**، وشرحه في زر صغير بجانب العنوان: نافذة منبثقة (CDK `cdkConnectedOverlay`) فيها **الوصف** و **طريقة الحساب** بالعربية والإنجليزية. تفتح بالمرور وبالتركيز (لوحة المفاتيح)، وبالضغط على الهاتف فتبقى مثبتة حتى ضغطة ثانية، وتغلق بـ Escape أو بالضغط خارجها. النافذة `role="tooltip"` وهي `aria-describedby` للزر. والرمز مرسوم بـ CSS (`::before`) لا بخط أيقونات، حتى يبقى نص العنوان كلماته هو (ولقارئ الشاشة). والنصوص كلها في `info-tips.ts` بمفاتيح مكتوبة النوع (`InfoTipKey`)، فخطأ المفتاح خطأ ترجمة لا خطأ تشغيل؛ ويقبل المكوّن أيضًا نصًا يُبنى في مكانه (مؤشرات الـ KPI من تعريفها).
+
+> 📄 **`frontend/src/app/features/costing/info-tip.ts`** — 166 سطر
+
+```ts
+import { CdkConnectedOverlay, CdkOverlayOrigin, ConnectedPosition } from '@angular/cdk/overlay';
+import { Component, computed, input, OnDestroy, signal } from '@angular/core';
+import { InfoTipContent, InfoTipKey, infoTips } from './info-tips';
+
+let next = 0;
+
+// The (ⓘ) beside a figure's title or a column's heading: what the figure is (الوصف) and how it is
+// worked out (طريقة الحساب), in Arabic and English, so the screen itself keeps only the figures.
+// It opens on hover and on focus, and on a tap for a phone; Escape, moving away or tapping outside
+// closes it. The popover is the button's description, for a screen reader too.
+@Component({
+  selector: 'app-info-tip',
+  imports: [CdkConnectedOverlay, CdkOverlayOrigin],
+  template: `
+    <button
+      #button
+      type="button"
+      class="info-tip"
+      cdkOverlayOrigin
+      #origin="cdkOverlayOrigin"
+      [attr.aria-label]="'About ' + tip().title.en + ' · ' + tip().title.ar"
+      [attr.aria-expanded]="open()"
+      [attr.aria-describedby]="open() ? id : null"
+      (mouseenter)="show()"
+      (mouseleave)="leave()"
+      (focus)="show()"
+      (blur)="hide()"
+      (click)="toggle($event)"
+      (keydown.escape)="hide()"
+    >
+      <span class="glyph" aria-hidden="true"></span>
+    </button>
+    <ng-template
+      cdkConnectedOverlay
+      [cdkConnectedOverlayOrigin]="origin"
+      [cdkConnectedOverlayOpen]="open()"
+      [cdkConnectedOverlayPositions]="positions"
+      [cdkConnectedOverlayViewportMargin]="12"
+      (overlayOutsideClick)="outside($event, button)"
+      (overlayKeydown)="$event.key === 'Escape' && hide()"
+      (detach)="hide()"
+    >
+      <div class="info-pop" role="tooltip" [id]="id" (mouseenter)="stay()" (mouseleave)="leave()">
+        <p class="info-pop-title">{{ tip().title.en }} · <span lang="ar">{{ tip().title.ar }}</span></p>
+        <section>
+          <h4><span lang="ar">الوصف</span> · What it is</h4>
+          <p lang="ar" dir="rtl">{{ tip().what.ar }}</p>
+          <p>{{ tip().what.en }}</p>
+        </section>
+        <section>
+          <h4><span lang="ar">طريقة الحساب</span> · How it's calculated</h4>
+          <p lang="ar" dir="rtl">{{ tip().how.ar }}</p>
+          <p class="formula">{{ tip().how.en }}</p>
+        </section>
+      </div>
+    </ng-template>
+  `,
+  styles: `
+    :host {
+      display: inline-flex;
+      vertical-align: middle;
+    }
+    .info-tip {
+      display: inline-grid;
+      place-items: center;
+      width: 22px;
+      height: 22px;
+      margin-inline-start: 2px;
+      padding: 0;
+      border: 0;
+      border-radius: 50%;
+      background: transparent;
+      color: var(--mat-sys-on-surface-variant);
+      cursor: help;
+    }
+    .info-tip:hover,
+    .info-tip:focus-visible,
+    .info-tip[aria-expanded='true'] {
+      color: var(--mat-sys-primary);
+      background: color-mix(in srgb, var(--mat-sys-primary) 10%, transparent);
+    }
+    .info-tip:focus-visible {
+      outline: 2px solid var(--mat-sys-primary);
+      outline-offset: 1px;
+    }
+    // Drawn, not a ligature: the heading's text stays its own words.
+    .glyph {
+      display: inline-grid;
+      place-items: center;
+      width: 15px;
+      height: 15px;
+      border: 1.5px solid currentColor;
+      border-radius: 50%;
+      box-sizing: border-box;
+    }
+    .glyph::before {
+      content: 'i';
+      font: 700 10px/1 Georgia, 'Times New Roman', serif;
+    }
+  `,
+})
+export class InfoTip implements OnDestroy {
+  // A tip of the dictionary by its key, or one made on the spot (a KPI's, from its own definition).
+  readonly key = input.required<InfoTipKey | InfoTipContent>({ alias: 'tip' });
+
+  protected readonly tip = computed(() => {
+    const key = this.key();
+    return typeof key === 'string' ? infoTips[key] : key;
+  });
+  protected readonly open = signal(false);
+  protected readonly id = `info-tip-${++next}`;
+  protected readonly positions: ConnectedPosition[] = [
+    { originX: 'center', originY: 'bottom', overlayX: 'center', overlayY: 'top', offsetY: 6 },
+    { originX: 'center', originY: 'top', overlayX: 'center', overlayY: 'bottom', offsetY: -6 },
+    { originX: 'end', originY: 'center', overlayX: 'start', overlayY: 'center', offsetX: 6 },
+    { originX: 'start', originY: 'center', overlayX: 'end', overlayY: 'center', offsetX: -6 },
+  ];
+  private timer: ReturnType<typeof setTimeout> | null = null;
+  // Opened by a tap or a click: it stays until closed, not on the pointer leaving.
+  private pinned = false;
+
+  protected show(): void {
+    this.stay();
+    this.open.set(true);
+  }
+
+  protected stay(): void {
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
+  }
+
+  // A moment's grace, to move the pointer onto the popover to read it.
+  protected leave(): void {
+    if (this.pinned) {
+      return;
+    }
+    this.stay();
+    this.timer = setTimeout(() => this.open.set(false), 150);
+  }
+
+  protected toggle(event: Event): void {
+    // In a table heading, or a clickable card: the tip is not a click on what is under it.
+    event.stopPropagation();
+    this.pinned = !(this.open() && this.pinned);
+    this.open.set(this.pinned);
+  }
+
+  // A click outside it closes it; one on its own button is the button's to toggle.
+  protected outside(event: MouseEvent, button: HTMLElement): void {
+    if (!(event.target instanceof Node && button.contains(event.target))) {
+      this.hide();
+    }
+  }
+
+  protected hide(): void {
+    this.stay();
+    this.pinned = false;
+    this.open.set(false);
+  }
+
+  ngOnDestroy(): void {
+    this.stay();
+  }
+}
+```
+
+
+> 📄 **`frontend/src/app/features/costing/info-tips.ts`** — 585 سطر
+
+```ts
+// What each figure on the costing screens is, and how it is worked out, in Arabic and English: the
+// text behind the (ⓘ) beside a card's title or a column's heading (InfoTip), so the screens keep only
+// the figures. Each is as the server computes it; a change there is a change here.
+
+export interface Bilingual {
+  en: string;
+  ar: string;
+}
+
+export interface InfoTipContent {
+  title: Bilingual;
+  // الوصف: what it is, and what to do with it.
+  what: Bilingual;
+  // طريقة الحساب: how it is calculated.
+  how: Bilingual;
+}
+
+const tip = (title: Bilingual, what: Bilingual, how: Bilingual): InfoTipContent => ({ title, what, how });
+
+export const infoTips = {
+  // ---- Purchase price variance ----
+  ppvImpact: tip(
+    { en: 'Financial impact', ar: 'الأثر المالي للانحراف' },
+    {
+      en: 'What the price changes of the period cost (or saved) on what was actually bought. Positive: you paid more than the stock was worth before.',
+      ar: 'ما كلفته (أو وفّرته) تغيرات الأسعار في الفترة على الكميات المشتراة فعلًا. الموجب يعني أنك دفعت أكثر من قيمة المخزون السابقة.',
+    },
+    {
+      en: '(Latest net price − baseline average) × quantity bought in the period, added up over every material.',
+      ar: '(آخر سعر شراء صافي − متوسط السعر السابق) × الكمية المشتراة في الفترة، مجموعًا لكل الخامات.',
+    },
+  ),
+  ppvRising: tip(
+    { en: 'Prices up', ar: 'ارتفاع الأسعار' },
+    { en: 'How many materials were last bought above the average they came in with.', ar: 'عدد الخامات التي كان آخر سعر شراء لها أعلى من متوسطها السابق.' },
+    {
+      en: 'Count of materials with latest net − baseline > 0; the badge is the extra paid on them: Σ positive impacts.',
+      ar: 'عدد الخامات التي (آخر سعر − المتوسط السابق) > 0، والشارة هي الزيادة المدفوعة عليها: مجموع الآثار الموجبة.',
+    },
+  ),
+  ppvFalling: tip(
+    { en: 'Prices down', ar: 'انخفاض الأسعار' },
+    { en: 'How many materials were last bought below the average they came in with.', ar: 'عدد الخامات التي كان آخر سعر شراء لها أقل من متوسطها السابق.' },
+    {
+      en: 'Count of materials with latest net − baseline < 0; the badge is what that saved: Σ negative impacts.',
+      ar: 'عدد الخامات التي (آخر سعر − المتوسط السابق) < 0، والشارة هي ما تم توفيره: مجموع الآثار السالبة.',
+    },
+  ),
+  ppvDishes: tip(
+    { en: 'Dishes affected', ar: 'الأطباق المتأثرة' },
+    { en: 'Menu dishes whose cost per portion went up because an ingredient got dearer.', ar: 'أطباق المنيو التي ارتفعت تكلفة حصتها بسبب ارتفاع سعر أحد مكوناتها.' },
+    {
+      en: 'Distinct dishes that use a risen material, directly or inside a prep item, by their recipes.',
+      ar: 'عدد الأطباق المختلفة التي تستخدم خامة ارتفع سعرها، مباشرة أو داخل صنف مُصنَّع، حسب الوصفات.',
+    },
+  ),
+  ppvLargest: tip(
+    { en: 'Largest rise', ar: 'أعلى ارتفاع' },
+    { en: 'The material whose price rose most, as a share of what it used to cost.', ar: 'الخامة التي ارتفع سعرها بأعلى نسبة مقارنة بتكلفتها السابقة.' },
+    { en: '(Latest net − baseline) ÷ baseline × 100, the highest of the rising materials.', ar: '(آخر سعر − المتوسط السابق) ÷ المتوسط السابق × 100، الأعلى بين الخامات المرتفعة.' },
+  ),
+  baselineAvg: tip(
+    { en: 'Baseline avg', ar: 'متوسط السعر السابق' },
+    {
+      en: 'The moving average cost the material had on the first day of the period: what its stock was worth a unit before these purchases.',
+      ar: 'متوسط التكلفة المتحرك للخامة في أول يوم من الفترة: قيمة الوحدة في المخزون قبل مشتريات الفترة.',
+    },
+    {
+      en: 'Replayed from the stock ledger before the period: each priced delivery averaged in with the stock on the shelf. With no history, the first price paid in the period.',
+      ar: 'يُعاد حسابه من دفتر حركة المخزون قبل الفترة: كل توريد مُسعّر يُدمج مع الرصيد الموجود بالمتوسط المرجح. بدون تاريخ سابق: أول سعر مدفوع في الفترة.',
+    },
+  ),
+  latestNet: tip(
+    { en: 'Latest net', ar: 'آخر سعر شراء صافي' },
+    {
+      en: 'The last price paid for a purchase unit in the period, after the invoice discount. Tap a price to open its invoice.',
+      ar: 'آخر سعر مدفوع لوحدة الشراء في الفترة بعد خصم الفاتورة. اضغط على السعر لفتح فاتورته.',
+    },
+    { en: 'Line cost after its share of the discount ÷ quantity bought, per purchase unit.', ar: 'تكلفة السطر بعد نصيبه من الخصم ÷ الكمية المشتراة، لكل وحدة شراء.' },
+  ),
+  ppvChange: tip(
+    { en: 'Change', ar: 'فرق السعر ونسبة التغير' },
+    { en: 'How far the latest price moved from the baseline, in money and as a share.', ar: 'مقدار تحرك آخر سعر عن المتوسط السابق، بالقيمة وبالنسبة.' },
+    { en: 'Latest net − baseline avg; and that ÷ baseline × 100.', ar: 'آخر سعر صافي − متوسط السعر السابق؛ ثم ÷ المتوسط السابق × 100.' },
+  ),
+  ppvLineImpact: tip(
+    { en: 'Impact', ar: 'الأثر المالي' },
+    { en: "What this material's price change cost on the quantity bought in the period.", ar: 'ما كلفه تغير سعر هذه الخامة على الكمية المشتراة في الفترة.' },
+    { en: '(Latest net − baseline avg) × quantity bought.', ar: '(آخر سعر صافي − متوسط السعر السابق) × الكمية المشتراة.' },
+  ),
+
+  // ---- The order planner ----
+  orderApproved: tip(
+    { en: 'Approved order', ar: 'الطلبية المعتمدة' },
+    { en: 'What the order you approved below will cost, at the latest prices.', ar: 'تكلفة الطلبية التي اعتمدتها في الجدول، بآخر أسعار الشراء.' },
+    { en: 'Σ approved quantity × latest net price paid, per material.', ar: 'مجموع (الكمية المعتمدة × آخر سعر شراء صافي) لكل خامة.' },
+  ),
+  orderSuggested: tip(
+    { en: 'Suggested', ar: 'المقترح' },
+    { en: 'What the planner suggests ordering, before your changes.', ar: 'ما يقترحه المخطط للطلب قبل تعديلاتك.' },
+    {
+      en: 'Per material: expected usage + reorder level − on hand, rounded up to whole purchase units; × latest price.',
+      ar: 'لكل خامة: الاستهلاك المتوقع + حد الطلب − الرصيد، مقربًا لأعلى لوحدات شراء كاملة؛ × آخر سعر.',
+    },
+  ),
+  orderBelowReorder: tip(
+    { en: 'Below reorder level', ar: 'تحت حد الطلب' },
+    { en: 'Materials whose stock is already under the level you set for reordering.', ar: 'الخامات التي رصيدها الآن أقل من حد الطلب الذي حددته.' },
+    { en: 'Count of materials with on hand < reorder level.', ar: 'عدد الخامات التي الرصيد < حد الطلب.' },
+  ),
+  orderPlannedFrom: tip(
+    { en: 'Planned from', ar: 'مبني على' },
+    { en: 'The days covered ahead, and the past days whose sales the plan is built on.', ar: 'أيام التغطية القادمة، والأيام السابقة التي بُنيت الخطة على مبيعاتها.' },
+    {
+      en: 'Each dish: its sales in the look-back ÷ days, × (1 + growth %) unless you expect otherwise; × days covered; through the recipes and prep items to bought materials.',
+      ar: 'لكل طبق: مبيعاته في فترة الرجوع ÷ عدد الأيام × (1 + نسبة النمو) ما لم تحدد توقعًا آخر؛ × أيام التغطية؛ ثم عبر الوصفات والمُصنّعات إلى الخامات.',
+    },
+  ),
+  orderDaily: tip(
+    { en: 'A day', ar: 'متوسط الاستهلاك اليومي' },
+    { en: 'What the past days used of the material a day, by the sales and the recipes.', ar: 'ما استُهلك من الخامة يوميًا في الأيام السابقة حسب المبيعات والوصفات.' },
+    { en: 'Recipe usage of the look-back sales ÷ look-back days, in purchase units.', ar: 'استهلاك الوصفات لمبيعات فترة الرجوع ÷ عدد أيامها، بوحدة الشراء.' },
+  ),
+  orderExpected: tip(
+    { en: 'Expected', ar: 'الاستهلاك المتوقع' },
+    { en: 'What the days ahead will need, the prep items already made netted off first.', ar: 'ما ستحتاجه الأيام القادمة، بعد خصم المُصنّعات الجاهزة في المخزون.' },
+    { en: 'Σ expected dish sales × recipe quantity (as purchased, yield allowed for) − prep items on hand.', ar: 'مجموع (المبيعات المتوقعة × كمية الوصفة كما تُشترى مع نسبة الصافي) − المُصنّعات المتاحة.' },
+  ),
+  orderSuggestedQty: tip(
+    { en: 'Suggested', ar: 'الكمية المرشحة' },
+    { en: 'What to order of this material, in whole purchase units.', ar: 'الكمية المقترح طلبها من الخامة بوحدات شراء كاملة.' },
+    { en: 'max(0, expected + reorder level − on hand), rounded up to a whole purchase unit.', ar: 'الأكبر من (0، المتوقع + حد الطلب − الرصيد)، مقربًا لأعلى لوحدة شراء كاملة.' },
+  ),
+
+  // ---- Theoretical against actual consumption ----
+  unexplainedVariance: tip(
+    { en: 'Unexplained variance', ar: 'الانحراف غير المبرر' },
+    {
+      en: 'Material that left the stores with no sale, recipe or logged waste to explain it: over-portioning, unrecorded waste, theft, or a wrong recipe.',
+      ar: 'خامات خرجت من المخزن دون بيع أو وصفة أو هالك مسجل يفسرها: زيادة في الحصص، هالك غير مسجل، سرقة، أو وصفة خاطئة.',
+    },
+    { en: '(Actual usage − theoretical usage) × average cost now.', ar: '(الاستهلاك الفعلي − الاستهلاك النظري) × متوسط التكلفة الحالي.' },
+  ),
+  highLoss: tip(
+    { en: 'High-loss materials', ar: 'خامات بفاقد مرتفع' },
+    { en: 'Materials used beyond the recipes by more than the tolerance: look at these first.', ar: 'الخامات التي تجاوز استهلاكها الوصفات بأكثر من نسبة السماح: ابدأ بها.' },
+    { en: 'Count of materials with unexplained ÷ theoretical × 100 > tolerance %.', ar: 'عدد الخامات التي (غير المبرر ÷ النظري × 100) > نسبة السماح.' },
+  ),
+  theoreticalUsage: tip(
+    { en: 'Theoretical usage', ar: 'الاستهلاك النظري' },
+    { en: 'What the period’s sales should have taken from the stores, with no waste and no mistakes.', ar: 'ما كان يجب أن تستهلكه مبيعات الفترة من المخزن بدون هالك أو أخطاء.' },
+    {
+      en: 'Σ dishes sold × recipe quantities, down through the prep items, + what is held in prep items made and not sold yet; at the average cost now.',
+      ar: 'مجموع (الأطباق المباعة × كميات الوصفات) عبر المُصنّعات، + ما بقي داخل مُصنّعات لم تُبع بعد؛ بمتوسط التكلفة الحالي.',
+    },
+  ),
+  actualUsage: tip(
+    { en: 'Actual usage', ar: 'الاستهلاك الفعلي' },
+    { en: 'What really left the stores in the period, by the stock book.', ar: 'ما خرج فعلًا من المخزن خلال الفترة حسب دفتر المخزون.' },
+    { en: 'Opening + purchases − logged waste − closing; at the average cost now.', ar: 'أول المدة + المشتريات − الهالك المسجل − آخر المدة؛ بمتوسط التكلفة الحالي.' },
+  ),
+  theoreticalVsActual: tip(
+    { en: 'Theoretical vs actual', ar: 'النظري مقابل الفعلي' },
+    {
+      en: 'The gap between what the recipes say the sales took and what the stores really lost. Positive: more used than the recipes allow.',
+      ar: 'الفرق بين ما تقول الوصفات إن المبيعات استهلكته وما خرج فعلًا من المخزن. الموجب: استهلاك أكثر مما تسمح به الوصفات.',
+    },
+    { en: 'Unexplained = actual − theoretical; % = unexplained ÷ theoretical × 100.', ar: 'غير المبرر = الفعلي − النظري؛ النسبة = غير المبرر ÷ النظري × 100.' },
+  ),
+
+  // ---- ABC and days on hand ----
+  classA: tip(
+    { en: 'Class A', ar: 'الفئة A' },
+    {
+      en: 'The few materials that hold most of the money used: count and price them daily, and negotiate them first.',
+      ar: 'عدد قليل من الخامات يمثل معظم قيمة الاستهلاك: تُجرد وتُراجع أسعارها يوميًا، وتُفاوض عليها أولًا.',
+    },
+    {
+      en: 'Materials sorted by worth used, largest first; A while the running share is within 75% of the total.',
+      ar: 'تُرتب الخامات حسب قيمة الاستهلاك تنازليًا؛ الفئة A ما دامت النسبة التراكمية ضمن 75% من الإجمالي.',
+    },
+  ),
+  classB: tip(
+    { en: 'Class B', ar: 'الفئة B' },
+    { en: 'The middle of the value: control them weekly.', ar: 'الشريحة الوسطى من القيمة: تُراقب أسبوعيًا.' },
+    { en: 'The next materials while the running share is above 75% and within 90%.', ar: 'الخامات التالية ما دامت النسبة التراكمية فوق 75% وحتى 90%.' },
+  ),
+  classC: tip(
+    { en: 'Class C', ar: 'الفئة C' },
+    { en: 'Many cheap materials with little of the money: buy in bulk, count less often.', ar: 'خامات كثيرة رخيصة بقيمة قليلة: تُشترى بالجملة وتُجرد على فترات أطول.' },
+    { en: 'The rest: running share above 90%.', ar: 'الباقي: النسبة التراكمية فوق 90%.' },
+  ),
+  abcShare: tip(
+    { en: 'Share', ar: 'النسبة · التراكمي' },
+    { en: "The material's part of all that was used, and the running total down the list.", ar: 'نصيب الخامة من إجمالي الاستهلاك، والمجموع التراكمي على طول القائمة.' },
+    { en: 'Worth used ÷ total worth used × 100; cumulative = Σ shares down to this row.', ar: 'قيمة الاستهلاك ÷ إجمالي قيمة الاستهلاك × 100؛ التراكمي = مجموع النسب حتى هذا السطر.' },
+  ),
+  abcWorth: tip(
+    { en: 'Worth used', ar: 'قيمة الاستهلاك' },
+    { en: 'What the material used in the period was worth: sold, made into prep items, wasted, short at a count.', ar: 'قيمة ما استُهلك من الخامة في الفترة: مبيعات وتصنيع وهالك وعجز جرد.' },
+    { en: 'Σ quantity of each use × the average cost when it happened.', ar: 'مجموع (كمية كل استهلاك × متوسط التكلفة وقت حدوثه).' },
+  ),
+  daysOnHand: tip(
+    { en: 'Days on hand', ar: 'أيام الكفاية' },
+    { en: 'How many days the stock on the shelf lasts at the pace it is used.', ar: 'عدد الأيام التي يكفيها الرصيد الحالي بمعدل الاستهلاك.' },
+    { en: 'On hand ÷ average daily usage (worth used ÷ days in the period).', ar: 'الرصيد ÷ متوسط الاستهلاك اليومي (الاستهلاك ÷ عدد أيام الفترة).' },
+  ),
+  stockoutRisk: tip(
+    { en: 'Stockout risk', ar: 'خطر النفاد' },
+    { en: 'Materials that will likely run out before the next delivery: order them now.', ar: 'خامات قد تنفد قبل التوريد القادم: اطلبها الآن.' },
+    { en: 'Days on hand < 2.', ar: 'أيام الكفاية < 2.' },
+  ),
+  deadStock: tip(
+    { en: 'Dead stock', ar: 'مخزون راكد' },
+    {
+      en: 'Stock on the shelf that nothing used in the period: cash tied up, and a risk of expiry. The badge is what it is worth.',
+      ar: 'مخزون موجود لم يُستهلك منه شيء في الفترة: سيولة مجمدة وخطر انتهاء صلاحية. الشارة هي قيمته.',
+    },
+    { en: 'On hand > 0 and worth used = 0; value = on hand × average cost.', ar: 'الرصيد > 0 والاستهلاك = 0؛ القيمة = الرصيد × متوسط التكلفة.' },
+  ),
+
+  // ---- Materials, prep items and recipes ----
+  apUnit: tip(
+    { en: 'AP$ / unit', ar: 'تكلفة الشراء للوحدة' },
+    {
+      en: 'As-purchased cost: what a purchase unit (a kg, a carton) costs in stock now, before trimming and cleaning.',
+      ar: 'تكلفة الشراء كما هي: قيمة وحدة الشراء (كيلو، كرتونة) في المخزون الآن قبل التنظيف والتشفية.',
+    },
+    {
+      en: 'The moving weighted average: (stock on hand × its average + quantity bought × price paid) ÷ (on hand + bought), at each priced delivery.',
+      ar: 'المتوسط المرجح المتحرك: (الرصيد × متوسطه + الكمية المشتراة × سعرها) ÷ (الرصيد + المشتراة)، عند كل توريد مُسعّر.',
+    },
+  ),
+  yieldPercent: tip(
+    { en: 'Yield %', ar: 'نسبة الصافي' },
+    { en: 'How much of what is bought is usable after trimming, peeling, boning or cleaning.', ar: 'نسبة ما يصلح للاستخدام مما يُشترى بعد التنظيف أو التقشير أو نزع العظم.' },
+    { en: 'Net usable weight ÷ gross weight bought × 100.', ar: 'الوزن الصافي بعد التنظيف ÷ الوزن القائم المشترى × 100.' },
+  ),
+  epUnit: tip(
+    { en: 'EP$ / unit', ar: 'تكلفة الصافي للوحدة' },
+    { en: 'Edible-portion cost: what a usable unit really costs once the waste of cleaning is paid for. Recipes are costed by it.', ar: 'تكلفة الجزء الصالح: التكلفة الحقيقية للوحدة بعد احتساب فاقد التنظيف. الوصفات تُحسب بها.' },
+    { en: 'AP$ / unit ÷ (yield % ÷ 100).', ar: 'تكلفة الشراء للوحدة ÷ (نسبة الصافي ÷ 100).' },
+  ),
+  stockValue: tip(
+    { en: 'Stock value', ar: 'قيمة المخزون' },
+    { en: 'What the stock on the shelf is worth at its average cost.', ar: 'قيمة الرصيد الموجود بمتوسط تكلفته.' },
+    { en: 'On hand × AP$ / unit (stock below zero counts as none).', ar: 'الرصيد × تكلفة الشراء للوحدة (الرصيد السالب يُحسب صفرًا).' },
+  ),
+  lastPrice: tip(
+    { en: 'Last price paid', ar: 'آخر سعر' },
+    { en: 'The net price of the latest invoice that bought it, to compare with the average.', ar: 'السعر الصافي لآخر فاتورة اشترته، للمقارنة بالمتوسط.' },
+    { en: 'Latest posted invoice line: cost after discount ÷ quantity, per purchase unit.', ar: 'آخر سطر فاتورة مرحّل: التكلفة بعد الخصم ÷ الكمية، لكل وحدة شراء.' },
+  ),
+  prepStandard: tip(
+    { en: 'By its recipe', ar: 'التكلفة المعيارية' },
+    { en: 'What a unit of the prep item should cost by its recipe at today’s prices.', ar: 'ما يجب أن تكلفه وحدة المُصنَّع حسب وصفته بأسعار اليوم.' },
+    { en: 'Σ ingredient quantity × EP$ of each ÷ the batch yield.', ar: 'مجموع (كمية كل مكون × تكلفته الصافية) ÷ ناتج الدفعة.' },
+  ),
+  prepAverage: tip(
+    { en: 'In stock at', ar: 'متوسط التكلفة' },
+    { en: 'What a unit of the prep item in stock cost, from the batches actually made.', ar: 'تكلفة وحدة المُصنَّع في المخزون من الدفعات المصنعة فعلًا.' },
+    { en: 'Moving average of the batches: (on hand × average + batch cost) ÷ (on hand + quantity made).', ar: 'المتوسط المتحرك للدفعات: (الرصيد × المتوسط + تكلفة الدفعة) ÷ (الرصيد + الكمية المصنعة).' },
+  ),
+  costPerPortion: tip(
+    { en: 'Cost per portion', ar: 'تكلفة الحصة' },
+    { en: 'What one portion of the dish costs to make, its share of the shared costs (oil, gas, boxes) included.', ar: 'تكلفة إعداد حصة واحدة من الطبق، شاملة نصيبها من التكاليف المشتركة (زيت، غاز، علب).' },
+    { en: '(Σ ingredient quantity × EP$ / unit) ÷ portions + shared cost per meal.', ar: '(مجموع كمية كل مكون × تكلفته الصافية) ÷ عدد الحصص + التكلفة المشتركة لكل وجبة.' },
+  ),
+  foodCostPercent: tip(
+    { en: 'Food cost %', ar: 'نسبة تكلفة الطعام' },
+    { en: 'The share of the selling price that goes on ingredients. Above the target eats into the profit.', ar: 'نسبة سعر البيع التي تذهب للمكونات. تجاوز المستهدف يقلل الربح.' },
+    { en: 'Cost per portion ÷ selling price (before VAT) × 100.', ar: 'تكلفة الحصة ÷ سعر البيع (قبل الضريبة) × 100.' },
+  ),
+  costPerRecipe: tip(
+    { en: 'Cost per recipe', ar: 'تكلفة الوصفة' },
+    { en: 'What the whole recipe costs, all its portions.', ar: 'تكلفة الوصفة كاملة بكل حصصها.' },
+    { en: 'Σ ingredient quantity × EP$ / unit.', ar: 'مجموع (كمية كل مكون × تكلفته الصافية للوحدة).' },
+  ),
+  marginPerPortion: tip(
+    { en: 'Margin per portion', ar: 'هامش الحصة' },
+    { en: 'What a portion leaves after its food cost, towards wages, rent and profit.', ar: 'ما تتركه الحصة بعد تكلفتها لتغطية الرواتب والإيجار والربح.' },
+    { en: 'Selling price − cost per portion.', ar: 'سعر البيع − تكلفة الحصة.' },
+  ),
+  foodCostBudget: tip(
+    { en: 'Food cost % budget', ar: 'نسبة التكلفة المستهدفة' },
+    { en: 'The food cost the restaurant aims at, set in Cost settings.', ar: 'نسبة التكلفة التي يستهدفها المطعم، من إعدادات التكاليف.' },
+    { en: 'Set by the manager; the ideal price is worked out from it.', ar: 'يحددها المدير؛ ويُحسب منها السعر المثالي.' },
+  ),
+  idealPrice: tip(
+    { en: 'Ideal selling price', ar: 'سعر البيع المثالي' },
+    { en: 'The price that brings the dish to the food cost target.', ar: 'السعر الذي يجعل تكلفة الطبق عند النسبة المستهدفة.' },
+    { en: 'Cost per portion ÷ (food cost target % ÷ 100).', ar: 'تكلفة الحصة ÷ (النسبة المستهدفة ÷ 100).' },
+  ),
+  portions: tip(
+    { en: 'Portions', ar: 'عدد الحصص' },
+    { en: 'How many portions the recipe makes.', ar: 'عدد الحصص التي تنتجها الوصفة.' },
+    { en: 'Entered on the recipe; the cost per portion divides by it.', ar: 'يُدخل في الوصفة؛ وتُقسم عليه تكلفة الوصفة.' },
+  ),
+  sellingPrice: tip(
+    { en: 'Selling price', ar: 'سعر البيع' },
+    { en: 'The menu price, or the planned price of a recipe not on the menu yet.', ar: 'سعر المنيو، أو السعر المخطط لوصفة غير مرتبطة بالمنيو بعد.' },
+    { en: 'Before VAT, as the menu holds it.', ar: 'قبل الضريبة كما هو في المنيو.' },
+  ),
+
+  // ---- Spending and the safe ----
+  totalSpent: tip(
+    { en: 'Total spent', ar: 'إجمالي المشتريات' },
+    { en: 'Everything the posted purchase invoices and expense vouchers cost in these days.', ar: 'إجمالي تكلفة فواتير الشراء المرحّلة وأذون الصرف في هذه الأيام.' },
+    { en: 'Σ priced invoice lines after discount + Σ expense vouchers, by invoice date.', ar: 'مجموع سطور الفواتير المسعّرة بعد الخصم + مجموع أذون الصرف، حسب تاريخ الفاتورة.' },
+  ),
+  stockSpend: tip(
+    { en: 'Into stock', ar: 'خامات' },
+    { en: 'What was bought into the stores: cost of sales once the recipes use it.', ar: 'ما اشتُري للمخزن: يصبح تكلفة مبيعات عند استخدامه في الوصفات.' },
+    { en: 'Σ priced lines of stock materials.', ar: 'مجموع السطور المسعّرة للخامات المخزنية.' },
+  ),
+  expenseSpend: tip(
+    { en: 'Expenses', ar: 'مصروفات' },
+    { en: "Overheads that never enter stock: they go to the KPIs' profit and loss.", ar: 'مصروفات عامة لا تدخل المخزن: تذهب لقائمة الأرباح والخسائر في المؤشرات.' },
+    { en: 'Σ expense lines + expense vouchers.', ar: 'مجموع سطور المصروفات + أذون الصرف.' },
+  ),
+  invoices: tip(
+    { en: 'Invoices', ar: 'الفواتير' },
+    { en: 'How many supplier invoices were posted in these days.', ar: 'عدد فواتير الموردين المرحّلة في هذه الأيام.' },
+    { en: 'Count of posted invoices dated in the period.', ar: 'عدد الفواتير المرحّلة المؤرخة في الفترة.' },
+  ),
+  categoryShare: tip(
+    { en: 'Share', ar: 'النسبة' },
+    { en: 'The part of everything spent that went to this category.', ar: 'نصيب هذه الفئة من إجمالي الإنفاق.' },
+    { en: 'Category total ÷ total spent × 100.', ar: 'إجمالي الفئة ÷ إجمالي الإنفاق × 100.' },
+  ),
+  openingBalance: tip(
+    { en: 'Opening balance', ar: 'الرصيد الافتتاحي' },
+    { en: 'What was in the safe when the first day began.', ar: 'ما كان في الخزنة في بداية أول يوم.' },
+    { en: 'Σ every safe entry before the first day.', ar: 'مجموع كل حركات الخزنة قبل أول يوم.' },
+  ),
+  totalIn: tip(
+    { en: 'Total in', ar: 'إجمالي الوارد' },
+    {
+      en: 'Everything the safe had to work with: the balance brought forward and all that came in these days.',
+      ar: 'كل ما توفر للخزنة: الرصيد المرحّل وكل ما دخلها في هذه الأيام.',
+    },
+    {
+      en: 'Opening balance + cash sales + Visa sales + tax collected + external funding.',
+      ar: 'الرصيد الافتتاحي + مبيعات الكاش + مبيعات الفيزا + الضريبة المحصلة + التمويل الخارجي.',
+    },
+  ),
+  totalOut: tip(
+    { en: 'Total out', ar: 'إجمالي المنصرف' },
+    { en: 'Cash paid out of the safe in these days: suppliers, expenses, staff.', ar: 'النقد المصروف من الخزنة في هذه الأيام: موردين ومصروفات وموظفين.' },
+    { en: 'Σ payments out of the safe in the period: suppliers, expense vouchers, staff, tax paid.', ar: 'مجموع المدفوعات من الخزنة في الفترة: موردين وأذون صرف وموظفين وضرائب.' },
+  ),
+  netCashFlow: tip(
+    { en: 'Net cash flow', ar: 'صافي التدفق النقدي' },
+    { en: 'Whether the safe gained or lost cash over these days.', ar: 'هل زاد نقد الخزنة أم نقص خلال هذه الأيام.' },
+    { en: 'Total in − opening balance − total out.', ar: 'إجمالي الوارد − الرصيد الافتتاحي − إجمالي المنصرف.' },
+  ),
+  closingBalance: tip(
+    { en: 'Closing balance', ar: 'الرصيد الختامي' },
+    { en: 'What should be in the safe at the end of the last day.', ar: 'ما يجب أن يكون في الخزنة في نهاية آخر يوم.' },
+    { en: 'Total in (the opening balance in it) − total out.', ar: 'إجمالي الوارد (ومنه الرصيد الافتتاحي) − إجمالي المنصرف.' },
+  ),
+
+  // ---- The theoretical cost and the variance between counts ----
+  theoreticalCost: tip(
+    { en: 'Theoretical cost', ar: 'التكلفة النظرية' },
+    { en: 'What the sales should have cost by their recipes, with no waste and no mistakes.', ar: 'ما كان يجب أن تكلفه المبيعات حسب وصفاتها بدون هالك أو أخطاء.' },
+    {
+      en: 'Σ the ingredients each sale took at its cost then (today’s for one sold before its recipe) + its shared cost per meal.',
+      ar: 'مجموع المكونات التي أخذها كل بيع بتكلفتها وقتها (وبأسعار اليوم لما بيع قبل وصفته) + التكلفة المشتركة لكل وجبة.',
+    },
+  ),
+  breakEven: tip(
+    { en: 'Break-even analysis', ar: 'تحليل نقطة التعادل' },
+    {
+      en: 'The sales the restaurant needs to cover all its costs, and what each scenario does to it.',
+      ar: 'المبيعات اللازمة لتغطية كل التكاليف، وأثر كل سيناريو عليها.',
+    },
+    {
+      en: "Income statement from the days of sales, at a year's pace (weekly × 52); costs from the months' entered costs × 12. Break-even sales = fixed costs ÷ (1 − cost of sales ÷ revenue).",
+      ar: 'قائمة الدخل من أيام المبيعات بمعدل سنوي (الأسبوع × 52)؛ والتكاليف من تكاليف الشهور المدخلة × 12. مبيعات التعادل = التكاليف الثابتة ÷ (1 − تكلفة المبيعات ÷ الإيرادات).',
+    },
+  ),
+  netVariance: tip(
+    { en: 'Net variance', ar: 'صافي قيمة الانحراف' },
+    { en: 'The worth of what was used beyond (or under) the recipes between the two counts, waste included.', ar: 'قيمة ما استُهلك زيادة (أو نقصًا) عن الوصفات بين الجردين، شاملًا الهالك.' },
+    { en: 'Σ (actual usage − standard usage) × unit cost.', ar: 'مجموع (الاستهلاك الفعلي − المعياري) × تكلفة الوحدة.' },
+  ),
+  recordedWaste: tip(
+    { en: 'Recorded waste', ar: 'الهالك المسجل' },
+    { en: 'The waste someone logged between the counts: it explains part of the variance.', ar: 'الهالك الذي سُجل بين الجردين: يفسر جزءًا من الانحراف.' },
+    { en: 'Σ spoilage and voided dishes × their cost.', ar: 'مجموع التالف والأطباق الملغاة × تكلفتها.' },
+  ),
+  unexplainedBetweenCounts: tip(
+    { en: 'Unexplained', ar: 'غير مبرر' },
+    { en: 'The variance no recorded waste covers: what to investigate.', ar: 'الانحراف الذي لا يغطيه الهالك المسجل: ما يجب التحقيق فيه.' },
+    { en: 'Net variance − recorded waste.', ar: 'صافي الانحراف − الهالك المسجل.' },
+  ),
+  unfavourable: tip(
+    { en: 'Unfavourable materials', ar: 'خامات غير مواتية' },
+    { en: 'Materials used beyond the recipes by more than the tolerance.', ar: 'الخامات التي تجاوز استهلاكها الوصفات بأكثر من نسبة السماح.' },
+    { en: 'Count of materials with variance ÷ standard usage × 100 > tolerance %.', ar: 'عدد الخامات التي (الانحراف ÷ المعياري × 100) > نسبة السماح.' },
+  ),
+  largestVariance: tip(
+    { en: 'Largest variance', ar: 'أكبر انحراف نسبي' },
+    { en: 'The material furthest from its recipes, as a share of its standard usage.', ar: 'الخامة الأبعد عن وصفاتها كنسبة من استهلاكها المعياري.' },
+    { en: 'max(variance ÷ standard usage × 100).', ar: 'أعلى قيمة لـ (الانحراف ÷ الاستهلاك المعياري × 100).' },
+  ),
+  standardUsage: tip(
+    { en: 'Standard usage', ar: 'الاستهلاك المعياري' },
+    { en: 'What the sales between the counts should have used, by the recipes.', ar: 'ما كان يجب أن تستهلكه المبيعات بين الجردين حسب الوصفات.' },
+    { en: 'Σ dishes sold × recipe quantity as purchased.', ar: 'مجموع (الأطباق المباعة × كمية الوصفة كما تُشترى).' },
+  ),
+
+  // ---- KPIs ----
+  kpiFoodCost: tip(
+    { en: 'Food cost %', ar: 'نسبة تكلفة الطعام' },
+    { en: 'How well food is bought and prepared: the share of food sales spent on its ingredients.', ar: 'كفاءة شراء الطعام وتحضيره: نسبة مبيعات الطعام التي تذهب لمكوناته.' },
+    { en: 'Cost of raw materials consumed ÷ food sales × 100.', ar: '(تكلفة المواد الخام المستهلكة ÷ إجمالي مبيعات الطعام) × 100.' },
+  ),
+  kpiBeverageCost: tip(
+    { en: 'Beverage cost %', ar: 'نسبة تكلفة المشروبات' },
+    { en: 'How well drinks are managed.', ar: 'كفاءة إدارة المشروبات.' },
+    { en: 'Cost of beverages sold ÷ beverage revenue × 100.', ar: '(تكلفة المشروبات المباعة ÷ إيرادات المشروبات) × 100.' },
+  ),
+  kpiLabourCost: tip(
+    { en: 'Labour cost %', ar: 'نسبة تكلفة العمالة' },
+    { en: 'Staffing against revenue.', ar: 'تكلفة العمالة مقارنة بالإيرادات.' },
+    { en: 'Wages and benefits ÷ revenue × 100.', ar: '(إجمالي الرواتب والمزايا ÷ إجمالي الإيرادات) × 100.' },
+  ),
+  kpiAverageCheck: tip(
+    { en: 'Average check', ar: 'متوسط قيمة الفاتورة' },
+    { en: 'What a customer spends on average.', ar: 'متوسط ما ينفقه العميل.' },
+    { en: 'Revenue ÷ paid orders.', ar: 'إجمالي الإيرادات ÷ عدد الفواتير.' },
+  ),
+  kpiSalesPerLabourHour: tip(
+    { en: 'Sales per labour hour', ar: 'الإيراد لكل ساعة عمل' },
+    { en: 'How productive the staff hours are.', ar: 'إنتاجية ساعات عمل الموظفين.' },
+    { en: 'Revenue ÷ labour hours.', ar: 'إجمالي المبيعات ÷ إجمالي ساعات العمل.' },
+  ),
+  kpiGrossProfitMargin: tip(
+    { en: 'Gross profit margin', ar: 'هامش الربح الإجمالي' },
+    { en: 'What the sales leave after the cost of what was sold.', ar: 'ما تتركه المبيعات بعد تكلفة ما بيع.' },
+    { en: 'Gross profit (revenue − cost of sales) ÷ revenue × 100.', ar: '(إجمالي الربح ÷ إجمالي الإيرادات) × 100، والربح الإجمالي = الإيرادات − تكلفة المبيعات.' },
+  ),
+  kpiNetProfitMargin: tip(
+    { en: 'Net profit margin', ar: 'هامش الربح الصافي' },
+    { en: 'What is left as profit of every pound sold, after every cost.', ar: 'ما يتبقى ربحًا من كل جنيه مبيعات بعد كل التكاليف.' },
+    { en: 'Net profit ÷ revenue × 100.', ar: '(صافي الربح ÷ الإيرادات) × 100.' },
+  ),
+  incomeStatement: tip(
+    { en: 'The month', ar: 'قائمة الدخل' },
+    {
+      en: "The month's profit and loss: revenue is its net sales, the tax collected on the takings is owed to the tax authority and never profit.",
+      ar: 'أرباح وخسائر الشهر: الإيراد هو صافي المبيعات، والضريبة المحصلة التزام على المطعم وليست ربحًا.',
+    },
+    {
+      en: 'Revenue = takings (cash + Visa) − tax collected. Food and beverage cost: what the sales took by their recipes, shared costs on the meals, losses against food. Expenses: the posted invoices by category, with what is entered by hand.',
+      ar: 'الإيراد = الإيرادات (كاش + فيزا) − الضريبة المحصلة. تكلفة الطعام والمشروبات: ما أخذته المبيعات حسب الوصفات مع التكاليف المشتركة، والفاقد على الطعام. المصروفات: فواتير الشراء المرحّلة حسب القسم مع المدخل يدويًا.',
+    },
+  ),
+  dishProfit: tip(
+    { en: 'Margin', ar: 'الهامش' },
+    { en: 'What the dish left of its sales after its ingredients this month.', ar: 'ما تركه الطبق من مبيعاته بعد مكوناته هذا الشهر.' },
+    { en: 'Profit = net sales − ingredient cost; margin = profit ÷ net sales × 100.', ar: 'الربح = صافي المبيعات − تكلفة المكونات؛ الهامش = الربح ÷ صافي المبيعات × 100.' },
+  ),
+
+  // ---- Menu engineering ----
+  meStar: tip(
+    { en: 'Stars', ar: 'النجوم' },
+    {
+      en: 'Popular and profitable: keep them as they are, give them the best place on the menu, and never let their quality or portion slip.',
+      ar: 'مطلوبة ومربحة: حافظ عليها كما هي، وضعها في أبرز مكان بالمنيو، ولا تسمح بتراجع جودتها أو حجم حصتها.',
+    },
+    { en: 'Menu mix ≥ popularity threshold, and contribution margin ≥ the average margin.', ar: 'نسبة المبيعات ≥ حد الشعبية، وهامش المساهمة ≥ متوسط الهامش.' },
+  ),
+  mePlowhorse: tip(
+    { en: 'Plowhorses', ar: 'خيول العمل' },
+    {
+      en: 'Popular but earn little: raise the price a little at a time, cut the portion cost or the dearer ingredients, or pair them with a high-margin side.',
+      ar: 'مطلوبة لكن ربحها قليل: ارفع السعر تدريجيًا، أو خفّض تكلفة الحصة والمكونات الغالية، أو قدّمها مع صنف جانبي عالي الربح.',
+    },
+    { en: 'Menu mix ≥ popularity threshold, contribution margin < the average margin.', ar: 'نسبة المبيعات ≥ حد الشعبية، وهامش المساهمة < متوسط الهامش.' },
+  ),
+  mePuzzle: tip(
+    { en: 'Puzzles', ar: 'الألغاز' },
+    {
+      en: 'Profitable but few order them: move them up the menu, rename or describe them better, have the staff suggest them, or lower the price a little.',
+      ar: 'مربحة لكن قليلة الطلب: انقلها لمكان أبرز في المنيو، حسّن اسمها ووصفها، اجعل الموظفين يقترحونها، أو خفّض سعرها قليلًا.',
+    },
+    { en: 'Menu mix < popularity threshold, contribution margin ≥ the average margin.', ar: 'نسبة المبيعات < حد الشعبية، وهامش المساهمة ≥ متوسط الهامش.' },
+  ),
+  meDog: tip(
+    { en: 'Dogs', ar: 'الأصناف الضعيفة' },
+    {
+      en: 'Neither popular nor profitable: take them off the menu, or rework them into something new; keep one only if it brings guests in for others.',
+      ar: 'غير مطلوبة وغير مربحة: احذفها من المنيو أو أعد تصميمها كصنف جديد؛ أبقِ عليها فقط إن كانت تجذب الزبائن لأصناف أخرى.',
+    },
+    { en: 'Menu mix < popularity threshold, contribution margin < the average margin.', ar: 'نسبة المبيعات < حد الشعبية، وهامش المساهمة < متوسط الهامش.' },
+  ),
+  menuMix: tip(
+    { en: 'Menu mix %', ar: 'نسبة المبيعات' },
+    { en: "The dish's share of all the portions sold of the dishes analysed.", ar: 'نصيب الطبق من إجمالي الحصص المباعة للأطباق محل التحليل.' },
+    { en: 'Quantity sold ÷ Σ quantity sold of every analysed dish × 100.', ar: 'الكمية المباعة ÷ مجموع الكميات المباعة لكل الأطباق × 100.' },
+  ),
+  popularityThreshold: tip(
+    { en: 'Popularity threshold', ar: 'حد الشعبية' },
+    { en: 'The menu mix a dish must reach to count as popular.', ar: 'نسبة المبيعات التي يجب أن يبلغها الطبق ليُعتبر مطلوبًا.' },
+    { en: '70% × (100% ÷ number of dishes analysed), as Kasavana and Smith set it.', ar: '70% × (100% ÷ عدد الأطباق محل التحليل)، حسب طريقة كاسافانا وسميث.' },
+  ),
+  contributionMargin: tip(
+    { en: 'Contribution margin', ar: 'هامش المساهمة' },
+    { en: 'What one portion leaves after its food cost, towards the other costs and the profit.', ar: 'ما تتركه الحصة الواحدة بعد تكلفة طعامها لتغطية باقي التكاليف والربح.' },
+    { en: 'Average net selling price − food cost per portion (ingredients as sold).', ar: 'متوسط سعر البيع الصافي − تكلفة طعام الحصة (المكونات وقت البيع).' },
+  ),
+  averageContribution: tip(
+    { en: 'Average margin', ar: 'متوسط هامش المساهمة' },
+    { en: 'The margin a dish must reach to count as profitable.', ar: 'الهامش الذي يجب أن يبلغه الطبق ليُعتبر مربحًا.' },
+    { en: 'Σ total contribution ÷ Σ quantity sold (weighted by what sold).', ar: 'مجموع المساهمة الكلية ÷ مجموع الكميات المباعة (متوسط مرجح بالمبيعات).' },
+  ),
+  totalContribution: tip(
+    { en: 'Total contribution', ar: 'إجمالي المساهمة' },
+    { en: 'What the dish earned over its food cost in the period: where the profit really comes from.', ar: 'ما ربحه الطبق فوق تكلفة طعامه في الفترة: مصدر الربح الحقيقي.' },
+    { en: 'Net sales − ingredient cost = contribution margin × quantity sold.', ar: 'صافي المبيعات − تكلفة المكونات = هامش المساهمة × الكمية المباعة.' },
+  ),
+  suggestedPrice: tip(
+    { en: 'Suggested price', ar: 'السعر المقترح' },
+    { en: 'The price that brings the dish to the food cost target.', ar: 'السعر الذي يجعل تكلفة الطبق عند النسبة المستهدفة.' },
+    { en: 'Food cost per portion ÷ (food cost target % ÷ 100).', ar: 'تكلفة طعام الحصة ÷ (النسبة المستهدفة ÷ 100).' },
+  ),
+  meFoodCost: tip(
+    { en: 'Food cost %', ar: 'نسبة تكلفة الطعام' },
+    { en: 'The share of what the dish sold for that went on its ingredients in the period.', ar: 'نسبة ما بيع به الطبق التي ذهبت لمكوناته في الفترة.' },
+    { en: 'Ingredient cost ÷ net sales × 100.', ar: 'تكلفة المكونات ÷ صافي المبيعات × 100.' },
+  ),
+
+  // ---- The stock card ----
+  scOpening: tip(
+    { en: 'Opening balance', ar: 'رصيد أول المدة' },
+    { en: 'What was in stock when the first day began.', ar: 'الرصيد في بداية أول يوم من الفترة.' },
+    { en: 'Σ every movement before the first day.', ar: 'مجموع كل الحركات قبل أول يوم.' },
+  ),
+  scIn: tip(
+    { en: 'Total in', ar: 'إجمالي الوارد' },
+    { en: 'Everything that came into stock in the period: purchases, batches made, counts found over, returns.', ar: 'كل ما دخل المخزن في الفترة: مشتريات، تصنيع، زيادة جرد، مرتجعات.' },
+    { en: 'Σ positive movements in the period (a voided purchase counts out).', ar: 'مجموع الحركات الموجبة في الفترة (إلغاء فاتورة يُحسب منصرفًا).' },
+  ),
+  scOut: tip(
+    { en: 'Total out', ar: 'إجمالي المنصرف' },
+    { en: 'Everything that left stock in the period: sales, production, waste, counts found short.', ar: 'كل ما خرج من المخزن في الفترة: مبيعات، تصنيع، هالك، عجز جرد.' },
+    { en: 'Σ negative movements in the period.', ar: 'مجموع الحركات السالبة في الفترة.' },
+  ),
+  scClosing: tip(
+    { en: 'Closing on hand', ar: 'رصيد آخر المدة' },
+    { en: 'What the book says is in stock at the end of the last day.', ar: 'الرصيد الدفتري في نهاية آخر يوم.' },
+    { en: 'Opening + total in − total out; value = closing × the moving average then.', ar: 'أول المدة + الوارد − المنصرف؛ القيمة = الرصيد × المتوسط المتحرك وقتها.' },
+  ),
+  scAverage: tip(
+    { en: 'Moving average cost (AP$)', ar: 'متوسط التكلفة المتحرك' },
+    { en: 'What a purchase unit in stock costs now: every valuation and recipe uses it.', ar: 'تكلفة وحدة الشراء في المخزون الآن: تستخدمه كل التقييمات والوصفات.' },
+    {
+      en: 'At each priced delivery or batch: (on hand × average + quantity × price) ÷ (on hand + quantity); a voided one is taken back out.',
+      ar: 'عند كل توريد أو تصنيع مُسعّر: (الرصيد × المتوسط + الكمية × السعر) ÷ (الرصيد + الكمية)؛ ويُستبعد المُلغى.',
+    },
+  ),
+  scBalance: tip(
+    { en: 'Running balance', ar: 'الرصيد بعد الحركة' },
+    { en: 'What was in stock right after this movement, whatever the filter shows.', ar: 'الرصيد مباشرة بعد هذه الحركة، بغض النظر عن الفلتر.' },
+    { en: 'Previous balance + in − out, over the whole ledger.', ar: 'الرصيد السابق + الوارد − المنصرف، على كامل الدفتر.' },
+  ),
+  scUnitPrice: tip(
+    { en: 'Unit price', ar: 'سعر الحركة' },
+    { en: 'The price the movement was made at: the price paid on a purchase, the batch cost of a batch, the average cost then for the rest.', ar: 'سعر الحركة: سعر الشراء للمشتريات، تكلفة الدفعة للتصنيع، والمتوسط وقتها لباقي الحركات.' },
+    { en: 'Per purchase unit; value = quantity × unit price.', ar: 'لكل وحدة شراء؛ القيمة = الكمية × سعر الحركة.' },
+  ),
+  scAverageAfter: tip(
+    { en: 'Moving avg after', ar: 'المتوسط بعد الحركة' },
+    { en: 'The moving average cost the movement left.', ar: 'متوسط التكلفة المتحرك بعد هذه الحركة.' },
+    {
+      en: 'Changed only by a priced purchase or batch (weighted with the stock on the shelf) or its void; other movements carry it on.',
+      ar: 'لا يتغير إلا بشراء أو تصنيع مُسعّر (مرجحًا بالرصيد) أو إلغائه؛ باقي الحركات تحمله كما هو.',
+    },
+  ),
+} satisfies Record<string, InfoTipContent>;
+
+export type InfoTipKey = keyof typeof infoTips;
+```
+
+
 > 📄 **`frontend/src/app/features/costing/costing-shell.ts`** — 50 سطر
 
 ```ts
@@ -7223,7 +8126,7 @@ export class CostingShell {
 ```
 
 
-> 📄 **`frontend/src/app/features/costing/costing.scss`** — 400 سطر
+> 📄 **`frontend/src/app/features/costing/costing.scss`** — 404 سطر
 
 ```scss
 // The Costing & Financials screens' own: the shared page styles (../shared/pages.scss), as every page of the app has them.
@@ -7571,6 +8474,10 @@ tr.pending-deletion td {
   box-shadow: var(--app-card-shadow);
 
   .label {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 2px;
     font: var(--mat-sys-label-medium);
     color: var(--mat-sys-on-surface-variant);
   }
@@ -7788,9 +8695,9 @@ export class PeriodBar {
 
 ## 6. شاشات الخامات
 
-**`MaterialsPage`:** الخامات بتكاليفها: AP$ لكل وحدة شراء (المتوسط)، Yield الافتراضي، EP$، الرصيد وقيمته، وحد الطلب. بحث ذكي، فلتر الفئة والنوع، ترتيب، تصدير واستيراد. و `MaterialDialog`: الإنشاء والتعديل وتغيير وحدة العد (مع شرح ما سيُعاد صياغته). و `MaterialHistoryDialog`: **كارت الصنف** (كل بند فاتورة اشترى الخامة، الأحدث أولًا، والملغى مشطوب) لمطابقة الورق عند جرد مريب. و `MaterialPicker` و `QuickMaterialDialog` لإضافة خامة سريعًا من سطر فاتورة.
+**`MaterialsPage`:** الخامات بتكاليفها: AP$ لكل وحدة شراء (المتوسط)، Yield الافتراضي، EP$، الرصيد وقيمته، وحد الطلب. بحث ذكي، فلتر الفئة والنوع، ترتيب، تصدير واستيراد. و `MaterialDialog`: الإنشاء والتعديل وتغيير وحدة العد (مع شرح ما سيُعاد صياغته). وفيه **حاسبة نسبة الصافي** (احسب من الوزن): نافذة منبثقة بوزنين، القائم والصافي بعد التنظيف، تحسب النسبة = الصافي ÷ القائم × 100 و EP$ = AP$ ÷ النسبة، و "استخدم النسبة" تضعها في الحقل؛ وتلميح الحقل يعرض EP$ الناتج دائمًا. و `MaterialHistoryDialog`: **سجل مشتريات الصنف** (كل بند فاتورة اشترى الخامة، الأحدث أولًا، والملغى مشطوب) لمطابقة الورق عند جرد مريب. و `StockCardDialog`: **كارتة الصنف** (الفصل 06): الفترة ونوع الحركة، شريط أول المدة والوارد والمنصرف وآخر المدة والمتوسط، ثم الدفتر سطرًا سطرًا، و Excel كما هو مفلتر. ومرجع كل سطر يفتح مصدره: الفاتورة فوق الكارتة وسطر الخامة فيها مُعلَّم مع طريق تصحيحها (تعديل الفاتورة يلغيها ويُعيد إدخالها)، والتشغيلة في نافذتها، والجرد في صفحته، ومبيعات اليوم في صفحة المبيعات على يومها والإيصال مُعلَّم (`?day=&receipt=`)، والتالف في سجل الهالك (`?spoilage=`)؛ وكل مرجع لا يُفتح إلا لمن يعمل تبويبه. و `StockCardButton` زر الكارتة بجانب اسم الخامة في جداول التحليلات. و `MaterialPicker` و `QuickMaterialDialog` لإضافة خامة سريعًا من سطر فاتورة.
 
-> 📄 **`frontend/src/app/features/costing/materials-page.ts`** — 384 سطر
+> 📄 **`frontend/src/app/features/costing/materials-page.ts`** — 395 سطر
 
 ```ts
 import { DatePipe, DecimalPipe } from '@angular/common';
@@ -7813,6 +8720,8 @@ import { Approvals, pendingLabel } from './approvals';
 import { saveBlob } from '../../core/ui/save-blob';
 import { MaterialDialog, MaterialDialogResult } from './material-dialog';
 import { MaterialHistoryDialog } from './material-history-dialog';
+import { InfoTip } from './info-tip';
+import { showStockCard } from './stock-card-dialog';
 import { SheetImportData, SheetImportDialog } from './sheet-import-dialog';
 import { todayIso } from './financials';
 import { FilterOption, FilterSelect } from '../shared/filter-select';
@@ -7844,6 +8753,7 @@ const unitGroups: Record<UnitOfMeasure, string> = { Gram: 'Weight · وزن', Mi
     DatePipe,
     DecimalPipe,
     FilterSelect,
+    InfoTip,
     FormsModule,
     MatButtonModule,
     MatFormFieldModule,
@@ -7895,12 +8805,12 @@ const unitGroups: Record<UnitOfMeasure, string> = { Gram: 'Weight · وزن', Mi
               <th>Material<span class="ar">الخامة</span></th>
               <th>Category<span class="ar">الفئة</span></th>
               <th>Bought by<span class="ar">وحدة الشراء</span></th>
-              <th class="num">AP$ / unit<span class="ar">تكلفة الشراء</span></th>
-              <th class="num">Yield %<span class="ar">نسبة الصافي</span></th>
-              <th class="num">EP$ / unit<span class="ar">تكلفة الصافي</span></th>
+              <th class="num">AP$ / unit <app-info-tip tip="apUnit" /><span class="ar">تكلفة الشراء</span></th>
+              <th class="num">Yield % <app-info-tip tip="yieldPercent" /><span class="ar">نسبة الصافي</span></th>
+              <th class="num">EP$ / unit <app-info-tip tip="epUnit" /><span class="ar">تكلفة الصافي</span></th>
               <th class="num">On hand<span class="ar">الرصيد</span></th>
-              <th class="num">Stock value<span class="ar">قيمة المخزون</span></th>
-              <th class="num">Last price paid<span class="ar">آخر سعر</span></th>
+              <th class="num">Stock value <app-info-tip tip="stockValue" /><span class="ar">قيمة المخزون</span></th>
+              <th class="num">Last price paid <app-info-tip tip="lastPrice" /><span class="ar">آخر سعر</span></th>
               <th class="num"><span class="visually-hidden">Actions</span></th>
             </tr>
           </thead>
@@ -7940,8 +8850,11 @@ const unitGroups: Record<UnitOfMeasure, string> = { Gram: 'Weight · وزن', Mi
                 <td class="num">{{ m.stockValue === null ? '' : (m.stockValue | money) }}</td>
                 <td class="num">{{ m.lastPurchaseCostPerPurchaseUnit === null ? '' : (m.lastPurchaseCostPerPurchaseUnit | money) }}</td>
                 <td class="num actions" (click)="$event.stopPropagation()">
+                  <button mat-icon-button (click)="stockCard(m)" matTooltip="Stock card · كارتة الصنف" [attr.aria-label]="'Stock card of ' + m.name">
+                    <mat-icon>receipt_long</mat-icon>
+                  </button>
                   @if (m.kind !== 'Prep') {
-                    <button mat-icon-button (click)="history(m)" matTooltip="Purchase history · كارت الصنف" [attr.aria-label]="'Purchase history of ' + m.name">
+                    <button mat-icon-button (click)="history(m)" matTooltip="Purchase history · سجل المشتريات" [attr.aria-label]="'Purchase history of ' + m.name">
                       <mat-icon>history</mat-icon>
                     </button>
                   }
@@ -8072,6 +8985,11 @@ export class MaterialsPage {
     return this.approvals.pendingFor(material.id);
   }
 
+  // Every movement of its stock, the balance and the average after each, each opening its record.
+  protected stockCard(material: MaterialCost): void {
+    showStockCard(this.dialog, material);
+  }
+
   // Every invoice line that bought it, to hold against the paper invoices.
   protected history(material: MaterialCost): void {
     this.dialog.open<MaterialHistoryDialog, MaterialCost>(MaterialHistoryDialog, { data: material, width: '960px', maxWidth: '95vw' });
@@ -8180,16 +9098,19 @@ export class MaterialsPage {
 ```
 
 
-> 📄 **`frontend/src/app/features/costing/material-dialog.ts`** — 387 سطر
+> 📄 **`frontend/src/app/features/costing/material-dialog.ts`** — 538 سطر
 
 ```ts
+import { A11yModule } from '@angular/cdk/a11y';
+import { CdkConnectedOverlay, CdkOverlayOrigin, ConnectedPosition } from '@angular/cdk/overlay';
 import { DecimalPipe } from '@angular/common';
 import { Component, computed, inject, signal } from '@angular/core';
-import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { takeUntilDestroyed, toSignal } from '@angular/core/rxjs-interop';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
 import { MAT_DIALOG_DATA, MatDialogModule, MatDialogRef } from '@angular/material/dialog';
 import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatIconModule } from '@angular/material/icon';
 import { MatInputModule } from '@angular/material/input';
 import { MatSelectModule } from '@angular/material/select';
 import { firstValueFrom, merge } from 'rxjs';
@@ -8217,7 +9138,20 @@ const many: Record<UnitOfMeasure, string> = { Gram: 'g', Millilitre: 'ml', Piece
 // everything recorded is restated by it, on a manager's say. A prep item keeps its unit.
 @Component({
   selector: 'app-material-dialog',
-  imports: [DecimalPipe, MatButtonModule, MatDialogModule, MatFormFieldModule, MatInputModule, MatSelectModule, PurchaseCategoryField, ReactiveFormsModule],
+  imports: [
+    A11yModule,
+    CdkConnectedOverlay,
+    CdkOverlayOrigin,
+    DecimalPipe,
+    MatButtonModule,
+    MatDialogModule,
+    MatFormFieldModule,
+    MatIconModule,
+    MatInputModule,
+    MatSelectModule,
+    PurchaseCategoryField,
+    ReactiveFormsModule,
+  ],
   template: `
     <h2 mat-dialog-title>{{ data ? 'Change ' + data.name : 'New raw material' }}</h2>
     <mat-dialog-content>
@@ -8306,8 +9240,58 @@ const many: Record<UnitOfMeasure, string> = { Gram: 'g', Millilitre: 'ml', Piece
         <mat-form-field>
           <mat-label>Yield % · نسبة الصافي</mat-label>
           <input matInput type="number" min="1" max="100" step="any" formControlName="yield" />
-          <mat-hint>Usable after trimming</mat-hint>
+          <button
+            mat-icon-button
+            matSuffix
+            type="button"
+            cdkOverlayOrigin
+            #yieldOrigin="cdkOverlayOrigin"
+            (click)="calculating.set(!calculating())"
+            [attr.aria-expanded]="calculating()"
+            aria-label="Calculate from weight · احسب من الوزن"
+            title="Calculate from weight · احسب من الوزن"
+          >
+            <mat-icon>calculate</mat-icon>
+          </button>
+          <mat-hint>{{ epHint() ?? 'Usable after trimming' }}</mat-hint>
         </mat-form-field>
+        <ng-template
+          cdkConnectedOverlay
+          [cdkConnectedOverlayOrigin]="yieldOrigin"
+          [cdkConnectedOverlayOpen]="calculating()"
+          [cdkConnectedOverlayPositions]="yieldPositions"
+          [cdkConnectedOverlayViewportMargin]="12"
+          (overlayOutsideClick)="calculating.set(false)"
+          (overlayKeydown)="$event.key === 'Escape' && calculating.set(false)"
+          (detach)="calculating.set(false)"
+        >
+          <section class="yield-calc" role="dialog" aria-label="Calculate yield from weight · احسب نسبة الصافي من الوزن" cdkTrapFocus [cdkTrapFocusAutoCapture]="true">
+            <h3>Calculate from weight · <span lang="ar">احسب من الوزن</span></h3>
+            <p class="muted">Weigh it as bought, then again cleaned and ready to cook, in the same unit. · <span lang="ar">بنفس الوحدة للوزنين.</span></p>
+            <mat-form-field subscriptSizing="dynamic">
+              <mat-label>Gross weight · الوزن القائم</mat-label>
+              <input matInput type="number" min="0" step="any" [value]="gross() ?? ''" (input)="gross.set(number($event))" aria-label="Gross weight, as bought" />
+            </mat-form-field>
+            <mat-form-field subscriptSizing="dynamic">
+              <mat-label>Net usable weight · الوزن الصافي بعد التنظيف</mat-label>
+              <input matInput type="number" min="0" step="any" [value]="net() ?? ''" (input)="net.set(number($event))" aria-label="Net usable weight, after cleaning" />
+            </mat-form-field>
+            @if (calculated(); as c) {
+              <dl class="result">
+                <div><dt>Yield % · نسبة الصافي</dt><dd>{{ c.yield | number: '1.0-2' }}%</dd></div>
+                @if (c.ep !== null) {
+                  <div><dt>EP$ / {{ form.value.purchaseUnit || 'unit' }} · تكلفة الصافي</dt><dd>{{ company.money(c.ep, 2, 4) }}</dd></div>
+                }
+              </dl>
+            } @else if (gross() !== null && net() !== null) {
+              <p class="error" role="alert">The net weight is more than nothing and at most the gross. · الصافي أكبر من صفر ولا يزيد عن القائم.</p>
+            }
+            <div class="actions">
+              <button mat-button type="button" (click)="calculating.set(false)">Cancel</button>
+              <button mat-flat-button type="button" [disabled]="!calculated()" (click)="useYield()">Use this yield · استخدم النسبة</button>
+            </div>
+          </section>
+        </ng-template>
         <mat-form-field>
           <mat-label>Reorder at ({{ form.value.purchaseUnit || 'units' }}) · حد الطلب</mat-label>
           <input matInput type="number" min="0" step="any" formControlName="reorderAt" />
@@ -8358,6 +9342,48 @@ const many: Record<UnitOfMeasure, string> = { Gram: 'g', Millilitre: 'ml', Piece
     .muted {
       color: var(--mat-sys-on-surface-variant);
     }
+    .yield-calc {
+      display: grid;
+      gap: 8px;
+      width: min(340px, calc(100vw - 32px));
+      padding: 14px 16px;
+      border-radius: 14px;
+      border: 1px solid var(--mat-sys-outline-variant);
+      background: var(--mat-sys-surface-container-lowest);
+      box-shadow: 0 8px 28px rgb(15 23 42 / 18%);
+
+      h3 {
+        margin: 0;
+        font: var(--mat-sys-title-small);
+      }
+      p {
+        margin: 0;
+        font: var(--mat-sys-body-small);
+      }
+      .result {
+        display: grid;
+        gap: 4px;
+        margin: 0;
+
+        div {
+          display: flex;
+          justify-content: space-between;
+          gap: 8px;
+        }
+        dt {
+          color: var(--mat-sys-on-surface-variant);
+        }
+        dd {
+          margin: 0;
+          font-weight: 600;
+        }
+      }
+      .actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 8px;
+      }
+    }
     @media (max-width: 560px) {
       .form {
         grid-template-columns: 1fr;
@@ -8367,6 +9393,15 @@ const many: Record<UnitOfMeasure, string> = { Gram: 'g', Millilitre: 'ml', Piece
 })
 export class MaterialDialog {
   protected readonly company = inject(Company);
+
+  // The yield worked out from two weighings: as bought (gross) and cleaned, ready to use (net).
+  protected readonly calculating = signal(false);
+  protected readonly gross = signal<number | null>(null);
+  protected readonly net = signal<number | null>(null);
+  protected readonly yieldPositions: ConnectedPosition[] = [
+    { originX: 'end', originY: 'bottom', overlayX: 'end', overlayY: 'top', offsetY: 4 },
+    { originX: 'end', originY: 'top', overlayX: 'end', overlayY: 'bottom', offsetY: -4 },
+  ];
   protected readonly data = inject<MaterialCost | null>(MAT_DIALOG_DATA);
   private readonly ref = inject(MatDialogRef<MaterialDialog, MaterialDialogResult>);
   private readonly api = inject(CostingApi);
@@ -8401,6 +9436,26 @@ export class MaterialDialog {
   });
 
   protected readonly unit = signal<UnitOfMeasure>(this.data?.unit ?? 'Gram');
+
+  private readonly values = toSignal(this.form.valueChanges, { initialValue: this.form.value });
+  // Net ÷ gross, and what a usable purchase unit costs at it: AP$ ÷ yield.
+  protected readonly calculated = computed(() => {
+    const [gross, net] = [this.gross(), this.net()];
+    if (gross === null || net === null || !(gross > 0) || !(net > 0) || net > gross) {
+      return null;
+    }
+    const yieldPercent = Math.round((net / gross) * 10000) / 100;
+    const cost = this.values().cost;
+    return { yield: yieldPercent, ep: cost != null && cost >= 0 ? cost / (yieldPercent / 100) : null };
+  });
+  // The yield field's hint: the EP$ it gives the AP$ above, once both are there.
+  protected readonly epHint = computed(() => {
+    const v = this.values();
+    if (v.cost == null || v.cost < 0 || !v.yield || v.yield <= 0 || v.yield > 100) {
+      return null;
+    }
+    return `EP$ ${this.company.money(v.cost / (v.yield / 100), 2, 4)} / ${v.purchaseUnit || 'unit'} · تكلفة الصافي`;
+  });
   protected readonly changingUnit = computed(() => !!this.data && this.unit() !== this.data.unit);
   protected readonly usage = signal<MaterialUsage | null>(null);
   protected readonly usageError = signal<string | null>(null);
@@ -8478,6 +9533,20 @@ export class MaterialDialog {
     } else {
       // Its price and reorder level were in the old unit: given again for the new one.
       this.form.patchValue({ cost: null, reorderAt: 0 });
+    }
+  }
+
+  protected number(event: Event): number | null {
+    const value = (event.target as HTMLInputElement).value;
+    return value === '' ? null : Number(value);
+  }
+
+  protected useYield(): void {
+    const c = this.calculated();
+    if (c) {
+      this.form.controls.yield.setValue(c.yield);
+      this.form.controls.yield.markAsDirty();
+      this.calculating.set(false);
     }
   }
 
@@ -8589,7 +9658,7 @@ import { errorMessage } from '../../core/http/error-message';
 import { Company } from '../../core/settings/company';
 import { MoneyPipe } from '../../core/ui/money.pipe';
 
-// A material's purchase history card (كارت الصنف): every invoice line that bought it, newest first,
+// A material's purchase history (سجل مشتريات الصنف): every invoice line that bought it, newest first,
 // as its paper has it, to hold against the paper invoices when a count looks wrong. A voided
 // invoice is shown, struck through and left out of the totals, with the one that corrected it.
 // A row opens its invoice in the archive.
@@ -8597,7 +9666,7 @@ import { MoneyPipe } from '../../core/ui/money.pipe';
   selector: 'app-material-history-dialog',
   imports: [DatePipe, DecimalPipe, MatButtonModule, MatDialogModule, MatIconModule, MatProgressBarModule, MoneyPipe],
   template: `
-    <h2 mat-dialog-title>{{ data.name }} · Purchase history <span class="inline-ar">كارت الصنف</span></h2>
+    <h2 mat-dialog-title>{{ data.name }} · Purchase history <span class="inline-ar">سجل المشتريات</span></h2>
     <mat-dialog-content>
       @if (loading()) {
         <mat-progress-bar mode="indeterminate" />
@@ -8762,6 +9831,484 @@ export class MaterialHistoryDialog {
     } finally {
       this.loading.set(false);
     }
+  }
+}
+```
+
+
+> 📄 **`frontend/src/app/features/costing/stock-card-dialog.ts`** — 472 سطر
+
+```ts
+import { DatePipe, DecimalPipe } from '@angular/common';
+import { Component, computed, effect, inject, input, signal, untracked } from '@angular/core';
+import { FormsModule } from '@angular/forms';
+import { MatButtonModule } from '@angular/material/button';
+import { MAT_DIALOG_DATA, MatDialog, MatDialogActions, MatDialogClose, MatDialogContent, MatDialogRef, MatDialogTitle } from '@angular/material/dialog';
+import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatIconModule } from '@angular/material/icon';
+import { MatProgressBarModule } from '@angular/material/progress-bar';
+import { MatSelectModule } from '@angular/material/select';
+import { MatTooltipModule } from '@angular/material/tooltip';
+import { Router } from '@angular/router';
+import { firstValueFrom } from 'rxjs';
+import { CostingAccess } from '../../core/costing/costing-tabs';
+import { CostingApi, StockCard, StockCardLine, StockCardMovementType, stockCardTypes } from '../../core/costing/costing.api';
+import { errorMessage } from '../../core/http/error-message';
+import { Company } from '../../core/settings/company';
+import { MoneyPipe } from '../../core/ui/money.pipe';
+import { NotifyService } from '../../core/ui/notify.service';
+import { saveBlob } from '../../core/ui/save-blob';
+import { InfoTip } from './info-tip';
+import { showInvoice } from './invoice-view-dialog';
+import { PeriodBar, periodDays } from './period-bar';
+import { showProductionOrder } from './production-order-dialog';
+
+// Which material's card, and the period to open it on (this month when not given).
+export interface StockCardData {
+  id: string;
+  name: string;
+  from?: string;
+  to?: string;
+}
+
+// The item's stock card (كارتة الصنف / حركة الصنف): every movement of one material or prep item over
+// the period, oldest first, as a store ledger is kept: in, out, the running balance, the price it
+// moved at and the moving average it left, with the balance it opened and closed the period on. A
+// filter shows one kind of movement; the balance stays the ledger's. Each line's reference opens the
+// record that made it: the invoice (its line for this material marked, to correct it), the batch,
+// the count, the day's sales, the spoilage. To Excel as filtered.
+@Component({
+  selector: 'app-stock-card-dialog',
+  imports: [
+    DatePipe,
+    DecimalPipe,
+    FormsModule,
+    InfoTip,
+    MatButtonModule,
+    // The dialog's parts alone: MatDialogModule would bring its own MatDialog, and the records it
+    // opens over itself are the app's dialogs.
+    MatDialogActions,
+    MatDialogClose,
+    MatDialogContent,
+    MatDialogTitle,
+    MatFormFieldModule,
+    MatIconModule,
+    MatProgressBarModule,
+    MatSelectModule,
+    MatTooltipModule,
+    MoneyPipe,
+    PeriodBar,
+  ],
+  template: `
+    <h2 mat-dialog-title>
+      {{ card()?.material ?? data.name }} · Stock card <span class="inline-ar">كارتة الصنف</span>
+      @if (card(); as c) {
+        <span class="title-sub">{{ c.code ? c.code + ' · ' : '' }}in {{ c.purchaseUnit }}{{ c.isPrepItem ? ' · prep item' : '' }}</span>
+      }
+    </h2>
+    <mat-dialog-content>
+      <div class="toolbar filters">
+        <app-period-bar [(from)]="from" [(to)]="to" />
+        <mat-form-field subscriptSizing="dynamic" class="type">
+          <mat-label>Movement · نوع الحركة</mat-label>
+          <mat-select [ngModel]="type()" (ngModelChange)="type.set($event)" aria-label="Movement type">
+            <mat-option [value]="null">All · الكل</mat-option>
+            @for (t of types; track t.type) {
+              <mat-option [value]="t.type">{{ t.en }} · {{ t.ar }}</mat-option>
+            }
+          </mat-select>
+        </mat-form-field>
+        <span class="spacer"></span>
+        <button mat-stroked-button (click)="download()" [disabled]="!card() || downloading()"><mat-icon>download</mat-icon> Excel</button>
+      </div>
+      @if (loading()) {
+        <mat-progress-bar mode="indeterminate" />
+      }
+      @if (error(); as e) {
+        <p class="error" role="alert">{{ e }}</p>
+      } @else if (card(); as c) {
+        <div class="tiles strip">
+          <div class="tile">
+            <span class="label">Opening balance · رصيد أول المدة <app-info-tip tip="scOpening" /></span>
+            <strong>{{ c.openingBalance | number: '1.0-3' }}</strong>
+            <small class="chip">{{ c.purchaseUnit }}</small>
+          </div>
+          <div class="tile">
+            <span class="label">Total in (+) · إجمالي الوارد <app-info-tip tip="scIn" /></span>
+            <strong class="in">+{{ c.totalIn | number: '1.0-3' }}</strong>
+          </div>
+          <div class="tile">
+            <span class="label">Total out (−) · إجمالي المنصرف <app-info-tip tip="scOut" /></span>
+            <strong class="out">−{{ c.totalOut | number: '1.0-3' }}</strong>
+          </div>
+          <div class="tile key">
+            <span class="label">Closing on hand · رصيد آخر المدة <app-info-tip tip="scClosing" /></span>
+            <strong>{{ c.closingBalance | number: '1.0-3' }}</strong>
+            @if (c.closingValue !== null) {
+              <small class="chip">{{ c.closingValue | money }}</small>
+            }
+          </div>
+          <div class="tile">
+            <span class="label">Moving avg cost (AP$) · متوسط التكلفة <app-info-tip tip="scAverage" /></span>
+            <strong>{{ c.averageCost === null ? '—' : price(c.averageCost) }}</strong>
+            <small class="chip">per {{ c.purchaseUnit }}</small>
+          </div>
+        </div>
+
+        <div class="table-wrap">
+          <table class="grid ledger">
+            <thead>
+              <tr>
+                <th>Date<span class="ar">التاريخ</span></th>
+                <th>Movement & reference<span class="ar">الحركة والمرجع</span></th>
+                <th>Supplier / details<span class="ar">المورد / البيان</span></th>
+                <th class="num">Qty in<span class="ar">وارد</span></th>
+                <th class="num">Qty out<span class="ar">منصرف</span></th>
+                <th class="num">Balance <app-info-tip tip="scBalance" /><span class="ar">الرصيد</span></th>
+                <th class="num">Unit price <app-info-tip tip="scUnitPrice" /><span class="ar">سعر الحركة</span></th>
+                <th class="num">Moving avg after <app-info-tip tip="scAverageAfter" /><span class="ar">المتوسط بعد الحركة</span></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr class="edge">
+                <td class="date">{{ c.from | date: 'd MMM y' }}</td>
+                <td colspan="4">Opening balance · رصيد أول المدة</td>
+                <td class="num"><strong>{{ c.openingBalance | number: '1.0-3' }}</strong></td>
+                <td></td>
+                <td class="num">{{ c.openingAverageCost === null ? '—' : price(c.openingAverageCost) }}</td>
+              </tr>
+              @for (l of c.lines; track l.movementId) {
+                <tr [class.reversal]="l.isReversal">
+                  <td class="date">
+                    {{ l.date | date: 'd MMM y' }}
+                    <div class="muted small">{{ l.occurredAtUtc | date: 'HH:mm' }}</div>
+                  </td>
+                  <td>
+                    <span class="move" [class]="l.type">{{ typeLabel(l.type) }}</span>
+                    @if (canOpen(l)) {
+                      <button type="button" class="ref" (click)="openSource(l)" [matTooltip]="openHint(l)">
+                        {{ l.reference }} <mat-icon aria-hidden="true">open_in_new</mat-icon>
+                      </button>
+                    } @else {
+                      <div class="ref plain">{{ l.reference }}</div>
+                    }
+                    @if (l.sourceDate && l.sourceDate !== l.date) {
+                      <div class="muted small">dated {{ l.sourceDate | date: 'd MMM y' }} · بتاريخ</div>
+                    }
+                  </td>
+                  <td>
+                    {{ l.details ?? '—' }}
+                    @if (l.recordedBy) {
+                      <div class="muted small">by {{ l.recordedBy }}</div>
+                    }
+                  </td>
+                  <td class="num in">{{ l.quantityIn ? '+' + (l.quantityIn | number: '1.0-3') : '' }}</td>
+                  <td class="num out">{{ l.quantityOut ? '−' + (l.quantityOut | number: '1.0-3') : '' }}</td>
+                  <td class="num" [class.negative]="l.balance < 0"><strong>{{ l.balance | number: '1.0-3' }}</strong></td>
+                  <td class="num">{{ l.unitCost === null ? '—' : price(l.unitCost) }}</td>
+                  <td class="num">{{ l.averageCostAfter === null ? '—' : price(l.averageCostAfter) }}</td>
+                </tr>
+              } @empty {
+                <tr><td colspan="8" class="muted">No {{ type() ? typeLabel(type()!).toLowerCase() + ' ' : '' }}movement in these days.</td></tr>
+              }
+            </tbody>
+            <tfoot>
+              <tr>
+                <td class="date">{{ c.to | date: 'd MMM y' }}</td>
+                <td colspan="2">Closing balance · رصيد آخر المدة</td>
+                <td class="num in">+{{ c.totalIn | number: '1.0-3' }}</td>
+                <td class="num out">−{{ c.totalOut | number: '1.0-3' }}</td>
+                <td class="num">{{ c.closingBalance | number: '1.0-3' }}</td>
+                <td class="num">{{ c.closingValue === null ? '' : (c.closingValue | money) }}</td>
+                <td class="num">{{ c.closingAverageCost === null ? '—' : price(c.closingAverageCost) }}</td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      }
+    </mat-dialog-content>
+    <mat-dialog-actions align="end">
+      <button mat-flat-button mat-dialog-close>Close</button>
+    </mat-dialog-actions>
+  `,
+  styleUrl: './costing.scss',
+  styles: `
+    .title-sub {
+      display: block;
+      font: var(--mat-sys-body-small);
+      color: var(--mat-sys-on-surface-variant);
+    }
+    .filters {
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .type {
+      width: 210px;
+    }
+    .strip {
+      margin: 8px 0 12px;
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    }
+    .in {
+      color: var(--app-ok);
+    }
+    .out {
+      color: var(--mat-sys-error);
+    }
+    .negative {
+      color: var(--mat-sys-error);
+    }
+    .date {
+      white-space: nowrap;
+    }
+    .small {
+      font-size: 0.85em;
+    }
+    .move {
+      display: inline-block;
+      padding: 0 8px;
+      border-radius: 999px;
+      font: var(--mat-sys-label-small);
+      line-height: 20px;
+      white-space: nowrap;
+      background: var(--mat-sys-surface-container-high);
+
+      &.Purchases {
+        background: color-mix(in srgb, var(--app-ok) 16%, transparent);
+      }
+      &.Sales {
+        background: color-mix(in srgb, var(--mat-sys-primary) 12%, transparent);
+      }
+      &.Waste {
+        background: color-mix(in srgb, var(--mat-sys-error) 12%, transparent);
+      }
+      &.Production {
+        background: color-mix(in srgb, var(--app-warn) 16%, transparent);
+      }
+    }
+    .ref {
+      display: flex;
+      align-items: center;
+      gap: 2px;
+      margin-top: 2px;
+      padding: 0;
+      border: 0;
+      background: none;
+      font: inherit;
+      text-align: start;
+    }
+    button.ref {
+      color: var(--mat-sys-primary);
+      cursor: pointer;
+      text-decoration: underline;
+      text-underline-offset: 2px;
+
+      mat-icon {
+        width: 14px;
+        height: 14px;
+        font-size: 14px;
+      }
+    }
+    tr.reversal td {
+      color: var(--mat-sys-on-surface-variant);
+    }
+    tr.edge td,
+    tfoot td {
+      font-weight: 500;
+      background: var(--mat-sys-surface-container-low);
+    }
+  `,
+})
+export class StockCardDialog {
+  protected readonly data = inject<StockCardData>(MAT_DIALOG_DATA);
+  private readonly api = inject(CostingApi);
+  private readonly company = inject(Company);
+  private readonly dialog = inject(MatDialog);
+  private readonly ref = inject(MatDialogRef<StockCardDialog>);
+  private readonly router = inject(Router);
+  private readonly notify = inject(NotifyService);
+  private readonly access = inject(CostingAccess);
+
+  protected readonly types = stockCardTypes;
+  protected readonly from = signal(this.data.from ?? periodDays('month').from);
+  protected readonly to = signal(this.data.to ?? periodDays('month').to);
+  protected readonly type = signal<StockCardMovementType | null>(null);
+  protected readonly card = signal<StockCard | null>(null);
+  protected readonly loading = signal(false);
+  protected readonly downloading = signal(false);
+  protected readonly error = signal<string | null>(null);
+
+  // Which records this user may open: each where its own tab is.
+  private readonly opens = computed(() => ({
+    PurchaseInvoice: this.access.has('Purchases'),
+    ProductionOrder: this.access.has('Production'),
+    StockCount: this.access.has('Counts'),
+    SalesReceipt: this.access.has('Sales'),
+    Spoilage: this.access.has('Waste'),
+  }));
+
+  constructor() {
+    effect(() => {
+      const [from, to, type] = [this.from(), this.to(), this.type()];
+      untracked(() => void this.load(from, to, type));
+    });
+  }
+
+  protected typeLabel(type: StockCardMovementType): string {
+    const t = this.types.find((x) => x.type === type);
+    return t ? `${t.en} · ${t.ar}` : type;
+  }
+
+  // A price per purchase unit: to the cent, or to four places when the cents would lose it.
+  protected price(value: number): string {
+    return this.company.money(value, 2, 4);
+  }
+
+  protected canOpen(line: StockCardLine): boolean {
+    return line.hasSource && this.opens()[line.sourceKind];
+  }
+
+  protected openHint(line: StockCardLine): string {
+    switch (line.sourceKind) {
+      case 'PurchaseInvoice':
+        return 'Open the invoice, this material marked, to check or correct it · فتح الفاتورة';
+      case 'ProductionOrder':
+        return 'Open the production batch · فتح التشغيلة';
+      case 'StockCount':
+        return 'Open the stock count · فتح الجرد';
+      case 'SalesReceipt':
+        return "Open the day's sales · فتح مبيعات اليوم";
+      default:
+        return 'Open the waste log of the day · فتح سجل الهالك';
+    }
+  }
+
+  protected async openSource(line: StockCardLine): Promise<void> {
+    switch (line.sourceKind) {
+      case 'PurchaseInvoice':
+        showInvoice(this.dialog, line.sourceId, this.data.id);
+        return;
+      case 'ProductionOrder': {
+        try {
+          const order = await firstValueFrom(this.api.productionOrder(line.sourceId));
+          if (order) {
+            showProductionOrder(this.dialog, order);
+          } else {
+            this.notify.error(null, 'That production batch is no longer there. · التشغيلة غير موجودة.');
+          }
+        } catch (error) {
+          this.notify.error(error, 'The production batch could not be loaded.');
+        }
+        return;
+      }
+      case 'StockCount':
+        this.leaveFor(['/costing/counts', line.sourceId]);
+        return;
+      case 'SalesReceipt':
+        this.leaveFor(['/costing/sales'], { day: line.sourceDate ?? line.date, receipt: line.sourceId });
+        return;
+      default:
+        this.leaveFor(['/costing/waste'], { spoilage: line.sourceId });
+    }
+  }
+
+  protected async download(): Promise<void> {
+    const c = this.card();
+    if (!c) {
+      return;
+    }
+    this.downloading.set(true);
+    try {
+      const name = (c.code ?? c.material).replace(/[^\p{L}\p{N}]+/gu, '-');
+      saveBlob(await firstValueFrom(this.api.stockCardSheet(this.data.id, this.from(), this.to(), this.type())), `stock-card-${name}-${this.from()}-to-${this.to()}.xlsx`);
+    } catch (error) {
+      this.notify.error(error, 'The stock card could not be downloaded.');
+    } finally {
+      this.downloading.set(false);
+    }
+  }
+
+  // A record on its own page: the card closes, the page opens on it.
+  private leaveFor(commands: unknown[], queryParams?: Record<string, string>): void {
+    this.ref.close();
+    void this.router.navigate(commands, { queryParams });
+  }
+
+  private async load(from: string, to: string, type: StockCardMovementType | null): Promise<void> {
+    this.loading.set(true);
+    this.error.set(null);
+    try {
+      this.card.set(await firstValueFrom(this.api.stockCard(this.data.id, from, to, type)));
+    } catch (error) {
+      this.error.set(errorMessage(error, 'The stock card could not be loaded.'));
+    } finally {
+      this.loading.set(false);
+    }
+  }
+}
+
+// A material's stock card over the list it was opened from.
+export function showStockCard(dialog: MatDialog, material: { id: string; name: string }, period?: { from: string; to: string }): void {
+  dialog.open<StockCardDialog, StockCardData>(StockCardDialog, {
+    data: { id: material.id, name: material.name, ...period },
+    width: '1180px',
+    maxWidth: '96vw',
+    autoFocus: 'dialog',
+  });
+}
+
+// The (receipt) beside a material's name in a report's table: its stock card, over the report's
+// period when given. A click on it is not a click on the row it is in.
+@Component({
+  selector: 'app-stock-card-button',
+  imports: [MatTooltipModule],
+  template: `
+    <button type="button" class="stock-card-button" (click)="open($event)" matTooltip="Stock card · كارتة الصنف" [attr.aria-label]="'Stock card of ' + name()">
+      <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false">
+        <path
+          fill="currentColor"
+          d="M19.5 3.5 18 2l-1.5 1.5L15 2l-1.5 1.5L12 2l-1.5 1.5L9 2 7.5 3.5 6 2v14H3v3c0 1.66 1.34 3 3 3h12c1.66 0 3-1.34 3-3V2l-1.5 1.5zM15 20H6c-.55 0-1-.45-1-1v-1h10v2zm4-1c0 .55-.45 1-1 1s-1-.45-1-1v-3H8V5h11v14zM9 7h6v2H9zm7 0h2v2h-2zm-7 3h6v2H9zm7 0h2v2h-2z"
+        />
+      </svg>
+    </button>
+  `,
+  styles: `
+    :host {
+      display: inline-flex;
+      vertical-align: middle;
+    }
+    .stock-card-button {
+      display: inline-grid;
+      place-items: center;
+      width: 26px;
+      height: 26px;
+      margin-inline-start: 4px;
+      padding: 0;
+      border: 0;
+      border-radius: 8px;
+      background: transparent;
+      color: var(--mat-sys-primary);
+      cursor: pointer;
+    }
+    .stock-card-button:hover,
+    .stock-card-button:focus-visible {
+      background: color-mix(in srgb, var(--mat-sys-primary) 10%, transparent);
+    }
+  `,
+})
+export class StockCardButton {
+  private readonly dialog = inject(MatDialog);
+  readonly id = input.required<string>();
+  readonly name = input.required<string>();
+  readonly from = input<string | undefined>(undefined);
+  readonly to = input<string | undefined>(undefined);
+
+  protected open(event: Event): void {
+    event.stopPropagation();
+    const [from, to] = [this.from(), this.to()];
+    showStockCard(this.dialog, { id: this.id(), name: this.name() }, from && to ? { from, to } : undefined);
   }
 }
 ```
@@ -9029,7 +10576,7 @@ export class RecipesShell {
 ```
 
 
-> 📄 **`frontend/src/app/features/costing/recipes-page.ts`** — 579 سطر
+> 📄 **`frontend/src/app/features/costing/recipes-page.ts`** — 581 سطر
 
 ```ts
 import { DatePipe, DecimalPipe } from '@angular/common';
@@ -9062,6 +10609,7 @@ import { FilterOption, FilterSelect } from '../shared/filter-select';
 import { SearchField } from '../shared/search-field';
 import { SortOption, SortState, smartMatch } from '../shared/smart-search';
 import { SortControl } from '../shared/sort-control';
+import { InfoTip } from './info-tip';
 
 // What the table shows: the recipes (all, on the menu, off it), the menu items still without
 // one, or the deleted ones.
@@ -9089,6 +10637,7 @@ const recipeSorts: SortOption<RecipeSort>[] = [
 @Component({
   selector: 'app-recipes-page',
   imports: [
+    InfoTip,
     DatePipe,
     DecimalPipe,
     FilterSelect,
@@ -9195,10 +10744,10 @@ const recipeSorts: SortOption<RecipeSort>[] = [
               <th class="num">Portions<span class="ar">الحصص</span></th>
               <th class="num">Price<span class="ar">السعر</span></th>
               <th class="num" [attr.aria-sort]="ariaSort('cost')">
-                <button class="sort" (click)="sortBy('cost')">Cost per portion {{ arrow('cost') }}</button><span class="ar">تكلفة الحصة</span>
+                <button class="sort" (click)="sortBy('cost')">Cost per portion {{ arrow('cost') }}</button> <app-info-tip tip="costPerPortion" /><span class="ar">تكلفة الحصة</span>
               </th>
               <th class="num" [attr.aria-sort]="ariaSort('foodCost')">
-                <button class="sort" (click)="sortBy('foodCost')">Food cost % {{ arrow('foodCost') }}</button><span class="ar">نسبة التكلفة</span>
+                <button class="sort" (click)="sortBy('foodCost')">Food cost % {{ arrow('foodCost') }}</button> <app-info-tip tip="foodCostPercent" /><span class="ar">نسبة التكلفة</span>
               </th>
               <th>Status<span class="ar">الحالة</span></th>
               <th class="num"><span class="visually-hidden">Actions</span></th>
@@ -9618,7 +11167,7 @@ export class RecipesPage {
 
 لكل سطر، كما في القالب الورقي: `EP$/وحدة = AP$/وحدة ÷ Yield`، وتكلفة السطر = كمية EP × EP$ (بوحدات الشراء). ثم تكلفة الحصة، سعر البيع، نسبة التكلفة، والحالة مقابل الهدف. المصنّع بلا دفعات يظهر "حسب وصفته". الربط بصنف/حجم/إضافة من المنيو، والأسطر بـ `GridKeys`.
 
-> 📄 **`frontend/src/app/features/costing/recipe-card-page.ts`** — 899 سطر
+> 📄 **`frontend/src/app/features/costing/recipe-card-page.ts`** — 900 سطر
 
 ```ts
 import { DatePipe, DecimalPipe } from '@angular/common';
@@ -9655,6 +11204,7 @@ import { Approvals } from './approvals';
 import { RecipeCategoryDialog, RecipeCategoryDialogData } from './recipe-category-dialog';
 import { GridKeys } from '../shared/grid-keys';
 import { MaterialPicker } from './material-picker';
+import { InfoTip } from './info-tip';
 
 interface Line {
   rawMaterialId: string | null;
@@ -9707,6 +11257,7 @@ const linkKey = (kind: RecipeTargetKind | null, catalogItemId: number | null, va
     DatePipe,
     DecimalPipe,
     FormsModule,
+    InfoTip,
     GridKeys,
     MatButtonModule,
     MatFormFieldModule,
@@ -9829,22 +11380,22 @@ const linkKey = (kind: RecipeTargetKind | null, catalogItemId: number | null, va
 
         <div class="figures">
           <div class="box key">
-            <span class="label">Cost per recipe<span class="ar">تكلفة الوصفة</span></span>
+            <span class="label">Cost per recipe <app-info-tip tip="costPerRecipe" /><span class="ar">تكلفة الوصفة</span></span>
             <strong>{{ costPerRecipe() | money }}</strong>
           </div>
           <div class="box key">
-            <span class="label">Cost per portion<span class="ar">تكلفة الحصة</span></span>
+            <span class="label">Cost per portion <app-info-tip tip="costPerPortion" /><span class="ar">تكلفة الحصة</span></span>
             <strong>{{ costPerPortion() | money }}</strong>
             @if (shared() > 0) {
-              <small class="muted">incl. {{ shared() | money }} shared</small>
+              <small class="chip">+{{ shared() | money }} shared</small>
             }
           </div>
           <div class="box key">
-            <span class="label">Margin per portion<span class="ar">هامش الحصة</span></span>
+            <span class="label">Margin per portion <app-info-tip tip="marginPerPortion" /><span class="ar">هامش الحصة</span></span>
             <strong>{{ price() === null || lines().length === 0 ? '—' : (margin() | money) }}</strong>
           </div>
           <div class="box">
-            <span class="label">Portions<span class="ar">عدد الحصص</span></span>
+            <span class="label">Portions <app-info-tip tip="portions" /><span class="ar">عدد الحصص</span></span>
             @if (editing()) {
               <mat-form-field subscriptSizing="dynamic" class="portions">
                 <input matInput type="number" min="1" step="1" [ngModel]="portions()" (ngModelChange)="portions.set($event)" aria-label="Portions" />
@@ -9854,20 +11405,19 @@ const linkKey = (kind: RecipeTargetKind | null, catalogItemId: number | null, va
             }
           </div>
           <div class="box">
-            <span class="label">{{ linked() ? 'Menu price' : 'Planned price' }}<span class="ar">{{ linked() ? 'سعر البيع' : 'السعر المخطط' }}</span></span>
+            <span class="label">{{ linked() ? 'Menu price' : 'Planned price' }} <app-info-tip tip="sellingPrice" /><span class="ar">{{ linked() ? 'سعر البيع' : 'السعر المخطط' }}</span></span>
             <strong>{{ price() === null ? '—' : (price() | money) }}</strong>
-            <small class="muted">before VAT</small>
           </div>
           <div class="box">
-            <span class="label">Food cost % budget<span class="ar">نسبة التكلفة المستهدفة</span></span>
+            <span class="label">Food cost % budget <app-info-tip tip="foodCostBudget" /><span class="ar">نسبة التكلفة المستهدفة</span></span>
             <strong>{{ target() | number: '1.0-1' }}%</strong>
           </div>
           <div class="box" [class.over]="status() === 'AboveTarget'">
-            <span class="label">Food cost % actual<span class="ar">نسبة التكلفة الفعلية</span></span>
+            <span class="label">Food cost % actual <app-info-tip tip="foodCostPercent" /><span class="ar">نسبة التكلفة الفعلية</span></span>
             <strong>{{ foodCost() === null ? '—' : (foodCost() | number: '1.1-1') + '%' }}</strong>
           </div>
           <div class="box">
-            <span class="label">Ideal selling price<span class="ar">سعر البيع المثالي</span></span>
+            <span class="label">Ideal selling price <app-info-tip tip="idealPrice" /><span class="ar">سعر البيع المثالي</span></span>
             <strong>{{ lines().length ? (idealPrice() | money) : '—' }}</strong>
           </div>
         </div>
@@ -9878,10 +11428,10 @@ const linkKey = (kind: RecipeTargetKind | null, catalogItemId: number | null, va
               <tr>
                 <th>Ingredients<span class="ar">المكونات</span></th>
                 <th class="num">Recipe quantity (EP)<span class="ar">كمية الوصفة (صافي)</span></th>
-                <th class="num">AP$ / unit<span class="ar">تكلفة الشراء</span></th>
+                <th class="num">AP$ / unit <app-info-tip tip="apUnit" /><span class="ar">تكلفة الشراء</span></th>
                 <th>Unit<span class="ar">الوحدة</span></th>
-                <th class="num">Yield %<span class="ar">نسبة الصافي</span></th>
-                <th class="num">EP$ / unit<span class="ar">تكلفة الصافي</span></th>
+                <th class="num">Yield % <app-info-tip tip="yieldPercent" /><span class="ar">نسبة الصافي</span></th>
+                <th class="num">EP$ / unit <app-info-tip tip="epUnit" /><span class="ar">تكلفة الصافي</span></th>
                 <th class="num">Recipe cost<span class="ar">تكلفة المكون</span></th>
                 @if (editing()) {
                   <th class="no-print"></th>
@@ -10882,7 +12432,7 @@ export class RecipeCategoryDialog {
 
 `PrepItemsPage` و `PrepItemPage`: المصنعات بتكلفتها بوصفتها اليوم وتكلفة دفعاتها على الرف ورصيدها، وصفحة وصفة الدفعة (EP للدفعة، وكمية الدفعة).
 
-> 📄 **`frontend/src/app/features/costing/prep-items-page.ts`** — 342 سطر
+> 📄 **`frontend/src/app/features/costing/prep-items-page.ts`** — 356 سطر
 
 ```ts
 import { DatePipe, DecimalPipe } from '@angular/common';
@@ -10905,6 +12455,8 @@ import { NotifyService } from '../../core/ui/notify.service';
 import { Approvals, pendingLabel } from './approvals';
 import { saveBlob } from '../../core/ui/save-blob';
 import { todayIso } from './financials';
+import { InfoTip } from './info-tip';
+import { showStockCard } from './stock-card-dialog';
 import { PrepImportDialog } from './prep-import-dialog';
 import { recipeSheetRules } from './recipe-sheet-rules';
 import { SheetImportData, SheetImportDialog } from './sheet-import-dialog';
@@ -10935,6 +12487,7 @@ const prepSorts: SortOption<PrepSort>[] = [
 @Component({
   selector: 'app-prep-items-page',
   imports: [
+    InfoTip,
     FilterSelect,
     SearchField,
     SortControl,
@@ -10996,17 +12549,18 @@ const prepSorts: SortOption<PrepSort>[] = [
             <tr>
               <th>Prep item<span class="ar">الصنف</span></th>
               <th class="num">One batch<span class="ar">الدفعة</span></th>
-              <th class="num">By its recipe<span class="ar">التكلفة المعيارية</span></th>
-              <th class="num">In stock at<span class="ar">متوسط التكلفة</span></th>
+              <th class="num">By its recipe <app-info-tip tip="prepStandard" /><span class="ar">التكلفة المعيارية</span></th>
+              <th class="num">In stock at <app-info-tip tip="prepAverage" /><span class="ar">متوسط التكلفة</span></th>
               <th class="num">On hand<span class="ar">الرصيد</span></th>
-              <th class="num">Stock value<span class="ar">قيمة المخزون</span></th>
+              <th class="num">Stock value <app-info-tip tip="stockValue" /><span class="ar">قيمة المخزون</span></th>
               <th>Last made<span class="ar">آخر تصنيع</span></th>
+              <th class="num"><span class="visually-hidden">Stock card</span></th>
             </tr>
           </thead>
           <tbody>
             @for (r of waiting(); track r.id) {
               <tr class="pending-deletion">
-                <td colspan="7">
+                <td colspan="8">
                   {{ r.summary }}
                   <div>
                     <span class="pending-badge">{{ pendingLabel(r).en }}<span class="ar">{{ pendingLabel(r).ar }}</span></span>
@@ -11044,11 +12598,16 @@ const prepSorts: SortOption<PrepSort>[] = [
                 <td class="num" [class.warn]="p.quantityOnHand < 0">{{ p.quantityOnHand / p.displayUnitSize | number: '1.0-3' }} {{ p.displayUnit }}</td>
                 <td class="num">{{ p.stockValue === null ? '—' : (p.stockValue | money) }}</td>
                 <td class="nowrap">{{ p.lastProducedAtUtc ? (p.lastProducedAtUtc | date: 'd MMM, HH:mm') : 'Never' }}</td>
+                <td class="num" (click)="$event.stopPropagation()">
+                  <button mat-icon-button (click)="stockCard(p)" matTooltip="Stock card · كارتة الصنف" [attr.aria-label]="'Stock card of ' + p.name">
+                    <mat-icon>receipt_long</mat-icon>
+                  </button>
+                </td>
               </tr>
             } @empty {
               @if (!waiting().length) {
                 <tr>
-                  <td colspan="7" class="muted">
+                  <td colspan="8" class="muted">
                     {{ items().length ? 'No prep item matches.' : 'No prep items yet. Add one, such as pizza dough, with its recipe for a batch.' }}
                   </td>
                 </tr>
@@ -11145,6 +12704,11 @@ export class PrepItemsPage {
 
   protected categoryName(item: PrepItem): string | null {
     return item.recipeCategoryId ? (this.categoryNames().get(item.recipeCategoryId) ?? null) : null;
+  }
+
+  // Its batches in, what the dishes took out, the counts, with the balance and average after each.
+  protected stockCard(item: PrepItem): void {
+    showStockCard(this.dialog, item);
   }
 
   protected open(item: PrepItem): void {
@@ -13544,7 +15108,7 @@ export class AddToMenuDialog {
 
 ## 10. المشتريات
 
-`PurchasesShell`. ثم `InvoiceLines` (مشترك بين شاشة الفاتورة وكل فاتورة في اليومية): البنود، الوحدات، المجاميع، **حصص الخصم** (`discount` signal و `shares`)، المورد، والإضافة السريعة. و `PurchasesPage`: الخطوتان (حفظ مسودة ⇐ تأكيد وترحيل)، وصورة الورقة.
+`PurchasesShell`. ثم `InvoiceLines` (مشترك بين شاشة الفاتورة وكل فاتورة في اليومية): البنود، الوحدات، المجاميع، **حصص الخصم** (`discount` signal و `shares`)، المورد، والإضافة السريعة، و **حارس السعر** (`priceDeviation`): إن ابتعد سعر وحدة الشراء في السطر عن المتوسط الحالي بأكثر من ±25% ظهرت شارة كهرمانية "تنبيه: السعر يختلف بـ X% عن المتوسط الحالي - تأكد من الوحدة!"، تنبيه فقط لا يمنع الحفظ (أغلب أسبابه جرامات كُتبت كيلوهات). و `PurchasesPage`: الخطوتان (حفظ مسودة ⇐ تأكيد وترحيل)، وصورة الورقة.
 
 > 📄 **`frontend/src/app/features/costing/purchases-shell.ts`** — 46 سطر
 
@@ -13598,7 +15162,7 @@ export class PurchasesShell {
 ```
 
 
-> 📄 **`frontend/src/app/features/costing/invoice-lines.ts`** — 882 سطر
+> 📄 **`frontend/src/app/features/costing/invoice-lines.ts`** — 944 سطر
 
 ```ts
 import { Component, Injectable, computed, inject, input, signal } from '@angular/core';
@@ -13633,6 +15197,9 @@ import { GridKeys } from '../shared/grid-keys';
 import { PickRow } from '../shared/pick-row';
 import { searchable, smartMatch } from '../shared/smart-search';
 import { materialCostText } from './material-picker';
+
+// A line's price this far from the material's average, either way, is flagged: check the unit.
+export const priceGuardrailPercent = 25;
 
 // An invoice's lines and supplier as they are entered, shared by the invoice screen and each
 // invoice of a daily batch: what a line names and in what unit, what the lines come to, the
@@ -14063,6 +15630,26 @@ export class InvoiceLines {
     return material && base && cost !== null ? (cost / base) * material.purchaseUnitSize : null;
   }
 
+  // How far the line's price per purchase unit is from the material's moving average now, as a
+  // share of it, when that is more than the guardrail allows (±25%): most often a quantity typed in
+  // the wrong unit (grams as kilos, a carton as a piece). Null when it is within, or there is
+  // nothing to compare. It warns; it never stops the invoice.
+  priceDeviation(line: InvoiceLine): number | null {
+    const material = this.material(line);
+    const average = material?.costPerPurchaseUnit;
+    const price = this.unitPrice(line);
+    if (!material || this.expense(line) || average == null || average <= 0 || price === null) {
+      return null;
+    }
+    const percent = ((price - average) / average) * 100;
+    if (Math.abs(percent) <= priceGuardrailPercent) {
+      return null;
+    }
+    // Whole points, but a price not quite nothing is never said to be −100%.
+    const whole = Math.round(percent);
+    return whole === -100 && percent !== -100 ? Math.round(percent * 10) / 10 : whole;
+  }
+
   // The lines as an invoice sends them. Lines not finished yet are left out of a draft saved only
   // to hold its paper (partial), and a discount not right yet kept back from it.
   toSave(partial = false): SavePurchaseLine[] {
@@ -14326,7 +15913,18 @@ const defaultMatcher = new ErrorStateMatcher();
                   <small class="net">Net · الصافي {{ e.netCost(line) | money }}</small>
                 }
               </td>
-              <td class="num">{{ e.unitPrice(line) === null ? '' : (e.unitPrice(line) | money) }}</td>
+              <td class="num">
+                {{ e.unitPrice(line) === null ? '' : (e.unitPrice(line) | money) }}
+                @if (e.priceDeviation(line); as off) {
+                  <div class="price-alert" role="status">
+                    <mat-icon aria-hidden="true">warning</mat-icon>
+                    <span>
+                      <span lang="ar" dir="rtl">تنبيه: السعر يختلف بـ {{ off > 0 ? '+' : '' }}{{ off }}% عن المتوسط الحالي - تأكد من الوحدة!</span>
+                      <span class="en">{{ off > 0 ? '+' : '' }}{{ off }}% from the average now: check the unit.</span>
+                    </span>
+                  </div>
+                }
+              </td>
               <td class="num muted">
                 @if (e.expense(line); as x) {
                   <span class="category">{{ x.category }}</span>
@@ -14401,6 +15999,34 @@ const defaultMatcher = new ErrorStateMatcher();
     .material {
       min-width: 216px;
       width: 100%;
+    }
+    .price-alert {
+      display: flex;
+      align-items: flex-start;
+      gap: 4px;
+      margin-top: 4px;
+      padding: 4px 8px;
+      max-width: 220px;
+      margin-inline-start: auto;
+      border-radius: 8px;
+      background: color-mix(in srgb, var(--app-warn) 16%, transparent);
+      color: var(--app-warn);
+      font: var(--mat-sys-label-small);
+      text-align: start;
+      white-space: normal;
+
+      mat-icon {
+        flex: none;
+        width: 16px;
+        height: 16px;
+        font-size: 16px;
+      }
+      span {
+        display: block;
+      }
+      .en {
+        opacity: 0.85;
+      }
     }
     .add-new {
       color: var(--mat-sys-primary);
@@ -17145,7 +18771,7 @@ export class InvoicePage {
 ```
 
 
-> 📄 **`frontend/src/app/features/costing/invoice-view.ts`** — 238 سطر
+> 📄 **`frontend/src/app/features/costing/invoice-view.ts`** — 254 سطر
 
 ```ts
 import { DatePipe, DecimalPipe } from '@angular/common';
@@ -17161,7 +18787,7 @@ const baseLabels: Record<UnitOfMeasure, string> = { Gram: 'g', Millilitre: 'ml',
 // category, the total split into stock and expenses, and the paper itself. With discounts, each
 // line's (its own and its share of the invoice's) and what it came to after them, and the
 // subtotal, less the discounts, as what is paid. Shown for review before posting, from the
-// history's Show, and on the invoice's own page.
+// history's Show, and on the invoice's own page; from a stock card, its material's line marked.
 @Component({
   selector: 'app-invoice-view',
   imports: [DatePipe, DecimalPipe, MoneyPipe, PaperPreview],
@@ -17220,9 +18846,12 @@ const baseLabels: Record<UnitOfMeasure, string> = { Gram: 'g', Millilitre: 'ml',
         </thead>
         <tbody>
           @for (l of inv.lines; track l.rawMaterialId ?? l.expenseItemId) {
-            <tr>
+            <tr [class.marked]="!!highlight() && l.rawMaterialId === highlight()" [attr.aria-current]="highlight() && l.rawMaterialId === highlight() ? 'true' : null">
               <td>
                 {{ l.material }}
+                @if (highlight() && l.rawMaterialId === highlight()) {
+                  <span class="badge marked-tag">This material · هذه الخامة</span>
+                }
                 @if (l.itemType === 'Expense') {
                   <span class="badge expense">Expense · مصروف</span>
                 }
@@ -17353,12 +18982,25 @@ const baseLabels: Record<UnitOfMeasure, string> = { Gram: 'g', Millilitre: 'ml',
         font: var(--mat-sys-title-medium);
       }
     }
+    tr.marked td {
+      background: color-mix(in srgb, var(--mat-sys-primary) 10%, transparent);
+    }
+    tr.marked td:first-child {
+      box-shadow: inset 3px 0 0 var(--mat-sys-primary);
+    }
+    .marked-tag {
+      margin-inline-start: 6px;
+      background: var(--mat-sys-primary);
+      color: var(--mat-sys-on-primary);
+    }
   `,
 })
 export class InvoiceView {
   protected readonly methods = paymentMethodLabels;
   protected readonly statuses = paymentStatusLabels;
   readonly invoice = input.required<PurchaseInvoice>();
+  // A material whose line is marked: the one its stock card opened the invoice for.
+  readonly highlight = input<string | null>(null);
 
   // Anything taken off it, by a line or on the whole invoice.
   protected readonly discounted = computed(() => {
@@ -17389,7 +19031,7 @@ export class InvoiceView {
 ```
 
 
-> 📄 **`frontend/src/app/features/costing/invoice-view-dialog.ts`** — 88 سطر
+> 📄 **`frontend/src/app/features/costing/invoice-view-dialog.ts`** — 116 سطر
 
 ```ts
 import { Component, inject, signal } from '@angular/core';
@@ -17405,9 +19047,13 @@ import { InvoiceView } from './invoice-view';
 
 export interface InvoiceViewData {
   invoiceId: string;
+  // From a stock card: the material whose line is marked.
+  highlightMaterialId?: string | null;
 }
 
-// The history's Show: one invoice, read-only, over the list, so the place in it is kept.
+// The history's Show: one invoice, read-only, over the list, so the place in it is kept. From a
+// stock card, its material's line marked, and how to put a wrong one right: correct the invoice,
+// which voids it and posts the corrected one in its place, so the stock and the average follow.
 @Component({
   selector: 'app-invoice-view-dialog',
   imports: [InvoiceView, MatButtonModule, MatDialogModule, MatIconModule, MatProgressBarModule, RouterLink],
@@ -17420,7 +19066,17 @@ export interface InvoiceViewData {
       @if (error()) {
         <p class="error">{{ error() }}</p>
       } @else if (invoice(); as inv) {
-        <app-invoice-view [invoice]="inv" />
+        @if (data.highlightMaterialId && inv.status === 'Posted') {
+          <p class="fix" role="note">
+            <mat-icon aria-hidden="true">build</mat-icon>
+            <span>
+              A wrong quantity, unit or price on the marked line? Correct the invoice (Edit): it is voided and re-entered as corrected, and
+              the stock and its average cost follow.
+              <span class="inline-ar">لتصحيح الكمية أو السعر: عدّل الفاتورة، فتُلغى ويُعاد إدخالها مصححة.</span>
+            </span>
+          </p>
+        }
+        <app-invoice-view [invoice]="inv" [highlight]="data.highlightMaterialId ?? null" />
       } @else if (loading()) {
         <mat-progress-bar mode="indeterminate" />
       } @else {
@@ -17444,6 +19100,20 @@ export interface InvoiceViewData {
     }
     .error {
       color: var(--mat-sys-error);
+    }
+    .fix {
+      display: flex;
+      align-items: flex-start;
+      gap: 6px;
+      margin: 0 0 12px;
+      padding: 8px 12px;
+      border-radius: 10px;
+      background: color-mix(in srgb, var(--mat-sys-primary) 8%, transparent);
+      font: var(--mat-sys-body-small);
+
+      mat-icon {
+        flex: none;
+      }
     }
   `,
 })
@@ -17472,9 +19142,9 @@ export class InvoiceViewDialog {
 
 // Focus on the dialog itself: on its first button or the paper's viewer, it would open
 // scrolled past the supplier and the lines.
-export function showInvoice(dialog: MatDialog, invoiceId: string): void {
+export function showInvoice(dialog: MatDialog, invoiceId: string, highlightMaterialId: string | null = null): void {
   dialog.open<InvoiceViewDialog, InvoiceViewData>(InvoiceViewDialog, {
-    data: { invoiceId },
+    data: highlightMaterialId ? { invoiceId, highlightMaterialId } : { invoiceId },
     width: '1000px',
     maxWidth: '95vw',
     autoFocus: 'dialog',
@@ -21890,11 +23560,11 @@ export class PhotoThumb {
 
 `SalesPage`: ملخصات الأيام وأصنافها. و `DailySalesDialog`: إدخال ملخص اليوم بأكواد المنيو (`"6101-2 · Margherita (Large)"`) بأسعاره، و `DailySalesImportDialog` من شيت العمودين.
 
-> 📄 **`frontend/src/app/features/costing/sales-page.ts`** — 278 سطر
+> 📄 **`frontend/src/app/features/costing/sales-page.ts`** — 302 سطر
 
 ```ts
 import { DatePipe } from '@angular/common';
-import { Component, computed, inject, signal } from '@angular/core';
+import { Component, computed, inject, input, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
 import { MatDialog } from '@angular/material/dialog';
@@ -21977,7 +23647,7 @@ const shownLines = 6;
           </thead>
           <tbody>
             @for (s of r.receipts; track s.id) {
-              <tr [class.voided]="s.voidedAtUtc">
+              <tr [class.voided]="s.voidedAtUtc" [class.focused]="s.id === receipt()" [attr.id]="'sale-' + s.id">
                 <td class="nowrap">
                   <strong>{{ s.businessDate | date: 'EEE d MMM' }}</strong>
                   <div class="muted small">
@@ -22035,6 +23705,12 @@ const shownLines = 6;
     .day {
       width: 170px;
     }
+    tr.focused td {
+      background: color-mix(in srgb, var(--mat-sys-primary) 10%, transparent);
+    }
+    tr.focused td:first-child {
+      box-shadow: inset 3px 0 0 var(--mat-sys-primary);
+    }
     tr.voided td {
       opacity: 0.6;
     }
@@ -22064,6 +23740,10 @@ export class SalesPage {
   protected readonly canChange = inject(AuthService).can(Permissions.InventoryManage);
   protected readonly shownLines = shownLines;
 
+  // Opened from a stock card: the day of the sale, and its receipt, marked and every line shown.
+  readonly day = input<string | undefined>(undefined);
+  readonly receipt = input<string | undefined>(undefined);
+
   protected readonly from = signal('');
   protected readonly to = signal('');
   protected readonly report = signal<SalesReport | null>(null);
@@ -22077,6 +23757,20 @@ export class SalesPage {
 
   constructor() {
     void (async () => {
+      const day = this.day();
+      if (day && /^\d{4}-\d{2}-\d{2}$/.test(day)) {
+        this.from.set(day);
+        this.to.set(day);
+        const receipt = this.receipt();
+        if (receipt) {
+          this.open.set(new Set([receipt]));
+        }
+        await this.load();
+        if (receipt) {
+          setTimeout(() => document.getElementById(`sale-${receipt}`)?.scrollIntoView({ block: 'center' }));
+        }
+        return;
+      }
       const today = await this.businessDay.today();
       const weekAgo = new Date(`${today}T12:00:00`);
       weekAgo.setDate(weekAgo.getDate() - 6);
@@ -23465,11 +25159,11 @@ export class CountSheetPage {
 
 `WastePage`: الهالك (خامات تالفة بسبب: تخرج من المخزون) والكسر (مستهلكات: تكلفة على اليوم)، وإلغاؤهما بموافقة.
 
-> 📄 **`frontend/src/app/features/costing/waste-page.ts`** — 558 سطر
+> 📄 **`frontend/src/app/features/costing/waste-page.ts`** — 568 سطر
 
 ```ts
 import { DatePipe, DecimalPipe } from '@angular/common';
-import { Component, computed, inject, signal } from '@angular/core';
+import { Component, computed, inject, input, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
 import { MatFormFieldModule } from '@angular/material/form-field';
@@ -23629,7 +25323,7 @@ interface Line {
           <tbody>
             @for (entry of shownRecent(); track entry.spoilageId) {
               @for (l of entry.lines; track l.rawMaterialId; let first = $first) {
-                <tr [class.pending-deletion]="!!pendingOf(entry)">
+                <tr [class.pending-deletion]="!!pendingOf(entry)" [class.focused]="entry.spoilageId === spoilage()" [attr.id]="first ? 'spoilage-' + entry.spoilageId : null">
                   <td>
                     @if (first) {
                       {{ entry.recordedAtUtc | date: 'd MMM, HH:mm' }}
@@ -23756,6 +25450,9 @@ interface Line {
   `,
   styleUrl: './costing.scss',
   styles: `
+    tr.focused td {
+      background: color-mix(in srgb, var(--mat-sys-primary) 10%, transparent);
+    }
     .breakage-form {
       display: flex;
       flex-wrap: wrap;
@@ -23821,6 +25518,9 @@ export class WastePage {
     { en: 'Damaged packaging', ar: 'تلف العبوة' },
     { en: 'Other', ar: 'أخرى' },
   ];
+
+  // Opened from a stock card: the entry it names, marked, the history reaching back a year for it.
+  readonly spoilage = input<string | undefined>(undefined);
 
   protected readonly materials = signal<MaterialCost[]>([]);
   protected readonly recent = signal<SpoilageEntry[]>([]);
@@ -24008,9 +25708,13 @@ export class WastePage {
     this.error.set(null);
     void this.approvals.refresh();
     try {
-      const [materials, recent] = await Promise.all([firstValueFrom(this.api.materials()), firstValueFrom(this.api.spoilage(30))]);
+      const focus = this.spoilage();
+      const [materials, recent] = await Promise.all([firstValueFrom(this.api.materials()), firstValueFrom(this.api.spoilage(focus ? 366 : 30))]);
       this.materials.set(materials);
       this.recent.set(recent);
+      if (focus) {
+        setTimeout(() => document.getElementById(`spoilage-${focus}`)?.scrollIntoView({ block: 'center' }));
+      }
     } catch (error) {
       this.error.set(errorMessage(error, 'The waste could not be loaded.'));
     } finally {

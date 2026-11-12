@@ -12,6 +12,7 @@ import { CategorySpending, CostingApi, SpendingReport, expenseLineLabels } from 
 import { errorMessage } from '../../core/http/error-message';
 import { Company } from '../../core/settings/company';
 import { MoneyPipe } from '../../core/ui/money.pipe';
+import { InfoTip } from './info-tip';
 import { PieSlice, SpendingPie, pieColors } from './spending-pie';
 
 type Period = 'month' | 'last-month' | 'quarter' | 'year' | 'custom';
@@ -23,6 +24,7 @@ type Period = 'month' | 'last-month' | 'quarter' | 'year' | 'custom';
 @Component({
   selector: 'app-spending-page',
   imports: [
+    InfoTip,
     DatePipe,
     DecimalPipe,
     FormsModule,
@@ -67,21 +69,19 @@ type Period = 'month' | 'last-month' | 'quarter' | 'year' | 'custom';
       </header>
       <div class="tiles">
         <div class="tile">
-          <span class="label">Total spent · إجمالي المشتريات</span>
+          <span class="label">Total spent · إجمالي المشتريات <app-info-tip tip="totalSpent" /></span>
           <strong>{{ r.total | money }}</strong>
         </div>
         <div class="tile">
-          <span class="label"><span class="swatch stock"></span>Into stock · خامات</span>
+          <span class="label"><span class="swatch stock"></span>Into stock · خامات <app-info-tip tip="stockSpend" /></span>
           <strong>{{ r.inventory | money }}</strong>
-          <small class="muted">cost of sales as the recipes use it</small>
         </div>
         <div class="tile">
-          <span class="label"><span class="swatch expense"></span>Expenses · مصروفات</span>
+          <span class="label"><span class="swatch expense"></span>Expenses · مصروفات <app-info-tip tip="expenseSpend" /></span>
           <strong>{{ r.expenses | money }}</strong>
-          <small class="muted">overheads in the KPIs' profit and loss</small>
         </div>
         <div class="tile">
-          <span class="label">Invoices · الفواتير</span>
+          <span class="label">Invoices · الفواتير <app-info-tip tip="invoices" /></span>
           <strong>{{ r.invoices }}</strong>
         </div>
       </div>
@@ -167,7 +167,7 @@ type Period = 'month' | 'last-month' | 'quarter' | 'year' | 'custom';
                 <th class="num">Into stock<span class="ar">خامات</span></th>
                 <th class="num">Expenses<span class="ar">مصروفات</span></th>
                 <th class="num">Total<span class="ar">الإجمالي</span></th>
-                <th class="num">Share<span class="ar">النسبة</span></th>
+                <th class="num">Share <app-info-tip tip="categoryShare" /><span class="ar">النسبة</span></th>
               </tr>
             </thead>
             <tbody>

@@ -195,4 +195,73 @@ public static class IntelligenceWorkbooks
                      r.OnHand, r.StockValue, r.AverageDaily, r.DaysOnHand, r.StockoutRisk, r.DeadStock],
                     Flagged: r.StockoutRisk || r.DeadStock))
                 .ToList())]);
+
+    private static string ClassName(MenuClass? c) => c switch
+    {
+        MenuClass.Star => "Star · نجم",
+        MenuClass.Plowhorse => "Plowhorse · حصان عمل",
+        MenuClass.Puzzle => "Puzzle · لغز",
+        MenuClass.Dog => "Dog · صنف ضعيف",
+        _ => "Not placed · غير مصنف",
+    };
+
+    public static Stream MenuEngineering(MenuEngineeringReport report) =>
+        ReportWorkbook.Build([new ReportSheet(
+            "Menu engineering", "Menu engineering & profitability · هندسة المنيو والربحية",
+            $"{Span(report.From, report.To)}{(report.Category is { } c ? $" · {c}" : "")} · popular: menu mix ≥ {report.PopularityThresholdPercent:0.##}%; "
+                + $"profitable: margin ≥ the average {report.AverageContribution:#,##0.00}; suggested price at a {report.FoodCostTargetPercent:0.#}% food cost",
+            [
+                new("Class · التصنيف"), new("Code · الكود"), new("Dish · الصنف"), new("Category · القسم"), new("Sold · المباع", ReportWorkbook.Quantity),
+                new("Menu mix · نسبة المبيعات", "0.00\"%\""), new("Avg price · متوسط السعر", ReportWorkbook.Money),
+                new("Food cost a portion · تكلفة الطبق", ReportWorkbook.Money), new("Food cost % · نسبة التكلفة", ReportWorkbook.Percent),
+                new("Margin a portion · هامش المساهمة", ReportWorkbook.Money), new("Total margin · إجمالي المساهمة", ReportWorkbook.Money),
+                new("Suggested price · السعر المقترح", ReportWorkbook.Money),
+            ],
+            [
+                .. report.Rows.Select(r => new ReportRow(
+                    [ClassName(r.Class), r.ItemCode, r.MenuItem, r.Category, r.QuantitySold, r.MenuMixPercent, r.AveragePrice, r.FoodCostPerPortion,
+                     r.FoodCostPercent, r.ContributionMargin, r.TotalContribution, r.SuggestedPrice],
+                    Flagged: r.Class == MenuClass.Dog)),
+                new ReportRow(["", "", "Total · الإجمالي", null, report.QuantitySold, null, null, null, report.FoodCostPercent, report.AverageContribution,
+                    report.TotalContribution, null], ReportRowKind.Total),
+            ])]);
+}
+
+// A material's stock card as a sheet: the period's movements as the screen lists them, its balance
+// opening and closing.
+public static class StockCardWorkbook
+{
+    private static string TypeName(StockCardMovementType type) => type switch
+    {
+        StockCardMovementType.Opening => "Opening · افتتاحي",
+        StockCardMovementType.Purchases => "Purchase · مشتريات",
+        StockCardMovementType.Production => "Production · إنتاج",
+        StockCardMovementType.Sales => "Sales · مبيعات",
+        StockCardMovementType.Waste => "Waste · هالك",
+        _ => "Count adjustment · تسوية جرد",
+    };
+
+    public static Stream Build(StockCard card)
+    {
+        var unit = card.PurchaseUnit;
+        return ReportWorkbook.Build([new ReportSheet(
+            "Stock card", $"{card.Material} · Stock card · كارتة الصنف",
+            $"{card.From:d MMM yyyy} – {card.To:d MMM yyyy}{(card.Type is { } t ? $" · {TypeName(t)} only" : "")} · quantities in {unit}, prices per {unit}",
+            [
+                new("Date · التاريخ", ReportWorkbook.Date), new("Movement · الحركة"), new("Reference · المرجع"), new("Details · البيان"),
+                new($"In · وارد ({unit})", ReportWorkbook.Quantity), new($"Out · منصرف ({unit})", ReportWorkbook.Quantity),
+                new("Balance · الرصيد", ReportWorkbook.Quantity), new("Unit price · سعر الحركة", "#,##0.00##"),
+                new("Value · القيمة", ReportWorkbook.Money), new("Moving average after · المتوسط بعد الحركة", "#,##0.00##"), new("By · بواسطة"),
+            ],
+            [
+                new ReportRow([card.From, "Opening balance · رصيد أول المدة", null, null, null, null, card.OpeningBalance, null, null, card.OpeningAverageCost, null],
+                    ReportRowKind.Group),
+                .. card.Lines.Select(l => new ReportRow(
+                    [l.Date, TypeName(l.Type), l.Reference, l.Details, l.QuantityIn == 0 ? null : l.QuantityIn, l.QuantityOut == 0 ? null : l.QuantityOut,
+                     l.Balance, l.UnitCost, l.Value, l.AverageCostAfter, l.RecordedBy],
+                    Flagged: l.IsReversal)),
+                new ReportRow([card.To, "Closing balance · رصيد آخر المدة", null, null, card.TotalIn, card.TotalOut, card.ClosingBalance, null, card.ClosingValue,
+                    card.ClosingAverageCost, null], ReportRowKind.Total),
+            ])]);
+    }
 }

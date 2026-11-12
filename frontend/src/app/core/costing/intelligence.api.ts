@@ -49,6 +49,8 @@ export interface PriceVarianceRow {
   latestSupplier: string | null;
   supplierIds: string[];
   affected: PriceImpactLine[];
+  // The invoice of the latest price, to open it.
+  latestInvoiceId: string | null;
 }
 
 export interface PriceVarianceReport {
@@ -228,6 +230,69 @@ export const evaluationLabels: Record<VarianceEvaluation, { en: string; ar: stri
   SharedCost: { en: 'Shared cost', ar: 'تكلفة مشتركة' },
 };
 
+// ---- Menu engineering (هندسة المنيو والربحية) ----
+
+export type MenuClass = 'Star' | 'Plowhorse' | 'Puzzle' | 'Dog';
+export type MenuCostStatus = 'WithinTarget' | 'AboveTarget' | 'NoRecipe' | 'MissingPrices' | 'NoPrice';
+
+// A dish sold in the period: its menu mix, average net price, food cost a portion and its share of
+// the price, its contribution margin and in all, where that places it, and the price that would bring
+// it to the food cost target. One with no recipe or no price is not placed (menuClass null).
+export interface MenuEngineeringRow {
+  itemCode: string;
+  menuItemId: number;
+  variantId: number | null;
+  menuItem: string;
+  menuItemAr: string | null;
+  category: string;
+  quantitySold: number;
+  menuMixPercent: number | null;
+  netSales: number;
+  averagePrice: number | null;
+  foodCostPerPortion: number | null;
+  foodCostPercent: number | null;
+  contributionMargin: number | null;
+  totalContribution: number | null;
+  popular: boolean;
+  profitable: boolean;
+  class: MenuClass | null;
+  suggestedPrice: number | null;
+  status: MenuCostStatus;
+}
+
+export interface MenuClassSummary {
+  class: MenuClass;
+  items: number;
+  quantitySold: number;
+  contribution: number;
+  contributionSharePercent: number | null;
+}
+
+export interface MenuEngineeringReport {
+  from: string;
+  to: string;
+  category: string | null;
+  foodCostTargetPercent: number;
+  items: number;
+  quantitySold: number;
+  netSales: number;
+  totalContribution: number;
+  averageContribution: number | null;
+  popularityThresholdPercent: number | null;
+  foodCostPercent: number | null;
+  classes: MenuClassSummary[];
+  rows: MenuEngineeringRow[];
+  unclassified: number;
+  categories: string[];
+}
+
+export const menuClassLabels: Record<MenuClass, { en: string; ar: string; icon: string; action: string; actionAr: string }> = {
+  Star: { en: 'Stars', ar: 'النجوم', icon: 'star', action: 'Keep and feature', actionAr: 'حافظ عليها وأبرزها' },
+  Plowhorse: { en: 'Plowhorses', ar: 'خيول العمل', icon: 'agriculture', action: 'Reprice or cut cost', actionAr: 'ارفع السعر أو خفّض التكلفة' },
+  Puzzle: { en: 'Puzzles', ar: 'الألغاز', icon: 'extension', action: 'Promote and reposition', actionAr: 'روّج لها وغيّر مكانها' },
+  Dog: { en: 'Dogs', ar: 'الأصناف الضعيفة', icon: 'trending_down', action: 'Rework or remove', actionAr: 'أعد تصميمها أو احذفها' },
+};
+
 // Filtering a sheet as the screen does: one category, one supplier, the words typed.
 export interface PriceSheetFilter {
   categoryId?: string | null;
@@ -275,4 +340,16 @@ export class IntelligenceApi {
   abcSheet(from: string, to: string): Observable<Blob> {
     return this.http.get('/api/costing/intelligence/abc/sheet', { params: { from, to }, responseType: 'blob' });
   }
+
+  menuEngineering(from: string, to: string, category: string | null = null): Observable<MenuEngineeringReport> {
+    return this.http.get<MenuEngineeringReport>('/api/costing/intelligence/menu-engineering', { params: menuParams(from, to, category) });
+  }
+
+  menuEngineeringSheet(from: string, to: string, category: string | null = null): Observable<Blob> {
+    return this.http.get('/api/costing/intelligence/menu-engineering/sheet', { params: menuParams(from, to, category), responseType: 'blob' });
+  }
+}
+
+function menuParams(from: string, to: string, category: string | null): Record<string, string> {
+  return category ? { from, to, category } : { from, to };
 }

@@ -206,4 +206,45 @@ describe('the material dialog', () => {
     expect(text(failed.el.querySelector('.unit-change')!)).toContain('could not be read');
     expect(failed.submit().disabled).toBe(true);
   });
+
+  it('works the yield out from two weighings, shows the EP$ it gives, and puts it in the yield', async () => {
+    const { fixture, page, el } = await render(tomatoes);
+    const hints = () => [...el.querySelectorAll('mat-hint')].map(text);
+    expect(hints()).toContain('EP$ L.E 30.00 / kg · تكلفة الصافي');
+
+    el.querySelector<HTMLButtonElement>('[aria-label="Calculate from weight · احسب من الوزن"]')!.click();
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const calc = document.querySelector('.yield-calc')!;
+    expect(calc.getAttribute('role')).toBe('dialog');
+    const [gross, net] = [...calc.querySelectorAll<HTMLInputElement>('input')];
+    const use = [...calc.querySelectorAll<HTMLButtonElement>('button')].find((b) => text(b).startsWith('Use this yield'))!;
+    expect(use.disabled).toBe(true);
+
+    // 10 kg bought, 8.5 kg left once cleaned: 85%, so a usable kg costs 30 ÷ 0.85.
+    gross.value = '10';
+    gross.dispatchEvent(new Event('input'));
+    net.value = '8.5';
+    net.dispatchEvent(new Event('input'));
+    fixture.detectChanges();
+    expect([...calc.querySelectorAll('.result dd')].map(text)).toEqual(['85%', 'L.E 35.2941']);
+
+    // More left than was bought: no yield.
+    net.value = '12';
+    net.dispatchEvent(new Event('input'));
+    fixture.detectChanges();
+    expect(calc.querySelector('.result')).toBeNull();
+    expect(text(calc.querySelector('[role="alert"]')!)).toContain('at most the gross');
+    net.value = '8.5';
+    net.dispatchEvent(new Event('input'));
+    fixture.detectChanges();
+
+    use.click();
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect(page['form'].controls.yield.value).toBe(85);
+    expect(document.querySelector('.yield-calc')).toBeNull();
+    expect(hints()).toContain('EP$ L.E 35.2941 / kg · تكلفة الصافي');
+  });
 });
+

@@ -2221,7 +2221,7 @@ export const costingTabs: readonly CostingTabInfo[] = [
   { tab: 'Menu', group: costingGroups.catalog, path: 'menu', en: 'Menu', ar: 'قائمة الطعام', icon: 'restaurant_menu', hint: { en: 'Items, sizes, add-ons and their prices', ar: 'الأصناف والأحجام والإضافات وأسعارها' } },
   {
     tab: 'Intelligence', group: costingGroups.catalog, path: 'intelligence', en: 'Material & demand intelligence', ar: 'تحليلات الخامات والطلبيات', icon: 'query_stats',
-    hint: { en: 'Price variance, the order planner, theoretical vs actual usage, ABC', ar: 'انحراف الأسعار وتخطيط الطلبيات والاستهلاك وتصنيف ABC' },
+    hint: { en: 'Price variance, the order planner, theoretical vs actual usage, ABC, menu engineering', ar: 'انحراف الأسعار وتخطيط الطلبيات والاستهلاك وتصنيف ABC وهندسة المنيو' },
   },
   { tab: 'Sales', group: costingGroups.operations, path: 'sales', en: 'Sales', ar: 'المبيعات', icon: 'point_of_sale', hint: { en: 'Sales entered or imported, refunds', ar: 'المبيعات المدخلة أو المستوردة والمرتجعات' } },
   {

@@ -144,5 +144,112 @@ public class IntelligenceTests
             // Its first row of figures, under the header.
             Assert.NotEmpty(book.Worksheet(1).Row(5).CellsUsed());
         }
+
+        // ---- The tomatoes' stock card over the ten days: 10 kg in at 20, 5 kg at 25 (the average
+        // 21.67), 2 kg into the sauce, 0.5 kg spoiled, 0.5 kg short at the count: 12 kg left, 260 worth.
+        // The average after the second delivery is the card's own; the ones after, as the ledger kept
+        // them, to six places a gram.
+        var cards = node.Service<StockCardService>(scope);
+        var card = await cards.GetAsync(tomatoes, today.AddDays(-10), today, null, ct);
+        Assert.Equal((0m, (decimal?)null, 15m, 3m, 12m, (decimal?)21.667m, (decimal?)260m, 12m, "kg"),
+            (card.OpeningBalance, card.OpeningAverageCost, card.TotalIn, card.TotalOut, card.ClosingBalance, card.ClosingAverageCost, card.ClosingValue,
+                card.OnHand, card.PurchaseUnit));
+        Assert.Equal(
+            [
+                (StockCardMovementType.Purchases, StockCardSourceKind.PurchaseInvoice, 10m, 0m, 10m, (decimal?)20m, (decimal?)20m),
+                (StockCardMovementType.Purchases, StockCardSourceKind.PurchaseInvoice, 5m, 0m, 15m, 25m, 21.6667m),
+                (StockCardMovementType.Production, StockCardSourceKind.ProductionOrder, 0m, 2m, 13m, 21.667m, 21.667m),
+                (StockCardMovementType.Waste, StockCardSourceKind.Spoilage, 0m, 0.5m, 12.5m, 21.667m, 21.667m),
+                (StockCardMovementType.CountAdjustment, StockCardSourceKind.StockCount, 0m, 0.5m, 12m, 21.667m, 21.667m),
+            ],
+            card.Lines.Select(l => (l.Type, l.SourceKind, l.QuantityIn, l.QuantityOut, l.Balance, l.UnitCost, l.AverageCostAfter)));
+        // Each line names its record and opens it: the invoice of its paper date, from its supplier;
+        // the batch of sauce; why the tomatoes were thrown away.
+        Assert.Equal((first, (DateOnly?)today.AddDays(-10), "Invoice, no number · فاتورة بدون رقم", "Nile Farms", 200m),
+            (card.Lines[0].SourceId, card.Lines[0].SourceDate, card.Lines[0].Reference, card.Lines[0].Details, card.Lines[0].Value));
+        Assert.Equal(("Production batch · تشغيلة إنتاج", "Batch: 2 kg of Pizza sauce", -43.33m), (card.Lines[2].Reference, card.Lines[2].Details, card.Lines[2].Value));
+        Assert.Equal(("Spoilage · تالف", "Rotten", "Omar"), (card.Lines[3].Reference, card.Lines[3].Details, card.Lines[3].RecordedBy));
+        Assert.Equal("Stock count · جرد", card.Lines[4].Reference);
+
+        // From yesterday: it opens with the first delivery's 10 kg at 20. Purchases only: two lines,
+        // the balance still the ledger's.
+        var since = await cards.GetAsync(tomatoes, yesterday, today, StockCardMovementType.Purchases, ct);
+        Assert.Equal((10m, (decimal?)20m, 5m, 3m, 12m), (since.OpeningBalance, since.OpeningAverageCost, since.TotalIn, since.TotalOut, since.ClosingBalance));
+        Assert.Equal([(5m, 15m)], since.Lines.Select(l => (l.QuantityIn, l.Balance)));
+        // The sauce's card: made, then sold through the burgers, the day's sales summary its record.
+        var sauceCard = await cards.GetAsync(sauce, yesterday, today, null, ct);
+        Assert.Equal(
+            [(StockCardMovementType.Production, 2m, 0m, 2m), (StockCardMovementType.Sales, 0m, 1.5m, 0.5m)],
+            sauceCard.Lines.Select(l => (l.Type, l.QuantityIn, l.QuantityOut, l.Balance)));
+        var sold = sauceCard.Lines[1];
+        Assert.Equal((StockCardSourceKind.SalesReceipt, (DateOnly?)yesterday, "Daily sales summary · ملخص المبيعات اليومية", "15 × Burger"),
+            (sold.SourceKind, sold.SourceDate, sold.Reference, sold.Details));
+        Assert.True(await node.Db(db => db.SalesReceipts.AnyAsync(r => r.Id == sold.SourceId, ct)));
+        await Assert.ThrowsAsync<Costing.Domain.Common.DomainException>(() => cards.GetAsync(tomatoes, today, yesterday, null, ct));
+        using (var book = new XLWorkbook(StockCardWorkbook.Build(card)))
+        {
+            var sheet = book.Worksheet("Stock card");
+            Assert.Equal(("Opening balance · رصيد أول المدة", "Closing balance · رصيد آخر المدة", 12d),
+                (sheet.Cell(5, 2).GetString(), sheet.Cell(11, 2).GetString(), sheet.Cell(11, 7).GetDouble()));
+        }
+
+        // The latest price's invoice, to open from the price variance.
+        Assert.NotNull(tomato.LatestInvoiceId);
+        Assert.NotEqual(first, tomato.LatestInvoiceId);
+    }
+
+    // Four dishes sold, a hundred in all: two popular (above 70% of an even 25% mix, 17.5%), two
+    // not; the average margin, weighted by what sold, 63.50. Lemonade has no recipe, so no place.
+    [Fact]
+    public async Task Menu_engineering_places_each_dish_by_its_popularity_and_margin()
+    {
+        await using var node = await TestSystem.StartAsync();
+        Assert.True(await TestSystem.WaitFor(() => node.Db(db => db.MenuItems.AnyAsync())));
+        var ct = TestContext.Current.CancellationToken;
+        using var scope = node.Scope();
+        var costing = node.Service<CostingService>(scope);
+        var today = node.Service<IntelligenceService>(scope).Today;
+        await node.Db(db => db.Database.ExecuteSqlRawAsync("""
+            INSERT INTO costing."MenuItems" ("Id", "Name", "Category", "Price", "IsAvailable", "IsPriceBasedOnAddons", "IsDeleted", "AddOnIds") VALUES
+                (30, 'Steak', 'Mains', 300, true, false, false, ARRAY[]::integer[]),
+                (31, 'Fries', 'Mains', 40, true, false, false, ARRAY[]::integer[]),
+                (32, 'Soup', 'Mains', 50, true, false, false, ARRAY[]::integer[]);
+            """, ct));
+
+        async Task<Guid> Piece(string name, decimal cost) =>
+            (await node.Send(new CreateRawMaterialCommand(name, UnitOfMeasure.Piece, PurchaseUnit: "piece", PurchaseUnitSize: 1, CostPerPurchaseUnit: cost))).Id;
+        await node.Send(new SetRecipeCommand(RecipeTargetKind.MenuItem, TestMenu.Burger, null, [new(await Piece("Patty", 20), 1)]));
+        await node.Send(new SetRecipeCommand(RecipeTargetKind.MenuItem, 30, null, [new(await Piece("Steak cut", 150), 1)]));
+        await node.Send(new SetRecipeCommand(RecipeTargetKind.MenuItem, 31, null, [new(await Piece("Potato portion", 10), 1)]));
+        await node.Send(new SetRecipeCommand(RecipeTargetKind.MenuItem, 32, null, [new(await Piece("Soup base", 30), 1)]));
+        await node.Send(new RecordDailySalesCommand(Guid.NewGuid(), today,
+            [new(TestMenu.Burger, null, 40), new(30, null, 5), new(31, null, 50), new(32, null, 5), new(TestMenu.Lemonade, null, 10)], "Omar"));
+        Assert.True(await TestSystem.WaitFor(async () => await node.Db(db => db.StockMovements.CountAsync(m => m.Reason == StockMovementReason.Sale)) == 4));
+
+        var report = await costing.GetMenuEngineeringAsync(today, today, null, ct);
+        Assert.Equal((4, 100m, 8_550m, 6_350m, (decimal?)63.5m, (decimal?)17.5m, 30m, 1),
+            (report.Items, report.QuantitySold, report.NetSales, report.TotalContribution, report.AverageContribution, report.PopularityThresholdPercent,
+                report.FoodCostTargetPercent, report.Unclassified));
+        Assert.Equal(
+            [
+                ("Burger", (MenuClass?)MenuClass.Star, (decimal?)40m, (decimal?)100m, (decimal?)16.7m, (decimal?)66.67m),
+                ("Fries", MenuClass.Plowhorse, 50m, 30m, 25m, 33.33m),
+                ("Steak", MenuClass.Puzzle, 5m, 150m, 50m, 500m),
+                ("Soup", MenuClass.Dog, 5m, 20m, 60m, 100m),
+                ("Lemonade", null, null, null, null, null),
+            ],
+            report.Rows.Select(r => (r.MenuItem, r.Class, r.MenuMixPercent, r.ContributionMargin, r.FoodCostPercent, r.SuggestedPrice)));
+        Assert.Equal((CostStatus.AboveTarget, CostStatus.NoRecipe), (report.Rows[3].Status, report.Rows[4].Status));
+        Assert.Equal(
+            [(MenuClass.Star, 1, 4_000m), (MenuClass.Plowhorse, 1, 1_500m), (MenuClass.Puzzle, 1, 750m), (MenuClass.Dog, 1, 100m)],
+            report.Classes.Select(c => (c.Class, c.Items, c.Contribution)));
+        Assert.Equal(["Drinks", "Mains"], report.Categories);
+
+        // The drinks alone: nothing with a recipe to place.
+        var drinks = await costing.GetMenuEngineeringAsync(today, today, "drinks", ct);
+        Assert.Equal((0, (decimal?)null, 1), (drinks.Items, drinks.PopularityThresholdPercent, drinks.Unclassified));
+        await Assert.ThrowsAsync<Costing.Domain.Common.DomainException>(() => costing.GetMenuEngineeringAsync(today, today.AddDays(-1), null, ct));
+        using var book = new XLWorkbook(IntelligenceWorkbooks.MenuEngineering(report));
+        Assert.Equal("Star · نجم", book.Worksheet("Menu engineering").Cell(5, 1).GetString());
     }
 }

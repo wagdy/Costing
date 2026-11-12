@@ -7,6 +7,7 @@ import { NotifyService } from '../../core/ui/notify.service';
 import { Approvals } from './approvals';
 import { MaterialHistoryDialog } from './material-history-dialog';
 import { MaterialsPage } from './materials-page';
+import { StockCardDialog } from './stock-card-dialog';
 import { SheetImportData, SheetImportDialog } from './sheet-import-dialog';
 
 const result: RawMaterialImportResult = {
@@ -213,5 +214,13 @@ describe('a material’s purchase history from its row', () => {
     expect(open).toHaveBeenCalledWith(MaterialHistoryDialog, { data: tomatoes, width: '960px', maxWidth: '95vw' });
     // The row's own click, which opens the material to change, is not set off.
     expect(open).toHaveBeenCalledTimes(1);
+
+    // Every material and prep item has its stock card: each movement, its balance and average after.
+    expect([...el.querySelectorAll('[aria-label^="Stock card of"]')].map((b) => b.getAttribute('aria-label'))).toEqual([
+      'Stock card of Tomato sauce', 'Stock card of Tomatoes',
+    ]);
+    el.querySelector<HTMLButtonElement>('[aria-label="Stock card of Tomato sauce"]')!.click();
+    expect(open).toHaveBeenLastCalledWith(StockCardDialog, expect.objectContaining({ data: { id: 'sauce', name: 'Tomato sauce' }, width: '1180px' }));
+    expect(open).toHaveBeenCalledTimes(2);
   });
 });

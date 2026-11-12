@@ -14,6 +14,8 @@ import { SearchField } from '../shared/search-field';
 import { SortOption, SortState, smartMatch, sortItems } from '../shared/smart-search';
 import { SortControl } from '../shared/sort-control';
 import { PeriodBar, periodDays } from './period-bar';
+import { InfoTip } from './info-tip';
+import { StockCardButton } from './stock-card-dialog';
 
 type ConsumptionSort = 'cost' | 'percent' | 'material';
 
@@ -30,7 +32,19 @@ const sorts: SortOption<ConsumptionSort>[] = [
 // waste not recorded, over-portioning, or stock walking out.
 @Component({
   selector: 'app-consumption-page',
-  imports: [DecimalPipe, FilterSelect, MatButtonModule, MatIconModule, MatProgressBarModule, MoneyPipe, PeriodBar, SearchField, SortControl],
+  imports: [
+    DecimalPipe,
+    FilterSelect,
+    InfoTip,
+    MatButtonModule,
+    MatIconModule,
+    MatProgressBarModule,
+    MoneyPipe,
+    PeriodBar,
+    SearchField,
+    SortControl,
+    StockCardButton,
+  ],
   template: `
     <div class="toolbar">
       <app-period-bar [(from)]="from" [(to)]="to" />
@@ -45,24 +59,24 @@ const sorts: SortOption<ConsumptionSort>[] = [
     } @else if (report(); as r) {
       <div class="tiles">
         <div class="tile key">
-          <span class="label">Unexplained variance · قيمة الانحراف غير المبرر</span>
+          <span class="label">Unexplained variance · قيمة الانحراف غير المبرر <app-info-tip tip="unexplainedVariance" /></span>
           <strong [class.loss]="r.unexplainedValue > 0">{{ r.unexplainedValue | money }}</strong>
-          <small class="muted">at the average cost now</small>
         </div>
         <div class="tile">
-          <span class="label">High-loss materials · خامات بفاقد مرتفع</span>
+          <span class="label">High-loss materials · خامات بفاقد مرتفع <app-info-tip tip="highLoss" /></span>
           <strong [class.loss]="r.highLoss > 0">{{ r.highLoss }}</strong>
-          <small class="muted">more than {{ r.tolerancePercent }}% over the recipes</small>
+          <small class="chip">&gt; {{ r.tolerancePercent }}%</small>
         </div>
         <div class="tile">
-          <span class="label">Theoretical usage · الاستهلاك النظري</span>
+          <span class="label">Theoretical usage · الاستهلاك النظري <app-info-tip tip="theoreticalUsage" /></span>
           <strong>{{ r.theoreticalValue | money }}</strong>
-          <small class="muted">what the sales should have taken</small>
         </div>
         <div class="tile">
-          <span class="label">Actual usage · الاستهلاك الفعلي</span>
+          <span class="label">Actual usage · الاستهلاك الفعلي <app-info-tip tip="actualUsage" /></span>
           <strong>{{ r.actualValue | money }}</strong>
-          <small class="muted">what left the stores</small>
+          @if (r.theoreticalValue > 0) {
+            <small class="chip">{{ (r.actualValue / r.theoreticalValue) * 100 | number: '1.0-1' }}% of theoretical</small>
+          }
         </div>
       </div>
       @if (r.soldWithoutRecipe.length) {
@@ -91,10 +105,10 @@ const sorts: SortOption<ConsumptionSort>[] = [
               <th class="num">Purchases<span class="ar">المشتريات</span></th>
               <th class="num">Logged waste<span class="ar">الهالك المسجل</span></th>
               <th class="num">Closing<span class="ar">آخر المدة</span></th>
-              <th class="num">Actual<span class="ar">الاستهلاك الفعلي</span></th>
-              <th class="num">Theoretical<span class="ar">الاستهلاك النظري</span></th>
-              <th class="num">Unexplained<span class="ar">الانحراف غير المبرر</span></th>
-              <th class="num">Variance cost<span class="ar">قيمة الانحراف</span></th>
+              <th class="num">Actual <app-info-tip tip="actualUsage" /><span class="ar">الاستهلاك الفعلي</span></th>
+              <th class="num">Theoretical <app-info-tip tip="theoreticalUsage" /><span class="ar">الاستهلاك النظري</span></th>
+              <th class="num">Unexplained <app-info-tip tip="theoreticalVsActual" /><span class="ar">الانحراف غير المبرر</span></th>
+              <th class="num">Variance cost <app-info-tip tip="unexplainedVariance" /><span class="ar">قيمة الانحراف</span></th>
             </tr>
           </thead>
           <tbody>
@@ -102,6 +116,7 @@ const sorts: SortOption<ConsumptionSort>[] = [
               <tr [class.high-loss]="row.evaluation === 'Unfavourable'">
                 <td>
                   <strong>{{ row.material }}</strong>
+                  <app-stock-card-button [id]="row.rawMaterialId" [name]="row.material" [from]="from()" [to]="to()" />
                   <div class="muted small">{{ row.code ? row.code + ' · ' : '' }}in {{ row.purchaseUnit }}{{ row.category ? ' · ' + row.category : '' }}</div>
                   <span class="evaluation" [class]="row.evaluation">{{ labels[row.evaluation].en }}<span class="ar">{{ labels[row.evaluation].ar }}</span></span>
                 </td>
@@ -138,12 +153,6 @@ const sorts: SortOption<ConsumptionSort>[] = [
           </tfoot>
         </table>
       </div>
-      <p class="note small">
-        Actual = opening + purchases − logged waste − closing, the stock book either side of the period (an opening count in it is where its
-        stock began). Theoretical = each dish sold × its recipe as purchased, through the prep items, plus what is still held in the prep items
-        made from it. A prep item's logged waste counts as its ingredients'. Unexplained = actual − theoretical, at the average cost now.
-        <span class="note-ar" lang="ar" dir="rtl">الفعلي = أول المدة + المشتريات − الهالك المسجل − آخر المدة. النظري = المبيعات × الوصفة.</span>
-      </p>
     }
   `,
   styleUrl: './costing.scss',

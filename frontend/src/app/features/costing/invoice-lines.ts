@@ -31,6 +31,9 @@ import { PickRow } from '../shared/pick-row';
 import { searchable, smartMatch } from '../shared/smart-search';
 import { materialCostText } from './material-picker';
 
+// A line's price this far from the material's average, either way, is flagged: check the unit.
+export const priceGuardrailPercent = 25;
+
 // An invoice's lines and supplier as they are entered, shared by the invoice screen and each
 // invoice of a daily batch: what a line names and in what unit, what the lines come to, the
 // supplier chosen, and the quick additions of a material, an expense or a supplier typed that is
@@ -460,6 +463,26 @@ export class InvoiceLines {
     return material && base && cost !== null ? (cost / base) * material.purchaseUnitSize : null;
   }
 
+  // How far the line's price per purchase unit is from the material's moving average now, as a
+  // share of it, when that is more than the guardrail allows (±25%): most often a quantity typed in
+  // the wrong unit (grams as kilos, a carton as a piece). Null when it is within, or there is
+  // nothing to compare. It warns; it never stops the invoice.
+  priceDeviation(line: InvoiceLine): number | null {
+    const material = this.material(line);
+    const average = material?.costPerPurchaseUnit;
+    const price = this.unitPrice(line);
+    if (!material || this.expense(line) || average == null || average <= 0 || price === null) {
+      return null;
+    }
+    const percent = ((price - average) / average) * 100;
+    if (Math.abs(percent) <= priceGuardrailPercent) {
+      return null;
+    }
+    // Whole points, but a price not quite nothing is never said to be −100%.
+    const whole = Math.round(percent);
+    return whole === -100 && percent !== -100 ? Math.round(percent * 10) / 10 : whole;
+  }
+
   // The lines as an invoice sends them. Lines not finished yet are left out of a draft saved only
   // to hold its paper (partial), and a discount not right yet kept back from it.
   toSave(partial = false): SavePurchaseLine[] {
@@ -723,7 +746,18 @@ const defaultMatcher = new ErrorStateMatcher();
                   <small class="net">Net · الصافي {{ e.netCost(line) | money }}</small>
                 }
               </td>
-              <td class="num">{{ e.unitPrice(line) === null ? '' : (e.unitPrice(line) | money) }}</td>
+              <td class="num">
+                {{ e.unitPrice(line) === null ? '' : (e.unitPrice(line) | money) }}
+                @if (e.priceDeviation(line); as off) {
+                  <div class="price-alert" role="status">
+                    <mat-icon aria-hidden="true">warning</mat-icon>
+                    <span>
+                      <span lang="ar" dir="rtl">تنبيه: السعر يختلف بـ {{ off > 0 ? '+' : '' }}{{ off }}% عن المتوسط الحالي - تأكد من الوحدة!</span>
+                      <span class="en">{{ off > 0 ? '+' : '' }}{{ off }}% from the average now: check the unit.</span>
+                    </span>
+                  </div>
+                }
+              </td>
               <td class="num muted">
                 @if (e.expense(line); as x) {
                   <span class="category">{{ x.category }}</span>
@@ -798,6 +832,34 @@ const defaultMatcher = new ErrorStateMatcher();
     .material {
       min-width: 216px;
       width: 100%;
+    }
+    .price-alert {
+      display: flex;
+      align-items: flex-start;
+      gap: 4px;
+      margin-top: 4px;
+      padding: 4px 8px;
+      max-width: 220px;
+      margin-inline-start: auto;
+      border-radius: 8px;
+      background: color-mix(in srgb, var(--app-warn) 16%, transparent);
+      color: var(--app-warn);
+      font: var(--mat-sys-label-small);
+      text-align: start;
+      white-space: normal;
+
+      mat-icon {
+        flex: none;
+        width: 16px;
+        height: 16px;
+        font-size: 16px;
+      }
+      span {
+        display: block;
+      }
+      .en {
+        opacity: 0.85;
+      }
     }
     .add-new {
       color: var(--mat-sys-primary);

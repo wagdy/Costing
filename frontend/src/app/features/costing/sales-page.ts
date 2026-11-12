@@ -1,5 +1,5 @@
 import { DatePipe } from '@angular/common';
-import { Component, computed, inject, signal } from '@angular/core';
+import { Component, computed, inject, input, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
 import { MatDialog } from '@angular/material/dialog';
@@ -82,7 +82,7 @@ const shownLines = 6;
           </thead>
           <tbody>
             @for (s of r.receipts; track s.id) {
-              <tr [class.voided]="s.voidedAtUtc">
+              <tr [class.voided]="s.voidedAtUtc" [class.focused]="s.id === receipt()" [attr.id]="'sale-' + s.id">
                 <td class="nowrap">
                   <strong>{{ s.businessDate | date: 'EEE d MMM' }}</strong>
                   <div class="muted small">
@@ -140,6 +140,12 @@ const shownLines = 6;
     .day {
       width: 170px;
     }
+    tr.focused td {
+      background: color-mix(in srgb, var(--mat-sys-primary) 10%, transparent);
+    }
+    tr.focused td:first-child {
+      box-shadow: inset 3px 0 0 var(--mat-sys-primary);
+    }
     tr.voided td {
       opacity: 0.6;
     }
@@ -169,6 +175,10 @@ export class SalesPage {
   protected readonly canChange = inject(AuthService).can(Permissions.InventoryManage);
   protected readonly shownLines = shownLines;
 
+  // Opened from a stock card: the day of the sale, and its receipt, marked and every line shown.
+  readonly day = input<string | undefined>(undefined);
+  readonly receipt = input<string | undefined>(undefined);
+
   protected readonly from = signal('');
   protected readonly to = signal('');
   protected readonly report = signal<SalesReport | null>(null);
@@ -182,6 +192,20 @@ export class SalesPage {
 
   constructor() {
     void (async () => {
+      const day = this.day();
+      if (day && /^\d{4}-\d{2}-\d{2}$/.test(day)) {
+        this.from.set(day);
+        this.to.set(day);
+        const receipt = this.receipt();
+        if (receipt) {
+          this.open.set(new Set([receipt]));
+        }
+        await this.load();
+        if (receipt) {
+          setTimeout(() => document.getElementById(`sale-${receipt}`)?.scrollIntoView({ block: 'center' }));
+        }
+        return;
+      }
       const today = await this.businessDay.today();
       const weekAgo = new Date(`${today}T12:00:00`);
       weekAgo.setDate(weekAgo.getDate() - 6);

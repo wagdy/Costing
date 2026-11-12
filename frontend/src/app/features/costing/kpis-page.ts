@@ -10,11 +10,24 @@ import { RouterLink } from '@angular/router';
 import { firstValueFrom } from 'rxjs';
 import { AuthService } from '../../core/auth/auth.service';
 import { Permissions } from '../../core/auth/permissions';
-import { CostingApi, Kpi, KpiReport, MonthlyExpenses, expenseLineLabels, kpiLabels } from '../../core/costing/costing.api';
+import { CostingApi, Kpi, KpiKey, KpiReport, MonthlyExpenses, expenseLineLabels, kpiLabels } from '../../core/costing/costing.api';
 import { errorMessage } from '../../core/http/error-message';
 import { Company } from '../../core/settings/company';
 import { MoneyPipe } from '../../core/ui/money.pipe';
 import { NotifyService } from '../../core/ui/notify.service';
+import { InfoTip } from './info-tip';
+import { InfoTipKey } from './info-tips';
+
+// Each KPI's (ⓘ): what it says and how it is worked out.
+const kpiTips: Record<KpiKey, InfoTipKey> = {
+  FoodCost: 'kpiFoodCost',
+  BeverageCost: 'kpiBeverageCost',
+  LabourCost: 'kpiLabourCost',
+  AverageCheck: 'kpiAverageCheck',
+  SalesPerLabourHour: 'kpiSalesPerLabourHour',
+  GrossProfitMargin: 'kpiGrossProfitMargin',
+  NetProfitMargin: 'kpiNetProfitMargin',
+};
 
 type Tone = 'ok' | 'bad' | 'check' | 'none';
 
@@ -33,7 +46,7 @@ const expenseFields: { key: keyof MonthlyExpenses; en: string; ar: string; hours
 // here. A KPI missing what it needs says so, never 0.
 @Component({
   selector: 'app-kpis-page',
-  imports: [DecimalPipe, FormsModule, MatButtonModule, MatFormFieldModule, MatIconModule, MatInputModule, MatProgressBarModule, MoneyPipe, RouterLink],
+  imports: [DecimalPipe, FormsModule, InfoTip, MatButtonModule, MatFormFieldModule, MatIconModule, MatInputModule, MatProgressBarModule, MoneyPipe, RouterLink],
   template: `
     <div class="toolbar">
       <mat-form-field subscriptSizing="dynamic">
@@ -62,7 +75,7 @@ const expenseFields: { key: keyof MonthlyExpenses; en: string; ar: string; hours
         @for (k of r.kpis; track k.key) {
           <div class="kpi" [class]="tone(k)">
             <div class="name">
-              {{ labels[k.key].en }}
+              {{ labels[k.key].en }} <app-info-tip [tip]="kpiTips[k.key]" />
               <span class="ar">{{ labels[k.key].ar }}</span>
             </div>
             @if (k.value !== null) {
@@ -103,7 +116,6 @@ const expenseFields: { key: keyof MonthlyExpenses; en: string; ar: string; hours
             @if (tone(k) === 'check') {
               <div class="range">{{ lowHint(k) }}</div>
             }
-            <div class="formula muted">{{ labels[k.key].formula }}<span class="ar">{{ labels[k.key].formulaAr }}</span></div>
           </div>
         }
       </div>
@@ -121,7 +133,7 @@ const expenseFields: { key: keyof MonthlyExpenses; en: string; ar: string; hours
 
       <div class="columns">
         <section>
-          <h3>The month <span class="inline-ar">قائمة الدخل</span></h3>
+          <h3>The month <span class="inline-ar">قائمة الدخل</span> <app-info-tip tip="incomeStatement" /></h3>
           <div class="table-wrap">
             <table class="grid statement">
               <tbody>
@@ -196,16 +208,9 @@ const expenseFields: { key: keyof MonthlyExpenses; en: string; ar: string; hours
               </tbody>
             </table>
           </div>
-          <p class="note small">
-            Revenue is the month's net sales: its takings, cash and Visa before the tax collected on them, which is owed to the tax authority
-            and never profit (gross takings = net sales + tax). Food and beverage sales share it as the month's sales are, at the menu's prices.
-            Food and beverage cost: what the sales took by their recipes, with shared costs such as frying oil on the meals. Losses are counted
-            against food. Expenses on the month's posted purchase invoices are taken off on their category's line, with what is entered by hand.
-            @if (r.statement.voids) {
-              Voids and refunds on the days: {{ r.statement.voids | money }}, already out of the takings.
-            }
-            <span class="note-ar" lang="ar" dir="rtl">الإيراد = صافي المبيعات (الكاش + الفيزا − الضريبة). الضريبة المحصلة التزام على المطعم وليست ربحًا.</span>
-          </p>
+          @if (r.statement.voids) {
+            <p class="note small">Voids and refunds on the days: {{ r.statement.voids | money }}, already out of the takings.</p>
+          }
           @if (r.statement.loggedExpenses?.length) {
             <div class="logged">
               <strong>From purchase invoices · من فواتير المشتريات</strong>
@@ -254,8 +259,7 @@ const expenseFields: { key: keyof MonthlyExpenses; en: string; ar: string; hours
         </section>
       </div>
 
-      <h3>Item profitability <span class="inline-ar">ربحية العنصر</span></h3>
-      <p class="note small">Selling price − ingredient cost, over what was sold this month. The most profitable first.</p>
+      <h3>Item profitability <span class="inline-ar">ربحية العنصر</span> <app-info-tip tip="dishProfit" /></h3>
       <div class="table-wrap">
         <table class="grid">
           <thead>
@@ -267,7 +271,7 @@ const expenseFields: { key: keyof MonthlyExpenses; en: string; ar: string; hours
               <th class="num">Ingredient cost<span class="ar">تكلفة المكونات</span></th>
               <th class="num">Profit<span class="ar">الربح</span></th>
               <th class="num">Profit per item<span class="ar">ربح الوحدة</span></th>
-              <th class="num">Margin<span class="ar">الهامش</span></th>
+              <th class="num">Margin <app-info-tip tip="dishProfit" /><span class="ar">الهامش</span></th>
             </tr>
           </thead>
           <tbody>
@@ -335,13 +339,8 @@ const expenseFields: { key: keyof MonthlyExpenses; en: string; ar: string; hours
       .status {
         font: var(--mat-sys-label-large);
       }
-      .range,
-      .formula {
+      .range {
         font: var(--mat-sys-body-small);
-      }
-      .formula {
-        margin-top: auto;
-        padding-top: 6px;
       }
       &.ok {
         border-color: var(--app-ok);
@@ -428,6 +427,7 @@ export class KpisPage {
   private readonly notify = inject(NotifyService);
 
   protected readonly labels = kpiLabels;
+  protected readonly kpiTips = kpiTips;
   protected readonly fields = expenseFields;
   protected readonly canEdit = computed(() => this.auth.can(Permissions.InventoryManage));
   protected readonly thisMonth = KpisPage.monthOf(new Date());

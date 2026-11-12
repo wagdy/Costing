@@ -32,6 +32,7 @@ import { Approvals } from './approvals';
 import { RecipeCategoryDialog, RecipeCategoryDialogData } from './recipe-category-dialog';
 import { GridKeys } from '../shared/grid-keys';
 import { MaterialPicker } from './material-picker';
+import { InfoTip } from './info-tip';
 
 interface Line {
   rawMaterialId: string | null;
@@ -84,6 +85,7 @@ const linkKey = (kind: RecipeTargetKind | null, catalogItemId: number | null, va
     DatePipe,
     DecimalPipe,
     FormsModule,
+    InfoTip,
     GridKeys,
     MatButtonModule,
     MatFormFieldModule,
@@ -206,22 +208,22 @@ const linkKey = (kind: RecipeTargetKind | null, catalogItemId: number | null, va
 
         <div class="figures">
           <div class="box key">
-            <span class="label">Cost per recipe<span class="ar">تكلفة الوصفة</span></span>
+            <span class="label">Cost per recipe <app-info-tip tip="costPerRecipe" /><span class="ar">تكلفة الوصفة</span></span>
             <strong>{{ costPerRecipe() | money }}</strong>
           </div>
           <div class="box key">
-            <span class="label">Cost per portion<span class="ar">تكلفة الحصة</span></span>
+            <span class="label">Cost per portion <app-info-tip tip="costPerPortion" /><span class="ar">تكلفة الحصة</span></span>
             <strong>{{ costPerPortion() | money }}</strong>
             @if (shared() > 0) {
-              <small class="muted">incl. {{ shared() | money }} shared</small>
+              <small class="chip">+{{ shared() | money }} shared</small>
             }
           </div>
           <div class="box key">
-            <span class="label">Margin per portion<span class="ar">هامش الحصة</span></span>
+            <span class="label">Margin per portion <app-info-tip tip="marginPerPortion" /><span class="ar">هامش الحصة</span></span>
             <strong>{{ price() === null || lines().length === 0 ? '—' : (margin() | money) }}</strong>
           </div>
           <div class="box">
-            <span class="label">Portions<span class="ar">عدد الحصص</span></span>
+            <span class="label">Portions <app-info-tip tip="portions" /><span class="ar">عدد الحصص</span></span>
             @if (editing()) {
               <mat-form-field subscriptSizing="dynamic" class="portions">
                 <input matInput type="number" min="1" step="1" [ngModel]="portions()" (ngModelChange)="portions.set($event)" aria-label="Portions" />
@@ -231,20 +233,19 @@ const linkKey = (kind: RecipeTargetKind | null, catalogItemId: number | null, va
             }
           </div>
           <div class="box">
-            <span class="label">{{ linked() ? 'Menu price' : 'Planned price' }}<span class="ar">{{ linked() ? 'سعر البيع' : 'السعر المخطط' }}</span></span>
+            <span class="label">{{ linked() ? 'Menu price' : 'Planned price' }} <app-info-tip tip="sellingPrice" /><span class="ar">{{ linked() ? 'سعر البيع' : 'السعر المخطط' }}</span></span>
             <strong>{{ price() === null ? '—' : (price() | money) }}</strong>
-            <small class="muted">before VAT</small>
           </div>
           <div class="box">
-            <span class="label">Food cost % budget<span class="ar">نسبة التكلفة المستهدفة</span></span>
+            <span class="label">Food cost % budget <app-info-tip tip="foodCostBudget" /><span class="ar">نسبة التكلفة المستهدفة</span></span>
             <strong>{{ target() | number: '1.0-1' }}%</strong>
           </div>
           <div class="box" [class.over]="status() === 'AboveTarget'">
-            <span class="label">Food cost % actual<span class="ar">نسبة التكلفة الفعلية</span></span>
+            <span class="label">Food cost % actual <app-info-tip tip="foodCostPercent" /><span class="ar">نسبة التكلفة الفعلية</span></span>
             <strong>{{ foodCost() === null ? '—' : (foodCost() | number: '1.1-1') + '%' }}</strong>
           </div>
           <div class="box">
-            <span class="label">Ideal selling price<span class="ar">سعر البيع المثالي</span></span>
+            <span class="label">Ideal selling price <app-info-tip tip="idealPrice" /><span class="ar">سعر البيع المثالي</span></span>
             <strong>{{ lines().length ? (idealPrice() | money) : '—' }}</strong>
           </div>
         </div>
@@ -255,10 +256,10 @@ const linkKey = (kind: RecipeTargetKind | null, catalogItemId: number | null, va
               <tr>
                 <th>Ingredients<span class="ar">المكونات</span></th>
                 <th class="num">Recipe quantity (EP)<span class="ar">كمية الوصفة (صافي)</span></th>
-                <th class="num">AP$ / unit<span class="ar">تكلفة الشراء</span></th>
+                <th class="num">AP$ / unit <app-info-tip tip="apUnit" /><span class="ar">تكلفة الشراء</span></th>
                 <th>Unit<span class="ar">الوحدة</span></th>
-                <th class="num">Yield %<span class="ar">نسبة الصافي</span></th>
-                <th class="num">EP$ / unit<span class="ar">تكلفة الصافي</span></th>
+                <th class="num">Yield % <app-info-tip tip="yieldPercent" /><span class="ar">نسبة الصافي</span></th>
+                <th class="num">EP$ / unit <app-info-tip tip="epUnit" /><span class="ar">تكلفة الصافي</span></th>
                 <th class="num">Recipe cost<span class="ar">تكلفة المكون</span></th>
                 @if (editing()) {
                   <th class="no-print"></th>

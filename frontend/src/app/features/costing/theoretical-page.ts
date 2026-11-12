@@ -22,6 +22,7 @@ import {
 import { errorMessage } from '../../core/http/error-message';
 import { MoneyPipe } from '../../core/ui/money.pipe';
 import { NotifyService } from '../../core/ui/notify.service';
+import { InfoTip } from './info-tip';
 
 // A group of the sales sheet: a recipe category, or the prep items.
 interface SheetGroup {
@@ -36,6 +37,7 @@ interface SheetGroup {
 @Component({
   selector: 'app-theoretical-page',
   imports: [
+    InfoTip,
     DatePipe,
     DecimalPipe,
     FormsModule,
@@ -216,8 +218,8 @@ interface SheetGroup {
               <th class="num">Quantity sold<span class="ar">الكمية المباعة</span></th>
               <th class="num">Net sales<span class="ar">صافي المبيعات</span></th>
               <th class="num">Recipe cost / unit<span class="ar">تكلفة الوصفة/وحدة</span></th>
-              <th class="num">Theoretical cost<span class="ar">التكلفة النظرية</span></th>
-              <th class="num">Food cost %<span class="ar">نسبة تكلفة الطعام</span></th>
+              <th class="num">Theoretical cost <app-info-tip tip="theoreticalCost" /><span class="ar">التكلفة النظرية</span></th>
+              <th class="num">Food cost % <app-info-tip tip="foodCostPercent" /><span class="ar">نسبة تكلفة الطعام</span></th>
               <th>Status<span class="ar">الحالة</span></th>
             </tr>
           </thead>

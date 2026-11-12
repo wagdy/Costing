@@ -208,11 +208,14 @@ approval is not added and said why, in English and Arabic, and the rest are.
 
 ## Material & demand intelligence (تحليلات الخامات والطلبيات)
 
-Under Catalog & Production, four tabs that read the stores as a cost accountant does
+Under Catalog & Production, five tabs that read the stores and the menu as a cost accountant does
 (`/api/costing/intelligence`, the Material & demand intelligence section and `inventory.view`).
 Every quantity is in the material's purchase unit (kg, L, a carton) and every price per it. Each
 tab has its summary cards on top, the list's search, filters and sort, and its Excel sheet with the
-same columns (`…/sheet`).
+same columns (`…/sheet`). A card shows its title, its figure and at most a short count or share;
+what the figure is and how it is worked out are in the (ⓘ) beside its title (and beside each
+technical column's heading), in Arabic and English. A material's name in these tables opens its
+stock card over the report's period, and the latest net price opens the invoice it came from.
 
 **Purchase price variance & recipe impact (تغير أسعار الشراء وأثرها على الوصفات)**, over a period
 (`GET prices?from&to`): each material bought in it, on posted invoices by the invoice's date.
@@ -269,6 +272,53 @@ is not archived:
 - **Days on hand** = on hand ÷ used a day, over the period's days so far. Under 2: **stockout
   risk**. Stock on hand with nothing used in the period: **dead or slow stock**, and the money it
   ties up at the average cost.
+
+**Menu engineering & profitability (هندسة المنيو والربحية)** (`GET menu-engineering?from&to&category`),
+each dish (or size) sold in the period, as Kasavana and Smith place it:
+
+- **Menu mix** = its quantity ÷ every analysed dish's. **Popular** when that is at least 70% of an
+  even share: 70% × (100% ÷ the number of dishes).
+- **Contribution margin** = its average net selling price − its food cost a portion (what its
+  ingredients cost when it was sold, as the theoretical report takes it; the monthly shared costs
+  are left out, so any period compares). **Profitable** when it is at least the average margin,
+  weighted by what sold (Σ contribution ÷ Σ quantity).
+- **Star** (النجوم): popular and profitable, keep and feature it. **Plowhorse** (خيول العمل):
+  popular, below the average margin: reprice or cut its cost. **Puzzle** (الألغاز): profitable, not
+  popular: promote and reposition it. **Dog** (الأصناف الضعيفة): neither: rework or remove it.
+- **Suggested price** = food cost a portion ÷ the food cost target. A dish with no recipe or no price
+  is listed, not placed, and its quantity is not in the mix. One menu category at a time compares
+  like with like.
+
+## The item's stock card (كارتة الصنف / حركة الصنف)
+
+From Raw materials and Prep items (and each intelligence table): `GET
+/api/costing/materials/{id}/stock-card?from&to&type` and its sheet (`…/stock-card/sheet`), on every
+tab that shows a material with its stock or price. Every movement of the material over the period,
+oldest first, read from the stock ledger:
+
+- **Opening balance** = Σ movements before the first day; **total in** and **total out** = the
+  period's positive and negative movements; **closing** = opening + in − out, valued at the moving
+  average then. The material's current average (AP$) beside them.
+- Each line: its date and time, the kind (opening, purchase, production, sales, waste, count
+  adjustment) and its record, quantity in or out, the **running balance** after it, the **unit
+  price** it moved at, and the **moving average after** it, replayed as the material keeps it: a
+  priced delivery or batch averaged in with the stock on the shelf (none below zero), a voided one
+  taken back out, any other movement carrying the average it was priced at.
+- A **type filter** shows one kind of movement; the balances stay the whole ledger's.
+- Each reference opens its record: an invoice over the card, the material's line marked, with the
+  way to correct it (the correction voids it and posts the corrected one); a production batch; a
+  stock count on its page; a day's sales on the Sales page at that day with its receipt marked
+  (`?day=&receipt=`); spoilage in the waste log (`?spoilage=`). A reference opens only for a user
+  who works its tab. An invoice whose paper date differs from the day it was posted shows that date.
+
+**Price guardrail (تنبيه السعر).** On a new invoice and in the daily batch, a stock line whose net
+price per purchase unit is more than 25% from the material's moving average now is marked in amber:
+"تنبيه: السعر يختلف بـ X% عن المتوسط الحالي - تأكد من الوحدة!" It never stops the invoice; most such
+lines are a quantity in the wrong unit.
+
+**Yield calculator.** In a raw material's dialog, "Calculate from weight" takes the gross weight as
+bought and the net usable weight after cleaning (in the same unit): yield % = net ÷ gross × 100, and
+EP$ = AP$ ÷ yield; "Use this yield" puts it in the field.
 
 ## Sales
 

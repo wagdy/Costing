@@ -11,7 +11,7 @@ import { errorMessage } from '../../core/http/error-message';
 import { Company } from '../../core/settings/company';
 import { MoneyPipe } from '../../core/ui/money.pipe';
 
-// A material's purchase history card (كارت الصنف): every invoice line that bought it, newest first,
+// A material's purchase history (سجل مشتريات الصنف): every invoice line that bought it, newest first,
 // as its paper has it, to hold against the paper invoices when a count looks wrong. A voided
 // invoice is shown, struck through and left out of the totals, with the one that corrected it.
 // A row opens its invoice in the archive.
@@ -19,7 +19,7 @@ import { MoneyPipe } from '../../core/ui/money.pipe';
   selector: 'app-material-history-dialog',
   imports: [DatePipe, DecimalPipe, MatButtonModule, MatDialogModule, MatIconModule, MatProgressBarModule, MoneyPipe],
   template: `
-    <h2 mat-dialog-title>{{ data.name }} · Purchase history <span class="inline-ar">كارت الصنف</span></h2>
+    <h2 mat-dialog-title>{{ data.name }} · Purchase history <span class="inline-ar">سجل المشتريات</span></h2>
     <mat-dialog-content>
       @if (loading()) {
         <mat-progress-bar mode="indeterminate" />

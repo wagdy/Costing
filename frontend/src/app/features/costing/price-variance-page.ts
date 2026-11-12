@@ -1,9 +1,11 @@
 import { DatePipe, DecimalPipe } from '@angular/common';
 import { Component, computed, effect, inject, signal, untracked } from '@angular/core';
 import { MatButtonModule } from '@angular/material/button';
+import { MatDialog } from '@angular/material/dialog';
 import { MatIconModule } from '@angular/material/icon';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { firstValueFrom } from 'rxjs';
+import { CostingAccess } from '../../core/costing/costing-tabs';
 import { IntelligenceApi, PriceVarianceReport, PriceVarianceRow } from '../../core/costing/intelligence.api';
 import { errorMessage } from '../../core/http/error-message';
 import { MoneyPipe } from '../../core/ui/money.pipe';
@@ -14,6 +16,9 @@ import { SearchField } from '../shared/search-field';
 import { SortOption, SortState, smartMatch, sortItems } from '../shared/smart-search';
 import { SortControl } from '../shared/sort-control';
 import { PeriodBar, periodDays } from './period-bar';
+import { InfoTip } from './info-tip';
+import { showInvoice } from './invoice-view-dialog';
+import { StockCardButton } from './stock-card-dialog';
 
 type PriceSort = 'impact' | 'change' | 'material';
 
@@ -30,7 +35,20 @@ const sorts: SortOption<PriceSort>[] = [
 // and food cost.
 @Component({
   selector: 'app-price-variance-page',
-  imports: [DatePipe, DecimalPipe, FilterSelect, MatButtonModule, MatIconModule, MatProgressBarModule, MoneyPipe, PeriodBar, SearchField, SortControl],
+  imports: [
+    DatePipe,
+    DecimalPipe,
+    FilterSelect,
+    InfoTip,
+    MatButtonModule,
+    MatIconModule,
+    MatProgressBarModule,
+    MoneyPipe,
+    PeriodBar,
+    SearchField,
+    SortControl,
+    StockCardButton,
+  ],
   template: `
     <div class="toolbar">
       <app-period-bar [(from)]="from" [(to)]="to" />
@@ -45,29 +63,29 @@ const sorts: SortOption<PriceSort>[] = [
     } @else if (report(); as r) {
       <div class="tiles">
         <div class="tile key">
-          <span class="label">Financial impact · الأثر المالي للانحراف</span>
+          <span class="label">Financial impact · الأثر المالي للانحراف <app-info-tip tip="ppvImpact" /></span>
           <strong [class.loss]="r.totalImpact > 0" [class.gain]="r.totalImpact < 0">{{ r.totalImpact | money }}</strong>
-          <small class="muted">(latest − baseline) × bought, every material</small>
         </div>
         <div class="tile">
-          <span class="label">Prices up · ارتفاع</span>
+          <span class="label">Prices up · ارتفاع <app-info-tip tip="ppvRising" /></span>
           <strong class="loss">{{ r.rising }}</strong>
-          <small class="muted">{{ r.increases | money }} more paid</small>
+          <small class="chip">+{{ r.increases | money }}</small>
         </div>
         <div class="tile">
-          <span class="label">Prices down · انخفاض</span>
+          <span class="label">Prices down · انخفاض <app-info-tip tip="ppvFalling" /></span>
           <strong class="gain">{{ r.falling }}</strong>
-          <small class="muted">{{ (r.decreases ? -r.decreases : 0) | money }} saved</small>
+          <small class="chip">−{{ (r.decreases ? -r.decreases : 0) | money }}</small>
         </div>
         <div class="tile">
-          <span class="label">Dishes affected · الأطباق المتأثرة</span>
+          <span class="label">Dishes affected · الأطباق المتأثرة <app-info-tip tip="ppvDishes" /></span>
           <strong>{{ r.affectedDishes }}</strong>
-          <small class="muted">by a price that went up</small>
         </div>
         <div class="tile">
-          <span class="label">Largest rise · أعلى ارتفاع</span>
+          <span class="label">Largest rise · أعلى ارتفاع <app-info-tip tip="ppvLargest" /></span>
           <strong>{{ r.largestRisePercent === null ? '—' : '+' + (r.largestRisePercent | number: '1.1-1') + '%' }}</strong>
-          <small class="muted">{{ r.largestRise ?? 'No price went up' }}</small>
+          @if (r.largestRise) {
+            <small class="chip">{{ r.largestRise }}</small>
+          }
         </div>
       </div>
 
@@ -85,11 +103,11 @@ const sorts: SortOption<PriceSort>[] = [
           <thead>
             <tr>
               <th>Material<span class="ar">الخامة</span></th>
-              <th class="num">Baseline avg<span class="ar">متوسط السعر السابق</span></th>
-              <th class="num">Latest net<span class="ar">آخر سعر شراء صافي</span></th>
-              <th class="num">Change<span class="ar">فرق السعر ونسبة التغير</span></th>
+              <th class="num">Baseline avg <app-info-tip tip="baselineAvg" /><span class="ar">متوسط السعر السابق</span></th>
+              <th class="num">Latest net <app-info-tip tip="latestNet" /><span class="ar">آخر سعر شراء صافي</span></th>
+              <th class="num">Change <app-info-tip tip="ppvChange" /><span class="ar">فرق السعر ونسبة التغير</span></th>
               <th class="num">Bought<span class="ar">الكمية المشتراة</span></th>
-              <th class="num">Impact<span class="ar">الأثر المالي</span></th>
+              <th class="num">Impact <app-info-tip tip="ppvLineImpact" /><span class="ar">الأثر المالي</span></th>
               <th class="num">Recipes<span class="ar">الوصفات المتأثرة</span></th>
             </tr>
           </thead>
@@ -100,10 +118,20 @@ const sorts: SortOption<PriceSort>[] = [
                 <td>
                   <mat-icon class="chevron">{{ isOpen(row) ? 'expand_less' : 'expand_more' }}</mat-icon>
                   <strong>{{ row.material }}</strong>
+                  <app-stock-card-button [id]="row.rawMaterialId" [name]="row.material" [from]="from()" [to]="to()" />
                   <div class="muted small">{{ row.code ? row.code + ' · ' : '' }}per {{ row.purchaseUnit }}{{ row.category ? ' · ' + row.category : '' }}</div>
                 </td>
                 <td class="num">{{ row.baselineCost === null ? '—' : (row.baselineCost | money) }}</td>
-                <td class="num">{{ row.latestCost === null ? '—' : (row.latestCost | money) }}</td>
+                <td class="num">
+                  @if (row.latestCost !== null && row.latestInvoiceId && canOpenInvoices()) {
+                    <button type="button" class="price-link" (click)="openInvoice(row); $event.stopPropagation()" (keydown.enter)="$event.stopPropagation()"
+                      [attr.aria-label]="'Open the invoice of the latest price of ' + row.material">
+                      {{ row.latestCost | money }}
+                    </button>
+                  } @else {
+                    {{ row.latestCost === null ? '—' : (row.latestCost | money) }}
+                  }
+                </td>
                 <td class="num" [class.loss]="(row.unitVariance ?? 0) > 0" [class.gain]="(row.unitVariance ?? 0) < 0">
                   {{ row.unitVariance === null ? '—' : (row.unitVariance > 0 ? '+' : '') + (row.unitVariance | money) }}
                   @if (row.changePercent !== null) {
@@ -173,16 +201,20 @@ const sorts: SortOption<PriceSort>[] = [
           </tbody>
         </table>
       </div>
-      <p class="note small">
-        Baseline: the moving average each material came in with, from its stock ledger before the first day. Latest: the last net price paid
-        in the period, after the invoice's discounts. A dish's food cost moves by the change in its portion's cost over its menu price; a prep
-        item's, over what it costs now.
-        <span class="note-ar" lang="ar" dir="rtl">السعر السابق: متوسط التكلفة قبل الفترة. آخر سعر: صافي آخر فاتورة بعد الخصم.</span>
-      </p>
     }
   `,
   styleUrl: './costing.scss',
   styles: `
+    .price-link {
+      padding: 0;
+      border: 0;
+      background: none;
+      font: inherit;
+      color: var(--mat-sys-primary);
+      text-decoration: underline;
+      text-underline-offset: 2px;
+      cursor: pointer;
+    }
     .loss {
       color: var(--mat-sys-error);
     }
@@ -230,6 +262,10 @@ const sorts: SortOption<PriceSort>[] = [
 export class PriceVariancePage {
   private readonly api = inject(IntelligenceApi);
   private readonly notify = inject(NotifyService);
+  private readonly dialog = inject(MatDialog);
+  private readonly access = inject(CostingAccess);
+  // The invoices open where their tab is.
+  protected readonly canOpenInvoices = computed(() => this.access.has('Purchases'));
 
   protected readonly from = signal(periodDays('month').from);
   protected readonly to = signal(periodDays('month').to);
@@ -287,6 +323,13 @@ export class PriceVariancePage {
 
   protected isOpen(row: PriceVarianceRow): boolean {
     return this.opened().has(row.rawMaterialId);
+  }
+
+  // The invoice of the latest price, its line for this material marked.
+  protected openInvoice(row: PriceVarianceRow): void {
+    if (row.latestInvoiceId) {
+      showInvoice(this.dialog, row.latestInvoiceId, row.rawMaterialId);
+    }
   }
 
   protected toggle(row: PriceVarianceRow): void {

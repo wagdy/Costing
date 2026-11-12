@@ -18,6 +18,8 @@ import { NotifyService } from '../../core/ui/notify.service';
 import { Approvals, pendingLabel } from './approvals';
 import { saveBlob } from '../../core/ui/save-blob';
 import { todayIso } from './financials';
+import { InfoTip } from './info-tip';
+import { showStockCard } from './stock-card-dialog';
 import { PrepImportDialog } from './prep-import-dialog';
 import { recipeSheetRules } from './recipe-sheet-rules';
 import { SheetImportData, SheetImportDialog } from './sheet-import-dialog';
@@ -48,6 +50,7 @@ const prepSorts: SortOption<PrepSort>[] = [
 @Component({
   selector: 'app-prep-items-page',
   imports: [
+    InfoTip,
     FilterSelect,
     SearchField,
     SortControl,
@@ -109,17 +112,18 @@ const prepSorts: SortOption<PrepSort>[] = [
             <tr>
               <th>Prep item<span class="ar">الصنف</span></th>
               <th class="num">One batch<span class="ar">الدفعة</span></th>
-              <th class="num">By its recipe<span class="ar">التكلفة المعيارية</span></th>
-              <th class="num">In stock at<span class="ar">متوسط التكلفة</span></th>
+              <th class="num">By its recipe <app-info-tip tip="prepStandard" /><span class="ar">التكلفة المعيارية</span></th>
+              <th class="num">In stock at <app-info-tip tip="prepAverage" /><span class="ar">متوسط التكلفة</span></th>
               <th class="num">On hand<span class="ar">الرصيد</span></th>
-              <th class="num">Stock value<span class="ar">قيمة المخزون</span></th>
+              <th class="num">Stock value <app-info-tip tip="stockValue" /><span class="ar">قيمة المخزون</span></th>
               <th>Last made<span class="ar">آخر تصنيع</span></th>
+              <th class="num"><span class="visually-hidden">Stock card</span></th>
             </tr>
           </thead>
           <tbody>
             @for (r of waiting(); track r.id) {
               <tr class="pending-deletion">
-                <td colspan="7">
+                <td colspan="8">
                   {{ r.summary }}
                   <div>
                     <span class="pending-badge">{{ pendingLabel(r).en }}<span class="ar">{{ pendingLabel(r).ar }}</span></span>
@@ -157,11 +161,16 @@ const prepSorts: SortOption<PrepSort>[] = [
                 <td class="num" [class.warn]="p.quantityOnHand < 0">{{ p.quantityOnHand / p.displayUnitSize | number: '1.0-3' }} {{ p.displayUnit }}</td>
                 <td class="num">{{ p.stockValue === null ? '—' : (p.stockValue | money) }}</td>
                 <td class="nowrap">{{ p.lastProducedAtUtc ? (p.lastProducedAtUtc | date: 'd MMM, HH:mm') : 'Never' }}</td>
+                <td class="num" (click)="$event.stopPropagation()">
+                  <button mat-icon-button (click)="stockCard(p)" matTooltip="Stock card · كارتة الصنف" [attr.aria-label]="'Stock card of ' + p.name">
+                    <mat-icon>receipt_long</mat-icon>
+                  </button>
+                </td>
               </tr>
             } @empty {
               @if (!waiting().length) {
                 <tr>
-                  <td colspan="7" class="muted">
+                  <td colspan="8" class="muted">
                     {{ items().length ? 'No prep item matches.' : 'No prep items yet. Add one, such as pizza dough, with its recipe for a batch.' }}
                   </td>
                 </tr>
@@ -258,6 +267,11 @@ export class PrepItemsPage {
 
   protected categoryName(item: PrepItem): string | null {
     return item.recipeCategoryId ? (this.categoryNames().get(item.recipeCategoryId) ?? null) : null;
+  }
+
+  // Its batches in, what the dishes took out, the counts, with the balance and average after each.
+  protected stockCard(item: PrepItem): void {
+    showStockCard(this.dialog, item);
   }
 
   protected open(item: PrepItem): void {

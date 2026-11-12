@@ -11,7 +11,7 @@ const baseLabels: Record<UnitOfMeasure, string> = { Gram: 'g', Millilitre: 'ml',
 // category, the total split into stock and expenses, and the paper itself. With discounts, each
 // line's (its own and its share of the invoice's) and what it came to after them, and the
 // subtotal, less the discounts, as what is paid. Shown for review before posting, from the
-// history's Show, and on the invoice's own page.
+// history's Show, and on the invoice's own page; from a stock card, its material's line marked.
 @Component({
   selector: 'app-invoice-view',
   imports: [DatePipe, DecimalPipe, MoneyPipe, PaperPreview],
@@ -70,9 +70,12 @@ const baseLabels: Record<UnitOfMeasure, string> = { Gram: 'g', Millilitre: 'ml',
         </thead>
         <tbody>
           @for (l of inv.lines; track l.rawMaterialId ?? l.expenseItemId) {
-            <tr>
+            <tr [class.marked]="!!highlight() && l.rawMaterialId === highlight()" [attr.aria-current]="highlight() && l.rawMaterialId === highlight() ? 'true' : null">
               <td>
                 {{ l.material }}
+                @if (highlight() && l.rawMaterialId === highlight()) {
+                  <span class="badge marked-tag">This material · هذه الخامة</span>
+                }
                 @if (l.itemType === 'Expense') {
                   <span class="badge expense">Expense · مصروف</span>
                 }
@@ -203,12 +206,25 @@ const baseLabels: Record<UnitOfMeasure, string> = { Gram: 'g', Millilitre: 'ml',
         font: var(--mat-sys-title-medium);
       }
     }
+    tr.marked td {
+      background: color-mix(in srgb, var(--mat-sys-primary) 10%, transparent);
+    }
+    tr.marked td:first-child {
+      box-shadow: inset 3px 0 0 var(--mat-sys-primary);
+    }
+    .marked-tag {
+      margin-inline-start: 6px;
+      background: var(--mat-sys-primary);
+      color: var(--mat-sys-on-primary);
+    }
   `,
 })
 export class InvoiceView {
   protected readonly methods = paymentMethodLabels;
   protected readonly statuses = paymentStatusLabels;
   readonly invoice = input.required<PurchaseInvoice>();
+  // A material whose line is marked: the one its stock card opened the invoice for.
+  readonly highlight = input<string | null>(null);
 
   // Anything taken off it, by a line or on the whole invoice.
   protected readonly discounted = computed(() => {

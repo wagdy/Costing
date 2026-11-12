@@ -357,3 +357,57 @@ table.grid {
     font: var(--mat-sys-body-small);
   }
 }
+
+// A figure's one short count or share beside it, on a costing tile or box (costing.scss): no
+// formula, that is its (ⓘ)'s.
+.tile .chip,
+.box .chip {
+  justify-self: start;
+  align-self: flex-start;
+  max-width: 100%;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font: var(--mat-sys-label-small);
+  background: color-mix(in srgb, var(--mat-sys-on-surface) 7%, transparent);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+// A figure's explanation (InfoTip), in the overlay: its title, then what it is and how it is worked
+// out, the Arabic first and right to left, the English formula in a quieter mono line.
+.info-pop {
+  max-width: min(380px, calc(100vw - 32px));
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--app-line, var(--mat-sys-outline-variant));
+  background: var(--mat-sys-surface-container-lowest);
+  color: var(--mat-sys-on-surface);
+  box-shadow: 0 8px 28px rgb(15 23 42 / 18%);
+  font: var(--mat-sys-body-small);
+  line-height: 1.5;
+
+  .info-pop-title {
+    margin: 0 0 6px;
+    font: var(--mat-sys-title-small);
+  }
+  section + section {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--app-line, var(--mat-sys-outline-variant));
+  }
+  h4 {
+    margin: 0 0 2px;
+    font: var(--mat-sys-label-medium);
+    color: var(--mat-sys-primary);
+  }
+  p {
+    margin: 0 0 2px;
+  }
+  p[dir='rtl'] {
+    text-align: right;
+  }
+  .formula {
+    color: var(--mat-sys-on-surface-variant);
+  }
+}

@@ -14,6 +14,9 @@ import { SearchField } from '../shared/search-field';
 import { SortOption, SortState, smartMatch, sortItems } from '../shared/smart-search';
 import { SortControl } from '../shared/sort-control';
 import { PeriodBar, periodDays } from './period-bar';
+import { InfoTip } from './info-tip';
+import { InfoTipKey } from './info-tips';
+import { StockCardButton } from './stock-card-dialog';
 
 type AbcSort = 'value' | 'days' | 'stock' | 'material';
 
@@ -24,10 +27,10 @@ const sorts: SortOption<AbcSort>[] = [
   { key: 'material', en: 'Material', ar: 'الخامة' },
 ];
 
-const classLabels: Record<AbcClass, { en: string; ar: string; hint: string }> = {
-  A: { en: 'Class A', ar: 'الفئة A', hint: 'Top 75% of what was used: control daily' },
-  B: { en: 'Class B', ar: 'الفئة B', hint: 'The next 15%: control weekly' },
-  C: { en: 'Class C', ar: 'الفئة C', hint: 'The last 10%: bulk, low cost' },
+const classLabels: Record<AbcClass, { en: string; ar: string; tip: InfoTipKey }> = {
+  A: { en: 'Class A', ar: 'الفئة A', tip: 'classA' },
+  B: { en: 'Class B', ar: 'الفئة B', tip: 'classB' },
+  C: { en: 'Class C', ar: 'الفئة C', tip: 'classC' },
 };
 
 // ABC classification & days on hand (تصنيف ABC وكفاية المخزون): each bought material by what the
@@ -37,7 +40,19 @@ const classLabels: Record<AbcClass, { en: string; ar: string; hint: string }> = 
 // with nothing used of it in the period, dead stock, the cash it ties up.
 @Component({
   selector: 'app-abc-page',
-  imports: [DecimalPipe, FilterSelect, MatButtonModule, MatIconModule, MatProgressBarModule, MoneyPipe, PeriodBar, SearchField, SortControl],
+  imports: [
+    DecimalPipe,
+    FilterSelect,
+    InfoTip,
+    MatButtonModule,
+    MatIconModule,
+    MatProgressBarModule,
+    MoneyPipe,
+    PeriodBar,
+    SearchField,
+    SortControl,
+    StockCardButton,
+  ],
   template: `
     <div class="toolbar">
       <app-period-bar [(from)]="from" [(to)]="to" />
@@ -53,20 +68,24 @@ const classLabels: Record<AbcClass, { en: string; ar: string; hint: string }> = 
       <div class="tiles">
         @for (c of r.classes; track c.class) {
           <div class="tile" [class.key]="c.class === 'A'">
-            <span class="label"><span class="abc" [class]="c.class">{{ c.class }}</span> {{ classes[c.class].en }} · {{ classes[c.class].ar }}</span>
+            <span class="label">
+              <span class="abc" [class]="c.class">{{ c.class }}</span> {{ classes[c.class].en }} · {{ classes[c.class].ar }}
+              <app-info-tip [tip]="classes[c.class].tip" />
+            </span>
             <strong>{{ c.materials }}</strong>
-            <small class="muted">{{ c.value | money }} · {{ c.sharePercent | number: '1.1-1' }}% of what was used</small>
+            <small class="chip">{{ c.value | money }} · {{ c.sharePercent | number: '1.1-1' }}%</small>
           </div>
         }
         <div class="tile">
-          <span class="label">Stockout risk · خطر النفاد</span>
+          <span class="label">Stockout risk · خطر النفاد <app-info-tip tip="stockoutRisk" /></span>
           <strong [class.loss]="r.stockoutRisks > 0">{{ r.stockoutRisks }}</strong>
-          <small class="muted">less than 2 days on hand</small>
         </div>
         <div class="tile">
-          <span class="label">Dead / slow stock · مخزون راكد</span>
+          <span class="label">Dead / slow stock · مخزون راكد <app-info-tip tip="deadStock" /></span>
           <strong [class.warn]="r.deadStock > 0">{{ r.deadStock }}</strong>
-          <small class="muted">{{ r.deadStockValue | money }} tied up, nothing used in {{ r.days }} days</small>
+          @if (r.deadStockValue) {
+            <small class="chip">{{ r.deadStockValue | money }}</small>
+          }
         </div>
       </div>
 
@@ -83,15 +102,15 @@ const classLabels: Record<AbcClass, { en: string; ar: string; hint: string }> = 
         <table class="grid abc-table">
           <thead>
             <tr>
-              <th>Class<span class="ar">الفئة</span></th>
+              <th>Class A / B / C <app-info-tip tip="classA" /><span class="ar">الفئة</span></th>
               <th>Material<span class="ar">الخامة</span></th>
               <th class="num">Used<span class="ar">الاستهلاك</span></th>
-              <th class="num">Worth<span class="ar">القيمة</span></th>
-              <th class="num">Share<span class="ar">النسبة · التراكمي</span></th>
+              <th class="num">Worth <app-info-tip tip="abcWorth" /><span class="ar">القيمة</span></th>
+              <th class="num">Share <app-info-tip tip="abcShare" /><span class="ar">النسبة · التراكمي</span></th>
               <th class="num">On hand<span class="ar">الرصيد</span></th>
               <th class="num">A day<span class="ar">يوميًا</span></th>
-              <th class="num">Days on hand<span class="ar">أيام الكفاية</span></th>
-              <th>Flag<span class="ar">تنبيه</span></th>
+              <th class="num">Days on hand <app-info-tip tip="daysOnHand" /><span class="ar">أيام الكفاية</span></th>
+              <th>Stockout risk / Dead stock <app-info-tip tip="stockoutRisk" /> <app-info-tip tip="deadStock" /><span class="ar">تنبيه</span></th>
             </tr>
           </thead>
           <tbody>
@@ -100,6 +119,7 @@ const classLabels: Record<AbcClass, { en: string; ar: string; hint: string }> = 
                 <td><span class="abc" [class]="row.class">{{ row.class }}</span></td>
                 <td>
                   <strong>{{ row.material }}</strong>
+                  <app-stock-card-button [id]="row.rawMaterialId" [name]="row.material" [from]="from()" [to]="to()" />
                   <div class="muted small">{{ row.code ? row.code + ' · ' : '' }}in {{ row.purchaseUnit }}{{ row.category ? ' · ' + row.category : '' }}</div>
                 </td>
                 <td class="num">{{ row.consumption | number: '1.0-3' }}</td>
@@ -136,11 +156,6 @@ const classLabels: Record<AbcClass, { en: string; ar: string; hint: string }> = 
           </tfoot>
         </table>
       </div>
-      <p class="note small">
-        Used: sold, made into prep items, wasted, or short at a count, valued at the cost when it happened. Classes by the running share of that
-        worth: A to 75%, B to 90%, C the rest. Days on hand = on hand ÷ used a day over the period's days so far.
-        <span class="note-ar" lang="ar" dir="rtl">أيام الكفاية = الرصيد ÷ متوسط الاستهلاك اليومي.</span>
-      </p>
     }
   `,
   styleUrl: './costing.scss',

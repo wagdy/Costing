@@ -109,6 +109,7 @@ public static class DependencyInjection
         services.AddScoped<PurchaseSpendingService>();
         services.AddScoped<TreasuryService>();
         services.AddScoped<IntelligenceService>();
+        services.AddScoped<StockCardService>();
 
         // The system's users.
         services.AddScoped<UserDirectory>();

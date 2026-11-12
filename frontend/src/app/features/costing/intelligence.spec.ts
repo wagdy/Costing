@@ -1,21 +1,43 @@
 import { Type } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
+import { MatDialog } from '@angular/material/dialog';
 import { of } from 'rxjs';
-import { AbcReport, ConsumptionReport, IntelligenceApi, OrderPlan, OrderPlanLine, PriceVarianceReport, PriceVarianceRow } from '../../core/costing/intelligence.api';
+import { CostingAccess, CostingTab } from '../../core/costing/costing-tabs';
+import {
+  AbcReport,
+  ConsumptionReport,
+  IntelligenceApi,
+  MenuEngineeringReport,
+  MenuEngineeringRow,
+  OrderPlan,
+  OrderPlanLine,
+  PriceVarianceReport,
+  PriceVarianceRow,
+} from '../../core/costing/intelligence.api';
 import { NotifyService } from '../../core/ui/notify.service';
 import { AbcPage } from './abc-page';
 import { ConsumptionPage } from './consumption-page';
+import { InvoiceViewDialog } from './invoice-view-dialog';
+import { MenuEngineeringPage } from './menu-engineering-page';
 import { OrderPlannerPage } from './order-planner-page';
 import { PriceVariancePage } from './price-variance-page';
+import { StockCardDialog } from './stock-card-dialog';
 
 const text = (el: Element) => el.textContent!.replace(/\s+/g, ' ').trim();
 const cells = (row: Element) => [...row.querySelectorAll(':scope > td')].map(text);
 
+// The dialogs the reports open (an invoice, a stock card), and the tabs the user works.
+const dialogOpen = vi.fn();
+let tabs: CostingTab[] = ['Intelligence', 'Purchases'];
+
 async function render<T>(component: Type<T>, api: Partial<Record<keyof IntelligenceApi, unknown>>) {
+  dialogOpen.mockReset();
   TestBed.configureTestingModule({
     providers: [
       { provide: IntelligenceApi, useValue: api },
       { provide: NotifyService, useValue: { info: vi.fn(), error: vi.fn() } },
+      { provide: MatDialog, useValue: { open: dialogOpen } },
+      { provide: CostingAccess, useValue: { has: (tab: CostingTab) => tabs.includes(tab) } },
     ],
   });
   const fixture = TestBed.createComponent(component);
@@ -28,7 +50,7 @@ function priceRow(overrides: Partial<PriceVarianceRow>): PriceVarianceRow {
   return {
     rawMaterialId: 'm', code: null, material: 'M', categoryId: 'veg', category: 'Vegetables', categoryAr: 'خضار', purchaseUnit: 'kg',
     baselineCost: 20, latestCost: 20, unitVariance: 0, changePercent: 0, quantityPurchased: 1, impact: 0, invoices: 1, latestPurchasedOn: '2026-10-05',
-    latestSupplierId: 'nile', latestSupplier: 'Nile Farms', supplierIds: ['nile'], affected: [], ...overrides,
+    latestSupplierId: 'nile', latestSupplier: 'Nile Farms', supplierIds: ['nile'], affected: [], latestInvoiceId: 'inv-latest', ...overrides,
   };
 }
 
@@ -78,6 +100,52 @@ describe('purchase price variance', () => {
       ['Prep item · مُصنّع Pizza sauce', '1 kg / kg', '+L.E 5.00 / kg', 'L.E 21.67', '+23.1%'],
       ['Dish · طبق Burger برجر', '0.1 kg / portion', '+L.E 0.50 / portion', 'L.E 120.00', '+0.4 pts'],
     ]);
+  });
+
+  it('keeps each card to its figure, its (ⓘ) saying what it is and how it is worked out', async () => {
+    const { el } = await render(PriceVariancePage, api);
+    expect(el.querySelectorAll('.tile small.muted').length).toBe(0);
+    expect(el.querySelector('.note')).toBeNull();
+    expect([...el.querySelectorAll('.tile app-info-tip button')].map((b) => b.getAttribute('aria-label'))).toEqual([
+      'About Financial impact · الأثر المالي للانحراف',
+      'About Prices up · ارتفاع الأسعار',
+      'About Prices down · انخفاض الأسعار',
+      'About Dishes affected · الأطباق المتأثرة',
+      'About Largest rise · أعلى ارتفاع',
+    ]);
+    expect([...el.querySelectorAll('.tile .chip')].map(text)).toEqual(['+L.E 25.00', '−L.E 0.00', 'Tomatoes']);
+    expect([...el.querySelectorAll('thead app-info-tip button')].map((b) => b.getAttribute('aria-label'))).toEqual([
+      'About Baseline avg · متوسط السعر السابق',
+      'About Latest net · آخر سعر شراء صافي',
+      'About Change · فرق السعر ونسبة التغير',
+      'About Impact · الأثر المالي',
+    ]);
+  });
+
+  it('opens the latest price’s invoice, its material marked, and the material’s stock card over the period', async () => {
+    const { fixture, el, page } = await render(PriceVariancePage, api);
+    el.querySelector<HTMLButtonElement>('[aria-label="Open the invoice of the latest price of Tomatoes"]')!.click();
+    expect(dialogOpen).toHaveBeenCalledExactlyOnceWith(InvoiceViewDialog, expect.objectContaining({ data: { invoiceId: 'inv-latest', highlightMaterialId: 'tomatoes' } }));
+    // Not a click on the row: it stays closed.
+    fixture.detectChanges();
+    expect(el.querySelector('tr.detail')).toBeNull();
+
+    el.querySelector<HTMLButtonElement>('[aria-label="Stock card of Tomatoes"]')!.click();
+    expect(dialogOpen).toHaveBeenLastCalledWith(
+      StockCardDialog,
+      expect.objectContaining({ data: { id: 'tomatoes', name: 'Tomatoes', from: page['from'](), to: page['to']() } }),
+    );
+  });
+
+  it('leaves the latest price as a figure for one who does not work the purchases', async () => {
+    tabs = ['Intelligence'];
+    try {
+      const { el } = await render(PriceVariancePage, api);
+      expect(el.querySelector('[aria-label^="Open the invoice"]')).toBeNull();
+      expect(cells(el.querySelector('tbody tr.row')!)[2]).toBe('L.E 25.00');
+    } finally {
+      tabs = ['Intelligence', 'Purchases'];
+    }
   });
 
   it('filters by supplier and category, and downloads the sheet as filtered', async () => {
@@ -247,7 +315,12 @@ describe('ABC and days on hand', () => {
     const { fixture, el, page } = await render(AbcPage, { abc: vi.fn(() => of(abc)), abcSheet: vi.fn() });
 
     expect([...el.querySelectorAll('.tile')].map((t) => text(t.querySelector('strong')!))).toEqual(['1', '1', '1', '1', '1']);
-    expect(text(el.querySelectorAll('.tile')[4].querySelector('small')!)).toBe('L.E 100.00 tied up, nothing used in 2 days');
+    // The dead stock's worth beside its count; what it means and how it is found, its (ⓘ)'s.
+    expect(text(el.querySelectorAll('.tile')[4].querySelector('.chip')!)).toBe('L.E 100.00');
+    expect(el.querySelectorAll('.tile small.muted').length).toBe(0);
+    expect([...el.querySelectorAll('.tile app-info-tip button')].map((b) => b.getAttribute('aria-label'))).toEqual([
+      'About Class A · الفئة A', 'About Class B · الفئة B', 'About Class C · الفئة C', 'About Stockout risk · خطر النفاد', 'About Dead stock · مخزون راكد',
+    ]);
     const rows = [...el.querySelectorAll('table.abc-table tbody tr')];
     expect(rows.map((r) => [text(r.querySelector('.abc')!), text(r.querySelectorAll('td')[1].querySelector('strong')!), text(r.querySelectorAll('td')[7]), text(r.querySelectorAll('td')[8])])).toEqual([
       ['A', 'Beef patty', '0.7', 'Stockout risk · خطر النفاد'],
@@ -263,5 +336,95 @@ describe('ABC and days on hand', () => {
     fixture.detectChanges();
     // The fewest days first; none at the end.
     expect([...el.querySelectorAll('table.abc-table tbody tr td:nth-child(2) strong')].map(text)).toEqual(['Beef patty', 'Tomatoes', 'Saffron']);
+  });
+});
+
+function dish(overrides: Partial<MenuEngineeringRow>): MenuEngineeringRow {
+  return {
+    itemCode: '1', menuItemId: 1, variantId: null, menuItem: 'Dish', menuItemAr: null, category: 'Mains', quantitySold: 1, menuMixPercent: 1, netSales: 1,
+    averagePrice: 1, foodCostPerPortion: 1, foodCostPercent: 30, contributionMargin: 1, totalContribution: 1, popular: false, profitable: false, class: 'Dog',
+    suggestedPrice: 1, status: 'WithinTarget', ...overrides,
+  };
+}
+
+// The four dishes of a hundred sold, as the server placed them, and lemonade with no recipe.
+const menu: MenuEngineeringReport = {
+  from: '2026-11-01', to: '2026-11-30', category: null, foodCostTargetPercent: 30, items: 4, quantitySold: 100, netSales: 8550, totalContribution: 6350,
+  averageContribution: 63.5, popularityThresholdPercent: 17.5, foodCostPercent: 25.7,
+  classes: [
+    { class: 'Star', items: 1, quantitySold: 40, contribution: 4000, contributionSharePercent: 63 },
+    { class: 'Plowhorse', items: 1, quantitySold: 50, contribution: 1500, contributionSharePercent: 23.6 },
+    { class: 'Puzzle', items: 1, quantitySold: 5, contribution: 750, contributionSharePercent: 11.8 },
+    { class: 'Dog', items: 1, quantitySold: 5, contribution: 100, contributionSharePercent: 1.6 },
+  ],
+  rows: [
+    dish({ itemCode: '1', menuItem: 'Burger', quantitySold: 40, menuMixPercent: 40, averagePrice: 120, foodCostPerPortion: 20, foodCostPercent: 16.7,
+      contributionMargin: 100, totalContribution: 4000, popular: true, profitable: true, class: 'Star', suggestedPrice: 66.67 }),
+    dish({ itemCode: '31', menuItemId: 31, menuItem: 'Fries', quantitySold: 50, menuMixPercent: 50, averagePrice: 40, foodCostPerPortion: 10, foodCostPercent: 25,
+      contributionMargin: 30, totalContribution: 1500, popular: true, class: 'Plowhorse', suggestedPrice: 33.33 }),
+    dish({ itemCode: '30', menuItemId: 30, menuItem: 'Steak', quantitySold: 5, menuMixPercent: 5, averagePrice: 300, foodCostPerPortion: 150, foodCostPercent: 50,
+      contributionMargin: 150, totalContribution: 750, profitable: true, class: 'Puzzle', suggestedPrice: 500, status: 'AboveTarget' }),
+    dish({ itemCode: '32', menuItemId: 32, menuItem: 'Soup', quantitySold: 5, menuMixPercent: 5, averagePrice: 50, foodCostPerPortion: 30, foodCostPercent: 60,
+      contributionMargin: 20, totalContribution: 100, class: 'Dog', suggestedPrice: 100, status: 'AboveTarget' }),
+    dish({ itemCode: '20', menuItemId: 20, menuItem: 'Lemonade', category: 'Drinks', quantitySold: 10, menuMixPercent: null, netSales: 300, averagePrice: 30,
+      foodCostPerPortion: null, foodCostPercent: null, contributionMargin: null, totalContribution: null, class: null, suggestedPrice: null, status: 'NoRecipe' }),
+  ],
+  unclassified: 1,
+  categories: ['Drinks', 'Mains'],
+};
+
+describe('menu engineering', () => {
+  const api = {
+    menuEngineering: vi.fn((_from: string, _to: string, _category: string | null) => of(menu)),
+    menuEngineeringSheet: vi.fn((_from: string, _to: string, _category: string | null) => of(new Blob(['x']))),
+  };
+
+  beforeEach(() => {
+    api.menuEngineering.mockClear();
+    api.menuEngineeringSheet.mockClear();
+    URL.createObjectURL = vi.fn(() => 'blob:sheet');
+    URL.revokeObjectURL = vi.fn();
+  });
+
+  it('places each dish in the matrix, each quadrant with its (ⓘ) and what to do with it', async () => {
+    const { el } = await render(MenuEngineeringPage, api);
+    expect(api.menuEngineering.mock.lastCall![0]).toMatch(/^\d{4}-\d{2}-01$/);
+    expect(api.menuEngineering.mock.lastCall![2]).toBeNull();
+    expect([...el.querySelectorAll('.tile strong')].map(text)).toEqual(['L.E 6,350.00', 'L.E 63.50', '17.5%', '25.7%']);
+    const quadrants = [...el.querySelectorAll('.quadrant')];
+    expect(quadrants.map((q) => [text(q.querySelector('h3')!), text(q.querySelector('.count')!), [...q.querySelectorAll('.names li')].map(text)])).toEqual([
+      ['Stars · النجوم', '1', ['Burger']],
+      ['Plowhorses · خيول العمل', '1', ['Fries']],
+      ['Puzzles · الألغاز', '1', ['Steak']],
+      ['Dogs · الأصناف الضعيفة', '1', ['Soup']],
+    ]);
+    expect(quadrants.map((q) => q.querySelector('app-info-tip button')!.getAttribute('aria-label'))).toEqual([
+      'About Stars · النجوم', 'About Plowhorses · خيول العمل', 'About Puzzles · الألغاز', 'About Dogs · الأصناف الضعيفة',
+    ]);
+  });
+
+  it('lists every dish with its margin and the price that meets the target, the unplaced apart', async () => {
+    const { el } = await render(MenuEngineeringPage, api);
+    const rows = [...el.querySelectorAll('.menu-table tbody tr')];
+    expect(rows.map((r) => [cells(r)[0], text(r.querySelector('td:nth-child(2) strong')!), cells(r)[6], cells(r)[8]])).toEqual([
+      ['star Stars النجوم', 'Burger', 'L.E 100.00', 'L.E 66.67'],
+      ['agriculture Plowhorses خيول العمل', 'Fries', 'L.E 30.00', 'L.E 33.33'],
+      ['extension Puzzles الألغاز', 'Steak', 'L.E 150.00', 'L.E 500.00+L.E 200.00'],
+      ['trending_down Dogs الأصناف الضعيفة', 'Soup', 'L.E 20.00', 'L.E 100.00+L.E 50.00'],
+      ['No recipe · بدون وصفة', 'Lemonade', '—', '—'],
+    ]);
+  });
+
+  it('shows one quadrant, one category, and downloads the sheet for it', async () => {
+    const { fixture, el, page } = await render(MenuEngineeringPage, api);
+    [...el.querySelectorAll<HTMLButtonElement>('.quadrant.Puzzle button')].find((b) => text(b).startsWith('Show these'))!.click();
+    fixture.detectChanges();
+    expect([...el.querySelectorAll('.menu-table tbody tr td:nth-child(2) strong')].map(text)).toEqual(['Steak']);
+
+    page['category'].set('Mains');
+    await fixture.whenStable();
+    expect(api.menuEngineering).toHaveBeenLastCalledWith(expect.any(String), expect.any(String), 'Mains');
+    await page['download']();
+    expect(api.menuEngineeringSheet).toHaveBeenCalledWith(expect.any(String), expect.any(String), 'Mains');
   });
 });
