@@ -44,7 +44,7 @@ public class SettingsApiTests
         Assert.Equal(("My company", "L.E", "Before", "Egypt", "Africa/Cairo", 4, false),
             (first.GetProperty("name").GetString(), first.GetProperty("currencySymbol").GetString(), first.GetProperty("currencyPosition").GetString(),
                 first.GetProperty("country").GetString(), first.GetProperty("timeZoneId").GetString(), first.GetProperty("workdayStartsAtHour").GetInt32(),
-                first.GetProperty("hasLogo").GetBoolean()));
+                first.GetProperty("hasCustomLogo").GetBoolean()));
 
         Assert.Equal(HttpStatusCode.Unauthorized, (await anyone.PutAsJsonAsync("/api/settings", Riyadh(), Cancel)).StatusCode);
         Assert.Equal(HttpStatusCode.Forbidden, (await accountant.PutAsJsonAsync("/api/settings", Riyadh(), Cancel)).StatusCode);
@@ -69,18 +69,72 @@ public class SettingsApiTests
         var manager = await api.ManagerAsync();
         byte[] png = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 13];
 
-        Assert.Equal(HttpStatusCode.NotFound, (await anyone.GetAsync("/api/settings/logo", Cancel)).StatusCode);
-        Assert.Equal(HttpStatusCode.Unauthorized, (await anyone.PutAsync("/api/settings/logo", Upload(png, "image/png", "logo.png"), Cancel)).StatusCode);
-        Assert.Equal(HttpStatusCode.UnprocessableEntity, (await manager.PutAsync("/api/settings/logo", Upload("<svg/>"u8.ToArray(), "image/svg+xml", "logo.svg"), Cancel)).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await anyone.GetAsync("/api/company-settings/logo", Cancel)).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await anyone.PutAsync("/api/company-settings/logo", Upload(png, "image/png", "logo.png"), Cancel)).StatusCode);
+        // Not the picture it says it is.
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, (await manager.PutAsync("/api/company-settings/logo", Upload("GIF89a"u8.ToArray(), "image/png", "logo.png"), Cancel)).StatusCode);
 
-        var saved = await Json(await manager.PutAsync("/api/settings/logo", Upload(png, "image/png", "logo.png"), Cancel));
-        Assert.True(saved.GetProperty("hasLogo").GetBoolean());
-        var shown = await anyone.GetAsync($"/api/settings/logo?v={saved.GetProperty("logoVersion").GetInt64()}", Cancel);
+        var saved = await Json(await manager.PutAsync("/api/company-settings/logo", Upload(png, "image/png", "logo.png"), Cancel));
+        var version = saved.GetProperty("logoVersion").GetInt64();
+        Assert.Equal((true, $"/api/company-settings/logo?v={version}"), (saved.GetProperty("hasCustomLogo").GetBoolean(), saved.GetProperty("logoUrl").GetString()));
+        var shown = await anyone.GetAsync(saved.GetProperty("logoUrl").GetString(), Cancel);
         Assert.Equal(("image/png", "nosniff"), (shown.Content.Headers.ContentType!.MediaType, shown.Headers.GetValues("X-Content-Type-Options").Single()));
         Assert.Equal(png, await shown.Content.ReadAsByteArrayAsync(Cancel));
+        // By its version, kept a year; and sandboxed, whatever it is.
+        Assert.True(shown.Headers.CacheControl!.Public && shown.Headers.CacheControl.MaxAge == TimeSpan.FromDays(365));
+        Assert.Contains("sandbox", shown.Headers.GetValues("Content-Security-Policy").Single());
+        // Without it, checked by its tag: unchanged, 304. At the old address too.
+        var unversioned = await anyone.GetAsync("/api/settings/logo", Cancel);
+        Assert.True(unversioned.Headers.CacheControl!.NoCache);
+        var check = new HttpRequestMessage(HttpMethod.Get, "/api/company-settings/logo");
+        check.Headers.IfNoneMatch.Add(unversioned.Headers.ETag!);
+        Assert.Equal(HttpStatusCode.NotModified, (await anyone.SendAsync(check, Cancel)).StatusCode);
 
-        Assert.False((await Json(await manager.DeleteAsync("/api/settings/logo", Cancel))).GetProperty("hasLogo").GetBoolean());
-        Assert.Equal(HttpStatusCode.NotFound, (await anyone.GetAsync("/api/settings/logo", Cancel)).StatusCode);
+        Assert.False((await Json(await manager.DeleteAsync("/api/company-settings/logo", Cancel))).GetProperty("hasCustomLogo").GetBoolean());
+        Assert.Equal(HttpStatusCode.NotFound, (await anyone.GetAsync("/api/company-settings/logo", Cancel)).StatusCode);
+        Assert.Equal(JsonValueKind.Null, (await Json(await anyone.GetAsync("/api/company-settings", Cancel))).GetProperty("logoUrl").ValueKind);
+    }
+
+    // An SVG drawing and an ICO icon are taken for what their bytes are, whatever the browser called
+    // them; an SVG with script, an event handler, a link out or a DTD is refused.
+    [Fact]
+    public async Task A_logo_may_be_a_drawing_or_an_icon_but_never_a_script()
+    {
+        await using var api = await TestApi.StartAsync();
+        var anyone = api.Anonymous();
+        var manager = await api.ManagerAsync();
+        async Task<HttpResponseMessage> Put(string svg, string name = "logo.svg") =>
+            await manager.PutAsync("/api/company-settings/logo", Upload(System.Text.Encoding.UTF8.GetBytes(svg), "image/svg+xml", name), Cancel);
+
+        var drawing = """<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><defs><linearGradient id="g"><stop offset="0" stop-color="#10b981"/></linearGradient></defs><rect width="64" height="64" rx="14" fill="url(#g)"/><use href="#g"/></svg>""";
+        var saved = await Json(await Put(drawing));
+        var shown = await anyone.GetAsync(saved.GetProperty("logoUrl").GetString(), Cancel);
+        Assert.Equal("image/svg+xml", shown.Content.Headers.ContentType!.MediaType);
+
+        foreach (var unsafeSvg in new[]
+                 {
+                     """<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>""",
+                     """<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"><rect/></svg>""",
+                     """<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"><image xlink:href="https://example.com/x.png"/></svg>""",
+                     """<svg xmlns="http://www.w3.org/2000/svg"><a href="java&#x0A;script:alert(1)"><rect/></a></svg>""",
+                     """<svg xmlns="http://www.w3.org/2000/svg"><foreignObject><div xmlns="http://www.w3.org/1999/xhtml">hi</div></foreignObject></svg>""",
+                     """<!DOCTYPE svg [<!ENTITY x SYSTEM "file:///etc/passwd">]><svg xmlns="http://www.w3.org/2000/svg">&x;</svg>""",
+                     """<?xml-stylesheet href="https://example.com/a.css"?><svg xmlns="http://www.w3.org/2000/svg"/>""",
+                     """<html><svg/></html>""",
+                     """<svg""",
+                 })
+            Assert.Equal(HttpStatusCode.UnprocessableEntity, (await Put(unsafeSvg)).StatusCode);
+
+        // An icon file, sent as anything at all.
+        byte[] ico = [0, 0, 1, 0, 1, 0, 16, 16, 0, 0, 1, 0, 32, 0, 0, 0, 0, 0, 22, 0, 0, 0];
+        var icon = await Json(await manager.PutAsync("/api/company-settings/logo", Upload(ico, "application/octet-stream", "favicon.ico"), Cancel));
+        var iconShown = await anyone.GetAsync(icon.GetProperty("logoUrl").GetString(), Cancel);
+        Assert.Equal(("image/x-icon", ico.Length), (iconShown.Content.Headers.ContentType!.MediaType, (await iconShown.Content.ReadAsByteArrayAsync(Cancel)).Length));
+
+        // Two megabytes at most.
+        var big = new byte[2 * 1024 * 1024 + 1];
+        new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A }.CopyTo(big, 0);
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, (await manager.PutAsync("/api/company-settings/logo", Upload(big, "image/png", "big.png"), Cancel)).StatusCode);
     }
 
     [Fact]

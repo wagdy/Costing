@@ -5,6 +5,7 @@ import { provideRouter, withComponentInputBinding } from '@angular/router';
 import { routes } from './app.routes';
 import { AuthService } from './core/auth/auth.service';
 import { loadCompany } from './core/settings/company';
+import { TabIcon } from './core/settings/tab-icon';
 import { authInterceptor, reachabilityInterceptor } from './core/http/interceptors';
 import { WesternDigits } from './core/ui/western-digits';
 
@@ -17,6 +18,8 @@ export const appConfig: ApplicationConfig = {
     provideAppInitializer(() => inject(AuthService).restore()),
     // The company's name, logo, money and country, for every screen: the sign-in page's too.
     provideAppInitializer(() => loadCompany()),
+    // The browser tab's icon: the company's logo, or the system's own; changed as the logo is.
+    provideAppInitializer(() => void inject(TabIcon)),
     // Arabic digits typed into any field that takes numbers go in as Western ones.
     provideAppInitializer(() => inject(WesternDigits).install()),
     { provide: MAT_FORM_FIELD_DEFAULT_OPTIONS, useValue: { appearance: 'outline' } },

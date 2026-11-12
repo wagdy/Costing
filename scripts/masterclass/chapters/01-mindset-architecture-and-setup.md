@@ -200,6 +200,8 @@ PostgreSQL 16 في Docker على `127.0.0.1:5436` (منفذ خاص حتى لا �
 
 ### 6.1 إعدادات الشركة (نموذج CQRS صغير كامل)
 
+والشعار (شعار الشركة وأيقونة المتصفح) فيها: PNG أو SVG أو JPEG أو WebP أو ICO حتى 2 ميجابايت. نوعه يُقرأ **من بايتاته** (`LogoImage.TypeOf`) لا مما قاله المتصفح، فملف ICO يصل بنوع `application/octet-stream` يُقبل كأيقونة. و SVG وثيقة XML قد تحمل سكربت، فلا يُقبل إلا إن قُرئ بلا DTD (فلا يجلب ملفًا ولا يتمدد)، وبلا `<script>` ولا `foreignObject` ولا معالج حدث `on…` ولا رابط إلا لنفسه (`#id`) أو لصورة داخله (`data:image/…`)؛ ثم يُخدم **معزولًا** (`Content-Security-Policy: …; sandbox`) فما فات الفحص لا يعمل أيضًا. ويُخدم الشعار لأي أحد (`GET /api/company-settings/logo`، والمسار القديم `api/settings` معه) بإصداره في العنوان (`?v=`): بالإصدار يُحفظ سنة (`immutable`)، وبدونه يُتحقق منه كل مرة بالـ ETag فيرد 304 إن لم يتغير. و `LogoUrl` في الـ DTO هو العنوان بإصداره، و `HasCustomLogo` هل رُفع شعار بدل أيقونة النظام.
+
 @@file backend/src/Costing.Application/Company/Settings.cs
 
 @@file backend/src/Costing.Api/Controllers/SettingsController.cs

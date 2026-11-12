@@ -40,13 +40,16 @@ public class CompanySettingsTests
     }
 
     [Fact]
-    public void A_logo_is_a_picture_of_a_megabyte_at_most()
+    public void A_logo_is_a_picture_drawing_or_icon_of_two_megabytes_at_most()
     {
         var settings = Egypt();
         settings.AttachLogo("../acme.png", "image/png", 2_048, "Omar");
         Assert.Equal((true, "acme.png", "image/png", 2_048), (settings.HasLogo, settings.LogoFileName, settings.LogoContentType, settings.LogoBytes));
+        settings.AttachLogo("acme.svg", "image/svg+xml", 2_048, "Omar");
+        settings.AttachLogo("acme.ico", "image/x-icon", CompanySettings.MaxLogoBytes, "Omar");
+        Assert.Equal((2 * 1024 * 1024, "image/x-icon"), (CompanySettings.MaxLogoBytes, settings.LogoContentType));
 
-        Assert.Throws<DomainException>(() => settings.AttachLogo("acme.svg", "image/svg+xml", 2_048, "Omar"));
+        Assert.Throws<DomainException>(() => settings.AttachLogo("acme.gif", "image/gif", 2_048, "Omar"));
         Assert.Throws<DomainException>(() => settings.AttachLogo("big.png", "image/png", CompanySettings.MaxLogoBytes + 1, "Omar"));
 
         settings.RemoveLogo("Omar");

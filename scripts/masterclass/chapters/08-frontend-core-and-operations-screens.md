@@ -70,6 +70,7 @@
 - `provideHttpClient(withInterceptors([reachabilityInterceptor, authInterceptor]))`: مراقبة الوصول للخادم، ثم إضافة التوكن، بالترتيب.
 - `provideAppInitializer(() => inject(AuthService).restore())`: قبل أول صفحة، يتأكد من التوكن المخزن عبر `/api/auth/me`.
 - `provideAppInitializer(() => loadCompany())`: اسم الشركة وشعارها وعملتها لكل شاشة.
+- `provideAppInitializer(() => void inject(TabIcon))`: أيقونة تبويب المتصفح: شعار الشركة إن وُجد، وإلا أيقونة النظام؛ وتتغير لحظة رفع الشعار أو حذفه.
 - `provideAppInitializer(() => inject(WesternDigits).install())`: الأرقام العربية في حقول الأرقام تُكتب غربية تلقائيًا.
 - `MAT_FORM_FIELD_DEFAULT_OPTIONS: { appearance: 'outline' }`.
 
@@ -96,6 +97,10 @@
 ### 4.2 الشركة والأدوات
 
 @@file frontend/src/app/core/settings/company.ts
+
+`TabIcon`: خدمة جذرية فيها `effect` واحد على `company.logoUrl()`: كلما تغيّر يحذف روابط الأيقونة من `<head>` (`link[rel~="icon"]` و `apple-touch-icon`) ويضيف الجديدة، لأن المتصفح قد لا يلاحظ تغيّر `href` على الرابط نفسه. ومع الشعار: رابطان إليه بإصداره؛ وبدونه: أيقونات النظام الثلاث من `public/` (`favicon.ico` بمقاسات 16 و32 و48، و `favicon.svg`، و `apple-touch-icon.png` 180 بلا حواف دائرية لأن iOS يقصّها بنفسه)، وكلها بـ `?v=2` لأن الملفات الثابتة تُحفظ سنة و `index.html` الذي يسميها لا يُحفظ أبدًا. ولأن الإعدادات signal، فرفع الشعار في صفحة الإعدادات يغيّر الأيقونة فورًا بلا إعادة تحميل.
+
+@@file frontend/src/app/core/settings/tab-icon.ts
 
 `FormChecks`: زر الحفظ **لا يُعطَّل أبدًا**؛ عند النقص يُعلَّم كل حقل ناقص بالأحمر وتحته ما ينقصه ويُركّز على أوله.
 

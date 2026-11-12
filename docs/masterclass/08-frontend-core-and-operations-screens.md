@@ -346,7 +346,7 @@ child.on('exit', (code, signal) => {
 
 ## 3. نقطة البداية والتوجيه
 
-> 📄 **`frontend/src/index.html`** — 14 سطر
+> 📄 **`frontend/src/index.html`** — 16 سطر
 
 ```html
 <!doctype html>
@@ -357,7 +357,9 @@ child.on('exit', (code, signal) => {
   <base href="/">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#ffffff">
-  <link rel="icon" type="image/x-icon" href="favicon.ico">
+  <link rel="icon" href="favicon.ico?v=2" sizes="32x32">
+  <link rel="icon" href="favicon.svg?v=2" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png?v=2">
 </head>
 <body class="mat-typography">
   <app-root></app-root>
@@ -400,10 +402,11 @@ export class App {}
 - `provideHttpClient(withInterceptors([reachabilityInterceptor, authInterceptor]))`: مراقبة الوصول للخادم، ثم إضافة التوكن، بالترتيب.
 - `provideAppInitializer(() => inject(AuthService).restore())`: قبل أول صفحة، يتأكد من التوكن المخزن عبر `/api/auth/me`.
 - `provideAppInitializer(() => loadCompany())`: اسم الشركة وشعارها وعملتها لكل شاشة.
+- `provideAppInitializer(() => void inject(TabIcon))`: أيقونة تبويب المتصفح: شعار الشركة إن وُجد، وإلا أيقونة النظام؛ وتتغير لحظة رفع الشعار أو حذفه.
 - `provideAppInitializer(() => inject(WesternDigits).install())`: الأرقام العربية في حقول الأرقام تُكتب غربية تلقائيًا.
 - `MAT_FORM_FIELD_DEFAULT_OPTIONS: { appearance: 'outline' }`.
 
-> 📄 **`frontend/src/app/app.config.ts`** — 24 سطر
+> 📄 **`frontend/src/app/app.config.ts`** — 27 سطر
 
 ```ts
 import { provideHttpClient, withInterceptors } from '@angular/common/http';
@@ -413,6 +416,7 @@ import { provideRouter, withComponentInputBinding } from '@angular/router';
 import { routes } from './app.routes';
 import { AuthService } from './core/auth/auth.service';
 import { loadCompany } from './core/settings/company';
+import { TabIcon } from './core/settings/tab-icon';
 import { authInterceptor, reachabilityInterceptor } from './core/http/interceptors';
 import { WesternDigits } from './core/ui/western-digits';
 
@@ -425,6 +429,8 @@ export const appConfig: ApplicationConfig = {
     provideAppInitializer(() => inject(AuthService).restore()),
     // The company's name, logo, money and country, for every screen: the sign-in page's too.
     provideAppInitializer(() => loadCompany()),
+    // The browser tab's icon: the company's logo, or the system's own; changed as the logo is.
+    provideAppInitializer(() => void inject(TabIcon)),
     // Arabic digits typed into any field that takes numbers go in as Western ones.
     provideAppInitializer(() => inject(WesternDigits).install()),
     { provide: MAT_FORM_FIELD_DEFAULT_OPTIONS, useValue: { appearance: 'outline' } },
@@ -840,7 +846,7 @@ export class ConnectivityService {
 
 ### 4.2 الشركة والأدوات
 
-> 📄 **`frontend/src/app/core/settings/company.ts`** — 107 سطر
+> 📄 **`frontend/src/app/core/settings/company.ts`** — 113 سطر
 
 ```ts
 import { HttpClient } from '@angular/common/http';
@@ -861,12 +867,15 @@ export interface CompanySettings {
   timeZoneId: string;
   // The hour the business day starts: before it, a night past midnight is still the evening's day.
   workdayStartsAtHour: number;
-  hasLogo: boolean;
+  // A logo uploaded in place of the system's own icon.
+  hasCustomLogo: boolean;
   // Changes with the logo: its address asks for the new one.
   logoVersion: number;
+  // Where it is, its version in the address; null with none.
+  logoUrl: string | null;
 }
 
-export type CompanySettingsInput = Omit<CompanySettings, 'hasLogo' | 'logoVersion'>;
+export type CompanySettingsInput = Omit<CompanySettings, 'hasCustomLogo' | 'logoVersion' | 'logoUrl'>;
 
 export const countryLabels: Record<Country, { en: string; ar: string }> = {
   Egypt: { en: 'Egypt', ar: 'مصر' },
@@ -902,15 +911,17 @@ export class Company {
     country: 'Egypt',
     timeZoneId: 'Africa/Cairo',
     workdayStartsAtHour: 4,
-    hasLogo: false,
+    hasCustomLogo: false,
     logoVersion: 0,
+    logoUrl: null,
   });
 
   // The currency it writes amounts in: "L.E", "SAR", or none.
   readonly currency = computed(() => this.settings().currencySymbol);
   // The company's name, or the system's own until it has one.
   readonly name = computed(() => this.settings().name || 'Costing & Financials');
-  readonly logoUrl = computed(() => (this.settings().hasLogo ? `/api/settings/logo?v=${this.settings().logoVersion}` : null));
+  // The company's logo: the browser tab's icon, the top bar's and the sign-in page's; null with none.
+  readonly logoUrl = computed(() => (this.settings().hasCustomLogo ? this.settings().logoUrl : null));
 
   money(amount: number, digits = 2, maxDigits = digits): string {
     const s = this.settings();
@@ -933,11 +944,12 @@ export class SettingsApi {
   uploadLogo(file: File): Observable<CompanySettings> {
     const form = new FormData();
     form.append('file', file, file.name);
-    return this.http.put<CompanySettings>('/api/settings/logo', form);
+    return this.http.put<CompanySettings>('/api/company-settings/logo', form);
   }
 
+  // Back to the system's own icon.
   removeLogo(): Observable<CompanySettings> {
-    return this.http.delete<CompanySettings>('/api/settings/logo');
+    return this.http.delete<CompanySettings>('/api/company-settings/logo');
   }
 }
 
@@ -948,6 +960,56 @@ export async function loadCompany(api = inject(SettingsApi), company = inject(Co
     company.settings.set(await firstValueFrom(api.get()));
   } catch {
     // Started without them.
+  }
+}
+```
+
+
+`TabIcon`: خدمة جذرية فيها `effect` واحد على `company.logoUrl()`: كلما تغيّر يحذف روابط الأيقونة من `<head>` (`link[rel~="icon"]` و `apple-touch-icon`) ويضيف الجديدة، لأن المتصفح قد لا يلاحظ تغيّر `href` على الرابط نفسه. ومع الشعار: رابطان إليه بإصداره؛ وبدونه: أيقونات النظام الثلاث من `public/` (`favicon.ico` بمقاسات 16 و32 و48، و `favicon.svg`، و `apple-touch-icon.png` 180 بلا حواف دائرية لأن iOS يقصّها بنفسه)، وكلها بـ `?v=2` لأن الملفات الثابتة تُحفظ سنة و `index.html` الذي يسميها لا يُحفظ أبدًا. ولأن الإعدادات signal، فرفع الشعار في صفحة الإعدادات يغيّر الأيقونة فورًا بلا إعادة تحميل.
+
+> 📄 **`frontend/src/app/core/settings/tab-icon.ts`** — 42 سطر
+
+```ts
+import { DOCUMENT } from '@angular/common';
+import { Injectable, effect, inject } from '@angular/core';
+import { Company } from './company';
+
+// The system's own icons (public/), when the company has no logo. Versioned: static files are kept a
+// year, and index.html, which names them, never is.
+export const defaultTabIcons: readonly { rel: string; href: string; type?: string; sizes?: string }[] = [
+  { rel: 'icon', href: 'favicon.ico?v=2', sizes: '32x32' },
+  { rel: 'icon', href: 'favicon.svg?v=2', type: 'image/svg+xml' },
+  { rel: 'apple-touch-icon', href: 'apple-touch-icon.png?v=2' },
+];
+
+// The browser tab's icon (أيقونة المتصفح): the company's logo once it has one, the system's own
+// otherwise. Set at start-up and again the moment a logo is uploaded or taken off, with no reload:
+// the head's icon links are replaced, not edited, since a browser may not notice an href changing.
+@Injectable({ providedIn: 'root' })
+export class TabIcon {
+  private readonly document = inject(DOCUMENT);
+  private readonly company = inject(Company);
+
+  constructor() {
+    effect(() => this.show(this.company.logoUrl()));
+  }
+
+  private show(logo: string | null): void {
+    const head = this.document.head;
+    head.querySelectorAll('link[rel~="icon"], link[rel="apple-touch-icon"]').forEach((link) => link.remove());
+    const links = logo ? [{ rel: 'icon', href: logo }, { rel: 'apple-touch-icon', href: logo }] : defaultTabIcons;
+    for (const icon of links) {
+      const link = this.document.createElement('link');
+      link.rel = icon.rel;
+      link.href = icon.href;
+      if ('type' in icon && icon.type) {
+        link.type = icon.type;
+      }
+      if ('sizes' in icon && icon.sizes) {
+        link.setAttribute('sizes', icon.sizes);
+      }
+      head.appendChild(link);
+    }
   }
 }
 ```

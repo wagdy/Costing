@@ -35,6 +35,6 @@ export const storekeeperMe: Me = {
 export function aCompany(overrides: Partial<CompanySettings> = {}): CompanySettings {
   return {
     name: 'Acme', currencySymbol: 'L.E', currencyPosition: 'Before', country: 'Egypt', timeZoneId: 'Africa/Cairo', workdayStartsAtHour: 4,
-    hasLogo: false, logoVersion: 0, ...overrides,
+    hasCustomLogo: false, logoVersion: 0, logoUrl: null, ...overrides,
   };
 }

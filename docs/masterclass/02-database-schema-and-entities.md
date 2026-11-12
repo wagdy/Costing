@@ -195,7 +195,7 @@ public interface IUnitOfWork
 
 `CompanySettings`: صف واحد: الاسم، العملة وموضعها (`L.E 1,400.00` أو `1,400.00 SAR`)، الدولة، المنطقة الزمنية، **ساعة بداية اليوم التجاري** (مطعم يغلق 2 فجرًا: مبيعات 1:30 فجرًا تتبع "أمس"). و `MoneyFormat.Format` يكتب المال بنفس الطريقة في كل مكان.
 
-> 📄 **`backend/src/Costing.Domain/Company/CompanySettings.cs`** — 172 سطر
+> 📄 **`backend/src/Costing.Domain/Company/CompanySettings.cs`** — 177 سطر
 
 ```csharp
 using System.Globalization;
@@ -245,10 +245,15 @@ public sealed class CompanySettings
     public const int MaxNameLength = 200;
     public const int MaxCurrencySymbolLength = 8;
     public const int MaxLogoFileNameLength = 200;
-    public const int MaxLogoBytes = 1024 * 1024;
+    public const int MaxLogoBytes = 2 * 1024 * 1024;
 
-    // A logo is shown in the page: a picture, never an SVG, which could carry script.
-    public static readonly IReadOnlySet<string> LogoTypes = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "image/png", "image/jpeg", "image/webp" };
+    // A logo is the browser tab's icon and the top bar's emblem: a picture (PNG, JPEG, WebP), an icon
+    // (ICO) or a drawing (SVG). An SVG is taken only with nothing in it that runs or reaches out
+    // (checked as it is uploaded), and is served sandboxed besides.
+    public static readonly IReadOnlySet<string> LogoTypes = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    {
+        "image/png", "image/jpeg", "image/webp", "image/svg+xml", "image/x-icon",
+    };
 
     private CompanySettings() { }
 
@@ -310,13 +315,13 @@ public sealed class CompanySettings
         }
     }
 
-    // A PNG, JPEG or WebP of up to a megabyte, replacing the one there was.
+    // A PNG, SVG, JPEG, WebP or ICO of up to two megabytes, replacing the one there was.
     public void AttachLogo(string fileName, string contentType, int bytes, string updatedBy)
     {
         if (!LogoTypes.Contains(contentType))
-            throw new DomainException("A logo is a PNG, JPEG or WebP picture.");
+            throw new DomainException("A logo is a PNG, SVG, JPEG, WebP or ICO picture.");
         if (bytes is <= 0 or > MaxLogoBytes)
-            throw new DomainException("A logo is a megabyte at most: save a smaller picture.");
+            throw new DomainException("A logo is two megabytes at most: save a smaller picture.");
         var name = Path.GetFileName(fileName?.Trim() ?? string.Empty);
         LogoFileName = name.Length is > 0 and <= MaxLogoFileNameLength ? name : "logo";
         LogoContentType = contentType.ToLowerInvariant();

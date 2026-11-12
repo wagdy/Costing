@@ -16,12 +16,15 @@ export interface CompanySettings {
   timeZoneId: string;
   // The hour the business day starts: before it, a night past midnight is still the evening's day.
   workdayStartsAtHour: number;
-  hasLogo: boolean;
+  // A logo uploaded in place of the system's own icon.
+  hasCustomLogo: boolean;
   // Changes with the logo: its address asks for the new one.
   logoVersion: number;
+  // Where it is, its version in the address; null with none.
+  logoUrl: string | null;
 }
 
-export type CompanySettingsInput = Omit<CompanySettings, 'hasLogo' | 'logoVersion'>;
+export type CompanySettingsInput = Omit<CompanySettings, 'hasCustomLogo' | 'logoVersion' | 'logoUrl'>;
 
 export const countryLabels: Record<Country, { en: string; ar: string }> = {
   Egypt: { en: 'Egypt', ar: 'مصر' },
@@ -57,15 +60,17 @@ export class Company {
     country: 'Egypt',
     timeZoneId: 'Africa/Cairo',
     workdayStartsAtHour: 4,
-    hasLogo: false,
+    hasCustomLogo: false,
     logoVersion: 0,
+    logoUrl: null,
   });
 
   // The currency it writes amounts in: "L.E", "SAR", or none.
   readonly currency = computed(() => this.settings().currencySymbol);
   // The company's name, or the system's own until it has one.
   readonly name = computed(() => this.settings().name || 'Costing & Financials');
-  readonly logoUrl = computed(() => (this.settings().hasLogo ? `/api/settings/logo?v=${this.settings().logoVersion}` : null));
+  // The company's logo: the browser tab's icon, the top bar's and the sign-in page's; null with none.
+  readonly logoUrl = computed(() => (this.settings().hasCustomLogo ? this.settings().logoUrl : null));
 
   money(amount: number, digits = 2, maxDigits = digits): string {
     const s = this.settings();
@@ -88,11 +93,12 @@ export class SettingsApi {
   uploadLogo(file: File): Observable<CompanySettings> {
     const form = new FormData();
     form.append('file', file, file.name);
-    return this.http.put<CompanySettings>('/api/settings/logo', form);
+    return this.http.put<CompanySettings>('/api/company-settings/logo', form);
   }
 
+  // Back to the system's own icon.
   removeLogo(): Observable<CompanySettings> {
-    return this.http.delete<CompanySettings>('/api/settings/logo');
+    return this.http.delete<CompanySettings>('/api/company-settings/logo');
   }
 }
 

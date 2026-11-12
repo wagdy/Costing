@@ -39,7 +39,7 @@ describe('the company settings', () => {
 
   beforeEach(() => {
     save.mockReset().mockImplementation((input) => of(aCompany(input)));
-    uploadLogo.mockReset().mockReturnValue(of(aCompany({ hasLogo: true, logoVersion: 7 })));
+    uploadLogo.mockReset().mockReturnValue(of(aCompany({ hasCustomLogo: true, logoVersion: 7, logoUrl: '/api/company-settings/logo?v=7' })));
     removeLogo.mockReset().mockReturnValue(of(aCompany()));
     notify.info.mockReset();
     notify.error.mockReset();
@@ -89,20 +89,44 @@ describe('the company settings', () => {
     expect(el.querySelector('.zone-warning')).toBeNull();
   });
 
-  it('uploads a logo, shows it, and takes it off', async () => {
+  it('previews the tab and the top bar, uploads a logo into both, and resets to the system’s icon', async () => {
     const { el, page, refresh } = await render();
-    expect(text(el.querySelector('.no-logo')!)).toContain('No logo yet');
+    const section = el.querySelector('[aria-labelledby="logo-title"]')!;
+    expect(text(section.querySelector('h2')!)).toBe('Company logo & browser tab icon شعار الشركة وأيقونة التبويب');
+    // The system's own icon until there is a logo; nothing to reset.
+    expect(section.querySelector('.tab img')?.getAttribute('src')).toBe('favicon.svg?v=2');
+    expect(section.querySelector('.bar .bar-mark')).not.toBeNull();
+    expect(text(section.querySelector('.tab-title')!)).toBe('Acme');
+    const buttons = () => [...section.querySelectorAll<HTMLButtonElement>('.logo-actions button')];
+    expect(buttons().map((b) => [text(b), b.disabled])).toEqual([
+      ['upload Upload logo · رفع شعار', false],
+      ['restart_alt Reset to default · استعادة الافتراضي', true],
+    ]);
+    expect(section.querySelector('input[type=file]')!.getAttribute('accept')).toContain('image/svg+xml');
 
     const picker = { files: [new File(['png'], 'logo.png', { type: 'image/png' })], value: 'C:\\fakepath\\logo.png' } as unknown as HTMLInputElement;
     await page['uploadLogo'](picker);
     await refresh();
     expect(uploadLogo).toHaveBeenCalledWith(expect.any(File));
     expect(picker.value).toBe('');
-    expect(el.querySelector('.logo img')?.getAttribute('src')).toBe('/api/settings/logo?v=7');
+    expect([section.querySelector('.tab img')?.getAttribute('src'), section.querySelector('.bar img')?.getAttribute('src')]).toEqual([
+      '/api/company-settings/logo?v=7',
+      '/api/company-settings/logo?v=7',
+    ]);
+    expect(buttons()[1].disabled).toBe(false);
 
-    await page['removeLogo']();
+    buttons()[1].click();
     await refresh();
     expect(removeLogo).toHaveBeenCalled();
-    expect(el.querySelector('.logo img')).toBeNull();
+    expect(section.querySelector('.tab img')?.getAttribute('src')).toBe('favicon.svg?v=2');
+    expect(section.querySelector('.bar img')).toBeNull();
+  });
+
+  it('refuses a logo over two megabytes before sending it', async () => {
+    const { page } = await render();
+    const big = new File([new Uint8Array(2 * 1024 * 1024 + 1)], 'big.png', { type: 'image/png' });
+    await page['uploadLogo']({ files: [big], value: 'x' } as unknown as HTMLInputElement);
+    expect(uploadLogo).not.toHaveBeenCalled();
+    expect(notify.error).toHaveBeenCalledWith(null, expect.stringContaining('two megabytes'));
   });
 });

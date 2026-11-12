@@ -12,13 +12,13 @@ describe('the company’s settings in the app', () => {
   });
 
   it('is read at start-up, and the app starts without it when the server cannot be reached', async () => {
-    const get = vi.fn().mockReturnValue(of(aCompany({ currencySymbol: 'SAR', currencyPosition: 'After', hasLogo: true, logoVersion: 42 })));
+    const get = vi.fn().mockReturnValue(of(aCompany({ currencySymbol: 'SAR', currencyPosition: 'After', hasCustomLogo: true, logoVersion: 42, logoUrl: '/api/company-settings/logo?v=42' })));
     TestBed.configureTestingModule({ providers: [{ provide: SettingsApi, useValue: { get } }] });
     const company = TestBed.inject(Company);
     expect([company.name(), company.money(10)]).toEqual(['Costing & Financials', 'L.E 10.00']);
 
     await TestBed.runInInjectionContext(() => loadCompany());
-    expect([company.name(), company.money(10), company.logoUrl()]).toEqual(['Acme', '10.00 SAR', '/api/settings/logo?v=42']);
+    expect([company.name(), company.money(10), company.logoUrl()]).toEqual(['Acme', '10.00 SAR', '/api/company-settings/logo?v=42']);
 
     get.mockReturnValue(throwError(() => new Error('down')));
     await TestBed.runInInjectionContext(() => loadCompany());

@@ -1081,9 +1081,12 @@ internal static class UploadedFile
 
 ### 6.1 إعدادات الشركة (نموذج CQRS صغير كامل)
 
-> 📄 **`backend/src/Costing.Application/Company/Settings.cs`** — 142 سطر
+والشعار (شعار الشركة وأيقونة المتصفح) فيها: PNG أو SVG أو JPEG أو WebP أو ICO حتى 2 ميجابايت. نوعه يُقرأ **من بايتاته** (`LogoImage.TypeOf`) لا مما قاله المتصفح، فملف ICO يصل بنوع `application/octet-stream` يُقبل كأيقونة. و SVG وثيقة XML قد تحمل سكربت، فلا يُقبل إلا إن قُرئ بلا DTD (فلا يجلب ملفًا ولا يتمدد)، وبلا `<script>` ولا `foreignObject` ولا معالج حدث `on…` ولا رابط إلا لنفسه (`#id`) أو لصورة داخله (`data:image/…`)؛ ثم يُخدم **معزولًا** (`Content-Security-Policy: …; sandbox`) فما فات الفحص لا يعمل أيضًا. ويُخدم الشعار لأي أحد (`GET /api/company-settings/logo`، والمسار القديم `api/settings` معه) بإصداره في العنوان (`?v=`): بالإصدار يُحفظ سنة (`immutable`)، وبدونه يُتحقق منه كل مرة بالـ ETag فيرد 304 إن لم يتغير. و `LogoUrl` في الـ DTO هو العنوان بإصداره، و `HasCustomLogo` هل رُفع شعار بدل أيقونة النظام.
+
+> 📄 **`backend/src/Costing.Application/Company/Settings.cs`** — 236 سطر
 
 ```csharp
+using System.Xml;
 using MediatR;
 using Costing.Application.Common;
 using Costing.Domain.Common;
@@ -1103,13 +1106,22 @@ public sealed record CompanySettingsDto(
     Country Country,
     string TimeZoneId,
     int WorkdayStartsAtHour,
-    bool HasLogo,
+    // A logo uploaded in place of the system's own icon.
+    bool HasCustomLogo,
     // Changes whenever the logo does, for the app to ask for the new one.
-    long LogoVersion)
+    long LogoVersion,
+    // Where it is, its version in the address (null with none): the tab's icon and the top bar's.
+    string? LogoUrl)
 {
-    public static CompanySettingsDto From(CompanyProfile p) => new(
-        p.Name, p.Money.Symbol, p.Money.Position, p.Country, p.TimeZoneId, p.WorkdayStartsAtHour, p.HasLogo,
-        p.LogoUpdatedAtUtc?.Ticks ?? 0);
+    public const string LogoPath = "/api/company-settings/logo";
+
+    public static CompanySettingsDto From(CompanyProfile p)
+    {
+        var version = p.LogoUpdatedAtUtc?.Ticks ?? 0;
+        return new(
+            p.Name, p.Money.Symbol, p.Money.Position, p.Country, p.TimeZoneId, p.WorkdayStartsAtHour, p.HasLogo, version,
+            p.HasLogo ? $"{LogoPath}?v={version}" : null);
+    }
 }
 
 public sealed record GetCompanySettingsQuery : IRequest<CompanySettingsDto>;
@@ -1145,8 +1157,9 @@ internal sealed class UpdateCompanySettingsHandler(ICompanySettingsStore store, 
     }
 }
 
-// The logo (شعار الشركة): a PNG, JPEG or WebP of up to a megabyte, checked by its first bytes,
-// replacing the one there was. A manager's.
+// The logo (شعار الشركة وأيقونة المتصفح): a PNG, SVG, JPEG, WebP or ICO of up to two megabytes,
+// replacing the one there was; what it is is read from its bytes, whatever the browser called it.
+// A manager's.
 public sealed record UploadCompanyLogoCommand(string FileName, string ContentType, byte[] Content, string StaffName) : IRequest<CompanySettingsDto>;
 
 internal sealed class UploadCompanyLogoHandler(ICompanySettingsStore store, ICompanyProfile profile, IUnitOfWork unitOfWork)
@@ -1155,9 +1168,11 @@ internal sealed class UploadCompanyLogoHandler(ICompanySettingsStore store, ICom
     public async Task<CompanySettingsDto> Handle(UploadCompanyLogoCommand request, CancellationToken cancellationToken)
     {
         var settings = await CompanySettingsRow.GetOrMakeAsync(store, profile, cancellationToken);
-        if (CompanySettings.LogoTypes.Contains(request.ContentType) && !UploadedFile.LooksLike(request.ContentType, request.Content))
-            throw new DomainException("That file is not the picture it says it is.");
-        settings.AttachLogo(request.FileName, request.ContentType, request.Content.Length, request.StaffName);
+        var type = LogoImage.TypeOf(request.Content)
+            ?? throw new DomainException(
+                "A logo is a PNG, SVG, JPEG, WebP or ICO picture: that file is none of them, or an SVG with script or links in it. "
+                + "· الشعار صورة PNG أو SVG أو JPEG أو WebP أو ICO.");
+        settings.AttachLogo(request.FileName, type, request.Content.Length, request.StaffName);
         await store.PutLogoAsync(request.Content, cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
         profile.Set(CompanyProfile.From(settings));
@@ -1181,7 +1196,8 @@ internal sealed class RemoveCompanyLogoHandler(ICompanySettingsStore store, ICom
     }
 }
 
-public sealed record CompanyLogoFile(string FileName, string ContentType, byte[] Content);
+// Version: its LogoVersion, the address's ?v= and the tag a browser checks it by.
+public sealed record CompanyLogoFile(string FileName, string ContentType, byte[] Content, long Version);
 
 public sealed record GetCompanyLogoQuery : IRequest<CompanyLogoFile?>;
 
@@ -1192,7 +1208,7 @@ internal sealed class GetCompanyLogoHandler(ICompanySettingsStore store) : IRequ
         if (await store.GetAsync(cancellationToken) is not { HasLogo: true } settings)
             return null;
         return await store.GetLogoAsync(cancellationToken) is { } content
-            ? new CompanyLogoFile(settings.LogoFileName!, settings.LogoContentType!, content)
+            ? new CompanyLogoFile(settings.LogoFileName!, settings.LogoContentType!, content, settings.LogoUpdatedAtUtc?.Ticks ?? 0)
             : null;
     }
 }
@@ -1226,15 +1242,96 @@ internal static class CompanySettingsRow
         return settings;
     }
 }
+
+// What an uploaded logo is, read from its bytes: a PNG, JPEG, WebP or ICO by its first bytes; an
+// SVG when it reads as one and has nothing in it that could run or reach out of it.
+internal static class LogoImage
+{
+    // Taken as a drawing's links: within itself (#id), or a picture inside it.
+    private static readonly string[] SafeLinks = ["#", "data:image/png", "data:image/jpeg", "data:image/webp", "data:image/gif"];
+
+    // Not in a logo: script, a page inside it, or anything that loads another.
+    private static readonly HashSet<string> UnsafeElements = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "script", "foreignObject", "iframe", "embed", "object", "handler", "listener",
+    };
+
+    public static string? TypeOf(byte[] content)
+    {
+        bool StartsWith(params byte[] prefix) => content.Length >= prefix.Length && content.AsSpan(0, prefix.Length).SequenceEqual(prefix);
+        if (UploadedFile.LooksLike("image/png", content))
+            return "image/png";
+        if (UploadedFile.LooksLike("image/jpeg", content))
+            return "image/jpeg";
+        if (UploadedFile.LooksLike("image/webp", content))
+            return "image/webp";
+        // An icon file: reserved 0, type 1, and at least one picture in it.
+        if (content.Length >= 6 && StartsWith(0, 0, 1, 0) && (content[4] | content[5] << 8) > 0)
+            return "image/x-icon";
+        return IsSafeSvg(content) ? "image/svg+xml" : null;
+    }
+
+    // XML whose root is <svg>, with no DTD (so nothing is fetched or expanded), no processing
+    // instruction (a stylesheet), no script or embedded page, no event handler, and no link but to
+    // itself or a picture inside it. Served sandboxed too, so what is missed here still never runs.
+    internal static bool IsSafeSvg(byte[] content)
+    {
+        var settings = new XmlReaderSettings
+        {
+            DtdProcessing = DtdProcessing.Prohibit, XmlResolver = null, IgnoreComments = true, IgnoreWhitespace = true, MaxCharactersInDocument = 4_000_000,
+        };
+        try
+        {
+            using var reader = XmlReader.Create(new MemoryStream(content), settings);
+            var root = true;
+            while (reader.Read())
+            {
+                if (reader.NodeType == XmlNodeType.ProcessingInstruction)
+                    return false;
+                if (reader.NodeType is XmlNodeType.Text or XmlNodeType.CDATA && Forbidden(reader.Value))
+                    return false;
+                if (reader.NodeType != XmlNodeType.Element)
+                    continue;
+                if (root && reader.LocalName != "svg")
+                    return false;
+                root = false;
+                if (UnsafeElements.Contains(reader.LocalName))
+                    return false;
+                for (var more = reader.MoveToFirstAttribute(); more; more = reader.MoveToNextAttribute())
+                {
+                    var name = reader.LocalName;
+                    if (name.StartsWith("on", StringComparison.OrdinalIgnoreCase) || Forbidden(reader.Value))
+                        return false;
+                    if (name is "href" or "src" && !SafeLinks.Any(l => reader.Value.TrimStart().StartsWith(l, StringComparison.OrdinalIgnoreCase)))
+                        return false;
+                }
+                reader.MoveToElement();
+            }
+            return !root;
+        }
+        catch (XmlException)
+        {
+            return false;
+        }
+    }
+
+    // A script's address, or a stylesheet's import, anywhere: "java\nscript:" too.
+    private static bool Forbidden(string value)
+    {
+        var squeezed = new string(value.Where(c => !char.IsWhiteSpace(c) && c != '\0').ToArray());
+        return squeezed.Contains("javascript:", StringComparison.OrdinalIgnoreCase) || squeezed.Contains("@import", StringComparison.OrdinalIgnoreCase);
+    }
+}
 ```
 
 
-> 📄 **`backend/src/Costing.Api/Controllers/SettingsController.cs`** — 61 سطر
+> 📄 **`backend/src/Costing.Api/Controllers/SettingsController.cs`** — 67 سطر
 
 ```csharp
 using MediatR;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Net.Http.Headers;
 using Costing.Api.Auth;
 using Costing.Application.Company;
 using Costing.Domain.Access;
@@ -1243,10 +1340,11 @@ using Costing.Domain.Company;
 namespace Costing.Api.Controllers;
 
 // Company Settings (إعدادات الشركة). Read by anyone, signed in or not: the sign-in page shows the
-// company's name and logo before anyone signs in, and nothing here is a secret.
-// Changed by a manager (settings.manage).
+// company's name and logo before anyone signs in, and the browser's tab its icon; nothing here is a
+// secret. Changed by a manager (settings.manage). At api/settings and api/company-settings alike.
 [ApiController]
 [Route("api/settings")]
+[Route("api/company-settings")]
 public sealed class SettingsController(ISender sender) : ControllerBase
 {
     [HttpGet]
@@ -1260,19 +1358,23 @@ public sealed class SettingsController(ISender sender) : ControllerBase
     public Task<CompanySettingsDto> Update(CompanySettingsInput request, CancellationToken cancellationToken) =>
         sender.Send(new UpdateCompanySettingsCommand(request, StaffName), cancellationToken);
 
+    // The tab's icon and the top bar's logo, before anyone signs in. Asked for by its version
+    // (?v=, as LogoUrl gives it), it is kept a year: a new logo is a new address. Asked for
+    // without, it is checked each time by its tag (304 when unchanged).
     [HttpGet("logo")]
     [AllowAnonymous]
-    public async Task<IActionResult> GetLogo(CancellationToken cancellationToken)
+    public async Task<IActionResult> GetLogo([FromQuery] long? v, CancellationToken cancellationToken)
     {
         if (await sender.Send(new GetCompanyLogoQuery(), cancellationToken) is not { } logo)
             return NotFound();
         Response.Headers.XContentTypeOptions = "nosniff";
-        // Asked for by its version (?v=), so a new logo is a new address.
-        Response.Headers.CacheControl = "public, max-age=86400";
-        return File(logo.Content, logo.ContentType);
+        // An SVG is a document: opened on its own, sandboxed, nothing in it runs or loads.
+        Response.Headers.ContentSecurityPolicy = "default-src 'none'; img-src data:; style-src 'unsafe-inline'; sandbox";
+        Response.Headers.CacheControl = v == logo.Version ? "public, max-age=31536000, immutable" : "no-cache";
+        return File(logo.Content, logo.ContentType, lastModified: null, entityTag: new EntityTagHeaderValue($"\"{logo.Version}\""));
     }
 
-    // A PNG, JPEG or WebP of up to a megabyte, replacing the one there was.
+    // A PNG, SVG, JPEG, WebP or ICO of up to two megabytes, replacing the one there was.
     [HttpPut("logo")]
     [Authorize(Policy = Permissions.SettingsManage)]
     [RequestSizeLimit(CompanySettings.MaxLogoBytes + 64 * 1024)]
@@ -1280,7 +1382,7 @@ public sealed class SettingsController(ISender sender) : ControllerBase
     public async Task<ActionResult<CompanySettingsDto>> UploadLogo(IFormFile file, CancellationToken cancellationToken)
     {
         if (file.Length > CompanySettings.MaxLogoBytes)
-            return UnprocessableEntity(new { errors = new[] { "A logo is a megabyte at most: save a smaller picture." } });
+            return UnprocessableEntity(new { errors = new[] { "A logo is two megabytes at most: save a smaller picture." } });
         using var content = new MemoryStream();
         await file.CopyToAsync(content, cancellationToken);
         return await sender.Send(new UploadCompanyLogoCommand(file.FileName, file.ContentType, content.ToArray(), StaffName), cancellationToken);
@@ -1591,7 +1693,9 @@ Costing/
         package.json
         proxy.conf.json
         public/
+            apple-touch-icon.png
             favicon.ico
+            favicon.svg
         scripts/
             build.mjs
         src/
@@ -1630,6 +1734,8 @@ Costing/
                         company.ts
                         hr-integration.ts
                         pos-integration.ts
+                        tab-icon.spec.ts
+                        tab-icon.ts
                     ui/
                         form-checks.ts
                         money.pipe.ts

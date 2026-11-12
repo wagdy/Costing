@@ -38,13 +38,35 @@ when it starts again.
 
 | Endpoint | Who | What it does |
 | --- | --- | --- |
-| `GET /api/settings` | Anyone, signed in or not | The settings, with `hasLogo` and `logoVersion` |
-| `PUT /api/settings` | `settings.manage` (a manager) | Saves `{ name, currencySymbol, currencyPosition, country, timeZoneId, workdayStartsAtHour }` |
-| `GET /api/settings/logo` | Anyone | The logo (`?v=` its version, cached a day) |
-| `PUT /api/settings/logo`, `DELETE …/logo` | `settings.manage` | A PNG, JPEG or WebP of up to a megabyte, checked by its first bytes (never an SVG), or taken off |
+Every endpoint answers at `/api/company-settings` and at `/api/settings` alike.
+
+| Endpoint | Who | What it does |
+| --- | --- | --- |
+| `GET /api/company-settings` | Anyone, signed in or not | The settings, with `hasCustomLogo`, `logoVersion` and `logoUrl` (the logo's address with its version, null with none) |
+| `PUT /api/company-settings` | `settings.manage` (a manager) | Saves `{ name, currencySymbol, currencyPosition, country, timeZoneId, workdayStartsAtHour }` |
+| `GET /api/company-settings/logo` | Anyone | The logo. With `?v=` its version: cached a year (`immutable`); without: `no-cache`, checked by its ETag (304 when unchanged). Served with `nosniff` and a sandboxing Content-Security-Policy |
+| `PUT /api/company-settings/logo` (multipart `file`) | `settings.manage` | A PNG, SVG, JPEG, WebP or ICO of up to two megabytes, replacing the one there was |
+| `DELETE /api/company-settings/logo` | `settings.manage` | Back to the system's own icon |
+
+**What a logo is** is read from its bytes, not from the type the browser sent: PNG, JPEG, WebP and
+ICO by their first bytes; an SVG when it parses as XML with an `<svg>` root and has no DTD, no
+processing instruction, no `<script>`, `<foreignObject>` or embedded page, no `on…` event handler, no
+`javascript:` and no link but to itself (`#id`) or to a picture inside it (`data:image/…`).
+Anything else is refused with a 422.
+
+## The browser tab's icon
+
+The system has its own icons in `frontend/public/` (`favicon.svg`, `favicon.ico` at 16, 32 and 48
+pixels, `apple-touch-icon.png` at 180): an emerald-to-indigo calculator. `index.html` names them
+with `?v=2`, since static files are cached a year and `index.html` never is. Once a logo is
+uploaded, `TabIcon` (`core/settings/tab-icon.ts`) replaces the head's icon links with the logo's
+address, at start-up and the moment a logo is uploaded or taken off, with no reload.
 
 ## The screens
 
-- **Settings** (top bar, a manager's): the name and logo, the currency with a preview of how an
-  amount will read, the country, the time zone and the hour the business day starts.
-- **The top bar and the sign-in page** show the logo, or the name's initials, and the name.
+- **Settings** (top bar, a manager's): the name, the currency with a preview of how an amount will
+  read, the country, the time zone and the hour the business day starts; and **Company logo &
+  browser tab icon** (شعار الشركة وأيقونة التبويب), previewing the tab and the top bar as they will
+  look, with **Upload logo** and **Reset to default**.
+- **The top bar and the sign-in page** show the logo, or the system's mark (the sign-in page the
+  name's initials), and the name.
