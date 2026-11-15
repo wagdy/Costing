@@ -65,7 +65,9 @@ public sealed record PrepItemDto(
     IReadOnlyList<ProductionOrderDto> Recent,
     Guid CategoryId,
     // The kitchen's recipe category it is sorted under; none when not given one.
-    Guid? RecipeCategoryId = null);
+    Guid? RecipeCategoryId = null,
+    // Counted every day, in the daily critical items' spot count.
+    bool IsSpotCheckItem = false);
 
 public sealed record PrepIngredientEntry(Guid RawMaterialId, decimal Quantity, decimal? YieldPercent = null);
 
@@ -130,7 +132,8 @@ internal static class PrepItemCosting
             last is null ? null : Money(last.UnitCost * item.PurchaseUnitSize),
             orders.Where(o => o.PrepItemId == item.Id).Select(o => ProductionOrderDto.From(o, materials)).ToList(),
             item.CategoryId,
-            recipe?.RecipeCategoryId);
+            recipe?.RecipeCategoryId,
+            item.IsSpotCheckItem);
     }
 
     // Would `prepItemId` end up made from itself, through the ingredients given and the other

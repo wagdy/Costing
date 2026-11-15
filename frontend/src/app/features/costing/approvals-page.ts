@@ -13,10 +13,15 @@ import {
   ApprovalPreview,
   ApprovalRequest,
   CostingApi,
+  StockCountSummary,
   UnitOfMeasure,
   actionLabels,
   moduleLabels,
 } from '../../core/costing/costing.api';
+import { AuthService } from '../../core/auth/auth.service';
+import { Permissions } from '../../core/auth/permissions';
+import { CostingAccess } from '../../core/costing/costing-tabs';
+import { RouterLink } from '@angular/router';
 import { errorMessage } from '../../core/http/error-message';
 import { MoneyPipe } from '../../core/ui/money.pipe';
 import { NotifyService } from '../../core/ui/notify.service';
@@ -47,6 +52,7 @@ const baseLabels: Record<UnitOfMeasure, string> = { Gram: 'g', Millilitre: 'ml',
 @Component({
   selector: 'app-approvals-page',
   imports: [
+    RouterLink,
     ApprovalChanges,
     DatePipe,
     DecimalPipe,
@@ -64,6 +70,17 @@ const baseLabels: Record<UnitOfMeasure, string> = { Gram: 'g', Millilitre: 'ml',
       changes: the record stays in every figure and cannot be changed, and nothing new is made or moved.
       <span class="inline-ar">طلبات بانتظار موافقة المدير.</span>
     </p>
+    @if (countToReview(); as c) {
+      <div class="count-review" role="status">
+        <mat-icon>rate_review</mat-icon>
+        <span>
+          <strong>{{ c.submittedBy }}</strong> handed in a {{ c.scope === 'Spot' ? 'spot count' : 'stock count' }} of {{ c.materials }}
+          {{ c.materials === 1 ? 'material' : 'materials' }} {{ c.submittedAtUtc | date: 'd MMM, HH:mm' }}, counted blind: reconcile it and post it, or send
+          lines back. <span class="inline-ar">جرد بانتظار المراجعة</span>
+        </span>
+        <a mat-flat-button [routerLink]="['/costing/counts', c.id]">Reconcile · مراجعة الفروقات</a>
+      </div>
+    }
     @if (loading()) {
       <mat-progress-bar mode="indeterminate" />
     } @else if (error()) {
@@ -265,6 +282,20 @@ const baseLabels: Record<UnitOfMeasure, string> = { Gram: 'g', Millilitre: 'ml',
   `,
   styleUrl: './costing.scss',
   styles: `
+    .count-review {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px 12px;
+      margin: 0 0 12px;
+      padding: 10px 14px;
+      border-radius: 12px;
+      background: color-mix(in srgb, var(--mat-sys-primary) 10%, transparent);
+
+      span {
+        flex: 1 1 320px;
+      }
+    }
     h3 {
       margin: 20px 0 8px;
       font: var(--mat-sys-title-medium);
@@ -378,6 +409,9 @@ export class ApprovalsPage {
   private readonly api = inject(CostingApi);
   private readonly notify = inject(NotifyService);
   private readonly approvals = inject(Approvals);
+  // A count handed in, for whoever reconciles counts: sees the costs and works the counts.
+  private readonly reconciles = inject(AuthService).can(Permissions.CostingView) && inject(CostingAccess).has('Counts');
+  protected readonly countToReview = signal<StockCountSummary | null>(null);
 
   protected readonly labels = moduleLabels;
   protected readonly actions = actionLabels;
@@ -533,10 +567,21 @@ export class ApprovalsPage {
       this.decided.set(requests.decided);
       // The tab's count and the other screens' marks follow.
       this.approvals.pending.set(requests.pending);
+      if (this.reconciles) {
+        void this.loadCountToReview();
+      }
     } catch (error) {
       this.error.set(errorMessage(error, 'The approvals could not be loaded.'));
     } finally {
       this.loading.set(false);
+    }
+  }
+
+  private async loadCountToReview(): Promise<void> {
+    try {
+      this.countToReview.set((await firstValueFrom(this.api.stockCounts())).find((c) => c.status === 'Draft' && c.review === 'Submitted') ?? null);
+    } catch {
+      // The approvals stand without it.
     }
   }
 }

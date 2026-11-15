@@ -162,6 +162,11 @@ const prepSorts: SortOption<PrepSort>[] = [
                 <td class="num">{{ p.stockValue === null ? '—' : (p.stockValue | money) }}</td>
                 <td class="nowrap">{{ p.lastProducedAtUtc ? (p.lastProducedAtUtc | date: 'd MMM, HH:mm') : 'Never' }}</td>
                 <td class="num" (click)="$event.stopPropagation()">
+                  <button mat-icon-button class="star" [class.on]="p.isSpotCheckItem" (click)="toggleSpotCheck(p)" [attr.aria-pressed]="!!p.isSpotCheckItem"
+                    [matTooltip]="p.isSpotCheckItem ? 'Daily critical item: counted every day · صنف جرد يومي' : 'Count every day · إضافة لأصناف الجرد اليومي'"
+                    [attr.aria-label]="'Daily critical item: ' + p.name">
+                    <mat-icon>{{ p.isSpotCheckItem ? 'star' : 'star_border' }}</mat-icon>
+                  </button>
                   <button mat-icon-button (click)="stockCard(p)" matTooltip="Stock card · كارتة الصنف" [attr.aria-label]="'Stock card of ' + p.name">
                     <mat-icon>receipt_long</mat-icon>
                   </button>
@@ -183,6 +188,13 @@ const prepSorts: SortOption<PrepSort>[] = [
   `,
   styleUrl: './costing.scss',
   styles: `
+    .star {
+      color: var(--mat-sys-on-surface-variant);
+
+      &.on {
+        color: #d97706;
+      }
+    }
     .small {
       font-size: 0.85em;
     }
@@ -267,6 +279,19 @@ export class PrepItemsPage {
 
   protected categoryName(item: PrepItem): string | null {
     return item.recipeCategoryId ? (this.categoryNames().get(item.recipeCategoryId) ?? null) : null;
+  }
+
+  // Starred, or not, as a daily critical item (جرد يومي سريع): the spot count of the daily critical
+  // items takes it. A flag; no stock moves.
+  protected async toggleSpotCheck(item: PrepItem): Promise<void> {
+    const next = !item.isSpotCheckItem;
+    try {
+      const saved = await firstValueFrom(this.api.setSpotCheck(item.id, next));
+      this.items.update((all) => all.map((x) => (x.id === item.id ? { ...x, isSpotCheckItem: saved.isSpotCheckItem } : x)));
+      this.notify.info(saved.isSpotCheckItem ? `${item.name} is counted every day now. · أُضيف للجرد اليومي.` : `${item.name} is off the daily count. · أُزيل من الجرد اليومي.`);
+    } catch (error) {
+      this.notify.error(error, 'The daily count could not be changed.');
+    }
   }
 
   // Its batches in, what the dishes took out, the counts, with the balance and average after each.

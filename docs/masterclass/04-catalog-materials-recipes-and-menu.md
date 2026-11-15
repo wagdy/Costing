@@ -275,7 +275,7 @@ public sealed class MaterialExplosion
 
 `RawMaterials.cs`: الإنشاء والتعديل والقائمة. `RawMaterialDto` (حسب تعليقه) بلا تكاليف: الكميات للجميع، والتكاليف عبر `api/costing`.
 
-> 📄 **`backend/src/Costing.Application/RawMaterials/RawMaterials.cs`** — 139 سطر
+> 📄 **`backend/src/Costing.Application/RawMaterials/RawMaterials.cs`** — 142 سطر
 
 ```csharp
 using MediatR;
@@ -306,7 +306,9 @@ public sealed record RawMaterialDto(
     decimal DefaultYieldPercent,
     MaterialKind Kind,
     Guid CategoryId,
-    string? CategoryAr)
+    string? CategoryAr,
+    // Counted every day, in the daily critical items' spot count.
+    bool IsSpotCheckItem = false)
 {
     public static RawMaterialDto From(RawMaterial material, PurchaseCategory? category) => new(
         material.Id,
@@ -322,7 +324,8 @@ public sealed record RawMaterialDto(
         material.DefaultYieldPercent,
         material.Kind,
         material.CategoryId,
-        category?.NameAr);
+        category?.NameAr,
+        material.IsSpotCheckItem);
 }
 
 // The optional parts describe it for costing. PurchaseUnit and PurchaseUnitSize go together:
@@ -2059,7 +2062,7 @@ internal sealed class AddRecipesToMenuHandler(IRecipeRepository recipes, IMenuRe
 
 المصنّع **خامة من نوع `Prep`** لها وصفة دفعة. القائمة تعرض: تكلفته بوصفته بأسعار اليوم (`RecipeCosts`)، وتكلفة الدفعات الموجودة على الرف (المتوسط)، والرصيد. التعديل للمدير، وغيره يطلب (`RequestPrepItemChangeCommand`).
 
-> 📄 **`backend/src/Costing.Application/Production/PrepItems.cs`** — 478 سطر
+> 📄 **`backend/src/Costing.Application/Production/PrepItems.cs`** — 481 سطر
 
 ```csharp
 using System.Globalization;
@@ -2129,7 +2132,9 @@ public sealed record PrepItemDto(
     IReadOnlyList<ProductionOrderDto> Recent,
     Guid CategoryId,
     // The kitchen's recipe category it is sorted under; none when not given one.
-    Guid? RecipeCategoryId = null);
+    Guid? RecipeCategoryId = null,
+    // Counted every day, in the daily critical items' spot count.
+    bool IsSpotCheckItem = false);
 
 public sealed record PrepIngredientEntry(Guid RawMaterialId, decimal Quantity, decimal? YieldPercent = null);
 
@@ -2194,7 +2199,8 @@ internal static class PrepItemCosting
             last is null ? null : Money(last.UnitCost * item.PurchaseUnitSize),
             orders.Where(o => o.PrepItemId == item.Id).Select(o => ProductionOrderDto.From(o, materials)).ToList(),
             item.CategoryId,
-            recipe?.RecipeCategoryId);
+            recipe?.RecipeCategoryId,
+            item.IsSpotCheckItem);
     }
 
     // Would `prepItemId` end up made from itself, through the ingredients given and the other
@@ -3366,7 +3372,7 @@ internal sealed class ImportMenuHandler(IMenuRepository menu, IUnitOfWork unitOf
 - **التقرير النظري (`TheoreticalCostReport`):** لكل صنف مُباع في الفترة: الكمية × تكلفة وصفته = تكلفة المبيعات النظرية، مقابل إيراده. (يُستخدم في الـ KPIs والفروقات، الفصل 06.)
 - **ورقة المبيعات اليدوية** والإعدادات (الهدف، التكاليف المشتركة).
 
-> 📄 **`backend/src/Costing.Infrastructure/Reports/CostingService.cs`** — 762 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Reports/CostingService.cs`** — 764 سطر
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
@@ -3427,7 +3433,9 @@ public sealed record MaterialCostDto(
     decimal? RecipeCostPerUnit = null,
     bool CostedByRecipe = false,
     // Costed by its recipe: what has no price inside it ("Cream", "Alfredo base: Cream").
-    IReadOnlyList<string>? RecipeCostMissing = null);
+    IReadOnlyList<string>? RecipeCostMissing = null,
+    // Counted every day, in the daily critical items' spot count.
+    bool IsSpotCheckItem = false);
 
 // One line of the Recipe Costing Template. Quantity is the Edible Portion (EP) for the whole
 // recipe in the material's Unit; APS/Unit and EPS/Unit are per PurchaseUnit, as prices are written.
@@ -3593,7 +3601,7 @@ public sealed partial class CostingService(CostingDbContext db, IBusinessCalenda
                 Money(m.AverageCost * Math.Max(m.QuantityOnHand, 0)),
                 Money(last?.UnitCost * m.PurchaseUnitSize), last?.OccurredAtUtc, m.AverageCost, m.Kind, m.CategoryId,
                 categories.GetValueOrDefault(m.CategoryId)?.Kind == CategoryKind.Expenses, costs.Of(m.Id).PerUnit, costs.Of(m.Id).ByRecipe,
-                costs.Of(m.Id).ByRecipe ? costs.Of(m.Id).Missing : []);
+                costs.Of(m.Id).ByRecipe ? costs.Of(m.Id).Missing : [], m.IsSpotCheckItem);
         }).ToList();
     }
 
@@ -4138,7 +4146,7 @@ public sealed partial class CostingService(CostingDbContext db, IBusinessCalenda
 
 `CostingController` (`api/costing`): التكاليف والتقارير الغذائية (المواد، البطاقات، النظري، الإعدادات، التكاليف المشتركة).
 
-> 📄 **`backend/src/Costing.Api/Controllers/CostingController.cs`** — 208 سطر
+> 📄 **`backend/src/Costing.Api/Controllers/CostingController.cs`** — 214 سطر
 
 ```csharp
 using Microsoft.AspNetCore.Authorization;
@@ -4159,7 +4167,7 @@ namespace Costing.Api.Controllers;
 [Authorize(Policy = Permissions.InventoryView)]
 public sealed class CostingController(
     CostingService costing, VarianceService variance, KpiService kpis, BreakEvenService breakEven, PurchaseSpendingService spending,
-    TreasuryService treasury, StockCardService stockCard, MediatR.ISender sender, Costing.Application.Common.IBusinessCalendar calendar) : ControllerBase
+    TreasuryService treasury, StockCardService stockCard, IntelligenceService intelligence, MediatR.ISender sender, Costing.Application.Common.IBusinessCalendar calendar) : ControllerBase
 {
     // Raw materials with their costs: what each costs per purchase unit, the last price paid, and
     // the stock's value.
@@ -4195,6 +4203,12 @@ public sealed class CostingController(
     // Wherever a material is shown with its stock or its price.
     private const CostingTabs StockCardTabs = CostingTabs.Materials | CostingTabs.Recipes | CostingTabs.Purchases | CostingTabs.Counts | CostingTabs.Waste
         | CostingTabs.Production | CostingTabs.Reports | CostingTabs.Intelligence;
+
+    // A spot count's ready lists (جرد يومي سريع): the daily critical items, class A, the high
+    // variance and each category, as material ids alone, for whoever starts a count.
+    [HttpGet("count-presets")]
+    [CostingTab(CostingTabs.Counts)]
+    public Task<CountPresets> GetCountPresets(CancellationToken cancellationToken) => intelligence.GetCountPresetsAsync(cancellationToken);
 
     // Every dish, size and add-on with its cost per portion and food cost %.
     [HttpGet("menu")]

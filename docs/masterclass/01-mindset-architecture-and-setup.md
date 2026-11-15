@@ -1614,6 +1614,7 @@ Costing/
                         20261110093114_AddPosIntegration.cs
                         20261110170004_AddEndOfDayPayouts.cs
                         20261110175322_AddHrIntegration.cs
+                        20261112143520_AddBlindAndSpotCounts.cs
                         CostingDbContextModelSnapshot.cs
                     PosIntegrationPersistence.cs
                     RetryOnConflictBehavior.cs
@@ -1636,8 +1637,10 @@ Costing/
                 HrIntegrationApiTests.cs
                 PosIntegrationApiTests.cs
                 SettingsApiTests.cs
+                StockCountApiTests.cs
                 TestApi.cs
             Costing.Application.Tests/
+                BlindAndSpotCountTests.cs
                 CompanySettingsFlowTests.cs
                 Costing.Application.Tests.csproj
                 EndOfDayPayoutTests.cs

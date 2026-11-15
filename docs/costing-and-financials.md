@@ -21,7 +21,7 @@ works it.
 | End of the day (تقفيل اليوم) | `/costing/end-of-day` | Each day's invoices photographed, cash and on credit, and its sales report, handed in for the daily batch and the takings |
 | Purchases (المشتريات) | `/costing/purchases` | Invoices, the day's batch, suppliers, categories |
 | Expense items (المصروفات العمومية) | `/costing/expense-items` | General expenses, never stock |
-| Stock counts (الجرد) | `/costing/counts` | Counts drafted, then posted |
+| Stock counts (الجرد) | `/costing/counts` | Full and spot counts drafted, blind for who counts, reconciled, then posted |
 | Waste (الهالك) | `/costing/waste` | Spoilage, and breakage |
 | Financials (الماليات) | `/costing/financials` | The safe, funding, each day's takings (cash, card, tax, voids), vouchers, suppliers owed and paid, advances, staff, tax and service |
 | Reports (التقارير) | `/costing/reports` | Spending, theoretical cost, variance, KPIs, break-even |
@@ -373,7 +373,7 @@ changed there. Here only:
   to someone on a day, on Financials → Payroll & deductions; kept here as a record and, while HR
   is linked, sent to HR as a deduction from their pay. Voided, it is taken off there too.
 
-## Stock counts: opening and periodic
+## Stock counts: opening, periodic, spot and blind
 
 A count is drafted (it saves itself as it is filled in, on any device) and then posted. Each count
 is one of two kinds, chosen when it starts and changeable while it is a draft:
@@ -399,6 +399,44 @@ average from then on, as its first batch would.
 counted periodically. A material forgotten the first time can be opened in a second opening count.
 Voiding an opening count (on approval) takes its stock back out and lets its materials be opened
 again.
+
+### Full and spot counts (جرد شامل · جرد يومي سريع / جزئي)
+
+A count covers either every material and prep item (**Full count**, جرد شامل: the weekly or month-end
+count) or a short list (**Spot count**, جرد يومي سريع / جزئي: a few items, checked every day to catch a
+loss early). A spot count is started in one click from a ready list on the Stock counts page, each
+showing how many it covers:
+
+| List | What it covers |
+| --- | --- |
+| Daily critical items (أصناف الجرد اليومي المحددة) | Every material and prep item starred (☆) on Raw materials or Prep items |
+| Top class-A materials (أصناف الفئة A الأعلى قيمة) | Class A of the ABC analysis over the last 30 days |
+| High-variance materials (الأصناف الأكثر انحرافًا) | Over their recipes in the last 30 days, or short beyond the tolerance at the last periodic count |
+| By category (حسب الفئة) | Every material of one category |
+
+The star is a flag alone (no stock moves, so no approval), set by whoever manages the materials.
+**Posting a spot count adjusts only the lines counted**: a material not on it, or on it and left
+blank, keeps its stock, and no `CountAdjustment` is written for it. Its sheet lists only what it
+covers. Both are periodic counts in the ledger and on the reports.
+
+### Blind counts (الجرد الأعمى)
+
+Whoever counts sees only the code, name, category and unit of each item, a field for what is on the
+shelf and an optional note: never what the records expect (the book), the variance or the cost, so
+the count is what is on the shelf and not what the screen says. It is enforced for whoever does not
+see the costs (a Storekeeper, no `costing.view`): the API leaves the book and the costs out of every
+draft it answers them with, whatever is asked. A Manager, Cost Controller or Accountant may count
+blind too: **Blind entry mode** (وضع الجرد الأعمى) on the count sheet, then asking `?blind=true`.
+**Print blind sheet** (طباعة كشف جرد أعمى) prints the sheet to count on paper: code, material,
+category, unit, an empty box for each, and lines to sign.
+
+A blind counter **hands the count in for review** (تسليم للمراجعة); only who sees the costs posts it.
+They reconcile it on the count sheet (also reached from Approvals, while one waits): each line's
+book, what was counted, the variance in its unit, the unit cost and the variance value, the largest
+first, a line short beyond the variance tolerance marked red and one over it amber, and the net
+variance. **Recount needed** (مطلوب إعادة جرد) sends the picked lines back with a note: the counter
+sees them marked to weigh again, still without the book, and hands the count in again. Posting
+clears the recount marks; the count keeps who handed it in.
 
 ## End of the day (تقفيل اليوم)
 

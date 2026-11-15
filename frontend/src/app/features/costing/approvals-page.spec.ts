@@ -1,7 +1,9 @@
 import { TestBed } from '@angular/core/testing';
+import { provideRouter } from '@angular/router';
 import { of } from 'rxjs';
 import { AuthService } from '../../core/auth/auth.service';
 import { CostingApi, ApprovalRequest } from '../../core/costing/costing.api';
+import { CostingAccess } from '../../core/costing/costing-tabs';
 import { NotifyService } from '../../core/ui/notify.service';
 import { ApprovalsPage } from './approvals-page';
 import { Approvals } from './approvals';
@@ -193,5 +195,42 @@ describe('the pending approvals', () => {
     await refresh();
     expect(rejectRequest).toHaveBeenCalledWith('q6', null);
     expect(notify.info).toHaveBeenCalledWith('Rejected: nothing is made.');
+  });
+});
+
+describe('a count handed in for review, on the approvals', () => {
+  async function render(reconciles: boolean) {
+    const handedIn = {
+      id: 'count-1', kind: 'Periodic', status: 'Draft', startedAtUtc: '2026-11-13T07:00:00Z', startedBy: 'Samir', postedAtUtc: null, postedBy: null,
+      materials: 2, scope: 'Spot', scopeLabel: 'Daily critical items', scopeSize: 2, review: 'Submitted', submittedBy: 'Samir',
+      submittedAtUtc: '2026-11-13T08:00:00Z',
+    };
+    TestBed.configureTestingModule({
+      providers: [
+        provideRouter([]),
+        { provide: CostingApi, useValue: { approvalRequests: () => of({ pending: [], decided: [] }), stockCounts: () => of([handedIn]) } },
+        { provide: NotifyService, useValue: { info: vi.fn(), error: vi.fn() } },
+        { provide: AuthService, useValue: { me: () => null, can: () => reconciles } },
+        { provide: CostingAccess, useValue: { has: (tab: string) => tab === 'Counts' } },
+      ],
+    });
+    const fixture = TestBed.createComponent(ApprovalsPage);
+    await fixture.whenStable();
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    return fixture.nativeElement as HTMLElement;
+  }
+
+  it('is offered to whoever reconciles counts, to open', async () => {
+    const el = await render(true);
+    const banner = el.querySelector('.count-review')!;
+    expect(text(banner)).toContain('Samir handed in a spot count of 2 materials');
+    expect(text(banner)).toContain('جرد بانتظار المراجعة');
+    expect(banner.querySelector('a')!.getAttribute('href')).toBe('/costing/counts/count-1');
+  });
+
+  it('is not shown to who does not see the costs', async () => {
+    expect((await render(false)).querySelector('.count-review')).toBeNull();
   });
 });

@@ -533,6 +533,51 @@ export const infoTips = {
     { en: 'Ingredient cost ÷ net sales × 100.', ar: 'تكلفة المكونات ÷ صافي المبيعات × 100.' },
   ),
 
+  // ---- Stock counts ----
+  countOpening: tip(
+    { en: 'Opening stock', ar: 'جرد افتتاحي' },
+    {
+      en: "Once per material, when costing starts: where its stock begins, at the cost it has. No shortage or surplus is recorded and nothing goes into the profit.",
+      ar: 'مرة واحدة لكل خامة عند بدء التكاليف: رصيد البداية بتكلفته. لا يُسجل عجز أو زيادة ولا أثر على الأرباح.',
+    },
+    { en: 'Stock set to what was counted, posted as OpeningStock, not as a count adjustment.', ar: 'يُضبط الرصيد على المجرود ويُرحّل كرصيد افتتاحي لا كتسوية جرد.' },
+  ),
+  countFull: tip(
+    { en: 'Full periodic count', ar: 'جرد دوري شامل' },
+    {
+      en: 'Every material, weekly, at the same point, with the kitchen closed. What it finds against the records is a shortage or a surplus, and the variance report measures between counts.',
+      ar: 'كل الخامات أسبوعيًا في نفس التوقيت والمطبخ مغلق. الفرق عن الرصيد الدفتري عجز أو زيادة، ويقيس تقرير الانحراف بين جردين.',
+    },
+    { en: 'For each material counted: adjustment = counted − book, valued at the average cost then.', ar: 'لكل خامة مجرودة: التسوية = المجرود − الدفتري، بمتوسط التكلفة وقتها.' },
+  ),
+  countSpot: tip(
+    { en: 'Daily spot count', ar: 'جرد يومي سريع / جزئي' },
+    {
+      en: 'A few materials, every day: the critical items starred, the class-A ones, those that ran short. A theft or an unrecorded waste shows the next day, not at the end of the week.',
+      ar: 'خامات قليلة يوميًا: الأصناف الحرجة المحددة، أو الفئة A، أو الأكثر انحرافًا. السرقة أو الهالك غير المسجل يظهر في اليوم التالي لا في نهاية الأسبوع.',
+    },
+    {
+      en: 'Only the materials counted in it are adjusted (counted − book); every other material keeps its stock exactly.',
+      ar: 'تُسوّى الخامات المجرودة فيه فقط (المجرود − الدفتري)، وباقي الخامات يبقى رصيدها كما هو تمامًا.',
+    },
+  ),
+  countBlind: tip(
+    { en: 'Blind count mode', ar: 'وضع الجرد الأعمى' },
+    {
+      en: 'The counter never sees what the records expect, so they weigh rather than copy the book. A storekeeper always counts blind and hands the count in; a manager or cost controller reconciles and posts it.',
+      ar: 'لا يرى من يجرد الرصيد الدفتري فيزن بدل أن ينقل الرقم. أمين المخزن يجرد دائمًا بشكل أعمى ويسلم الجرد للمراجعة، والمدير أو مراقب التكاليف يطابق ويرحّل.',
+    },
+    {
+      en: 'Hidden while counting: the book quantity, the difference, the unit cost and its value — left out by the server too, not only the screen.',
+      ar: 'مخفي أثناء الجرد: الرصيد الدفتري والفرق وتكلفة الوحدة وقيمتها — يحذفها الخادم نفسه لا الشاشة فقط.',
+    },
+  ),
+  countVarianceValue: tip(
+    { en: 'Variance value', ar: 'قيمة الفرق' },
+    { en: 'What the shortage or surplus is worth. Red: short beyond the tolerance; amber: over it.', ar: 'قيمة العجز أو الزيادة. أحمر: عجز يتجاوز نسبة السماح؛ كهرماني: زيادة تتجاوزها.' },
+    { en: '(Counted − book) × average cost per unit; flagged when |counted − book| ÷ book × 100 > tolerance %.', ar: '(المجرود − الدفتري) × متوسط تكلفة الوحدة؛ ويُعلّم إذا تجاوز |الفرق| ÷ الدفتري × 100 نسبة السماح.' },
+  ),
+
   // ---- The stock card ----
   scOpening: tip(
     { en: 'Opening balance', ar: 'رصيد أول المدة' },

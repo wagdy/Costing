@@ -152,4 +152,89 @@ public class StockCountTests
         Assert.Throws<DomainException>(() => cheese.RecordSpoilage(10, Guid.NewGuid(), " ", "Omar"));
         Assert.Throws<DomainException>(() => cheese.RecordSpoilage(0, Guid.NewGuid(), "Dropped", "Omar"));
     }
+
+    // A spot count (جرد يومي سريع) covers the materials chosen, takes no others, and moves only what
+    // was counted in it; every other material keeps its stock exactly.
+    [Fact]
+    public void A_spot_count_counts_only_what_it_covers_and_moves_nothing_else()
+    {
+        var beef = Priced("Beef", 10_000, 400);
+        var cheese = Priced("Mozzarella", 5_000, 300);
+        var flour = Priced("Flour", 50_000, 30);
+        var count = new StockCount(Guid.NewGuid(), "Omar", StockCountKind.Periodic, StockCountScope.Spot, [beef.Id, cheese.Id], "Daily critical items");
+        Assert.Equal((StockCountScope.Spot, "Daily critical items", 2), (count.Scope, count.ScopeLabel, count.ScopeMaterialIds.Length));
+
+        Assert.Throws<DomainException>(() => count.Record([(beef.Id, 9_500m), (flour.Id, 49_000m)]));
+        // Cheese in it, not counted yet: not counted is not counted at nothing.
+        count.Record([(beef.Id, 9_500m)]);
+        var movements = count.Post(new Dictionary<Guid, RawMaterial> { [beef.Id] = beef }, "Mona");
+
+        var moved = Assert.Single(movements);
+        Assert.Equal((beef.Id, -500m, StockMovementReason.CountAdjustment), (moved.RawMaterialId, moved.Quantity, moved.Reason));
+        Assert.Equal((9_500m, 5_000m, 50_000m), (beef.QuantityOnHand, cheese.QuantityOnHand, flour.QuantityOnHand));
+    }
+
+    [Fact]
+    public void A_spot_count_is_periodic_names_at_least_one_material_and_its_counted_lines_stay_within_it()
+    {
+        var beef = Priced("Beef", 10_000, 400);
+        var cheese = Priced("Mozzarella", 5_000, 300);
+        Assert.Throws<DomainException>(() => new StockCount(Guid.NewGuid(), "Omar", StockCountKind.Opening, StockCountScope.Spot, [beef.Id]));
+        Assert.Throws<DomainException>(() => new StockCount(Guid.NewGuid(), "Omar", StockCountKind.Periodic, StockCountScope.Spot, []));
+
+        var count = new StockCount(Guid.NewGuid(), "Omar");
+        count.Record([(beef.Id, 9_000m), (cheese.Id, 4_000m)]);
+        // Narrowed to the beef with the cheese counted: refused until the cheese is cleared.
+        Assert.Throws<DomainException>(() => count.SetScope(StockCountScope.Spot, [beef.Id], "Beef"));
+        count.Record([(beef.Id, 9_000m)]);
+        count.SetScope(StockCountScope.Spot, [beef.Id], "Beef");
+        Assert.Throws<DomainException>(() => count.SetKind(StockCountKind.Opening));
+        // Back to a full count: every material again.
+        count.SetScope(StockCountScope.Full, [], "ignored");
+        Assert.Equal((StockCountScope.Full, 0, (string?)null), (count.Scope, count.ScopeMaterialIds.Length, count.ScopeLabel));
+    }
+
+    // Blind (الجرد الأعمى): the counter hands the count in; who reconciles sends lines back to weigh
+    // again, with a note, never with the figure; handed in again, the recount is done.
+    [Fact]
+    public void A_count_is_handed_in_sent_back_for_lines_to_weigh_again_and_handed_in_again()
+    {
+        var beef = Priced("Beef", 10_000, 400);
+        var cheese = Priced("Mozzarella", 5_000, 300);
+        var count = new StockCount(Guid.NewGuid(), "Samir");
+        Assert.Throws<DomainException>(() => count.Submit("Samir"));
+
+        count.Record([(beef.Id, 7_000m, (string?)"  two bags opened  "), (cheese.Id, 5_000m, null)]);
+        Assert.Equal(("two bags opened", (string?)null), (count.Lines[0].Note, count.Lines[1].Note));
+        count.Submit("Samir");
+        Assert.Equal((StockCountReview.Submitted, "Samir"), (count.Review, count.SubmittedBy));
+
+        Assert.Throws<DomainException>(() => count.RequestRecount([Guid.NewGuid()], null, "Karim"));
+        count.RequestRecount([beef.Id], "Weigh the beef again: the scale was off", "Karim");
+        Assert.Equal((StockCountReview.RecountRequested, "Karim", "Weigh the beef again: the scale was off"), (count.Review, count.ReviewedBy, count.ReviewNote));
+        Assert.Equal([true, false], count.Lines.Select(l => l.RecountRequested));
+        // Still blind: a draft keeps no figure of the records.
+        Assert.All(count.Lines, l => Assert.Null(l.BookQuantity));
+
+        // Weighed again, and handed in: the recount is done with.
+        count.Record([(beef.Id, 9_800m, (string?)null), (cheese.Id, 5_000m, null)]);
+        Assert.True(count.Lines[0].RecountRequested);
+        count.Submit("Samir");
+        Assert.Equal((StockCountReview.Submitted, (string?)null), (count.Review, count.ReviewNote));
+        Assert.All(count.Lines, l => Assert.False(l.RecountRequested));
+
+        Assert.Throws<DomainException>(() => count.Record([(beef.Id, 1m, (string?)new string('x', StockCount.MaxNoteLength + 1))]));
+        count.Post(new Dictionary<Guid, RawMaterial> { [beef.Id] = beef, [cheese.Id] = cheese }, "Karim");
+        Assert.Throws<DomainException>(() => count.RequestRecount([beef.Id], null, "Karim"));
+    }
+
+    [Fact]
+    public void A_material_is_starred_as_a_daily_critical_item_and_nothing_moves()
+    {
+        var beef = Priced("Beef", 10_000, 400);
+        beef.MarkSpotCheck(true);
+        Assert.Equal((true, 10_000m), (beef.IsSpotCheckItem, beef.QuantityOnHand));
+        beef.MarkSpotCheck(false);
+        Assert.False(beef.IsSpotCheckItem);
+    }
 }

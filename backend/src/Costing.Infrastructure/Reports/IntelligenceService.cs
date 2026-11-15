@@ -225,8 +225,23 @@ public sealed record AbcReport(
     decimal StockValue,
     IReadOnlyList<AbcRow> Rows);
 
+// ---- Spot count presets ----
+
+// A spot count's ready list (جرد يومي سريع): the materials in it, by id alone (no figures), so a
+// storekeeper starts one as readily as a manager.
+public sealed record CountPreset(string Key, string Name, string NameAr, IReadOnlyList<Guid> MaterialIds);
+
+public sealed record CountCategoryPreset(Guid CategoryId, string Name, string? NameAr, IReadOnlyList<Guid> MaterialIds);
+
+// Critical: the daily critical items starred. ClassA: class A of the last 30 days (ABC). HighVariance:
+// what ran over its recipes in them (theoretical against actual, unfavourable) or came up short at the
+// last periodic count by more than the tolerance. And each category's materials.
+public sealed record CountPresets(DateOnly From, DateOnly To, decimal TolerancePercent, IReadOnlyList<CountPreset> Presets, IReadOnlyList<CountCategoryPreset> Categories);
+
 public sealed class IntelligenceService(CostingDbContext db, IBusinessCalendar clock, SalesLedger ledger)
 {
+    // The days a preset looks back over.
+    public const int PresetDays = 30;
     // Class A: what the materials up to three quarters of the value are; B, the next 15%.
     public const decimal ClassALimit = 75;
     public const decimal ClassBLimit = 90;
@@ -252,6 +267,51 @@ public sealed class IntelligenceService(CostingDbContext db, IBusinessCalendar c
     ];
 
     public DateOnly Today => clock.BusinessDateOf(DateTime.UtcNow);
+
+    // ---- Spot count presets ----
+
+    public async Task<CountPresets> GetCountPresetsAsync(CancellationToken cancellationToken)
+    {
+        var (to, from) = (Today, Today.AddDays(-(PresetDays - 1)));
+        var materials = await db.RawMaterials.AsNoTracking().Where(m => m.ArchivedAtUtc == null).ToListAsync(cancellationToken);
+        var active = materials.Select(m => m.Id).ToHashSet();
+        var tolerance = (await db.CostingSettings.AsNoTracking().SingleOrDefaultAsync(cancellationToken))?.VarianceTolerancePercent
+            ?? CostingSettings.DefaultVarianceTolerance;
+
+        var critical = materials.Where(m => m.IsSpotCheckItem).OrderBy(m => m.Name).Select(m => m.Id).ToList();
+        var classA = (await GetAbcAsync(from, to, cancellationToken)).Rows
+            .Where(r => r.Class == AbcClass.A && r.ConsumptionValue > 0 && active.Contains(r.RawMaterialId))
+            .Select(r => r.RawMaterialId)
+            .ToList();
+
+        // Over its recipes in the last days, or short at the last periodic count beyond the tolerance.
+        var overRecipes = (await GetConsumptionAsync(from, to, cancellationToken)).Rows
+            .Where(r => r.Evaluation == VarianceEvaluation.Unfavourable)
+            .Select(r => r.RawMaterialId);
+        var lastCount = await db.StockCounts.AsNoTracking().Include(c => c.Lines)
+            .Where(c => c.Status == Domain.StockCounts.StockCountStatus.Posted && c.Kind == Domain.StockCounts.StockCountKind.Periodic)
+            .OrderByDescending(c => c.PostedAtUtc)
+            .FirstOrDefaultAsync(cancellationToken);
+        var shortAtCount = (lastCount?.Lines ?? [])
+            .Where(l => l.BookQuantity is > 0 and var book && (l.CountedQuantity - book) / book * 100 < -tolerance)
+            .Select(l => l.RawMaterialId);
+        var highVariance = overRecipes.Concat(shortAtCount).Where(active.Contains).Distinct().ToList();
+
+        var categories = await db.PurchaseCategories.AsNoTracking().ToListAsync(cancellationToken);
+        var byCategory = materials.ToLookup(m => m.CategoryId);
+        return new CountPresets(
+            from, to, tolerance,
+            [
+                new CountPreset("critical", "Daily critical items", "أصناف الجرد اليومي المحددة", critical),
+                new CountPreset("classA", "Top class-A materials", "أصناف الفئة A الأعلى قيمة", classA),
+                new CountPreset("highVariance", "High-variance materials", "الأصناف الأكثر انحرافًا", highVariance),
+            ],
+            categories
+                .Where(c => byCategory[c.Id].Any())
+                .OrderBy(c => c.Name, StringComparer.CurrentCultureIgnoreCase)
+                .Select(c => new CountCategoryPreset(c.Id, c.Name, c.NameAr, byCategory[c.Id].OrderBy(m => m.Name).Select(m => m.Id).ToList()))
+                .ToList());
+    }
 
     // ---- Purchase price variance and recipe impact ----
 

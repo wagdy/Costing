@@ -143,6 +143,14 @@ internal sealed class StockCountConfiguration : IEntityTypeConfiguration<StockCo
         builder.Property(c => c.Status).IsEnumName();
         builder.Property(c => c.Kind).IsEnumName().HasDefaultValue(StockCountKind.Periodic).HasSentinel((StockCountKind)0);
         builder.Ignore(c => c.IsOpening);
+        builder.Ignore(c => c.IsSpot);
+        builder.Property(c => c.Scope).IsEnumName().HasDefaultValue(StockCountScope.Full).HasSentinel((StockCountScope)0);
+        builder.Property(c => c.ScopeMaterialIds).HasDefaultValueSql("'{}'::uuid[]");
+        builder.Property(c => c.ScopeLabel).HasMaxLength(StockCount.MaxScopeLabelLength);
+        builder.Property(c => c.Review).IsEnumName().HasDefaultValue(StockCountReview.Counting).HasSentinel((StockCountReview)0);
+        builder.Property(c => c.SubmittedBy).HasMaxLength(200);
+        builder.Property(c => c.ReviewedBy).HasMaxLength(200);
+        builder.Property(c => c.ReviewNote).HasMaxLength(StockCount.MaxReviewNoteLength);
         builder.Property(c => c.StartedBy).HasMaxLength(200);
         builder.Property(c => c.PostedBy).HasMaxLength(200);
         builder.Property(c => c.VoidedBy).HasMaxLength(200);
@@ -160,6 +168,7 @@ internal sealed class StockCountLineConfiguration : IEntityTypeConfiguration<Sto
         builder.Property(l => l.CountedQuantity).IsQuantity();
         builder.Property(l => l.BookQuantity).IsQuantity();
         builder.Property(l => l.UnitCost).IsUnitCost();
+        builder.Property(l => l.Note).HasMaxLength(StockCount.MaxNoteLength);
         builder.HasOne<RawMaterial>().WithMany().HasForeignKey(l => l.RawMaterialId).OnDelete(DeleteBehavior.Restrict);
         builder.HasIndex(l => new { l.StockCountId, l.RawMaterialId }).IsUnique();
     }

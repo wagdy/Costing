@@ -58,7 +58,10 @@ describe('the prep items', () => {
         provideRouter([]),
         {
           provide: CostingApi,
-          useValue: { prepItems: () => of([dough, sauce, glaze]), approvalRequests: () => of({ pending, decided: [] }), recipeCategories: () => of([]) },
+          useValue: {
+            prepItems: () => of([dough, sauce, glaze]), approvalRequests: () => of({ pending, decided: [] }), recipeCategories: () => of([]),
+            setSpotCheck: (_id: string, isSpotCheckItem: boolean) => of({ isSpotCheckItem }),
+          },
         },
         { provide: AuthService, useValue: { me: () => null, can: () => true } },
       ],
@@ -100,5 +103,17 @@ describe('the prep items', () => {
     expect(page['shown']()).toEqual([dough]);
     page['open'](dough);
     expect(navigate).toHaveBeenCalledWith(['/costing/recipes/prep', 'dough']);
+  });
+
+  it('stars one as a daily critical item, for the daily spot count, without opening it', async () => {
+    const { el } = await render();
+    const navigate = vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
+    const star = () => el.querySelector<HTMLButtonElement>('[aria-label="Daily critical item: Pizza dough"]')!;
+
+    expect([star().getAttribute('aria-pressed'), text(star())]).toEqual(['false', 'star_border']);
+    star().click();
+    await vi.waitFor(() => expect(star().getAttribute('aria-pressed')).toBe('true'));
+    expect(text(star())).toBe('star');
+    expect(navigate).not.toHaveBeenCalled();
   });
 });

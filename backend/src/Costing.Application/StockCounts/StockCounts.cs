@@ -22,8 +22,17 @@ namespace Costing.Application.StockCounts;
 // valued at its cost, with no shortage or surplus against the zero before it, so neither the
 // KPIs nor the profit see it. A material is opened once: one in a posted count already is
 // counted periodically from then on.
+//
+// A periodic count is full (جرد شامل) or a spot count (جرد يومي سريع) of a chosen few; posting
+// either moves only the materials counted in it. Who counts may count blind (الجرد الأعمى): the
+// API leaves the records' figures and the costs out of what such a counter is sent, and a counter
+// who counts blind hands the count in for a manager or a cost controller to reconcile and post.
 
-public sealed record StockCountLineDto(Guid RawMaterialId, decimal CountedQuantity, decimal? BookQuantity, decimal? UnitCost);
+// What a count sheet shows of each line. BookQuantity and UnitCost are what the records say: on a
+// posted count, as they were at posting; on a draft, as they are now, for whoever reconciles it.
+// Left out (null) for whoever counts blind: a storekeeper, or anyone counting with blind mode on.
+public sealed record StockCountLineDto(
+    Guid RawMaterialId, decimal CountedQuantity, decimal? BookQuantity, decimal? UnitCost, string? Note = null, bool RecountRequested = false);
 
 public sealed record StockCountDto(
     Guid Id,
@@ -35,20 +44,51 @@ public sealed record StockCountDto(
     IReadOnlyList<StockCountLineDto> Lines,
     DateTime? VoidedAtUtc = null,
     string? VoidedBy = null,
-    StockCountKind Kind = StockCountKind.Periodic)
+    StockCountKind Kind = StockCountKind.Periodic,
+    StockCountScope Scope = StockCountScope.Full,
+    IReadOnlyList<Guid>? ScopeMaterialIds = null,
+    string? ScopeLabel = null,
+    StockCountReview Review = StockCountReview.Counting,
+    string? SubmittedBy = null,
+    DateTime? SubmittedAtUtc = null,
+    string? ReviewedBy = null,
+    DateTime? ReviewedAtUtc = null,
+    string? ReviewNote = null,
+    // Shown blind: the records' figures and the costs left out.
+    bool Blind = false)
 {
-    public static StockCountDto From(StockCount count) => new(
+    // live: the draft's materials as they stand, for the records' figures now. Blind, none at all.
+    public static StockCountDto From(StockCount count, bool blind = false, IReadOnlyDictionary<Guid, RawMaterial>? live = null) => new(
         count.Id, count.Status, count.StartedAtUtc, count.StartedBy, count.PostedAtUtc, count.PostedBy,
-        count.Lines.Select(l => new StockCountLineDto(l.RawMaterialId, l.CountedQuantity, l.BookQuantity, l.UnitCost)).ToList(),
-        count.VoidedAtUtc, count.VoidedBy, count.Kind);
+        count.Lines.Select(l =>
+        {
+            var (book, cost) = blind ? (null, null)
+                : count.Status == StockCountStatus.Draft
+                    ? (live?.GetValueOrDefault(l.RawMaterialId)?.QuantityOnHand, live?.GetValueOrDefault(l.RawMaterialId)?.AverageCost)
+                    : (l.BookQuantity, l.UnitCost);
+            return new StockCountLineDto(l.RawMaterialId, l.CountedQuantity, book, cost, l.Note, l.RecountRequested);
+        }).ToList(),
+        count.VoidedAtUtc, count.VoidedBy, count.Kind, count.Scope, count.ScopeMaterialIds, count.ScopeLabel, count.Review, count.SubmittedBy,
+        count.SubmittedAtUtc, count.ReviewedBy, count.ReviewedAtUtc, count.ReviewNote, blind);
+
+    // As the caller may see it: a draft not blind with the records' figures now.
+    public static async Task<StockCountDto> ShowAsync(StockCount count, bool blind, IRawMaterialRepository materials, CancellationToken cancellationToken)
+    {
+        if (blind || count.Status != StockCountStatus.Draft || count.Lines.Count == 0)
+            return From(count, blind);
+        var live = (await materials.GetByIdsAsync(count.Lines.Select(l => l.RawMaterialId).ToList(), cancellationToken)).ToDictionary(m => m.Id);
+        return From(count, blind, live);
+    }
 }
 
-// In the material's unit: grams, millilitres, pieces.
-public sealed record StockCountLine(Guid RawMaterialId, decimal CountedQuantity);
+// In the material's unit: grams, millilitres, pieces; with the counter's note, if any.
+public sealed record StockCountLine(Guid RawMaterialId, decimal CountedQuantity, string? Note = null);
 
 public sealed record StockCountSummaryDto(
     Guid Id, StockCountStatus Status, DateTime StartedAtUtc, string StartedBy, DateTime? PostedAtUtc, string? PostedBy, int Materials,
-    DateTime? VoidedAtUtc = null, string? VoidedBy = null, StockCountKind Kind = StockCountKind.Periodic);
+    DateTime? VoidedAtUtc = null, string? VoidedBy = null, StockCountKind Kind = StockCountKind.Periodic,
+    StockCountScope Scope = StockCountScope.Full, string? ScopeLabel = null, int ScopeSize = 0,
+    StockCountReview Review = StockCountReview.Counting, string? SubmittedBy = null, DateTime? SubmittedAtUtc = null);
 
 // The draft first, if there is one, then the posted counts, newest first.
 public sealed record GetStockCountsQuery : IRequest<IReadOnlyList<StockCountSummaryDto>>;
@@ -60,21 +100,35 @@ internal sealed class GetStockCountsQueryHandler(IStockCountRepository counts)
         (await counts.GetAllAsync(cancellationToken))
             .OrderBy(c => c.Status)
             .ThenByDescending(c => c.PostedAtUtc ?? c.StartedAtUtc)
-            .Select(c => new StockCountSummaryDto(c.Id, c.Status, c.StartedAtUtc, c.StartedBy, c.PostedAtUtc, c.PostedBy, c.Lines.Count, c.VoidedAtUtc, c.VoidedBy, c.Kind))
+            .Select(c => new StockCountSummaryDto(
+                c.Id, c.Status, c.StartedAtUtc, c.StartedBy, c.PostedAtUtc, c.PostedBy, c.Lines.Count, c.VoidedAtUtc, c.VoidedBy, c.Kind,
+                c.Scope, c.ScopeLabel, c.ScopeMaterialIds.Length, c.Review, c.SubmittedBy, c.SubmittedAtUtc))
             .ToList();
 }
 
-public sealed record GetStockCountQuery(Guid StockCountId) : IRequest<StockCountDto?>;
+// Blind: as its counter sees it, without the records' figures or the costs.
+public sealed record GetStockCountQuery(Guid StockCountId, bool Blind = false) : IRequest<StockCountDto?>;
 
-internal sealed class GetStockCountQueryHandler(IStockCountRepository counts) : IRequestHandler<GetStockCountQuery, StockCountDto?>
+internal sealed class GetStockCountQueryHandler(IStockCountRepository counts, IRawMaterialRepository materials) : IRequestHandler<GetStockCountQuery, StockCountDto?>
 {
     public async Task<StockCountDto?> Handle(GetStockCountQuery request, CancellationToken cancellationToken) =>
-        await counts.GetByIdAsync(request.StockCountId, cancellationToken) is { } count ? StockCountDto.From(count) : null;
+        await counts.GetByIdAsync(request.StockCountId, cancellationToken) is { } count
+            ? await StockCountDto.ShowAsync(count, request.Blind, materials, cancellationToken)
+            : null;
 }
 
 // Creates the draft on its first save. Only one draft at a time: a second is refused, naming the
 // one still open. Kind: periodic or opening, as it starts or changed while a draft; none keeps it.
-public sealed record SaveStockCountCommand(Guid StockCountId, IReadOnlyList<StockCountLine> Lines, string StaffName = "", StockCountKind? Kind = null)
+// Scope: full, or a spot count of ScopeMaterialIds (named ScopeLabel); none keeps it.
+public sealed record SaveStockCountCommand(
+    Guid StockCountId,
+    IReadOnlyList<StockCountLine> Lines,
+    string StaffName = "",
+    StockCountKind? Kind = null,
+    StockCountScope? Scope = null,
+    IReadOnlyList<Guid>? ScopeMaterialIds = null,
+    string? ScopeLabel = null,
+    bool Blind = false)
     : IRequest<StockCountDto>;
 
 internal sealed class SaveStockCountCommandHandler(
@@ -85,8 +139,9 @@ internal sealed class SaveStockCountCommandHandler(
     public async Task<StockCountDto> Handle(SaveStockCountCommand request, CancellationToken cancellationToken)
     {
         // Every listed material must exist; an empty draft is allowed while it is being started.
-        if (request.Lines.Count > 0)
-            await materials.GetRequiredByIdsAsync(request.Lines.Select(l => l.RawMaterialId).ToList(), cancellationToken);
+        var named = request.Lines.Select(l => l.RawMaterialId).Concat(request.ScopeMaterialIds ?? []).Distinct().ToList();
+        if (named.Count > 0)
+            await materials.GetRequiredByIdsAsync(named, cancellationToken);
 
         var count = await counts.GetByIdAsync(request.StockCountId, cancellationToken);
         if (count is null)
@@ -94,15 +149,109 @@ internal sealed class SaveStockCountCommandHandler(
             if (await counts.GetDraftAsync(cancellationToken) is { } open)
                 throw new DomainException(
                     $"{open.StartedBy} started a count at {open.StartedAtUtc:HH:mm} UTC that is still open: finish or discard it first.");
-            count = new StockCount(request.StockCountId, request.StaffName, request.Kind ?? StockCountKind.Periodic);
+            count = new StockCount(
+                request.StockCountId, request.StaffName, request.Kind ?? StockCountKind.Periodic, request.Scope ?? StockCountScope.Full,
+                request.ScopeMaterialIds, request.ScopeLabel);
             counts.Add(count);
         }
-        else if (request.Kind is { } kind)
-            count.SetKind(kind);
+        else
+        {
+            if (request.Kind is { } kind)
+                count.SetKind(kind);
+            if (request.Scope is { } scope)
+                count.SetScope(scope, request.ScopeMaterialIds ?? [], request.ScopeLabel);
+        }
 
-        count.Record(request.Lines.Select(l => (l.RawMaterialId, l.CountedQuantity)).ToList());
+        count.Record(request.Lines.Select(l => (l.RawMaterialId, l.CountedQuantity, l.Note)).ToList());
         await unitOfWork.SaveChangesAsync(cancellationToken);
-        return StockCountDto.From(count);
+        return await StockCountDto.ShowAsync(count, request.Blind, materials, cancellationToken);
+    }
+}
+
+// Handed in by its counter (تسليم الجرد للمراجعة), for a manager or cost controller to reconcile
+// against the records and post: a counter who counts blind never posts.
+public sealed record SubmitStockCountCommand(Guid StockCountId, string StaffName = "", bool Blind = false) : IRequest<StockCountDto>;
+
+internal sealed class SubmitStockCountCommandHandler(IStockCountRepository counts, IRawMaterialRepository materials, IUnitOfWork unitOfWork)
+    : IRequestHandler<SubmitStockCountCommand, StockCountDto>
+{
+    public async Task<StockCountDto> Handle(SubmitStockCountCommand request, CancellationToken cancellationToken)
+    {
+        var count = await counts.GetRequiredAsync(request.StockCountId, cancellationToken);
+        count.Submit(request.StaffName);
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+        return await StockCountDto.ShowAsync(count, request.Blind, materials, cancellationToken);
+    }
+}
+
+// Lines sent back to be weighed again (مطلوب إعادة جرد), by who reconciles the count; the counter
+// sees which and the note, never what the records expect.
+public sealed record RequestStockCountRecountCommand(Guid StockCountId, IReadOnlyList<Guid> RawMaterialIds, string? Note, string StaffName = "")
+    : IRequest<StockCountDto>;
+
+internal sealed class RequestStockCountRecountCommandHandler(IStockCountRepository counts, IRawMaterialRepository materials, IUnitOfWork unitOfWork)
+    : IRequestHandler<RequestStockCountRecountCommand, StockCountDto>
+{
+    public async Task<StockCountDto> Handle(RequestStockCountRecountCommand request, CancellationToken cancellationToken)
+    {
+        var count = await counts.GetRequiredAsync(request.StockCountId, cancellationToken);
+        count.RequestRecount(request.RawMaterialIds ?? [], request.Note, request.StaffName);
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+        return await StockCountDto.ShowAsync(count, blind: false, materials, cancellationToken);
+    }
+}
+
+// What a count sheet lists: each material and prep item by its code, name, category and the unit
+// it is counted in, whether it is a daily critical item, and nothing of its stock or its cost, so
+// a sheet counted blind carries neither.
+public sealed record CountItemDto(
+    Guid Id,
+    string? Code,
+    string Name,
+    Guid CategoryId,
+    string Category,
+    string? CategoryAr,
+    UnitOfMeasure Unit,
+    string PurchaseUnit,
+    decimal PurchaseUnitSize,
+    bool IsPrepItem,
+    bool IsSpotCheckItem,
+    bool IsArchived);
+
+public sealed record GetCountItemsQuery : IRequest<IReadOnlyList<CountItemDto>>;
+
+internal sealed class GetCountItemsQueryHandler(IRawMaterialRepository materials, IPurchaseCategoryRepository categories)
+    : IRequestHandler<GetCountItemsQuery, IReadOnlyList<CountItemDto>>
+{
+    public async Task<IReadOnlyList<CountItemDto>> Handle(GetCountItemsQuery request, CancellationToken cancellationToken)
+    {
+        var byId = (await categories.GetAllAsync(cancellationToken)).ToDictionary(c => c.Id);
+        return (await materials.GetAllAsync(cancellationToken))
+            .Select(m =>
+            {
+                var category = byId.GetValueOrDefault(m.CategoryId);
+                return new CountItemDto(
+                    m.Id, m.Code, m.Name, m.CategoryId, category?.Name ?? PurchaseCategory.GeneralName, category?.NameAr, m.Unit, m.PurchaseUnit,
+                    m.PurchaseUnitSize, m.IsPrepItem, m.IsSpotCheckItem, m.IsArchived);
+            })
+            .OrderBy(i => i.Category, StringComparer.CurrentCultureIgnoreCase)
+            .ThenBy(i => i.Name, StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+    }
+}
+
+// Starred, or not, as a daily critical item (جرد يومي سريع): a flag, no stock moves.
+public sealed record SetSpotCheckItemCommand(Guid RawMaterialId, bool IsSpotCheckItem) : IRequest<bool>;
+
+internal sealed class SetSpotCheckItemCommandHandler(IRawMaterialRepository materials, IUnitOfWork unitOfWork)
+    : IRequestHandler<SetSpotCheckItemCommand, bool>
+{
+    public async Task<bool> Handle(SetSpotCheckItemCommand request, CancellationToken cancellationToken)
+    {
+        var material = await materials.GetRequiredAsync(request.RawMaterialId, cancellationToken);
+        material.MarkSpotCheck(request.IsSpotCheckItem);
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+        return material.IsSpotCheckItem;
     }
 }
 

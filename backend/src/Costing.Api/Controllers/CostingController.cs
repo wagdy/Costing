@@ -16,7 +16,7 @@ namespace Costing.Api.Controllers;
 [Authorize(Policy = Permissions.InventoryView)]
 public sealed class CostingController(
     CostingService costing, VarianceService variance, KpiService kpis, BreakEvenService breakEven, PurchaseSpendingService spending,
-    TreasuryService treasury, StockCardService stockCard, MediatR.ISender sender, Costing.Application.Common.IBusinessCalendar calendar) : ControllerBase
+    TreasuryService treasury, StockCardService stockCard, IntelligenceService intelligence, MediatR.ISender sender, Costing.Application.Common.IBusinessCalendar calendar) : ControllerBase
 {
     // Raw materials with their costs: what each costs per purchase unit, the last price paid, and
     // the stock's value.
@@ -52,6 +52,12 @@ public sealed class CostingController(
     // Wherever a material is shown with its stock or its price.
     private const CostingTabs StockCardTabs = CostingTabs.Materials | CostingTabs.Recipes | CostingTabs.Purchases | CostingTabs.Counts | CostingTabs.Waste
         | CostingTabs.Production | CostingTabs.Reports | CostingTabs.Intelligence;
+
+    // A spot count's ready lists (جرد يومي سريع): the daily critical items, class A, the high
+    // variance and each category, as material ids alone, for whoever starts a count.
+    [HttpGet("count-presets")]
+    [CostingTab(CostingTabs.Counts)]
+    public Task<CountPresets> GetCountPresets(CancellationToken cancellationToken) => intelligence.GetCountPresetsAsync(cancellationToken);
 
     // Every dish, size and add-on with its cost per portion and food cost %.
     [HttpGet("menu")]

@@ -72,6 +72,12 @@ public sealed class RawMaterial : AggregateRoot
     // AverageCost per purchase unit, as prices are written: 360 a kg rather than 0.36 a gram.
     public decimal? CostPerPurchaseUnit => AverageCost * PurchaseUnitSize;
 
+    // Counted every day (جرد يومي سريع): the few that are dear or walk away (beef, cheese, coffee),
+    // which a spot count of the daily critical items takes. A flag, nothing more: it moves no stock.
+    public bool IsSpotCheckItem { get; private set; }
+
+    public void MarkSpotCheck(bool isSpotCheckItem) => IsSpotCheckItem = isSpotCheckItem;
+
     public void Rename(string name)
     {
         if (string.IsNullOrWhiteSpace(name))

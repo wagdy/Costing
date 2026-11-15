@@ -26,7 +26,9 @@ public sealed record RawMaterialDto(
     decimal DefaultYieldPercent,
     MaterialKind Kind,
     Guid CategoryId,
-    string? CategoryAr)
+    string? CategoryAr,
+    // Counted every day, in the daily critical items' spot count.
+    bool IsSpotCheckItem = false)
 {
     public static RawMaterialDto From(RawMaterial material, PurchaseCategory? category) => new(
         material.Id,
@@ -42,7 +44,8 @@ public sealed record RawMaterialDto(
         material.DefaultYieldPercent,
         material.Kind,
         material.CategoryId,
-        category?.NameAr);
+        category?.NameAr,
+        material.IsSpotCheckItem);
 }
 
 // The optional parts describe it for costing. PurchaseUnit and PurchaseUnitSize go together:

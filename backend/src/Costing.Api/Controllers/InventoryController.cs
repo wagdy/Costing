@@ -57,6 +57,14 @@ public sealed class InventoryController(ISender sender) : ControllerBase
 
     // What records a material (the ledger, invoices, recipes, prep recipes, counts, batches): a
     // change of the unit it is counted in restates them all, and needs the conversion to.
+    // Starred, or not, as a daily critical item (جرد يومي سريع): from the materials, the prep items
+    // or the counts. A flag; no stock moves, so no approval.
+    [HttpPut("raw-materials/{rawMaterialId:guid}/spot-check")]
+    [CostingTab(CostingTabs.Materials | CostingTabs.Recipes | CostingTabs.Counts)]
+    [Authorize(Policy = Permissions.InventoryManage)]
+    public async Task<object> SetSpotCheckItem(Guid rawMaterialId, SpotCheckRequest request, CancellationToken cancellationToken) =>
+        new { isSpotCheckItem = await sender.Send(new SetSpotCheckItemCommand(rawMaterialId, request.IsSpotCheckItem), cancellationToken) };
+
     [HttpGet("raw-materials/{rawMaterialId:guid}/usage")]
     [CostingTab(CostingTabs.Materials)]
     [Authorize(Policy = Permissions.InventoryManage)]
@@ -548,9 +556,11 @@ public sealed class InventoryController(ISender sender) : ControllerBase
     // A whole physical count in one request, recorded and posted at once: sets stock to what is
     // on the shelf and records the difference. StockCountId makes a retry harmless, as PurchaseId
     // does above. The screens fill in a draft instead, below.
+    // Counted and posted at once: posting is for who sees the records (costing.view).
     [HttpPost("stock-counts")]
     [CostingTab(CostingTabs.Counts)]
     [Authorize(Policy = Permissions.InventoryManage)]
+    [Authorize(Policy = Permissions.CostingView)]
     public Task<IReadOnlyList<RawMaterialDto>> RecordStockCount(RecordStockCountCommand command, CancellationToken cancellationToken) =>
         sender.Send(command with { StaffName = StaffName }, cancellationToken);
 
@@ -562,24 +572,52 @@ public sealed class InventoryController(ISender sender) : ControllerBase
     public Task<IReadOnlyList<StockCountSummaryDto>> GetStockCounts(CancellationToken cancellationToken) =>
         sender.Send(new GetStockCountsQuery(), cancellationToken);
 
+    // A count as its caller may see it. Blind (الجرد الأعمى) for whoever does not see the costs (a
+    // storekeeper): the records' figures and the costs left out, whatever is asked; anyone else
+    // counting blind asks for it (?blind=true).
     [HttpGet("stock-counts/{stockCountId:guid}")]
     [CostingTab(CostingTabs.Counts)]
     [Authorize(Policy = Permissions.InventoryManage)]
-    public async Task<ActionResult<StockCountDto>> GetStockCount(Guid stockCountId, CancellationToken cancellationToken) =>
-        await sender.Send(new GetStockCountQuery(stockCountId), cancellationToken) is { } count ? count : NotFound();
+    public async Task<ActionResult<StockCountDto>> GetStockCount(Guid stockCountId, [FromQuery] bool blind, CancellationToken cancellationToken) =>
+        await sender.Send(new GetStockCountQuery(stockCountId, Blind(blind)), cancellationToken) is { } count ? count : NotFound();
+
+    // What a count sheet lists, every material and prep item, with nothing of its stock or cost.
+    [HttpGet("stock-counts/items")]
+    [CostingTab(CostingTabs.Counts)]
+    [Authorize(Policy = Permissions.InventoryManage)]
+    public Task<IReadOnlyList<CountItemDto>> GetCountItems(CancellationToken cancellationToken) =>
+        sender.Send(new GetCountItemsQuery(), cancellationToken);
 
     // Saves the draft as it stands, creating it on the first save. The whole list each time: a
-    // material left out is not counted.
+    // material left out is not counted. A spot count is started with what it covers.
     [HttpPut("stock-counts/{stockCountId:guid}")]
     [CostingTab(CostingTabs.Counts)]
     [Authorize(Policy = Permissions.InventoryManage)]
-    public Task<StockCountDto> SaveStockCount(Guid stockCountId, SaveStockCountRequest request, CancellationToken cancellationToken) =>
-        sender.Send(new SaveStockCountCommand(stockCountId, request.Lines ?? [], StaffName, request.Kind), cancellationToken);
+    public Task<StockCountDto> SaveStockCount(Guid stockCountId, SaveStockCountRequest request, [FromQuery] bool blind, CancellationToken cancellationToken) =>
+        sender.Send(new SaveStockCountCommand(
+            stockCountId, request.Lines ?? [], StaffName, request.Kind, request.Scope, request.ScopeMaterialIds, request.ScopeLabel, Blind(blind)), cancellationToken);
 
-    // Sets stock to what was counted. Posting again returns the posted count.
+    // Handed in for review by its counter: anyone who counts may.
+    [HttpPost("stock-counts/{stockCountId:guid}/submit")]
+    [CostingTab(CostingTabs.Counts)]
+    [Authorize(Policy = Permissions.InventoryManage)]
+    public Task<StockCountDto> SubmitStockCount(Guid stockCountId, [FromQuery] bool blind, CancellationToken cancellationToken) =>
+        sender.Send(new SubmitStockCountCommand(stockCountId, StaffName, Blind(blind)), cancellationToken);
+
+    // Lines sent back to be weighed again: by who reconciles, so who sees the records.
+    [HttpPost("stock-counts/{stockCountId:guid}/recount")]
+    [CostingTab(CostingTabs.Counts)]
+    [Authorize(Policy = Permissions.InventoryManage)]
+    [Authorize(Policy = Permissions.CostingView)]
+    public Task<StockCountDto> RequestRecount(Guid stockCountId, StockCountRecountRequest request, CancellationToken cancellationToken) =>
+        sender.Send(new RequestStockCountRecountCommand(stockCountId, request.RawMaterialIds ?? [], request.Note, StaffName), cancellationToken);
+
+    // Sets stock to what was counted, by who has reconciled it against the records (costing.view):
+    // a counter who counts blind hands it in instead. Posting again returns the posted count.
     [HttpPost("stock-counts/{stockCountId:guid}/post")]
     [CostingTab(CostingTabs.Counts)]
     [Authorize(Policy = Permissions.InventoryManage)]
+    [Authorize(Policy = Permissions.CostingView)]
     public Task<StockCountDto> PostStockCount(Guid stockCountId, CancellationToken cancellationToken) =>
         sender.Send(new PostStockCountCommand(stockCountId, StaffName), cancellationToken);
 
@@ -714,6 +752,9 @@ public sealed class InventoryController(ISender sender) : ControllerBase
 
     private bool CanApprove => UserClaims.RoleOf(User) is { } role && RolePermissions.Has(role, Permissions.ApprovalDecide);
 
+    // Counts blind: who does not see the costs always, anyone else when they ask.
+    private bool Blind(bool asked) => asked || !(UserClaims.RoleOf(User) is { } role && RolePermissions.Has(role, Permissions.CostingView));
+
     private string StaffId => UserClaims.IdOf(User) ?? string.Empty;
 
     private RequestDeletionCommand DeletionOf(Guid requestId, ApprovalModule module, Guid recordId, string? reason) =>
@@ -721,7 +762,16 @@ public sealed class InventoryController(ISender sender) : ControllerBase
 }
 
 // Kind: periodic or opening stock; none keeps the draft's (a new one is periodic).
-public sealed record SaveStockCountRequest(IReadOnlyList<StockCountLine> Lines, Costing.Domain.StockCounts.StockCountKind? Kind = null);
+public sealed record SaveStockCountRequest(
+    IReadOnlyList<StockCountLine> Lines,
+    Costing.Domain.StockCounts.StockCountKind? Kind = null,
+    Costing.Domain.StockCounts.StockCountScope? Scope = null,
+    IReadOnlyList<Guid>? ScopeMaterialIds = null,
+    string? ScopeLabel = null);
+
+public sealed record StockCountRecountRequest(IReadOnlyList<Guid> RawMaterialIds, string? Note = null);
+
+public sealed record SpotCheckRequest(bool IsSpotCheckItem);
 
 public sealed record CorrectPurchaseInvoiceRequest(
     Guid RequestId,

@@ -224,3 +224,38 @@ describe('a material’s purchase history from its row', () => {
     expect(open).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('a daily critical item (جرد يومي سريع), starred from its row', () => {
+  it('is starred and unstarred in place, saying so, without opening the material', async () => {
+    const open = vi.fn();
+    const info = vi.fn();
+    const setSpotCheck = vi.fn((_id: string, isSpotCheckItem: boolean) => of({ isSpotCheckItem }));
+    const beef = { id: 'beef', name: 'Beef', kind: 'Purchased', code: null, category: null, unit: 'Gram', purchaseUnit: 'kg', purchaseUnitSize: 1000,
+      costPerPurchaseUnit: null, defaultYieldPercent: 100, quantityOnHand: 0, stockValue: null, lastPurchaseCostPerPurchaseUnit: null,
+      isSpotCheckItem: false } as unknown as MaterialCost;
+    TestBed.configureTestingModule({
+      providers: [
+        { provide: CostingApi, useValue: { materials: () => of([beef]), setSpotCheck } },
+        { provide: MatDialog, useValue: { open } },
+        { provide: NotifyService, useValue: { info, error: vi.fn() } },
+        { provide: Approvals, useValue: { refresh: vi.fn(), pendingFor: vi.fn() } },
+      ],
+    });
+    const fixture = TestBed.createComponent(MaterialsPage);
+    await fixture.whenStable();
+    fixture.detectChanges();
+    const el = fixture.nativeElement as HTMLElement;
+    const star = () => el.querySelector<HTMLButtonElement>('[aria-label="Daily critical item: Beef"]')!;
+
+    star().click();
+    await vi.waitFor(() => expect(star().getAttribute('aria-pressed')).toBe('true'));
+    expect(setSpotCheck).toHaveBeenCalledWith('beef', true);
+    expect(info).toHaveBeenLastCalledWith('Beef is counted every day now. · أُضيف للجرد اليومي.');
+
+    star().click();
+    await vi.waitFor(() => expect(star().getAttribute('aria-pressed')).toBe('false'));
+    expect(setSpotCheck).toHaveBeenLastCalledWith('beef', false);
+    expect(info).toHaveBeenLastCalledWith('Beef is off the daily count. · أُزيل من الجرد اليومي.');
+    expect(open).not.toHaveBeenCalled();
+  });
+});

@@ -39,6 +39,8 @@ export interface MaterialCost {
   recipeCostPerUnit?: number | null;
   costedByRecipe?: boolean;
   recipeCostMissing?: string[];
+  // Counted every day: in the daily critical items' spot count (جرد يومي سريع).
+  isSpotCheckItem?: boolean;
 }
 
 // What a recipe line is costed from, per unit: the material's average, or for a prep item never
@@ -506,6 +508,64 @@ export const countKindLabels: Record<StockCountKind, { en: string; ar: string }>
   Opening: { en: 'Opening stock', ar: 'جرد افتتاحي' },
 };
 
+// Full (جرد شامل): every material. Spot (جرد يومي سريع / جزئي): a chosen few, and posting it
+// moves only what was counted in it.
+export type StockCountScope = 'Full' | 'Spot';
+
+// Where a draft stands between who counts and who reconciles: being counted, handed in for
+// review, or sent back with lines to weigh again.
+export type StockCountReview = 'Counting' | 'Submitted' | 'RecountRequested';
+
+export const countScopeLabels: Record<StockCountScope, { en: string; ar: string }> = {
+  Full: { en: 'Full count', ar: 'جرد شامل' },
+  Spot: { en: 'Spot count', ar: 'جرد يومي سريع' },
+};
+
+export const countReviewLabels: Record<StockCountReview, { en: string; ar: string }> = {
+  Counting: { en: 'Being counted', ar: 'جارٍ الجرد' },
+  Submitted: { en: 'Handed in for review', ar: 'بانتظار المراجعة' },
+  RecountRequested: { en: 'Recount needed', ar: 'مطلوب إعادة جرد' },
+};
+
+// What a count sheet lists of a material or prep item: nothing of its stock or its cost.
+export interface CountItem {
+  id: string;
+  code: string | null;
+  name: string;
+  categoryId: string;
+  category: string;
+  categoryAr: string | null;
+  unit: UnitOfMeasure;
+  purchaseUnit: string;
+  purchaseUnitSize: number;
+  isPrepItem: boolean;
+  isSpotCheckItem: boolean;
+  isArchived: boolean;
+}
+
+// A spot count's ready lists, by material id alone.
+export interface CountPreset {
+  key: 'critical' | 'classA' | 'highVariance';
+  name: string;
+  nameAr: string;
+  materialIds: string[];
+}
+
+export interface CountCategoryPreset {
+  categoryId: string;
+  name: string;
+  nameAr: string | null;
+  materialIds: string[];
+}
+
+export interface CountPresets {
+  from: string;
+  to: string;
+  tolerancePercent: number;
+  presets: CountPreset[];
+  categories: CountCategoryPreset[];
+}
+
 export interface StockCountSummary {
   id: string;
   status: StockCountStatus;
@@ -517,15 +577,24 @@ export interface StockCountSummary {
   voidedAtUtc?: string | null;
   voidedBy?: string | null;
   kind: StockCountKind;
+  scope?: StockCountScope;
+  scopeLabel?: string | null;
+  scopeSize?: number;
+  review?: StockCountReview;
+  submittedBy?: string | null;
+  submittedAtUtc?: string | null;
 }
 
-// Quantities in the material's unit (grams, millilitres, pieces). Book quantity and cost are
-// filled in when the count is posted; a draft has neither.
+// Quantities in the material's unit (grams, millilitres, pieces). Book quantity and cost are what
+// the records say: on a posted count as at posting, on a draft as they stand now; null for whoever
+// counts blind. The counter's note, and whether the line is sent back to be weighed again.
 export interface StockCountLine {
   rawMaterialId: string;
   countedQuantity: number;
   bookQuantity: number | null;
   unitCost: number | null;
+  note?: string | null;
+  recountRequested?: boolean;
 }
 
 export interface StockCount {
@@ -539,6 +608,24 @@ export interface StockCount {
   voidedAtUtc?: string | null;
   voidedBy?: string | null;
   kind: StockCountKind;
+  scope?: StockCountScope;
+  scopeMaterialIds?: string[];
+  scopeLabel?: string | null;
+  review?: StockCountReview;
+  submittedBy?: string | null;
+  submittedAtUtc?: string | null;
+  reviewedBy?: string | null;
+  reviewedAtUtc?: string | null;
+  reviewNote?: string | null;
+  // Sent blind: the records' figures and the costs left out.
+  blind?: boolean;
+}
+
+// A spot count started: what it covers and what it was chosen as.
+export interface CountScopeInput {
+  scope: StockCountScope;
+  scopeMaterialIds: string[];
+  scopeLabel: string | null;
 }
 
 export interface SpoilageLine {
@@ -929,6 +1016,8 @@ export interface PrepItem {
   recent: ProductionOrder[];
   // The kitchen's recipe category it is sorted under, as dishes are; null for none.
   recipeCategoryId: string | null;
+  // Counted every day: in the daily critical items' spot count (جرد يومي سريع).
+  isSpotCheckItem?: boolean;
 }
 
 export interface SavePrepItem {
@@ -1734,17 +1823,52 @@ export class CostingApi {
     return this.http.post<Supplier>(`/api/inventory/suppliers/${id}/restore`, {});
   }
 
-  // Null for a count not saved yet (404, and only 404).
-  stockCount(id: string): Observable<StockCount | null> {
-    return this.http.get<StockCount>(`/api/inventory/stock-counts/${id}`).pipe(
+  // Null for a count not saved yet (404, and only 404). Blind: the records' figures and the costs
+  // left out (a storekeeper's are, whatever is asked).
+  stockCount(id: string, blind = false): Observable<StockCount | null> {
+    return this.http.get<StockCount>(`/api/inventory/stock-counts/${id}`, { params: blind ? { blind: 'true' } : {} }).pipe(
       catchError((error: unknown) => (error instanceof HttpErrorResponse && error.status === 404 ? of(null) : throwError(() => error))),
     );
   }
 
-  // The whole list each time: a material left out is not counted.
-  // Kind: periodic or opening stock, as it starts or changed while a draft.
-  saveStockCount(id: string, lines: { rawMaterialId: string; countedQuantity: number }[], kind?: StockCountKind): Observable<StockCount> {
-    return this.http.put<StockCount>(`/api/inventory/stock-counts/${id}`, kind ? { lines, kind } : { lines });
+  // The whole list each time: a material left out is not counted; each line with its note.
+  // Kind: periodic or opening stock, as it starts or changed while a draft. Scope: a spot count's,
+  // as it starts.
+  saveStockCount(
+    id: string,
+    lines: { rawMaterialId: string; countedQuantity: number; note?: string | null }[],
+    kind?: StockCountKind,
+    scope?: CountScopeInput,
+    blind = false,
+  ): Observable<StockCount> {
+    return this.http.put<StockCount>(`/api/inventory/stock-counts/${id}`, { lines, ...(kind ? { kind } : {}), ...(scope ?? {}) }, {
+      params: blind ? { blind: 'true' } : {},
+    });
+  }
+
+  // Handed in for a manager or cost controller to reconcile and post.
+  submitStockCount(id: string, blind = false): Observable<StockCount> {
+    return this.http.post<StockCount>(`/api/inventory/stock-counts/${id}/submit`, {}, { params: blind ? { blind: 'true' } : {} });
+  }
+
+  // Lines sent back to be weighed again (مطلوب إعادة جرد), with a note.
+  requestRecount(id: string, rawMaterialIds: string[], note: string | null): Observable<StockCount> {
+    return this.http.post<StockCount>(`/api/inventory/stock-counts/${id}/recount`, { rawMaterialIds, note });
+  }
+
+  // Every material and prep item a count sheet lists, with nothing of its stock or cost.
+  countItems(): Observable<CountItem[]> {
+    return this.http.get<CountItem[]>('/api/inventory/stock-counts/items');
+  }
+
+  // A spot count's ready lists: daily critical, class A, high variance, each category.
+  countPresets(): Observable<CountPresets> {
+    return this.http.get<CountPresets>('/api/costing/count-presets');
+  }
+
+  // Starred, or not, as a daily critical item.
+  setSpotCheck(id: string, isSpotCheckItem: boolean): Observable<{ isSpotCheckItem: boolean }> {
+    return this.http.put<{ isSpotCheckItem: boolean }>(`/api/inventory/raw-materials/${id}/spot-check`, { isSpotCheckItem });
   }
 
   postStockCount(id: string): Observable<StockCount> {

@@ -225,8 +225,11 @@ public class CostingTests
         var draft = Guid.NewGuid();
         var saved = await node.Send(new SaveStockCountCommand(draft, [new(oil, 15_000)], "Omar"));
         Assert.Equal((StockCountStatus.Draft, "Omar"), (saved.Status, saved.StartedBy));
-        // A draft does not show what the records expect: the counter counts the shelf.
-        Assert.Null(Assert.Single(saved.Lines).BookQuantity);
+        // Whoever reconciles sees the records' live figure beside the draft; a blind count does not:
+        // the counter counts the shelf.
+        Assert.Equal(20_000m, Assert.Single(saved.Lines).BookQuantity);
+        var blind = await node.Send(new SaveStockCountCommand(draft, [new(oil, 15_000)], "Omar", Blind: true));
+        Assert.Equal((null, null), (Assert.Single(blind.Lines).BookQuantity, Assert.Single(blind.Lines).UnitCost));
 
         // A second count while this one is open is refused, naming it.
         var second = await Assert.ThrowsAsync<DomainException>(() => node.Send(new SaveStockCountCommand(Guid.NewGuid(), [], "Sara")));

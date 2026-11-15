@@ -148,6 +148,11 @@ const unitGroups: Record<UnitOfMeasure, string> = { Gram: 'Weight · وزن', Mi
                 <td class="num">{{ m.stockValue === null ? '' : (m.stockValue | money) }}</td>
                 <td class="num">{{ m.lastPurchaseCostPerPurchaseUnit === null ? '' : (m.lastPurchaseCostPerPurchaseUnit | money) }}</td>
                 <td class="num actions" (click)="$event.stopPropagation()">
+                  <button mat-icon-button class="star" [class.on]="m.isSpotCheckItem" (click)="toggleSpotCheck(m)" [attr.aria-pressed]="!!m.isSpotCheckItem"
+                    [matTooltip]="m.isSpotCheckItem ? 'Daily critical item: counted every day · صنف جرد يومي' : 'Count every day · إضافة لأصناف الجرد اليومي'"
+                    [attr.aria-label]="'Daily critical item: ' + m.name">
+                    <mat-icon>{{ m.isSpotCheckItem ? 'star' : 'star_border' }}</mat-icon>
+                  </button>
                   <button mat-icon-button (click)="stockCard(m)" matTooltip="Stock card · كارتة الصنف" [attr.aria-label]="'Stock card of ' + m.name">
                     <mat-icon>receipt_long</mat-icon>
                   </button>
@@ -173,6 +178,13 @@ const unitGroups: Record<UnitOfMeasure, string> = { Gram: 'Weight · وزن', Mi
   `,
   styleUrl: './costing.scss',
   styles: `
+    .star {
+      color: var(--mat-sys-on-surface-variant);
+
+      &.on {
+        color: #d97706;
+      }
+    }
     .danger {
       color: var(--mat-sys-error);
     }
@@ -281,6 +293,19 @@ export class MaterialsPage {
 
   protected pendingOf(material: MaterialCost): ApprovalRequest | undefined {
     return this.approvals.pendingFor(material.id);
+  }
+
+  // Starred, or not, as a daily critical item (جرد يومي سريع): the spot count of the daily critical
+  // items takes it. A flag; no stock moves.
+  protected async toggleSpotCheck(material: MaterialCost): Promise<void> {
+    const next = !material.isSpotCheckItem;
+    try {
+      const saved = await firstValueFrom(this.api.setSpotCheck(material.id, next));
+      this.materials.update((all) => all.map((x) => (x.id === material.id ? { ...x, isSpotCheckItem: saved.isSpotCheckItem } : x)));
+      this.notify.info(saved.isSpotCheckItem ? `${material.name} is counted every day now. · أُضيف للجرد اليومي.` : `${material.name} is off the daily count. · أُزيل من الجرد اليومي.`);
+    } catch (error) {
+      this.notify.error(error, 'The daily count could not be changed.');
+    }
   }
 
   // Every movement of its stock, the balance and the average after each, each opening its record.

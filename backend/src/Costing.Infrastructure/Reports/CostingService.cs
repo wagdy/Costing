@@ -56,7 +56,9 @@ public sealed record MaterialCostDto(
     decimal? RecipeCostPerUnit = null,
     bool CostedByRecipe = false,
     // Costed by its recipe: what has no price inside it ("Cream", "Alfredo base: Cream").
-    IReadOnlyList<string>? RecipeCostMissing = null);
+    IReadOnlyList<string>? RecipeCostMissing = null,
+    // Counted every day, in the daily critical items' spot count.
+    bool IsSpotCheckItem = false);
 
 // One line of the Recipe Costing Template. Quantity is the Edible Portion (EP) for the whole
 // recipe in the material's Unit; APS/Unit and EPS/Unit are per PurchaseUnit, as prices are written.
@@ -222,7 +224,7 @@ public sealed partial class CostingService(CostingDbContext db, IBusinessCalenda
                 Money(m.AverageCost * Math.Max(m.QuantityOnHand, 0)),
                 Money(last?.UnitCost * m.PurchaseUnitSize), last?.OccurredAtUtc, m.AverageCost, m.Kind, m.CategoryId,
                 categories.GetValueOrDefault(m.CategoryId)?.Kind == CategoryKind.Expenses, costs.Of(m.Id).PerUnit, costs.Of(m.Id).ByRecipe,
-                costs.Of(m.Id).ByRecipe ? costs.Of(m.Id).Missing : []);
+                costs.Of(m.Id).ByRecipe ? costs.Of(m.Id).Missing : [], m.IsSpotCheckItem);
         }).ToList();
     }
 
