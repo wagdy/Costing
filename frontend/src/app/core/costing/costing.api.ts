@@ -211,6 +211,10 @@ export interface RecipeCostCard {
   recipeCategoryId: string | null;
   recipeCategory: string | null;
   recipeCategoryAr: string | null;
+  // The kitchen's minutes for one plate (null: the ordinary 10) and how hard they are: what the
+  // burdened plate cost shares the labor by.
+  prepTimeMinutes?: number | null;
+  complexityWeight?: number;
 }
 
 // The kitchen's own grouping of its recipes: Sauces, Staff meals, Catering orders.
@@ -234,6 +238,9 @@ export interface SaveRecipe {
   variantId: number | null;
   portions: number;
   ingredients: RecipeLine[];
+  // Sent together; without the complexity, neither changes.
+  prepTimeMinutes?: number | null;
+  complexityWeight?: number;
 }
 
 export interface TheoreticalCostRow {
@@ -316,6 +323,16 @@ export interface CostingSettings {
   varianceTolerancePercent?: number | null;
   // Menu categories that are drinks: the beverage cost %. None, everything is food.
   beverageCategories?: string[] | null;
+  // The fully burdened plate cost's, saved together.
+  plateCost?: PlateCostSettings | null;
+}
+
+export interface PlateCostSettings {
+  defaultOverheadAllocationMethod: 'ActivityBasedPrepTime' | 'ByQuantitySold' | 'ByRevenueShare';
+  targetNetMarginPercent: number;
+  // A month's stand-in labor and overheads before its payroll and bills are in; null: none.
+  fallbackMonthlyLaborCost: number | null;
+  fallbackMonthlyOverheadCost: number | null;
 }
 
 export type KpiKey =
@@ -1018,6 +1035,9 @@ export interface PrepItem {
   recipeCategoryId: string | null;
   // Counted every day: in the daily critical items' spot count (جرد يومي سريع).
   isSpotCheckItem?: boolean;
+  // A batch's prep time (null: the ordinary 10 minutes) and how hard it is.
+  prepTimeMinutes?: number | null;
+  complexityWeight?: number;
 }
 
 export interface SavePrepItem {
@@ -1031,6 +1051,9 @@ export interface SavePrepItem {
   displayUnit: string;
   displayUnitSize: number;
   reorderLevel: number;
+  // A batch's prep time and complexity, sent together; without the complexity, neither changes.
+  prepTimeMinutes?: number | null;
+  complexityWeight?: number;
   // For a request: made here, so a retry is recorded once; and why, for the manager.
   requestId?: string;
   reason?: string | null;

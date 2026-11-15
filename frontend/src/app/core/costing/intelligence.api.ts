@@ -293,6 +293,125 @@ export const menuClassLabels: Record<MenuClass, { en: string; ar: string; icon: 
   Dog: { en: 'Dogs', ar: 'الأصناف الضعيفة', icon: 'trending_down', action: 'Rework or remove', actionAr: 'أعد تصميمها أو احذفها' },
 };
 
+// The fully burdened plate cost (التكلفة الكلية للطبق): each dish's food, its share of the period's
+// labor and overheads, and what is left of its price.
+export type OverheadAllocationMethod = 'ActivityBasedPrepTime' | 'ByQuantitySold' | 'ByRevenueShare';
+export type PoolSource = 'Actual' | 'Simulated';
+export type PlateStatus = 'Healthy' | 'Thin' | 'Losing' | 'NoRecipe' | 'NoPrice' | 'NotAllocated';
+
+export const allocationMethodLabels: Record<OverheadAllocationMethod, { en: string; ar: string; icon: string }> = {
+  ActivityBasedPrepTime: { en: 'Activity-based (prep time)', ar: 'حسب وقت التحضير', icon: 'timer' },
+  ByQuantitySold: { en: 'Equal per plate', ar: 'بالتساوي للطبق', icon: 'restaurant' },
+  ByRevenueShare: { en: 'By revenue %', ar: 'بنسبة الإيراد', icon: 'percent' },
+};
+
+export const plateStatusLabels: Record<PlateStatus, { en: string; ar: string }> = {
+  Healthy: { en: 'Healthy net margin', ar: 'ربح صافي جيد' },
+  Thin: { en: 'Thin margin', ar: 'هامش ضعيف' },
+  Losing: { en: 'Losing after overhead', ar: 'خاسر بعد التحميل' },
+  NoRecipe: { en: 'No recipe', ar: 'بدون وصفة' },
+  NoPrice: { en: 'No price', ar: 'بدون سعر' },
+  NotAllocated: { en: 'Nothing sold to share over', ar: 'لا مبيعات للتحميل' },
+};
+
+export interface CostPoolPart {
+  key: string;
+  label: string;
+  labelAr: string;
+  amount: number;
+}
+
+export interface CostPool {
+  total: number;
+  parts: CostPoolPart[];
+  // Months with nothing recorded that took the cost settings' stand-in figure.
+  standInMonths: string[];
+}
+
+export interface BurdenedPlateRow {
+  itemCode: string;
+  menuItemId: number | null;
+  variantId: number | null;
+  recipeId: string | null;
+  dish: string;
+  dishAr: string | null;
+  category: string | null;
+  onMenu: boolean;
+  quantitySold: number;
+  // Not sold in the period: what a plate of it would carry.
+  estimated: boolean;
+  sellingPrice: number | null;
+  prepTimeMinutes: number | null;
+  complexityWeight: number;
+  weightedMinutes: number;
+  prepTimeAssumed: boolean;
+  directFoodCost: number | null;
+  foodCostPercent: number | null;
+  allocatedLaborCost: number | null;
+  laborCostPercent: number | null;
+  primeCost: number | null;
+  primeCostPercent: number | null;
+  allocatedOverheadCost: number | null;
+  overheadCostPercent: number | null;
+  fullyBurdenedCost: number | null;
+  fullyBurdenedCostPercent: number | null;
+  trueNetProfitPerPlate: number | null;
+  trueNetMarginPercent: number | null;
+  totalPeriodNetProfit: number | null;
+  suggestedPriceForTargetNetMargin: number | null;
+  bleedingAfterOverhead: boolean;
+  missingPrices: boolean;
+  status: PlateStatus;
+}
+
+export interface BurdenedCostReport {
+  from: string;
+  to: string;
+  days: number;
+  method: OverheadAllocationMethod;
+  source: PoolSource;
+  targetNetMarginPercent: number;
+  labor: CostPool;
+  overhead: CostPool;
+  platesSold: number;
+  sales: number;
+  laborPerPlate: number | null;
+  laborPerRevenue: number | null;
+  laborPerWeightedMinute: number | null;
+  overheadPerPlate: number | null;
+  overheadPerRevenue: number | null;
+  laborAllocated: number;
+  averageLaborPerPlate: number | null;
+  overheadAllocated: number;
+  averageOverheadPerPlate: number | null;
+  averageFullyBurdenedCostPercent: number | null;
+  averageTrueNetMarginPercent: number | null;
+  totalPeriodNetProfit: number;
+  dishesBleeding: number;
+  rows: BurdenedPlateRow[];
+  categories: string[];
+}
+
+// One recipe's plate for its card: this month so far, as the cost settings share it.
+export interface BurdenedRecipeCost {
+  from: string;
+  to: string;
+  method: OverheadAllocationMethod;
+  targetNetMarginPercent: number;
+  platesSold: number;
+  plate: BurdenedPlateRow | null;
+}
+
+// What the report is asked for: the days, how to share, and the actual pools or monthly figures.
+export interface BurdenedCostQuery {
+  from: string;
+  to: string;
+  method: OverheadAllocationMethod | null;
+  source: PoolSource;
+  monthlyLabor?: number | null;
+  monthlyOverhead?: number | null;
+}
+
 // Filtering a sheet as the screen does: one category, one supplier, the words typed.
 export interface PriceSheetFilter {
   categoryId?: string | null;
@@ -348,6 +467,29 @@ export class IntelligenceApi {
   menuEngineeringSheet(from: string, to: string, category: string | null = null): Observable<Blob> {
     return this.http.get('/api/costing/intelligence/menu-engineering/sheet', { params: menuParams(from, to, category), responseType: 'blob' });
   }
+
+  burdenedCosts(query: BurdenedCostQuery): Observable<BurdenedCostReport> {
+    return this.http.get<BurdenedCostReport>('/api/costing/intelligence/burdened-costs', { params: burdenedParams(query) });
+  }
+
+  burdenedCostsSheet(query: BurdenedCostQuery): Observable<Blob> {
+    return this.http.get('/api/costing/intelligence/burdened-costs/sheet', { params: burdenedParams(query), responseType: 'blob' });
+  }
+
+  // A recipe's plate, for the box on its card.
+  recipeBurdenedCost(recipeId: string): Observable<BurdenedRecipeCost> {
+    return this.http.get<BurdenedRecipeCost>(`/api/costing/recipes/${recipeId}/burdened`);
+  }
+}
+
+function burdenedParams(query: BurdenedCostQuery): Record<string, string> {
+  const params: Record<string, string> = { from: query.from, to: query.to, source: query.source };
+  if (query.method) params['method'] = query.method;
+  if (query.source === 'Simulated') {
+    if (query.monthlyLabor !== null && query.monthlyLabor !== undefined) params['monthlyLabor'] = String(query.monthlyLabor);
+    if (query.monthlyOverhead !== null && query.monthlyOverhead !== undefined) params['monthlyOverhead'] = String(query.monthlyOverhead);
+  }
+  return params;
 }
 
 function menuParams(from: string, to: string, category: string | null): Record<string, string> {

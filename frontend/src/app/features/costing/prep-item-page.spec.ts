@@ -232,6 +232,9 @@ describe('a prep item', () => {
       displayUnit: 'kg',
       displayUnitSize: 1000,
       reorderLevel: 2_500,
+      // A batch's minutes: the ordinary 10 until set.
+      prepTimeMinutes: 10,
+      complexityWeight: 1,
       requestId: expect.any(String),
     });
     expect(navigate).toHaveBeenCalledWith(['/costing/recipes/prep', 'new-dough'], { replaceUrl: true });

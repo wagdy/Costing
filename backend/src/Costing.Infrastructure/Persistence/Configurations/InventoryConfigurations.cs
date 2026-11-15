@@ -58,6 +58,10 @@ internal sealed class RecipeConfiguration : IEntityTypeConfiguration<Recipe>
         builder.Property(r => r.TargetKind).HasConversion<string>().HasMaxLength(32);
         builder.Property(r => r.DeletedBy).HasMaxLength(200);
         builder.Property(r => r.Portions).HasDefaultValue(1);
+        // Null is the ordinary 10 minutes, so it has no database default to stand in for it.
+        builder.Property(r => r.PrepTimeMinutes).HasPrecision(6, 2);
+        builder.Property(r => r.ComplexityWeight).HasPrecision(6, 2).HasDefaultValue(PlateActivity.DefaultComplexityWeight);
+        builder.Ignore(r => r.Activity);
 
         // One active recipe per target; deleted and off-menu ones are left out. NULLS NOT
         // DISTINCT because VariantId is null for a base recipe and an add-on, and PostgreSQL
@@ -402,6 +406,9 @@ internal sealed class PrepRecipeConfiguration : IEntityTypeConfiguration<PrepRec
         builder.HasMany(r => r.Ingredients).WithOne().HasForeignKey(i => i.PrepRecipeId).OnDelete(DeleteBehavior.Cascade);
         builder.Navigation(r => r.Ingredients).HasField("_ingredients").UsePropertyAccessMode(PropertyAccessMode.Field);
         builder.HasOne<RecipeCategory>().WithMany().HasForeignKey(r => r.RecipeCategoryId).OnDelete(DeleteBehavior.SetNull);
+        builder.Property(r => r.PrepTimeMinutes).HasPrecision(6, 2);
+        builder.Property(r => r.ComplexityWeight).HasPrecision(6, 2).HasDefaultValue(PlateActivity.DefaultComplexityWeight);
+        builder.Ignore(r => r.Activity);
     }
 }
 

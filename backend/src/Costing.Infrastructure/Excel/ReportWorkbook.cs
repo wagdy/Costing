@@ -1,4 +1,5 @@
 using ClosedXML.Excel;
+using Costing.Domain.Recipes;
 using Costing.Infrastructure.Reports;
 
 namespace Costing.Infrastructure.Excel;
@@ -225,6 +226,78 @@ public static class IntelligenceWorkbooks
                 new ReportRow(["", "", "Total · الإجمالي", null, report.QuantitySold, null, null, null, report.FoodCostPercent, report.AverageContribution,
                     report.TotalContribution, null], ReportRowKind.Total),
             ])]);
+}
+
+// The fully burdened plate cost as two sheets: each dish's food, labor, overheads and true net
+// profit, as the screen shows them; and the pools and the rates they were shared at.
+public static class BurdenedCostWorkbook
+{
+    public static string MethodName(OverheadAllocationMethod method) => method switch
+    {
+        OverheadAllocationMethod.ByQuantitySold => "Equal per plate · بالتساوي للطبق",
+        OverheadAllocationMethod.ByRevenueShare => "By revenue % · بنسبة الإيراد",
+        _ => "Activity-based (prep time) · حسب وقت التحضير",
+    };
+
+    public static string StatusName(PlateStatus status) => status switch
+    {
+        PlateStatus.Healthy => "Healthy net margin · ربح صافي جيد",
+        PlateStatus.Thin => "Thin margin · هامش ضعيف",
+        PlateStatus.Losing => "Losing after overhead · خاسر بعد التحميل",
+        PlateStatus.NoRecipe => "No recipe · بدون وصفة",
+        PlateStatus.NoPrice => "No price · بدون سعر",
+        _ => "Not allocated · غير محمّل",
+    };
+
+    public static Stream Build(BurdenedCostReport report)
+    {
+        var source = report.Source == PoolSource.Simulated ? "simulated monthly labor & overheads" : "actual pools";
+        var plates = new ReportSheet(
+            "Burdened plate cost", "Fully burdened plate cost · التكلفة الكلية للطبق",
+            $"{report.From:d MMM yyyy} – {report.To:d MMM yyyy} · {MethodName(report.Method)} · {source} · prices before VAT · "
+                + $"suggested price at a {report.TargetNetMarginPercent:0.#}% net margin",
+            [
+                new("Code · الكود"), new("Dish · الصنف"), new("Category · القسم"), new("Sold · المباع", ReportWorkbook.Quantity),
+                new("Prep min · دقائق التحضير", "0.##"), new("Selling price · سعر البيع", ReportWorkbook.Money),
+                new("Food cost · الخامات", ReportWorkbook.Money), new("Food % · نسبة الخامات", ReportWorkbook.Percent),
+                new("+ Labor · العمالة", ReportWorkbook.Money), new("Labor % · نسبة العمالة", ReportWorkbook.Percent),
+                new("Prime cost · التكلفة الأولية", ReportWorkbook.Money), new("Prime % · النسبة الأولية", ReportWorkbook.Percent),
+                new("+ Overhead · الإيجار والمرافق والإهلاك", ReportWorkbook.Money), new("Overhead % · نسبة التشغيل", ReportWorkbook.Percent),
+                new("= Fully burdened · التكلفة الكلية", ReportWorkbook.Money), new("Burdened % · النسبة الكلية", ReportWorkbook.Percent),
+                new("True net profit · صافي الربح", ReportWorkbook.Money), new("Net margin % · نسبة صافي الربح", ReportWorkbook.Percent),
+                new("Period net profit · صافي ربح الفترة", ReportWorkbook.Money), new("Suggested price · السعر المقترح", ReportWorkbook.Money),
+                new("Status · الحالة"),
+            ],
+            [
+                .. report.Rows.Select(r => new ReportRow(
+                    [r.ItemCode, r.Estimated ? $"{r.Dish} (not sold: estimated)" : r.Dish, r.Category, r.QuantitySold, r.WeightedMinutes, r.SellingPrice,
+                     r.DirectFoodCost, r.FoodCostPercent, r.AllocatedLaborCost, r.LaborCostPercent, r.PrimeCost, r.PrimeCostPercent,
+                     r.AllocatedOverheadCost, r.OverheadCostPercent, r.FullyBurdenedCost, r.FullyBurdenedCostPercent, r.TrueNetProfitPerPlate,
+                     r.TrueNetMarginPercent, r.TotalPeriodNetProfit, r.SuggestedPriceForTargetNetMargin, StatusName(r.Status)],
+                    Flagged: r.Status == PlateStatus.Losing)),
+                new ReportRow(["", "Plates sold · الأطباق المباعة", null, report.PlatesSold, null, null, null, null, report.AverageLaborPerPlate, null, null, null,
+                    report.AverageOverheadPerPlate, null, null, report.AverageFullyBurdenedCostPercent, null, report.AverageTrueNetMarginPercent,
+                    report.TotalPeriodNetProfit, null, $"{report.DishesBleeding} bleeding after overhead"], ReportRowKind.Total),
+            ]);
+        var pools = new ReportSheet(
+            "Cost pools", "Labor & overhead pools · وعاء العمالة والتشغيل",
+            $"{report.From:d MMM yyyy} – {report.To:d MMM yyyy} · each month spread evenly over its days",
+            [new("Pool · الوعاء"), new("Part · البند"), new("Amount · المبلغ", ReportWorkbook.Money)],
+            [
+                new ReportRow(["Labor · العمالة", null, null], ReportRowKind.Group),
+                .. report.Labor.Parts.Select(p => new ReportRow(["", $"{p.Label} · {p.LabelAr}", p.Amount])),
+                new ReportRow(["", "Labor pool · وعاء العمالة", report.Labor.Total], ReportRowKind.Total),
+                new ReportRow(["Overheads · الإيجار والمرافق والإهلاك", null, null], ReportRowKind.Group),
+                .. report.Overhead.Parts.Select(p => new ReportRow(["", $"{p.Label} · {p.LabelAr}", p.Amount])),
+                new ReportRow(["", "Overhead pool · وعاء التشغيل", report.Overhead.Total], ReportRowKind.Total),
+                new ReportRow(["Allocated · المحمّل", null, null], ReportRowKind.Group),
+                new ReportRow(["", "Labor on the plates sold · العمالة المحملة", report.LaborAllocated]),
+                new ReportRow(["", "Overheads on the plates sold · التشغيل المحمّل", report.OverheadAllocated]),
+                new ReportRow(["", "Plates sold · الأطباق المباعة", report.PlatesSold]),
+                new ReportRow(["", "Sales before VAT · المبيعات قبل الضريبة", report.Sales]),
+            ]);
+        return ReportWorkbook.Build([plates, pools]);
+    }
 }
 
 // A material's stock card as a sheet: the period's movements as the screen lists them, its balance

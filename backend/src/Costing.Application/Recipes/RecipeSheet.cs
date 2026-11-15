@@ -26,11 +26,13 @@ namespace Costing.Application.Recipes;
 // whole, and each such row said why in English and Arabic: never half its ingredients. Nothing on
 // the sheet is a cost: what each recipe costs is worked out from its ingredients' prices now.
 
-public sealed record RecipeSheetRow(int Row, string? Item, string? Ingredient, string? Quantity, string? Portions = null, string? Category = null);
+public sealed record RecipeSheetRow(
+    int Row, string? Item, string? Ingredient, string? Quantity, string? Portions = null, string? Category = null, string? PrepTime = null);
 
 // One row written out: the recipe as the sheet names it, an ingredient by its label, the quantity
-// in that ingredient's unit; the portions and category on a recipe's first row.
-public sealed record RecipeSheetLine(string Item, string Ingredient, decimal Quantity, int? Portions, string? Category);
+// in that ingredient's unit; the portions, category and prep time for one plate on a recipe's
+// first row (the prep time blank when it is the ordinary 10 minutes by default).
+public sealed record RecipeSheetLine(string Item, string Ingredient, decimal Quantity, int? Portions, string? Category, decimal? PrepTimeMinutes = null);
 
 // What the sheet is written from: its rows, and its dropdowns' lists (the recipes and menu items,
 // the ingredients with their units, the kitchen's recipe categories).
@@ -146,7 +148,8 @@ internal sealed class GetRecipeSheetHandler(
                 lines.Add(new RecipeSheetLine(
                     name, lookup.LabelOf(material), SheetNumbers.InSheetUnit(ingredient.Quantity, material.Unit),
                     first ? recipe.Portions : null,
-                    first && recipe.RecipeCategoryId is { } category ? categoryNames.GetValueOrDefault(category) : null));
+                    first && recipe.RecipeCategoryId is { } category ? categoryNames.GetValueOrDefault(category) : null,
+                    first ? recipe.PrepTimeMinutes : null));
                 first = false;
             }
         }
@@ -282,6 +285,18 @@ internal sealed class ImportRecipesHandler(
                 }
                 portions = (int)p;
             }
+            // Its prep time for one plate, in minutes, from any of its rows: blank leaves it as it is.
+            var prepText = group.Rows.Select(r => SheetText.Clean(r.PrepTime)).FirstOrDefault(p => p is not null);
+            decimal? prepTime = null;
+            if (prepText is not null)
+            {
+                if (SheetText.Amount(prepText) is not { } minutes || minutes < 0 || minutes > PlateActivity.MaxPrepTimeMinutes)
+                {
+                    Skip($"\"{prepText}\" is not a prep time: minutes for one plate, 0 to 1,440.", $"\"{prepText}\" ليس وقت تحضير: دقائق للطبق من 0 إلى 1440.");
+                    continue;
+                }
+                prepTime = Math.Round(minutes, 2, MidpointRounding.AwayFromZero);
+            }
             var categoryName = group.Rows.Select(r => SheetText.Clean(r.Category)).FirstOrDefault(c => c is not null);
             if (categoryName?.Length > 100)
             {
@@ -347,6 +362,8 @@ internal sealed class ImportRecipesHandler(
                 else
                     offMenu[SheetText.Key(group.Name)] = recipe;
                 await recipe.WriteAsync(materials, ingredients, portionsNow, cancellationToken);
+                if (prepTime is { } minutes)
+                    recipe.SetActivity(recipe.Activity with { PrepTimeMinutes = minutes });
                 created.Add(new ImportedSheetItem(group.Row, recipe.Id, group.Name));
             }
             else
@@ -357,6 +374,11 @@ internal sealed class ImportRecipesHandler(
                     changes.Add("Ingredients");
                 if (portionsNow != recipe.Portions)
                     changes.Add("Portions");
+                if (prepTime is { } minutes && minutes != recipe.PrepTimeMinutes)
+                {
+                    recipe.SetActivity(recipe.Activity with { PrepTimeMinutes = minutes });
+                    changes.Add("Prep time");
+                }
                 if (category is not null && category.Id != recipe.RecipeCategoryId)
                 {
                     recipe.MoveTo(category.Id);

@@ -171,6 +171,54 @@ public sealed class RecipeCosts
 ```
 
 
+### 1.5.1 وقت التحضير ومعامل الصعوبة (`PlateActivity`)
+
+لكل وصفة **وقت تحضير للطبق الواحد** بالدقائق (`PrepTimeMinutes`: من 0 إلى 1440، وفارغ = الدقائق العشر المعتادة) و **معامل صعوبة** (`ComplexityWeight`: 1 دقيقة عادية، من 0.1 إلى 10)؛ وللمصنّع مثلهما لكل **تشغيلة**. هذه هي "محركات التكلفة" التي يوزع بها محرك التكلفة الكلية (الفصل 06) أجور المطبخ على الأطباق. القيمة الجديدة تبدأ بعشر دقائق، والهجرة `AddBurdenedPlateCost` تضع 10 لما كُتب قبلها. الحفظ يحمل `PlateActivity` اختياريًا: إن لم يُرسَل (استيراد إكسل بلا العمود، أو الكاشير) بقيت القيم كما هي.
+
+> 📄 **`backend/src/Costing.Domain/Recipes/PlateActivity.cs`** — 38 سطر
+
+```csharp
+using Costing.Domain.Common;
+
+namespace Costing.Domain.Recipes;
+
+// What a plate, or a batch of a prep item, takes of the kitchen's time (معامل وقت وصعوبة التحضير):
+// the minutes of work, and how hard that work is against an ordinary minute. The burdened plate
+// cost shares the period's labor by them, activity-based: a dish that takes twenty minutes of a
+// chef carries more of the wages than a juice poured in one.
+//
+// PrepTimeMinutes: for one plate of a dish; for one batch of a prep item. Null until it is set: the
+// kitchen's ordinary 10 minutes stands in. ComplexityWeight: 1 is an ordinary minute; 1.5 a minute
+// of skilled work (a grill station), 0.5 a minute of simple assembly.
+public sealed record PlateActivity(decimal? PrepTimeMinutes, decimal ComplexityWeight)
+{
+    public const decimal DefaultPrepTimeMinutes = 10;
+    public const decimal DefaultComplexityWeight = 1;
+    public const decimal MaxPrepTimeMinutes = 24 * 60;
+    public const decimal MinComplexityWeight = 0.1m;
+    public const decimal MaxComplexityWeight = 10;
+
+    public static readonly PlateActivity Default = new(DefaultPrepTimeMinutes, DefaultComplexityWeight);
+
+    // The minutes counted: as set, or the ordinary 10 when not.
+    public decimal Minutes => PrepTimeMinutes ?? DefaultPrepTimeMinutes;
+
+    // Minutes weighed by how hard they are: what the labor is shared by.
+    public decimal WeightedMinutes => Minutes * ComplexityWeight;
+
+    public static PlateActivity Checked(decimal? prepTimeMinutes, decimal complexityWeight)
+    {
+        if (prepTimeMinutes is < 0 or > MaxPrepTimeMinutes)
+            throw new DomainException("The prep time is minutes between 0 and 1,440 (a day). · وقت التحضير بالدقائق بين 0 و1440.");
+        if (complexityWeight is < MinComplexityWeight or > MaxComplexityWeight)
+            throw new DomainException("The complexity weight is between 0.1 and 10: 1 is an ordinary minute. · معامل الصعوبة بين 0.1 و10.");
+        return new PlateActivity(prepTimeMinutes is { } m ? Math.Round(m, 2, MidpointRounding.AwayFromZero) : null,
+            Math.Round(complexityWeight, 2, MidpointRounding.AwayFromZero));
+    }
+}
+```
+
+
 ### 1.6 تفجير الخامات (`MaterialExplosion`: Bill of Materials)
 
 السؤال: "كم دقيقًا **مشترًى** في 1 جم من البيتزا النهائية؟" مطلوب لمخطط الطلبيات والاستهلاك النظري (الفصل 06). `PerUnit(materialId)` تعيد قاموسًا: لكل خامة مشتراة، كم وحدة منها في وحدة واحدة من المادة، نزولًا عبر المصنعات:
@@ -1557,7 +1605,7 @@ internal sealed class RestoreExpenseItemHandler(
 
 `Recipes.cs`: `SetRecipeCommand` (وصفة طبق: المكونات بـ EP والـ Yield، الحصص، الفئة، والهدف في المنيو)، الحذف كعلامة (`DeletedAtUtc`) والاستعادة. وصفة فعّالة واحدة لكل هدف (فهرس فريد، الفصل 02).
 
-> 📄 **`backend/src/Costing.Application/Recipes/Recipes.cs`** — 218 سطر
+> 📄 **`backend/src/Costing.Application/Recipes/Recipes.cs`** — 226 سطر
 
 ```csharp
 using MediatR;
@@ -1585,7 +1633,9 @@ public sealed record RecipeDto(
     int? VariantId,
     IReadOnlyList<RecipeIngredientDto> Ingredients,
     int Portions,
-    bool IsDeleted)
+    bool IsDeleted,
+    decimal? PrepTimeMinutes = PlateActivity.DefaultPrepTimeMinutes,
+    decimal ComplexityWeight = PlateActivity.DefaultComplexityWeight)
 {
     public static RecipeDto From(Recipe recipe) => new(
         recipe.Id,
@@ -1597,7 +1647,9 @@ public sealed record RecipeDto(
         recipe.VariantId,
         recipe.Ingredients.Select(i => new RecipeIngredientDto(i.RawMaterialId, i.Quantity, i.YieldPercent)).ToList(),
         recipe.Portions,
-        recipe.IsDeleted);
+        recipe.IsDeleted,
+        recipe.PrepTimeMinutes,
+        recipe.ComplexityWeight);
 }
 
 internal static class RecipeWriting
@@ -1703,7 +1755,9 @@ public sealed record SaveRecipeCommand(
     int Portions,
     IReadOnlyList<RecipeIngredientDto> Ingredients,
     Guid? RecipeCategoryId = null,
-    decimal? PlannedPrice = null) : IRequest<RecipeDto>;
+    decimal? PlannedPrice = null,
+    // Its prep time and complexity (معامل وقت وصعوبة التحضير); none keeps them as they are.
+    PlateActivity? Activity = null) : IRequest<RecipeDto>;
 
 internal sealed class SaveRecipeHandler(
     IRecipeRepository recipes,
@@ -1743,6 +1797,8 @@ internal sealed class SaveRecipeHandler(
         }
 
         await recipe.WriteAsync(materials, request.Ingredients, request.Portions, cancellationToken);
+        if (request.Activity is { } activity)
+            recipe.SetActivity(activity);
         await unitOfWork.SaveChangesAsync(cancellationToken);
         return RecipeDto.From(recipe);
     }
@@ -2062,7 +2118,7 @@ internal sealed class AddRecipesToMenuHandler(IRecipeRepository recipes, IMenuRe
 
 المصنّع **خامة من نوع `Prep`** لها وصفة دفعة. القائمة تعرض: تكلفته بوصفته بأسعار اليوم (`RecipeCosts`)، وتكلفة الدفعات الموجودة على الرف (المتوسط)، والرصيد. التعديل للمدير، وغيره يطلب (`RequestPrepItemChangeCommand`).
 
-> 📄 **`backend/src/Costing.Application/Production/PrepItems.cs`** — 481 سطر
+> 📄 **`backend/src/Costing.Application/Production/PrepItems.cs`** — 500 سطر
 
 ```csharp
 using System.Globalization;
@@ -2134,7 +2190,10 @@ public sealed record PrepItemDto(
     // The kitchen's recipe category it is sorted under; none when not given one.
     Guid? RecipeCategoryId = null,
     // Counted every day, in the daily critical items' spot count.
-    bool IsSpotCheckItem = false);
+    bool IsSpotCheckItem = false,
+    // A batch's prep time (null: the ordinary 10 minutes) and complexity.
+    decimal? PrepTimeMinutes = PlateActivity.DefaultPrepTimeMinutes,
+    decimal ComplexityWeight = PlateActivity.DefaultComplexityWeight);
 
 public sealed record PrepIngredientEntry(Guid RawMaterialId, decimal Quantity, decimal? YieldPercent = null);
 
@@ -2200,7 +2259,9 @@ internal static class PrepItemCosting
             orders.Where(o => o.PrepItemId == item.Id).Select(o => ProductionOrderDto.From(o, materials)).ToList(),
             item.CategoryId,
             recipe?.RecipeCategoryId,
-            item.IsSpotCheckItem);
+            item.IsSpotCheckItem,
+            recipe is null ? PlateActivity.DefaultPrepTimeMinutes : recipe.PrepTimeMinutes,
+            recipe?.ComplexityWeight ?? PlateActivity.DefaultComplexityWeight);
     }
 
     // Would `prepItemId` end up made from itself, through the ingredients given and the other
@@ -2287,7 +2348,9 @@ public sealed record PrepItemChange(
     string? DisplayUnit = null,
     decimal? DisplayUnitSize = null,
     decimal ReorderLevel = 0,
-    Guid? RecipeCategoryId = null);
+    Guid? RecipeCategoryId = null,
+    // A batch's prep time and complexity (معامل وقت وصعوبة التحضير); none keeps them as they are.
+    PlateActivity? Activity = null);
 
 // Saves prep items, for a manager's own save and for an approval alike; checks and describes one
 // asked for without changing anything.
@@ -2332,6 +2395,8 @@ internal sealed class PrepItemWriter(
             recipe.SetBatch(change.BatchQuantity);
         recipe.Replace(ingredients);
         recipe.MoveTo(change.RecipeCategoryId);
+        if (change.Activity is { } activity)
+            recipe.SetActivity(activity);
         all[item.Id] = item;
         return (item, recipe, category);
     }
@@ -2355,6 +2420,8 @@ internal sealed class PrepItemWriter(
         if (PrepItemCosting.Loop(copy.Id, ingredients.Select(i => i.Material.Id), await recipes.GetAllAsync(cancellationToken), all) is { } through)
             throw new DomainException($"{through} is made with {copy.Name}, so {copy.Name} cannot be made with {through}.");
         new PrepRecipe(copy, change.BatchQuantity).Replace(ingredients);
+        if (change.Activity is { } activity)
+            PlateActivity.Checked(activity.PrepTimeMinutes, activity.ComplexityWeight);
     }
 
     // What a request would add, or change against the prep item as it is, line by line.
@@ -2395,6 +2462,13 @@ internal sealed class PrepItemWriter(
             PrepItemCosting.Amount(change.BatchQuantity, size, unit));
         Add("Reorder below", existing is null ? null : PrepItemCosting.Amount(existing.ReorderLevel, existing),
             existing is null && change.ReorderLevel == 0 ? null : PrepItemCosting.Amount(change.ReorderLevel, size, unit));
+        if (change.Activity is { } activity)
+        {
+            static string Minutes(PlateActivity a) =>
+                (a.PrepTimeMinutes is { } m ? $"{m.ToString("0.##", CultureInfo.InvariantCulture)} min a batch" : "10 min a batch (ordinary)")
+                + (a.ComplexityWeight == 1 ? "" : $" × {a.ComplexityWeight.ToString("0.##", CultureInfo.InvariantCulture)}");
+            Add("Prep time", recipe is null ? null : Minutes(recipe.Activity), Minutes(activity));
+        }
 
         var before = recipe?.Ingredients.ToDictionary(i => i.RawMaterialId, i => Line(i.RawMaterialId, i.Quantity, i.YieldPercent)) ?? [];
         var after = change.Ingredients.ToDictionary(i => i.RawMaterialId, i => Line(i.RawMaterialId, i.Quantity, i.YieldPercent));
@@ -2487,10 +2561,11 @@ public sealed record SavePrepItemCommand(
     string? DisplayUnit = null,
     decimal? DisplayUnitSize = null,
     decimal ReorderLevel = 0,
-    Guid? RecipeCategoryId = null) : IRequest<PrepItemDto>
+    Guid? RecipeCategoryId = null,
+    PlateActivity? Activity = null) : IRequest<PrepItemDto>
 {
     public PrepItemChange Change =>
-        new(Name, Unit, BatchQuantity, Ingredients, Code, CategoryId, DisplayUnit, DisplayUnitSize, ReorderLevel, RecipeCategoryId);
+        new(Name, Unit, BatchQuantity, Ingredients, Code, CategoryId, DisplayUnit, DisplayUnitSize, ReorderLevel, RecipeCategoryId, Activity);
 }
 
 internal sealed class SavePrepItemCommandHandler(
@@ -3372,7 +3447,7 @@ internal sealed class ImportMenuHandler(IMenuRepository menu, IUnitOfWork unitOf
 - **التقرير النظري (`TheoreticalCostReport`):** لكل صنف مُباع في الفترة: الكمية × تكلفة وصفته = تكلفة المبيعات النظرية، مقابل إيراده. (يُستخدم في الـ KPIs والفروقات، الفصل 06.)
 - **ورقة المبيعات اليدوية** والإعدادات (الهدف، التكاليف المشتركة).
 
-> 📄 **`backend/src/Costing.Infrastructure/Reports/CostingService.cs`** — 764 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Reports/CostingService.cs`** — 795 سطر
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
@@ -3494,7 +3569,10 @@ public sealed record RecipeCostCard(
     // The kitchen's own category for it; null until it is sorted.
     Guid? RecipeCategoryId = null,
     string? RecipeCategory = null,
-    string? RecipeCategoryAr = null);
+    string? RecipeCategoryAr = null,
+    // The kitchen's minutes for one plate (null: the ordinary 10) and how hard they are.
+    decimal? PrepTimeMinutes = PlateActivity.DefaultPrepTimeMinutes,
+    decimal ComplexityWeight = PlateActivity.DefaultComplexityWeight);
 
 // Where a theoretical cost report's sales come from: the till's closed orders (and the online ones),
 // or quantities an accountant typed in.
@@ -3561,9 +3639,23 @@ public sealed record ManualSalesSheetDto(int Year, int Month, IReadOnlyList<Manu
 
 public sealed record ManualSalesLineDto(ManualSalesItemKind Kind, Guid ItemId, decimal Quantity);
 
-// VarianceTolerancePercent and BeverageCategories: left out of a save, they stay as they are.
+// VarianceTolerancePercent, BeverageCategories and PlateCost: left out of a save, they stay as they are.
 public sealed record CostingSettingsDto(
-    decimal FoodCostTargetPercent, decimal? VarianceTolerancePercent = null, IReadOnlyList<string>? BeverageCategories = null);
+    decimal FoodCostTargetPercent, decimal? VarianceTolerancePercent = null, IReadOnlyList<string>? BeverageCategories = null,
+    PlateCostSettingsDto? PlateCost = null);
+
+// The fully burdened plate cost's settings, saved together: how labor and overheads are shared
+// unless asked otherwise, the net margin a plate should leave, and the months' stand-in figures
+// (none: no stand-in).
+public sealed record PlateCostSettingsDto(
+    OverheadAllocationMethod DefaultOverheadAllocationMethod,
+    decimal TargetNetMarginPercent,
+    decimal? FallbackMonthlyLaborCost,
+    decimal? FallbackMonthlyOverheadCost)
+{
+    public static PlateCostSettingsDto Of(CostingSettings s) =>
+        new(s.DefaultOverheadAllocationMethod, s.TargetNetMarginPercent, s.FallbackMonthlyLaborCost, s.FallbackMonthlyOverheadCost);
+}
 
 public sealed record SharedCostDto(Guid Id, string Name, Guid? RawMaterialId, string? RawMaterialName, decimal? MonthlyAmount, string? Category);
 
@@ -3610,7 +3702,7 @@ public sealed partial class CostingService(CostingDbContext db, IBusinessCalenda
     public async Task<CostingSettingsDto> GetSettingsAsync(CancellationToken cancellationToken)
     {
         var settings = await SettingsAsync(cancellationToken);
-        return new(settings.FoodCostTargetPercent, settings.VarianceTolerancePercent, settings.BeverageCategories);
+        return new(settings.FoodCostTargetPercent, settings.VarianceTolerancePercent, settings.BeverageCategories, PlateCostSettingsDto.Of(settings));
     }
 
     public async Task<CostingSettingsDto> SaveSettingsAsync(CostingSettingsDto settings, CancellationToken cancellationToken)
@@ -3626,8 +3718,21 @@ public sealed partial class CostingService(CostingDbContext db, IBusinessCalenda
         row.VarianceTolerancePercent = settings.VarianceTolerancePercent ?? row.VarianceTolerancePercent;
         if (settings.BeverageCategories is { } beverages)
             row.BeverageCategories = beverages.Where(c => !string.IsNullOrWhiteSpace(c)).Select(c => c.Trim()).Distinct().ToList();
+        if (settings.PlateCost is { } plate)
+        {
+            if (!Enum.IsDefined(plate.DefaultOverheadAllocationMethod))
+                throw new DomainException("Choose how labor and overheads are shared. · اختر طريقة التحميل.");
+            if (plate.TargetNetMarginPercent is < 0 or >= 100)
+                throw new DomainException("The target net margin is a percentage from 0 to under 100. · نسبة صافي الربح المستهدفة بين 0 و100.");
+            if (plate.FallbackMonthlyLaborCost < 0 || plate.FallbackMonthlyOverheadCost < 0)
+                throw new DomainException("A month's labor or overheads cannot be negative. · المصاريف الشهرية لا تكون سالبة.");
+            row.DefaultOverheadAllocationMethod = plate.DefaultOverheadAllocationMethod;
+            row.TargetNetMarginPercent = plate.TargetNetMarginPercent;
+            row.FallbackMonthlyLaborCost = plate.FallbackMonthlyLaborCost;
+            row.FallbackMonthlyOverheadCost = plate.FallbackMonthlyOverheadCost;
+        }
         await db.SaveChangesAsync(cancellationToken);
-        return new(row.FoodCostTargetPercent, row.VarianceTolerancePercent, row.BeverageCategories);
+        return new(row.FoodCostTargetPercent, row.VarianceTolerancePercent, row.BeverageCategories, PlateCostSettingsDto.Of(row));
     }
 
     public async Task<IReadOnlyList<SharedCostDto>> GetSharedCostsAsync(CancellationToken cancellationToken)
@@ -4011,7 +4116,8 @@ public sealed partial class CostingService(CostingDbContext db, IBusinessCalenda
             Money(perPortion * 100 / data.FoodCostTarget), missing, status,
             recipe?.Id, usesBaseRecipe ? null : recipe?.Name, linkedTo, standalone, recipe?.PlannedPrice, usesBaseRecipe,
             recipe?.IsDeleted ?? false, recipe?.DeletedAtUtc, recipe?.DeletedBy,
-            usesBaseRecipe ? null : own?.Id, usesBaseRecipe ? null : own?.Name, usesBaseRecipe ? null : own?.NameAr);
+            usesBaseRecipe ? null : own?.Id, usesBaseRecipe ? null : own?.Name, usesBaseRecipe ? null : own?.NameAr,
+            recipe is null ? PlateActivity.DefaultPrepTimeMinutes : recipe.PrepTimeMinutes, recipe?.ComplexityWeight ?? PlateActivity.DefaultComplexityWeight);
     }
 
     // One sold line of a settled order in the month, net of refunds, with what its ingredients
@@ -4146,7 +4252,7 @@ public sealed partial class CostingService(CostingDbContext db, IBusinessCalenda
 
 `CostingController` (`api/costing`): التكاليف والتقارير الغذائية (المواد، البطاقات، النظري، الإعدادات، التكاليف المشتركة).
 
-> 📄 **`backend/src/Costing.Api/Controllers/CostingController.cs`** — 214 سطر
+> 📄 **`backend/src/Costing.Api/Controllers/CostingController.cs`** — 222 سطر
 
 ```csharp
 using Microsoft.AspNetCore.Authorization;
@@ -4167,7 +4273,8 @@ namespace Costing.Api.Controllers;
 [Authorize(Policy = Permissions.InventoryView)]
 public sealed class CostingController(
     CostingService costing, VarianceService variance, KpiService kpis, BreakEvenService breakEven, PurchaseSpendingService spending,
-    TreasuryService treasury, StockCardService stockCard, IntelligenceService intelligence, MediatR.ISender sender, Costing.Application.Common.IBusinessCalendar calendar) : ControllerBase
+    TreasuryService treasury, StockCardService stockCard, IntelligenceService intelligence, BurdenedCostService burdened, MediatR.ISender sender,
+    Costing.Application.Common.IBusinessCalendar calendar) : ControllerBase
 {
     // Raw materials with their costs: what each costs per purchase unit, the last price paid, and
     // the stock's value.
@@ -4234,6 +4341,13 @@ public sealed class CostingController(
     [CostingTab(CostingTabs.Recipes | CostingTabs.Menu | CostingTabs.Reports)]
     public Task<RecipeCostCard> GetRecipeCardById(Guid recipeId, CancellationToken cancellationToken) =>
         costing.GetRecipeCardAsync(recipeId, cancellationToken);
+
+    // The recipe's fully burdened plate (التكلفة الكلية شاملة التشغيل), for its card: its food, its
+    // share of this month's labor and overheads so far, as the cost settings share them.
+    [HttpGet("recipes/{recipeId:guid}/burdened")]
+    [CostingTab(CostingTabs.Recipes | CostingTabs.Menu | CostingTabs.Reports | CostingTabs.Intelligence)]
+    public Task<BurdenedRecipeCost> GetRecipeBurdenedCost(Guid recipeId, CancellationToken cancellationToken) =>
+        burdened.GetForRecipeAsync(recipeId, cancellationToken);
 
     // The Monthly Theoretical Cost report for a business month: from the till's sales (Pos, the
     // default), or from the quantities typed in for it (Manual).

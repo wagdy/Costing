@@ -23,6 +23,7 @@ public static class RecipeWorkbook
     public const string QuantityHeader = "Quantity · الكمية";
     public const string PortionsHeader = "Portions · عدد الحصص";
     public const string CategoryHeader = "Recipe Category · قسم الوصفة";
+    public const string PrepTimeHeader = "Prep Time (mins) · وقت التحضير بالدقائق";
 
     private static readonly Column[] Columns =
     [
@@ -35,6 +36,8 @@ public static class RecipeWorkbook
             "Optional, on any of its rows: how many portions the quantities make. Blank: as it was, or 1 for a new recipe.", "0"),
         new("Category", CategoryHeader, ["recipe category", "category", "قسم الوصفة", "القسم"],
             "Optional, on any of its rows: the kitchen's own category. A new name is added."),
+        new("PrepTime", PrepTimeHeader, ["prep time (mins)", "prep time", "prep minutes", "minutes", "وقت التحضير بالدقائق", "وقت التحضير"],
+            "Optional, on any of its rows: the kitchen's minutes for one plate, for the burdened plate cost. Blank: as it was, or the ordinary 10 for a new recipe.", "0.##"),
     ];
 
     private static readonly string[] Help =
@@ -46,20 +49,21 @@ public static class RecipeWorkbook
         "Ingredient: always from the list. Its name says its unit: write the quantity in it, 0.2 for 200 g. · اكتب الكمية بوحدة المكوّن: 0.2 لـ 200 جرام.",
         "A recipe with a row that cannot be read is left as it was, and each such row is said why. · الوصفة التي بها صف خاطئ لا تُغيَّر.",
         "No prices: each recipe's cost is worked out from its ingredients' prices. · لا أسعار: التكلفة تُحسب من أسعار المكونات.",
+        "Prep Time (mins): optional, the kitchen's minutes for one plate, for the burdened plate cost. · وقت التحضير للطبق بالدقائق، اختياري.",
         "Every material and prep item, with its unit, is on the hidden Ingredients sheet. · كل الخامات والمصنعات بوحداتها في ورقة Ingredients المخفية.",
     ];
 
     private static readonly object[][] Examples =
     [
-        ["6101 · Margherita", "Pizza dough · مصنّع (Kg)", 0.25, 1, "Pizza"],
-        ["", "Mozzarella (Kg)", 0.15, "", ""],
-        ["", "Tomato sauce · مصنّع (Liter)", 0.08, "", ""],
-        ["Staff meal", "Rice (Kg)", 2, 10, "Staff meals"],
+        ["6101 · Margherita", "Pizza dough · مصنّع (Kg)", 0.25, 1, "Pizza", 12],
+        ["", "Mozzarella (Kg)", 0.15, "", "", ""],
+        ["", "Tomato sauce · مصنّع (Liter)", 0.08, "", "", ""],
+        ["Staff meal", "Rice (Kg)", 2, 10, "Staff meals", ""],
     ];
 
     public static Stream Build(RecipeSheet sheet, bool withRows) =>
         SheetBook.Build(DataSheetName, Columns, Help, Examples,
-            withRows ? sheet.Lines.Select(l => new object?[] { l.Item, l.Ingredient, l.Quantity, l.Portions, l.Category }).ToList() : [],
+            withRows ? sheet.Lines.Select(l => new object?[] { l.Item, l.Ingredient, l.Quantity, l.Portions, l.Category, l.PrepTimeMinutes }).ToList() : [],
             new Dictionary<string, SheetList>
             {
                 ["Item"] = new(sheet.Items, true, "A new recipe", "Not on the list: a recipe off the menu of that name is added. · وصفة جديدة بهذا الاسم."),
@@ -70,7 +74,7 @@ public static class RecipeWorkbook
 
     public static IReadOnlyList<RecipeSheetRow> Read(Stream stream) =>
         SheetBook.Read(stream, Columns, "Item", "Recipe")
-            .Select(r => new RecipeSheetRow(r.Row, r.Text("Item"), r.Text("Ingredient"), r.Text("Quantity"), r.Text("Portions"), r.Text("Category")))
+            .Select(r => new RecipeSheetRow(r.Row, r.Text("Item"), r.Text("Ingredient"), r.Text("Quantity"), r.Text("Portions"), r.Text("Category"), r.Text("PrepTime")))
             .ToList();
 }
 

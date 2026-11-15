@@ -3140,6 +3140,596 @@ public sealed partial class CostingService
 ```
 
 
+### 3.4.1.1 التكلفة الكلية للطبق (Fully Burdened Plate Cost)
+
+هندسة المنيو تحكم على الطبق بتكلفة خاماته وحدها، والطبق يأخذ أيضًا وقت المطبخ ونصيبه من الإيجار والمرافق والإهلاك. المحرك يجمع **وعاءين** للفترة ثم يوزعهما على الأطباق المباعة:
+
+```text
+وعاء العمالة  = لكل شهر: مسير الرواتب المعتمد من HR (أو الرواتب المصروفة له) + الأجور المدخلة في المؤشرات + مصروفات بند الأجور
+وعاء التشغيل  = لكل شهر: الإيجار + المصاريف القابلة للتحكم + الفوائد + الإهلاك المدخلة، + فواتير وسندات بنود الإيجار والتحكم والثابتة
+كل شهر يُوزع بالتساوي على أيامه: الفترة تأخذ (أيامها فيه ÷ أيام الشهر)؛ والشهر الخالي يأخذ الرقم التقديري من الإعدادات
+
+بالتساوي:        عمالة الطبق = الوعاء ÷ الأطباق المباعة ؛ ومثلها التشغيل
+بنسبة الإيراد:    عمالة الطبق = الوعاء × سعره ÷ المبيعات ؛ ومثلها التشغيل
+حسب الوقت (ABC): عمالة الطبق = الوعاء × دقائقه الموزونة ÷ Σ(الكمية × الدقائق الموزونة) ؛ والتشغيل بالتساوي
+
+التكلفة الكلية = الخامات + العمالة + التشغيل ؛ صافي الربح = السعر قبل الضريبة − التكلفة الكلية
+السعر المقترح  = التكلفة الكلية ÷ (1 − الهامش المستهدف)   أو بالإيراد: الخامات ÷ (1 − الهامش − الأوعية ÷ المبيعات)
+```
+
+الرياضيات نفسها **دوال نقية** في الـ Domain (`PlateCostAllocation`) لتُختبر وحدها: الوعاء يُحمَّل كاملًا (Σ نصيب الطبق × كميته = الوعاء)، والطبق غير المباع يأخذ ما كان سيحمله الطبق منه بالمعدلات نفسها. و `CostingService.PlateCost` يعطي نقطة البداية لكل طبق: تكلفة الخامات من بطاقة الوصفة الآن، والسعر، والكمية المباعة، والدقائق الموزونة (وقته × صعوبته + نصيبه من دقائق تشغيلات المصنّعات التي فيه، تكراريًا مع حماية من الدوران). ثم `BurdenedCostService` يجمع الأوعية ويحسب لكل طبق ويُلخّص: المحمّل من كل وعاء ومتوسطه للطبق، ومتوسط التكلفة الكلية وصافي الربح موزونين بالمبيعات، وعدد **الأطباق الخاسرة بعد التحميل** (رابحة على الخامات، خاسرة بعدها). والمجموع يُحسب من الأنصبة الدقيقة لا المقرّبة، ليساوي الوعاء حتى القرش.
+
+> 📄 **`backend/src/Costing.Domain/Recipes/PlateCostAllocation.cs`** — 96 سطر
+
+```csharp
+namespace Costing.Domain.Recipes;
+
+// How a period's labor and overheads are shared over the plates sold in it, for the fully burdened
+// plate cost (التكلفة الكلية للطبق):
+//
+//   ByQuantitySold        (بالتساوي حسب الكمية المباعة)   every plate carries the same:
+//                          labor a plate    = labor pool ÷ plates sold
+//                          overhead a plate = overhead pool ÷ plates sold
+//   ByRevenueShare        (بنسبة المساهمة في الإيراد)     by what a plate sells for:
+//                          a dish's share   = its price × its quantity ÷ the period's sales
+//                          labor a plate    = labor pool × its share ÷ its quantity = labor pool × its price ÷ the sales
+//                          (the same for the overheads)
+//   ActivityBasedPrepTime (حسب وقت التحضير - ABC)         labor by the kitchen's time, the rest by the plate:
+//                          labor a plate    = labor pool × its weighted minutes ÷ Σ (quantity × weighted minutes)
+//                          overhead a plate = overhead pool ÷ plates sold
+//
+// Shared over what was sold, the pools are allocated whole: Σ (a plate's share × its quantity) is
+// the pool. A dish not sold in the period is given the share a plate of it would have carried, at
+// the same rates, so its burdened cost is known before it sells.
+public enum OverheadAllocationMethod
+{
+    ByQuantitySold = 1,
+    ByRevenueShare = 2,
+    ActivityBasedPrepTime = 3,
+}
+
+// A dish as the period sold it: how many plates, what one sells for (null with no price), what the
+// plates sold came to (its price × its quantity; its net sales when it has no price), and the
+// kitchen's weighted minutes for one plate.
+public sealed record PlateDriver(decimal QuantitySold, decimal? Price, decimal Revenue, decimal WeightedMinutes);
+
+// The period's rates, each over what was sold: null when nothing was sold to share over.
+public sealed record AllocationRates(
+    OverheadAllocationMethod Method,
+    decimal LaborPool,
+    decimal OverheadPool,
+    decimal PlatesSold,
+    decimal Revenue,
+    decimal WeightedMinutesSold,
+    decimal? LaborPerPlate,
+    decimal? LaborPerRevenue,
+    decimal? LaborPerWeightedMinute,
+    decimal? OverheadPerPlate,
+    decimal? OverheadPerRevenue)
+{
+    // One plate's labor and overheads, at its price and its weighted minutes. Null where the
+    // method cannot place it: nothing sold in the period, or no price to share revenue by.
+    public (decimal? Labor, decimal? Overhead) For(decimal? price, decimal weightedMinutes) => Method switch
+    {
+        OverheadAllocationMethod.ByQuantitySold => (LaborPerPlate, OverheadPerPlate),
+        OverheadAllocationMethod.ByRevenueShare => (price * LaborPerRevenue, price * OverheadPerRevenue),
+        _ => (LaborPerWeightedMinute * weightedMinutes, OverheadPerPlate),
+    };
+}
+
+public static class PlateCostAllocation
+{
+    public static AllocationRates Rates(
+        OverheadAllocationMethod method, decimal laborPool, decimal overheadPool, IEnumerable<PlateDriver> dishes)
+    {
+        var sold = dishes.Where(d => d.QuantitySold > 0).ToList();
+        var plates = sold.Sum(d => d.QuantitySold);
+        var revenue = sold.Sum(d => d.Revenue);
+        var minutes = sold.Sum(d => d.QuantitySold * d.WeightedMinutes);
+        decimal? Over(decimal pool, decimal whole) => whole > 0 ? pool / whole : null;
+        return new AllocationRates(
+            method, laborPool, overheadPool, plates, revenue, minutes,
+            Over(laborPool, plates), Over(laborPool, revenue), Over(laborPool, minutes),
+            Over(overheadPool, plates), Over(overheadPool, revenue));
+    }
+
+    // The price that leaves the target net margin after the food, the labor and the overheads. By
+    // quantity or by time, a plate's labor and overheads do not move with its price:
+    //   price = (food + labor + overheads) ÷ (1 − target)
+    // By revenue share they do, at (pools ÷ sales) of every pound it sells for:
+    //   price = food ÷ (1 − target − (labor pool + overhead pool) ÷ sales)
+    // Null when no price reaches it: the pools take as much of each pound as the margin leaves.
+    public static decimal? SuggestedPrice(AllocationRates rates, decimal foodCost, decimal weightedMinutes, decimal targetNetMarginPercent)
+    {
+        var target = targetNetMarginPercent / 100;
+        if (target >= 1)
+            return null;
+        if (rates.Method == OverheadAllocationMethod.ByRevenueShare)
+        {
+            if (rates.LaborPerRevenue is not { } labor || rates.OverheadPerRevenue is not { } overhead)
+                return null;
+            var left = 1 - target - labor - overhead;
+            return left > 0 ? foodCost / left : null;
+        }
+
+        var (perPlateLabor, perPlateOverhead) = rates.For(null, weightedMinutes);
+        if (perPlateLabor is not { } l || perPlateOverhead is not { } o)
+            return null;
+        return (foodCost + l + o) / (1 - target);
+    }
+}
+```
+
+
+> 📄 **`backend/src/Costing.Infrastructure/Reports/CostingService.PlateCost.cs`** — 132 سطر
+
+```csharp
+using Microsoft.EntityFrameworkCore;
+using Costing.Domain.Production;
+using Costing.Domain.Recipes;
+
+namespace Costing.Infrastructure.Reports;
+
+// A dish as the fully burdened plate cost starts from: what one plate's ingredients cost now (its
+// recipe card's cost per portion, prep items by RecipeCosts, shared costs included), what it sells
+// for before VAT, how many plates the period sold, and the kitchen's weighted minutes for a plate.
+//
+// Weighted minutes: the dish's own prep time × its complexity, and its share of each prep item it
+// is made with: a batch's prep time × its complexity, over what the batch makes, for what one plate
+// takes of it, as purchased. A pizza with 250 g of a 10 kg dough batch that takes 60 minutes
+// carries 1.5 of them.
+internal sealed record PlateBase(
+    string ItemCode,
+    int? MenuItemId,
+    int? VariantId,
+    Guid? RecipeId,
+    string Dish,
+    string? DishAr,
+    string? Category,
+    // On the menu now; off it: an off-menu (R&D) recipe at its planned price, or a dish sold in the
+    // period that has left the menu since.
+    bool OnMenu,
+    decimal QuantitySold,
+    decimal NetSales,
+    // The menu's price, or the planned price off it; sold without a price, its average net price.
+    decimal? Price,
+    decimal? FoodCost,
+    bool HasRecipe,
+    bool MissingPrices,
+    decimal? PrepTimeMinutes,
+    decimal ComplexityWeight,
+    decimal WeightedMinutes,
+    bool PrepTimeAssumed);
+
+public sealed partial class CostingService
+{
+    internal async Task<IReadOnlyList<PlateBase>> PlateBasesAsync(DateOnly from, DateOnly to, CancellationToken cancellationToken)
+    {
+        var data = await LoadMenuAsync(cancellationToken);
+        var prepRecipes = await db.PrepRecipes.AsNoTracking().Include(r => r.Ingredients).ToDictionaryAsync(r => r.PrepItemId, cancellationToken);
+        var minutesPerUnit = new PrepMinutes(prepRecipes);
+
+        var sold = (await SalesAsync(from, to, cancellationToken))
+            .GroupBy(s => (s.MenuItemId, s.VariantId))
+            .ToDictionary(g => g.Key, g => (
+                Any: g.First(), Quantity: (decimal)g.Sum(s => s.Quantity), NetSales: g.Sum(s => s.NetSales),
+                Ingredients: g.Sum(s => s.IngredientCost), HasRecipe: g.Any(s => s.HasRecipe), Missing: g.Any(s => s.MissingPrice)));
+
+        decimal Weighted(Recipe? recipe) =>
+            recipe is null
+                ? PlateActivity.Default.WeightedMinutes
+                : recipe.Activity.WeightedMinutes + recipe.Ingredients.Sum(i => i.AsPurchasedQuantity / recipe.Portions * minutesPerUnit.Of(i.RawMaterialId));
+
+        var rows = new List<PlateBase>();
+        var seen = new HashSet<(int, int?)>();
+        foreach (var target in data.Targets.Where(t => t.Kind == RecipeTargetKind.MenuItem))
+        {
+            var key = (target.CatalogItemId, target.VariantId);
+            var hasSizes = target.VariantId is null && data.Targets.Any(t => t.Kind == RecipeTargetKind.MenuItem && t.CatalogItemId == target.CatalogItemId && t.VariantId is not null);
+            var sale = sold.GetValueOrDefault(key);
+            // A dish sold by its sizes: each size is a plate, the dish itself never is.
+            if (hasSizes && sale.Quantity == 0)
+                continue;
+            seen.Add(key);
+
+            var own = data.Recipes.GetValueOrDefault(new RecipeTarget(target.Kind, target.CatalogItemId, target.VariantId));
+            var recipe = own ?? (target.VariantId is not null ? data.Recipes.GetValueOrDefault(RecipeTarget.ForMenuItem(target.CatalogItemId)) : null);
+            var card = CardOf(target);
+            var price = target.PricedByAddOns ? null : target.Price;
+            if (price is null && sale.Quantity > 0 && sale.NetSales > 0)
+                price = sale.NetSales / sale.Quantity;
+            rows.Add(new PlateBase(
+                card.ItemCode, target.CatalogItemId, target.VariantId, recipe?.Id, target.Name, target.NameAr, target.Category, true,
+                sale.Quantity, sale.NetSales, price, card.HasRecipe ? card.CostPerPortion : null, card.HasRecipe, card.MissingPrices.Count > 0,
+                recipe?.PrepTimeMinutes, recipe?.ComplexityWeight ?? PlateActivity.DefaultComplexityWeight, Weighted(recipe),
+                recipe is null || recipe.PrepTimeMinutes is null));
+        }
+
+        // Sold in the period and gone from the menu since: its plates were made and served all the
+        // same, at what their ingredients cost when sold.
+        foreach (var ((menuItemId, variantId), sale) in sold.Where(s => !seen.Contains(s.Key)))
+        {
+            var any = sale.Any;
+            rows.Add(new PlateBase(
+                ItemCode(menuItemId, variantId), menuItemId, variantId, null, any.Name, any.NameAr, any.Category.Length > 0 ? any.Category : null, false,
+                sale.Quantity, sale.NetSales, sale.NetSales > 0 ? sale.NetSales / sale.Quantity : null,
+                sale.HasRecipe ? sale.Ingredients / sale.Quantity : null, sale.HasRecipe, sale.Missing,
+                null, PlateActivity.DefaultComplexityWeight, PlateActivity.Default.WeightedMinutes, true));
+        }
+
+        // Off the menu: a dish being planned, at its planned price, so its burdened cost is known
+        // before it goes on the menu.
+        foreach (var recipe in data.AllRecipes.Where(r => !r.IsDeleted && !r.IsLinked))
+        {
+            var card = Card(recipe, data);
+            rows.Add(new PlateBase(
+                "", null, null, recipe.Id, card.Recipe, null, card.Category, false, 0, 0, recipe.PlannedPrice, card.CostPerPortion, true,
+                card.MissingPrices.Count > 0, recipe.PrepTimeMinutes, recipe.ComplexityWeight, Weighted(recipe), recipe.PrepTimeMinutes is null));
+        }
+        return rows;
+
+        RecipeCostCard CardOf(Target target)
+        {
+            var own = data.Recipes.GetValueOrDefault(new RecipeTarget(target.Kind, target.CatalogItemId, target.VariantId));
+            var recipe = own ?? (target.VariantId is not null ? data.Recipes.GetValueOrDefault(RecipeTarget.ForMenuItem(target.CatalogItemId)) : null);
+            return CostingService.Card(target, recipe, own is null && recipe is not null, data);
+        }
+    }
+
+    // The kitchen's weighted minutes in one gram, millilitre or piece of a prep item: its batch's
+    // minutes, and those of the prep items it is made with, over what the batch makes. A bought
+    // material takes none; a prep item made with itself (never saved) stops there.
+    private sealed class PrepMinutes(IReadOnlyDictionary<Guid, PrepRecipe> recipes)
+    {
+        private readonly Dictionary<Guid, decimal> _known = [];
+        private readonly HashSet<Guid> _working = [];
+
+        public decimal Of(Guid materialId)
+        {
+            if (_known.TryGetValue(materialId, out var known))
+                return known;
+            if (!recipes.TryGetValue(materialId, out var recipe) || recipe.BatchQuantity <= 0 || !_working.Add(materialId))
+                return 0;
+            var minutes = (recipe.Activity.WeightedMinutes + recipe.Ingredients.Sum(i => i.AsPurchasedQuantity * Of(i.RawMaterialId))) / recipe.BatchQuantity;
+            _working.Remove(materialId);
+            return _known[materialId] = minutes;
+        }
+    }
+}
+```
+
+
+> 📄 **`backend/src/Costing.Infrastructure/Reports/BurdenedCostService.cs`** — 325 سطر
+
+```csharp
+using Microsoft.EntityFrameworkCore;
+using Costing.Domain.Categories;
+using Costing.Domain.Common;
+using Costing.Domain.Recipes;
+using Costing.Domain.Treasury;
+using Costing.Infrastructure.Persistence;
+using static Costing.Infrastructure.Reports.CostingService;
+
+namespace Costing.Infrastructure.Reports;
+
+// The fully burdened plate cost (محرك التكلفة الكلية للطبق): each dish's food, its share of the
+// period's labor and of its overheads, and what is left of its price after all three.
+//
+//   Fully burdened cost  = food cost + allocated labor + allocated overheads
+//   Prime cost           = food cost + allocated labor
+//   True net profit      = selling price (before VAT) − fully burdened cost; × plates sold for the period
+//   True net margin %    = true net profit ÷ selling price × 100
+//
+// The pools, for the days chosen. Each month is taken whole and spread evenly over its days, so a
+// rent paid on the 1st, or a payroll approved on the 30th, is carried by every plate of the month,
+// and a part of a month carries its share by days (15 of 30 days: half):
+//
+//   Labor     the month's payroll approved on HR (its labor cost), or the salaries paid from the safe
+//             for it when HR sent none, the wages and benefits entered for it on the KPIs, and the
+//             expense invoices and vouchers filed under a Wages category: as the KPIs' labor cost.
+//   Overheads the month's occupation (rent), controllable costs (utilities, running costs),
+//             interest and depreciation entered on the KPIs, and its expense invoices and vouchers
+//             under an Occupation, Controllable or Other fixed category: the P&L's overheads.
+//
+// A month with nothing recorded for a pool takes the cost settings' stand-in monthly figure for it
+// when one is set, and says so. Simulated, the pools are the monthly figures given instead, spread
+// the same way. Food cost is each recipe card's cost per portion now: the moving averages, prep
+// items by their batches (or their recipes before the first), and the shared costs.
+public enum PoolSource
+{
+    Actual = 1,
+    Simulated = 2,
+}
+
+public enum PlateStatus
+{
+    // At or above the target net margin.
+    Healthy = 1,
+    // Profitable, below the target.
+    Thin = 2,
+    // Losing money once labor and overheads are added.
+    Losing = 3,
+    NoRecipe = 4,
+    NoPrice = 5,
+    // Nothing was sold in the period to share the pools over.
+    NotAllocated = 6,
+}
+
+// One part of a pool, as the screen and the sheet list them.
+public sealed record CostPoolPart(string Key, string Label, string LabelAr, decimal Amount);
+
+// A pool for the days: its parts, and the months that took the stand-in figure.
+public sealed record CostPool(decimal Total, IReadOnlyList<CostPoolPart> Parts, IReadOnlyList<string> StandInMonths);
+
+public sealed record BurdenedPlateRow(
+    string ItemCode,
+    int? MenuItemId,
+    int? VariantId,
+    Guid? RecipeId,
+    string Dish,
+    string? DishAr,
+    string? Category,
+    bool OnMenu,
+    decimal QuantitySold,
+    // Not sold in the period: its shares are what a plate of it would have carried.
+    bool Estimated,
+    decimal? SellingPrice,
+    decimal? PrepTimeMinutes,
+    decimal ComplexityWeight,
+    decimal WeightedMinutes,
+    bool PrepTimeAssumed,
+    decimal? DirectFoodCost,
+    decimal? FoodCostPercent,
+    decimal? AllocatedLaborCost,
+    decimal? LaborCostPercent,
+    decimal? PrimeCost,
+    decimal? PrimeCostPercent,
+    decimal? AllocatedOverheadCost,
+    decimal? OverheadCostPercent,
+    decimal? FullyBurdenedCost,
+    decimal? FullyBurdenedCostPercent,
+    decimal? TrueNetProfitPerPlate,
+    decimal? TrueNetMarginPercent,
+    decimal? TotalPeriodNetProfit,
+    decimal? SuggestedPriceForTargetNetMargin,
+    // Above its food cost, below zero once labor and overheads are added (أطباق خاسرة بعد التحميل).
+    bool BleedingAfterOverhead,
+    bool MissingPrices,
+    PlateStatus Status);
+
+public sealed record BurdenedCostReport(
+    DateOnly From,
+    DateOnly To,
+    int Days,
+    OverheadAllocationMethod Method,
+    PoolSource Source,
+    decimal TargetNetMarginPercent,
+    CostPool Labor,
+    CostPool Overhead,
+    decimal PlatesSold,
+    decimal Sales,
+    // The rates the pools were shared at: a plate, a pound of sales, a weighted minute.
+    decimal? LaborPerPlate,
+    decimal? LaborPerRevenue,
+    decimal? LaborPerWeightedMinute,
+    decimal? OverheadPerPlate,
+    decimal? OverheadPerRevenue,
+    // What the plates sold carried: each pool's allocated part, and on average a plate.
+    decimal LaborAllocated,
+    decimal? AverageLaborPerPlate,
+    decimal OverheadAllocated,
+    decimal? AverageOverheadPerPlate,
+    // Over the plates sold, weighted by their sales.
+    decimal? AverageFullyBurdenedCostPercent,
+    decimal? AverageTrueNetMarginPercent,
+    decimal TotalPeriodNetProfit,
+    int DishesBleeding,
+    IReadOnlyList<BurdenedPlateRow> Rows,
+    IReadOnlyList<string> Categories);
+
+// One recipe's burdened plate, for its card: the month so far, as the cost settings share it.
+public sealed record BurdenedRecipeCost(
+    DateOnly From, DateOnly To, OverheadAllocationMethod Method, decimal TargetNetMarginPercent, decimal PlatesSold, BurdenedPlateRow? Plate);
+
+public sealed class BurdenedCostService(CostingDbContext db, Application.Common.IBusinessCalendar clock, CostingService costing, PurchaseSpendingService spending)
+{
+    private static readonly ExpenseLine[] OverheadLines = [ExpenseLine.Occupation, ExpenseLine.Controllable, ExpenseLine.OtherFixed];
+
+    public async Task<BurdenedCostReport> GetAsync(
+        DateOnly from, DateOnly to, OverheadAllocationMethod? method, PoolSource source, decimal? monthlyLabor, decimal? monthlyOverhead,
+        CancellationToken cancellationToken)
+    {
+        if (to < from)
+            throw new DomainException("The first day must come before the last. · اليوم الأول قبل الأخير.");
+        if (to > from.AddYears(2))
+            throw new DomainException("Choose two years at most. · سنتان على الأكثر.");
+        if (method is { } m && !Enum.IsDefined(m))
+            throw new DomainException("Choose how labor and overheads are shared. · اختر طريقة التحميل.");
+        if (monthlyLabor < 0 || monthlyOverhead < 0)
+            throw new DomainException("A month's labor or overheads cannot be negative. · المصاريف الشهرية لا تكون سالبة.");
+
+        var settings = await db.CostingSettings.AsNoTracking().SingleOrDefaultAsync(cancellationToken) ?? new CostingSettings();
+        var chosen = method ?? settings.DefaultOverheadAllocationMethod;
+        var (labor, overhead) = source == PoolSource.Simulated
+            ? Simulated(from, to, monthlyLabor ?? settings.FallbackMonthlyLaborCost ?? 0, monthlyOverhead ?? settings.FallbackMonthlyOverheadCost ?? 0)
+            : await ActualAsync(from, to, settings, cancellationToken);
+
+        var bases = await costing.PlateBasesAsync(from, to, cancellationToken);
+        var rates = PlateCostAllocation.Rates(chosen, labor.Total, overhead.Total,
+            bases.Select(b => new PlateDriver(b.QuantitySold, b.Price, b.Price is { } p ? p * b.QuantitySold : b.NetSales, b.WeightedMinutes)));
+        var target = settings.TargetNetMarginPercent;
+        var rows = bases.Select(b => Row(b, rates, target))
+            .OrderByDescending(r => r.QuantitySold > 0)
+            .ThenBy(r => r.TrueNetMarginPercent ?? decimal.MaxValue)
+            .ThenBy(r => r.Dish, StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+
+        var sold = rows.Where(r => r.QuantitySold > 0).ToList();
+        // What the plates sold carried, from their exact shares: the pool, to the piastre.
+        var shares = bases.Where(x => x.QuantitySold > 0).Select(x => (x.QuantitySold, Share: rates.For(x.Price, x.WeightedMinutes))).ToList();
+        var laborAllocated = shares.Sum(x => (x.Share.Labor ?? 0) * x.QuantitySold);
+        var overheadAllocated = shares.Sum(x => (x.Share.Overhead ?? 0) * x.QuantitySold);
+        var weighed = sold.Where(r => r is { SellingPrice: > 0, FullyBurdenedCost: not null }).ToList();
+        var weighedSales = weighed.Sum(r => r.SellingPrice!.Value * r.QuantitySold);
+        decimal? Weighted(Func<BurdenedPlateRow, decimal> value) =>
+            weighedSales > 0 ? Percent(weighed.Sum(r => value(r) * r.QuantitySold) / weighedSales) : null;
+
+        return new BurdenedCostReport(
+            from, to, to.DayNumber - from.DayNumber + 1, chosen, source, target, labor, overhead, rates.PlatesSold, Money(rates.Revenue),
+            Money(rates.LaborPerPlate), Round6(rates.LaborPerRevenue), Round6(rates.LaborPerWeightedMinute), Money(rates.OverheadPerPlate),
+            Round6(rates.OverheadPerRevenue),
+            Money(laborAllocated), rates.PlatesSold > 0 ? Money(laborAllocated / rates.PlatesSold) : null,
+            Money(overheadAllocated), rates.PlatesSold > 0 ? Money(overheadAllocated / rates.PlatesSold) : null,
+            Weighted(r => r.FullyBurdenedCost!.Value), Weighted(r => r.SellingPrice!.Value - r.FullyBurdenedCost!.Value),
+            Money(sold.Sum(r => r.TotalPeriodNetProfit ?? 0)),
+            rows.Count(r => r.BleedingAfterOverhead), rows,
+            rows.Select(r => r.Category).OfType<string>().Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.CurrentCultureIgnoreCase).ToList());
+    }
+
+    // The recipe's plate over the month so far, actual pools, the settings' method: its card's box.
+    public async Task<BurdenedRecipeCost> GetForRecipeAsync(Guid recipeId, CancellationToken cancellationToken)
+    {
+        var recipe = await db.Recipes.AsNoTracking().SingleOrDefaultAsync(r => r.Id == recipeId, cancellationToken)
+            ?? throw new NotFoundException(nameof(Recipe), recipeId);
+        var today = clock.BusinessDateOf(DateTime.UtcNow);
+        var report = await GetAsync(new DateOnly(today.Year, today.Month, 1), today, null, PoolSource.Actual, null, null, cancellationToken);
+        var plate = report.Rows.FirstOrDefault(r => recipe.Target is { } t
+                ? r.MenuItemId == t.CatalogItemId && r.VariantId == t.VariantId
+                : r.RecipeId == recipeId && r.MenuItemId is null);
+        return new BurdenedRecipeCost(report.From, report.To, report.Method, report.TargetNetMarginPercent, report.PlatesSold, plate);
+    }
+
+    private static BurdenedPlateRow Row(PlateBase b, AllocationRates rates, decimal target)
+    {
+        var (laborExact, overheadExact) = rates.For(b.Price, b.WeightedMinutes);
+        var food = b.FoodCost;
+        var price = b.Price;
+        decimal? Share(decimal? part) => part is { } p && price > 0 ? Percent(p / price.Value) : null;
+        decimal? prime = food + laborExact;
+        decimal? burdened = prime + overheadExact;
+        decimal? profit = price - burdened;
+        var status = !b.HasRecipe ? PlateStatus.NoRecipe
+            : laborExact is null || overheadExact is null ? (price is null ? PlateStatus.NoPrice : PlateStatus.NotAllocated)
+            : price is not > 0 ? PlateStatus.NoPrice
+            : profit < 0 ? PlateStatus.Losing
+            : profit / price * 100 < target ? PlateStatus.Thin
+            : PlateStatus.Healthy;
+        var suggested = food is { } f ? PlateCostAllocation.SuggestedPrice(rates, f, b.WeightedMinutes, target) : null;
+        return new BurdenedPlateRow(
+            b.ItemCode, b.MenuItemId, b.VariantId, b.RecipeId, b.Dish, b.DishAr, b.Category, b.OnMenu, b.QuantitySold, b.QuantitySold == 0,
+            Money(price), b.PrepTimeMinutes, b.ComplexityWeight, Math.Round(b.WeightedMinutes, 2, MidpointRounding.AwayFromZero), b.PrepTimeAssumed,
+            Money(food), Share(food), Money(laborExact), Share(laborExact), Money(prime), Share(prime), Money(overheadExact), Share(overheadExact),
+            Money(burdened), Share(burdened), Money(profit), Share(profit), Money(profit * b.QuantitySold), Money(suggested),
+            price - food > 0 && profit < 0, b.MissingPrices, status);
+    }
+
+    // Each month's figures, spread evenly over its days: the part of it the days chosen cover.
+    private static IEnumerable<(DateOnly Month, decimal Share)> Months(DateOnly from, DateOnly to)
+    {
+        for (var month = new DateOnly(from.Year, from.Month, 1); month <= to; month = month.AddMonths(1))
+        {
+            var last = month.AddMonths(1).AddDays(-1);
+            var first = from > month ? from : month;
+            var end = to < last ? to : last;
+            yield return (month, (decimal)(end.DayNumber - first.DayNumber + 1) / (last.DayNumber - month.DayNumber + 1));
+        }
+    }
+
+    private static (CostPool Labor, CostPool Overhead) Simulated(DateOnly from, DateOnly to, decimal monthlyLabor, decimal monthlyOverhead)
+    {
+        var months = Months(from, to).Sum(m => m.Share);
+        return (
+            new CostPool(Money(monthlyLabor * months), [new("simulated", "Simulated monthly labor", "عمالة تقديرية شهرية", Money(monthlyLabor * months))], []),
+            new CostPool(Money(monthlyOverhead * months), [new("simulated", "Simulated monthly overheads", "مصاريف تشغيل تقديرية شهرية", Money(monthlyOverhead * months))], []));
+    }
+
+    private async Task<(CostPool Labor, CostPool Overhead)> ActualAsync(DateOnly from, DateOnly to, CostingSettings settings, CancellationToken cancellationToken)
+    {
+        var months = Months(from, to).ToList();
+        var periods = months.Select(m => m.Month).ToList();
+        var entered = await db.MonthlyExpenses.AsNoTracking()
+            .Where(e => e.Year >= from.Year && e.Year <= to.Year)
+            .ToListAsync(cancellationToken);
+        var payrolls = await db.PayrollRuns.AsNoTracking().Where(r => periods.Contains(r.Period))
+            .Select(r => new { r.Period, r.LaborCost }).ToListAsync(cancellationToken);
+        var salaries = await db.SafeTransactions.AsNoTracking()
+            .Where(t => t.Kind == SafeTransactionKind.SalaryPayment && t.PayrollMonth != null && periods.Contains(t.PayrollMonth.Value))
+            .GroupBy(t => t.PayrollMonth!.Value)
+            .Select(g => new { Month = g.Key, Paid = -g.Sum(t => t.Amount) })
+            .ToListAsync(cancellationToken);
+
+        decimal payroll = 0, salariesPaid = 0, wagesEntered = 0, wagesLogged = 0, laborStandIn = 0;
+        decimal occupation = 0, controllable = 0, otherFixed = 0, interest = 0, depreciation = 0, overheadStandIn = 0;
+        var laborStandInMonths = new List<string>();
+        var overheadStandInMonths = new List<string>();
+        foreach (var (month, share) in months)
+        {
+            var e = entered.SingleOrDefault(x => x.Year == month.Year && x.Month == month.Month);
+            var logged = await spending.LoggedExpensesAsync(month, month.AddMonths(1).AddDays(-1), cancellationToken);
+            decimal Logged(ExpenseLine line) => logged.Where(l => l.ExpenseLine == line).Sum(l => l.Amount);
+
+            var run = payrolls.SingleOrDefault(r => r.Period == month);
+            var paid = salaries.SingleOrDefault(s => s.Month == month)?.Paid ?? 0;
+            var laborRecorded = run is not null || paid != 0 || e?.WagesAndBenefits is not null || Logged(ExpenseLine.Wages) != 0;
+            if (!laborRecorded && settings.FallbackMonthlyLaborCost is { } laborFallback)
+            {
+                laborStandIn += laborFallback * share;
+                laborStandInMonths.Add($"{month:MMM yyyy}");
+            }
+            else
+            {
+                if (run is not null)
+                    payroll += run.LaborCost * share;
+                else
+                    salariesPaid += paid * share;
+                wagesEntered += (e?.WagesAndBenefits ?? 0) * share;
+                wagesLogged += Logged(ExpenseLine.Wages) * share;
+            }
+
+            var overheadRecorded = e is { OccupationCost: not null } or { OtherControllableCosts: not null } or { Interest: not null } or { Depreciation: not null }
+                || OverheadLines.Any(l => Logged(l) != 0);
+            if (!overheadRecorded && settings.FallbackMonthlyOverheadCost is { } overheadFallback)
+            {
+                overheadStandIn += overheadFallback * share;
+                overheadStandInMonths.Add($"{month:MMM yyyy}");
+            }
+            else
+            {
+                occupation += ((e?.OccupationCost ?? 0) + Logged(ExpenseLine.Occupation)) * share;
+                controllable += ((e?.OtherControllableCosts ?? 0) + Logged(ExpenseLine.Controllable)) * share;
+                otherFixed += Logged(ExpenseLine.OtherFixed) * share;
+                interest += (e?.Interest ?? 0) * share;
+                depreciation += (e?.Depreciation ?? 0) * share;
+            }
+        }
+
+        static CostPool Pool(IReadOnlyList<string> standIn, params CostPoolPart[] parts)
+        {
+            var kept = parts.Where(p => p.Amount != 0).Select(p => p with { Amount = Money(p.Amount) }).ToList();
+            return new CostPool(kept.Sum(p => p.Amount), kept, standIn);
+        }
+
+        return (
+            Pool(laborStandInMonths,
+                new("payroll", "Payroll approved on HR", "مسير الرواتب المعتمد", payroll),
+                new("salaries", "Salaries paid from the safe", "الرواتب المصروفة من الخزنة", salariesPaid),
+                new("wagesEntered", "Wages & benefits entered", "الأجور والمزايا المدخلة", wagesEntered),
+                new("wagesLogged", "Wages paid as expenses", "أجور مسجلة كمصروفات", wagesLogged),
+                new("standIn", "Stand-in monthly labor", "عمالة شهرية تقديرية", laborStandIn)),
+            Pool(overheadStandInMonths,
+                new("occupation", "Rent & occupation", "الإيجار والمكان", occupation),
+                new("controllable", "Utilities & running costs", "المرافق ومصاريف التشغيل", controllable),
+                new("otherFixed", "Other fixed costs", "مصاريف ثابتة أخرى", otherFixed),
+                new("interest", "Interest", "الفوائد", interest),
+                new("depreciation", "Depreciation", "الإهلاك", depreciation),
+                new("standIn", "Stand-in monthly overheads", "مصاريف تشغيل شهرية تقديرية", overheadStandIn)));
+    }
+
+    private static decimal? Round6(decimal? value) => value is { } v ? Math.Round(v, 6, MidpointRounding.AwayFromZero) : null;
+}
+```
+
+
 ### 3.4.2 كارتة الصنف (Stock Card): حركة الصنف بالتفصيل
 
 دفتر الحركات append-only (الفصل 03)، فكارتة الصنف **قراءة** له لا جدولًا جديدًا: كل حركات الخامة (أو المصنّع) حتى آخر يوم مرتبة بالوقت، ثم **إعادة تشغيل** المتوسط المرجح عليها كما تفعله `RawMaterial` نفسها:
@@ -3473,12 +4063,13 @@ public sealed class StockCardService(CostingDbContext db, IBusinessCalendar cloc
 
 `IntelligenceController` (`api/costing/intelligence`): التبويبات الخمسة وكل منها بشيت Excel، و `POST orders` (الخطة) و `POST orders/sheet` (ورقة الطلب). وكارتة الصنف في `CostingController`: `GET api/costing/materials/{id}/stock-card?from&to&type` وشيتها `…/stock-card/sheet`، مفتوحة لكل تبويب يعرض الخامة بسعرها أو رصيدها.
 
-> 📄 **`backend/src/Costing.Api/Controllers/IntelligenceController.cs`** — 82 سطر
+> 📄 **`backend/src/Costing.Api/Controllers/IntelligenceController.cs`** — 101 سطر
 
 ```csharp
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Costing.Domain.Access;
+using Costing.Domain.Recipes;
 using Costing.Api.Auth;
 using Costing.Infrastructure.Excel;
 using Costing.Infrastructure.Reports;
@@ -3487,13 +4078,13 @@ namespace Costing.Api.Controllers;
 
 // Material & demand intelligence (تحليلات الخامات والطلبيات): purchase price variance and what it does
 // to the recipes, the order planner and its sheet, theoretical against actual consumption, and ABC
-// with days on hand, and menu engineering. Each as a table, and as a workbook (…/sheet). Costs, so a manager's or a cost
+// with days on hand, menu engineering, and the fully burdened plate cost. Each as a table, and as a workbook (…/sheet). Costs, so a manager's or a cost
 // controller's view; nothing here changes anything.
 [ApiController]
 [Route("api/costing/intelligence")]
 [Authorize(Policy = Permissions.InventoryView)]
 [CostingTab(CostingTabs.Intelligence)]
-public sealed class IntelligenceController(IntelligenceService intelligence, CostingService costing) : ControllerBase
+public sealed class IntelligenceController(IntelligenceService intelligence, CostingService costing, BurdenedCostService burdened) : ControllerBase
 {
     [HttpGet("prices")]
     public Task<PriceVarianceReport> GetPrices([FromQuery] DateOnly from, [FromQuery] DateOnly to, CancellationToken cancellationToken) =>
@@ -3557,6 +4148,24 @@ public sealed class IntelligenceController(IntelligenceService intelligence, Cos
         [FromQuery] DateOnly from, [FromQuery] DateOnly to, [FromQuery] string? category, CancellationToken cancellationToken) =>
         File(IntelligenceWorkbooks.MenuEngineering(await costing.GetMenuEngineeringAsync(from, to, category, cancellationToken)), ReportWorkbook.ContentType,
             $"menu-engineering-{from:yyyy-MM-dd}-to-{to:yyyy-MM-dd}.xlsx");
+
+    // The fully burdened plate cost (التكلفة الكلية للطبق): each dish's food, its share of the period's
+    // labor and overheads, and its true net profit. method: how they are shared (the cost settings'
+    // when none); source=Simulated with monthlyLabor and monthlyOverhead tries monthly figures instead
+    // of the period's own (the settings' stand-in figures when left out).
+    [HttpGet("burdened-costs")]
+    public Task<BurdenedCostReport> GetBurdenedCosts(
+        [FromQuery] DateOnly from, [FromQuery] DateOnly to, [FromQuery] OverheadAllocationMethod? method, [FromQuery] PoolSource? source,
+        [FromQuery] decimal? monthlyLabor, [FromQuery] decimal? monthlyOverhead, CancellationToken cancellationToken) =>
+        burdened.GetAsync(from, to, method, source ?? PoolSource.Actual, monthlyLabor, monthlyOverhead, cancellationToken);
+
+    [HttpGet("burdened-costs/sheet")]
+    public async Task<IActionResult> GetBurdenedCostsSheet(
+        [FromQuery] DateOnly from, [FromQuery] DateOnly to, [FromQuery] OverheadAllocationMethod? method, [FromQuery] PoolSource? source,
+        [FromQuery] decimal? monthlyLabor, [FromQuery] decimal? monthlyOverhead, CancellationToken cancellationToken) =>
+        File(BurdenedCostWorkbook.Build(
+                await burdened.GetAsync(from, to, method, source ?? PoolSource.Actual, monthlyLabor, monthlyOverhead, cancellationToken)),
+            ReportWorkbook.ContentType, $"burdened-plate-cost-{from:yyyy-MM-dd}-to-{to:yyyy-MM-dd}.xlsx");
 }
 ```
 

@@ -24,6 +24,8 @@ import {
   unitLabels,
   recipeCostOf,
 } from '../../core/costing/costing.api';
+import { CostingAccess } from '../../core/costing/costing-tabs';
+import { BurdenedRecipeCost, IntelligenceApi, allocationMethodLabels } from '../../core/costing/intelligence.api';
 import { errorMessage } from '../../core/http/error-message';
 import { Company } from '../../core/settings/company';
 import { MoneyPipe } from '../../core/ui/money.pipe';
@@ -233,6 +235,26 @@ const linkKey = (kind: RecipeTargetKind | null, catalogItemId: number | null, va
             }
           </div>
           <div class="box">
+            <span class="label">Prep time (mins) <app-info-tip tip="bcPrepTime" /><span class="ar">وقت التحضير بالدقائق</span></span>
+            @if (editing()) {
+              <div class="prep">
+                <mat-form-field subscriptSizing="dynamic" class="minutes">
+                  <input matInput type="number" min="0" max="1440" step="any" placeholder="10" [ngModel]="prepTime()"
+                    (ngModelChange)="prepTime.set(figure($event))" aria-label="Prep time in minutes for one plate" />
+                </mat-form-field>
+                <span class="times" aria-hidden="true">×</span>
+                <mat-form-field subscriptSizing="dynamic" class="weight">
+                  <input matInput type="number" min="0.1" max="10" step="0.1" [ngModel]="complexity()"
+                    (ngModelChange)="complexity.set(figure($event))" aria-label="Complexity weight" />
+                </mat-form-field>
+              </div>
+              <small class="muted">One plate; × complexity (1 ordinary) · للطبق × معامل الصعوبة</small>
+            } @else {
+              <strong>{{ prepTime() === null ? '10' : (prepTime() | number: '1.0-2') }} min</strong>
+              <small class="muted">{{ prepTime() === null ? 'Default · افتراضي' : '' }}{{ complexity() !== 1 ? ' × ' + complexity() + ' complexity' : '' }}</small>
+            }
+          </div>
+          <div class="box">
             <span class="label">{{ linked() ? 'Menu price' : 'Planned price' }} <app-info-tip tip="sellingPrice" /><span class="ar">{{ linked() ? 'سعر البيع' : 'السعر المخطط' }}</span></span>
             <strong>{{ price() === null ? '—' : (price() | money) }}</strong>
           </div>
@@ -249,6 +271,52 @@ const linkKey = (kind: RecipeTargetKind | null, catalogItemId: number | null, va
             <strong>{{ lines().length ? (idealPrice() | money) : '—' }}</strong>
           </div>
         </div>
+
+        @if (burdened(); as b) {
+          @if (b.plate; as p) {
+            <section class="burdened" aria-label="Fully burdened cost breakdown">
+              <h3>
+                Fully burdened cost breakdown <span class="inline-ar">التكلفة الكلية شاملة التشغيل</span>
+                <app-info-tip tip="bcBurdened" />
+              </h3>
+              @if (p.fullyBurdenedCost !== null && p.directFoodCost !== null) {
+                <p class="equation">
+                  <span class="term food"><strong>{{ p.directFoodCost | money }}</strong> الخامات · food</span>
+                  <span class="op">+</span>
+                  <span class="term labor"><strong>{{ p.allocatedLaborCost | money }}</strong> العمالة · labor</span>
+                  <span class="op">+</span>
+                  <span class="term overhead"><strong>{{ p.allocatedOverheadCost | money }}</strong> الإيجار والمرافق · overhead</span>
+                  <span class="op">=</span>
+                  <span class="term total"><strong>{{ p.fullyBurdenedCost | money }}</strong> التكلفة الكلية · fully burdened</span>
+                  @if (p.trueNetProfitPerPlate !== null) {
+                    <span class="net" [class.loss]="p.trueNetProfitPerPlate < 0">
+                      (صافي الربح · net profit: {{ p.trueNetProfitPerPlate | money }} · {{ p.trueNetMarginPercent | number: '1.1-1' }}%)
+                    </span>
+                  }
+                </p>
+              } @else {
+                <p class="muted">
+                  {{ p.status === 'NotAllocated'
+                    ? 'No plates sold this month yet: nothing to share the labor and overheads over. · لا مبيعات هذا الشهر بعد.'
+                    : 'Give it a price to see its true net profit. · حدد السعر.' }}
+                </p>
+              }
+              <p class="muted basis">
+                {{ methodLabels[b.method].en }} · {{ methodLabels[b.method].ar }}, this month so far ({{ b.platesSold | number: '1.0-0' }} plates sold),
+                {{ p.weightedMinutes | number: '1.0-2' }} weighted min a plate{{ p.estimated ? '; not sold yet: estimated' : '' }}.
+                @if (p.suggestedPriceForTargetNetMargin !== null) {
+                  {{ b.targetNetMarginPercent | number: '1.0-1' }}% net margin at {{ p.suggestedPriceForTargetNetMargin | money }}.
+                }
+                @if (dirty()) {
+                  <strong>As last saved · حسب آخر حفظ.</strong>
+                }
+                @if (canSeeBurdened) {
+                  <a routerLink="/costing/intelligence/burdened">Every dish · كل الأطباق</a>
+                }
+              </p>
+            </section>
+          }
+        }
 
         <div class="table-wrap">
           <table class="grid" appGridKeys (appGridKeysAppend)="add()">
@@ -460,6 +528,66 @@ const linkKey = (kind: RecipeTargetKind | null, catalogItemId: number | null, va
       grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
       gap: 8px;
     }
+    .prep {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      .minutes {
+        width: 76px;
+      }
+      .weight {
+        width: 64px;
+      }
+    }
+    .burdened {
+      margin: 12px 0;
+      padding: 12px 14px;
+      border-radius: 12px;
+      border: 1px solid var(--mat-sys-outline-variant);
+      background: var(--mat-sys-surface-container-lowest);
+
+      h3 {
+        margin: 0 0 6px;
+        font: var(--mat-sys-title-small);
+      }
+      .equation {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        gap: 6px 8px;
+        margin: 0 0 6px;
+      }
+      .term {
+        padding-inline-start: 8px;
+        border-inline-start: 4px solid;
+      }
+      .term.food {
+        border-color: #2563eb;
+      }
+      .term.labor {
+        border-color: #d97706;
+      }
+      .term.overhead {
+        border-color: #7c3aed;
+      }
+      .term.total {
+        border-color: var(--mat-sys-on-surface);
+      }
+      .op {
+        color: var(--mat-sys-on-surface-variant);
+      }
+      .net {
+        font-weight: 600;
+        color: var(--app-ok);
+      }
+      .net.loss {
+        color: var(--mat-sys-error);
+      }
+      .basis {
+        font-size: 0.85em;
+        margin: 0;
+      }
+    }
     .box {
       display: flex;
       flex-direction: column;
@@ -561,6 +689,14 @@ export class RecipeCardPage {
   protected readonly link = signal<string | null>(null);
   protected readonly lines = signal<Line[]>([]);
   protected readonly portions = signal<number | null>(1);
+  // The kitchen's minutes for one plate (none: the ordinary 10) and how hard they are.
+  protected readonly prepTime = signal<number | null>(10);
+  protected readonly complexity = signal<number | null>(1);
+  // This month's labor and overheads on a plate of it, as last saved.
+  protected readonly burdened = signal<BurdenedRecipeCost | null>(null);
+  protected readonly methodLabels = allocationMethodLabels;
+  private readonly intelligence = inject(IntelligenceApi);
+  protected readonly canSeeBurdened = inject(CostingAccess).has('Intelligence');
   // The recipe as saved, to tell a change from none.
   private readonly saved = signal('');
 
@@ -686,9 +822,21 @@ export class RecipeCardPage {
       !this.duplicate() &&
       this.categoryId() !== null &&
       (this.linked() !== null || this.name().trim() !== '') &&
-      (price === null || price >= 0)
+      (price === null || price >= 0) &&
+      this.activityValid()
     );
   });
+
+  // Minutes 0 to a day's 1,440, or none; complexity 0.1 to 10.
+  protected readonly activityValid = computed(() => {
+    const [minutes, weight] = [this.prepTime(), this.complexity()];
+    return (minutes === null || (minutes >= 0 && minutes <= 1440)) && weight !== null && weight >= 0.1 && weight <= 10;
+  });
+
+  // A typed figure; cleared, none.
+  protected figure(value: unknown): number | null {
+    return value === null || value === '' || value === undefined || Number.isNaN(Number(value)) ? null : Number(value);
+  }
 
   // The same ingredient on two lines: one line, with the quantities added together, is meant.
   protected readonly duplicate = computed(() => {
@@ -774,6 +922,8 @@ export class RecipeCardPage {
       variantId: linked?.variantId ?? null,
       portions: this.portions() ?? 1,
       ingredients: this.lines().map((l) => ({ rawMaterialId: l.rawMaterialId!, quantity: l.quantity!, yieldPercent: l.yieldPercent })),
+      prepTimeMinutes: this.prepTime(),
+      complexityWeight: this.complexity() ?? 1,
     };
     this.saving.set(true);
     this.problem.set(null);
@@ -835,6 +985,8 @@ export class RecipeCardPage {
       link: this.link(),
       lines: this.lines(),
       portions: this.portions(),
+      prepTime: this.prepTime(),
+      complexity: this.complexity(),
     });
   }
 
@@ -869,6 +1021,8 @@ export class RecipeCardPage {
         this.link.set(card.isStandalone ? null : linkKey(card.targetKind, card.catalogItemId, card.variantId));
         this.lines.set(card.lines.map((l) => ({ rawMaterialId: l.rawMaterialId, quantity: l.quantity, yieldPercent: l.yieldPercent })));
         this.portions.set(card.portions);
+        this.prepTime.set(card.prepTimeMinutes === undefined ? 10 : card.prepTimeMinutes);
+        this.complexity.set(card.complexityWeight ?? 1);
       } else {
         this.name.set('');
         this.categoryId.set(null);
@@ -876,12 +1030,28 @@ export class RecipeCardPage {
         this.link.set(start.kind && start.id ? linkKey(start.kind, Number(start.id), start.variant ? Number(start.variant) : null) : null);
         this.lines.set([{ rawMaterialId: null, quantity: null, yieldPercent: 100 }]);
         this.portions.set(1);
+        this.prepTime.set(10);
+        this.complexity.set(1);
       }
       this.saved.set(this.snapshot());
+      this.burdened.set(null);
+      if (card?.recipeId) {
+        void this.loadBurdened(card.recipeId);
+      }
     } catch (error) {
       this.error.set(errorMessage(error, 'The recipe could not be loaded.'));
     } finally {
       this.loading.set(false);
+    }
+  }
+
+  // Its plate's share of this month's labor and overheads: the box beside its food cost. Without
+  // it, the card is whole all the same.
+  private async loadBurdened(recipeId: string): Promise<void> {
+    try {
+      this.burdened.set(await firstValueFrom(this.intelligence.recipeBurdenedCost(recipeId)));
+    } catch {
+      this.burdened.set(null);
     }
   }
 

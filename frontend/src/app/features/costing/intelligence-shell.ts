@@ -5,7 +5,7 @@ import { SubNav, SubNavTab } from '../shared/sub-nav';
 // Material & demand intelligence (تحليلات الخامات والطلبيات): what the purchase prices did and what
 // that does to the dishes; what to order for the days ahead; what was used against what the sales
 // should have taken; which materials hold the money, and how long the stock lasts; and which dishes
-// earn their place on the menu.
+// earn their place on the menu, and what each plate truly costs with its labor and overheads.
 @Component({
   selector: 'app-intelligence-shell',
   imports: [RouterOutlet, SubNav],
@@ -22,5 +22,6 @@ export class IntelligenceShell {
     { path: 'consumption', icon: 'compare_arrows', en: 'Theoretical vs actual', ar: 'النظري مقابل الفعلي' },
     { path: 'abc', icon: 'stacked_bar_chart', en: 'ABC & days on hand', ar: 'تصنيف ABC وكفاية المخزون' },
     { path: 'menu', icon: 'grid_view', en: 'Menu engineering', ar: 'هندسة المنيو والربحية' },
+    { path: 'burdened', icon: 'layers', en: 'Burdened plate cost', ar: 'التكلفة الكلية للطبق' },
   ];
 }

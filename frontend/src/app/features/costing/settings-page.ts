@@ -10,7 +10,8 @@ import { MatSelectModule } from '@angular/material/select';
 import { firstValueFrom } from 'rxjs';
 import { AuthService } from '../../core/auth/auth.service';
 import { Permissions } from '../../core/auth/permissions';
-import { CostingApi, MaterialCost, SaveSharedCost, SharedCost } from '../../core/costing/costing.api';
+import { CostingApi, MaterialCost, PlateCostSettings, SaveSharedCost, SharedCost } from '../../core/costing/costing.api';
+import { OverheadAllocationMethod, allocationMethodLabels } from '../../core/costing/intelligence.api';
 import { errorMessage } from '../../core/http/error-message';
 import { MenuSalesApi } from '../../core/costing/menu-sales.api';
 import { Company } from '../../core/settings/company';
@@ -71,6 +72,45 @@ interface Draft {
             <button mat-flat-button (click)="saveTarget()" [disabled]="!targetValid() || (target === savedTarget && tolerance === savedTolerance) || busy()">
               Save
             </button>
+          }
+        </div>
+      </section>
+
+      <section class="block">
+        <h2>Plate cost <span class="inline-ar">التكلفة الكلية للطبق</span></h2>
+        <p class="note">
+          How the fully burdened plate cost shares labor and overheads unless asked otherwise, the net margin a plate should leave after
+          them, and a month's stand-in labor and overheads: used for a month with nothing recorded yet, and to start a simulation.
+        </p>
+        <div class="toolbar plate">
+          <mat-form-field subscriptSizing="dynamic" class="method">
+            <mat-label>Share labor &amp; overheads · طريقة التحميل</mat-label>
+            <mat-select [(ngModel)]="plate.defaultOverheadAllocationMethod" [disabled]="!canEdit()" aria-label="Default allocation method">
+              @for (m of methods; track m) {
+                <mat-option [value]="m">{{ methodLabels[m].en }} · {{ methodLabels[m].ar }}</mat-option>
+              }
+            </mat-select>
+          </mat-form-field>
+          <mat-form-field subscriptSizing="dynamic" class="target">
+            <mat-label>Target net margin · صافي الربح المستهدف</mat-label>
+            <input matInput type="number" min="0" max="99" step="0.5" [(ngModel)]="plate.targetNetMarginPercent" [disabled]="!canEdit()"
+              aria-label="Target net margin" />
+            <span matTextSuffix>%</span>
+          </mat-form-field>
+          <mat-form-field subscriptSizing="dynamic" class="amount" floatLabel="always">
+            <mat-label>Stand-in labor / month · عمالة تقديرية</mat-label>
+            <input matInput type="number" min="0" step="any" [(ngModel)]="plate.fallbackMonthlyLaborCost" [disabled]="!canEdit()"
+              placeholder="None · لا يوجد" aria-label="Stand-in monthly labor" />
+            <span matTextSuffix>&nbsp;{{ company.currency() }}</span>
+          </mat-form-field>
+          <mat-form-field subscriptSizing="dynamic" class="amount" floatLabel="always">
+            <mat-label>Stand-in overheads / month · مصاريف تقديرية</mat-label>
+            <input matInput type="number" min="0" step="any" [(ngModel)]="plate.fallbackMonthlyOverheadCost" [disabled]="!canEdit()"
+              placeholder="None · لا يوجد" aria-label="Stand-in monthly overheads" />
+            <span matTextSuffix>&nbsp;{{ company.currency() }}</span>
+          </mat-form-field>
+          @if (canEdit()) {
+            <button mat-flat-button (click)="savePlate()" [disabled]="!plateValid() || samePlate() || busy()">Save</button>
           }
         </div>
       </section>
@@ -234,6 +274,21 @@ interface Draft {
         font: var(--mat-sys-title-small);
       }
     }
+    .plate {
+      flex-wrap: wrap;
+      .method {
+        width: 300px;
+      }
+      .amount {
+        width: 260px;
+      }
+    }
+    @media (max-width: 600px) {
+      .plate .method,
+      .plate .amount {
+        width: 100%;
+      }
+    }
   `,
 })
 export class SettingsPage {
@@ -263,6 +318,16 @@ export class SettingsPage {
   protected beverages: string[] = [];
   private savedBeverages: string[] = [];
 
+  protected readonly methods: OverheadAllocationMethod[] = ['ActivityBasedPrepTime', 'ByQuantitySold', 'ByRevenueShare'];
+  protected readonly methodLabels = allocationMethodLabels;
+  protected plate: PlateCostSettings = {
+    defaultOverheadAllocationMethod: 'ActivityBasedPrepTime',
+    targetNetMarginPercent: 15,
+    fallbackMonthlyLaborCost: null,
+    fallbackMonthlyOverheadCost: null,
+  };
+  private savedPlate = JSON.stringify(this.plate);
+
   constructor() {
     void this.load();
     firstValueFrom(this.menuApi.menu()).then(
@@ -289,6 +354,46 @@ export class SettingsPage {
       this.notify.error(error, 'The targets could not be saved.');
     } finally {
       this.busy.set(false);
+    }
+  }
+
+  // A cleared amount is none; a margin from 0 to under 100.
+  private cleanPlate(): PlateCostSettings {
+    const amount = (value: unknown) => (value === null || value === '' || value === undefined ? null : Number(value));
+    return { ...this.plate, fallbackMonthlyLaborCost: amount(this.plate.fallbackMonthlyLaborCost), fallbackMonthlyOverheadCost: amount(this.plate.fallbackMonthlyOverheadCost) };
+  }
+
+  protected plateValid(): boolean {
+    const plate = this.cleanPlate();
+    const margin = plate.targetNetMarginPercent;
+    return (
+      typeof margin === 'number' && margin >= 0 && margin < 100 &&
+      (plate.fallbackMonthlyLaborCost ?? 0) >= 0 &&
+      (plate.fallbackMonthlyOverheadCost ?? 0) >= 0
+    );
+  }
+
+  protected samePlate(): boolean {
+    return JSON.stringify(this.cleanPlate()) === this.savedPlate;
+  }
+
+  protected async savePlate(): Promise<void> {
+    this.busy.set(true);
+    try {
+      const saved = await firstValueFrom(this.api.saveSettings({ foodCostTargetPercent: this.savedTarget, plateCost: this.cleanPlate() }));
+      this.keepPlate(saved.plateCost);
+      this.notify.info('Plate cost settings saved. · تم الحفظ.');
+    } catch (error) {
+      this.notify.error(error, 'The plate cost settings could not be saved.');
+    } finally {
+      this.busy.set(false);
+    }
+  }
+
+  private keepPlate(plate: PlateCostSettings | null | undefined): void {
+    if (plate) {
+      this.plate = { ...plate };
+      this.savedPlate = JSON.stringify(this.cleanPlate());
     }
   }
 
@@ -368,6 +473,7 @@ export class SettingsPage {
       this.tolerance = this.savedTolerance = settings.varianceTolerancePercent ?? 5;
       this.beverages = [...(settings.beverageCategories ?? [])];
       this.savedBeverages = [...this.beverages];
+      this.keepPlate(settings.plateCost);
       this.shared.set(shared);
       this.materials.set(materials);
     } catch (error) {

@@ -185,7 +185,8 @@ public class WorkbookTests
         using var book = new XLWorkbook(RecipeWorkbook.Build(sheet, withRows: true));
 
         var data = book.Worksheet(RecipeWorkbook.DataSheetName);
-        Assert.Equal([RecipeWorkbook.ItemHeader, "Ingredient · المكون", RecipeWorkbook.QuantityHeader, RecipeWorkbook.PortionsHeader, RecipeWorkbook.CategoryHeader],
+        Assert.Equal([RecipeWorkbook.ItemHeader, "Ingredient · المكون", RecipeWorkbook.QuantityHeader, RecipeWorkbook.PortionsHeader, RecipeWorkbook.CategoryHeader,
+                RecipeWorkbook.PrepTimeHeader],
             data.Row(1).CellsUsed().Select(c => c.GetString()));
         // Every material and prep item, its code, its kind and its system unit, out of sight.
         var reference = book.Worksheet("Ingredients");

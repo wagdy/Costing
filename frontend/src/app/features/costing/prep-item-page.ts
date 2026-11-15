@@ -161,6 +161,18 @@ const displayUnits: Record<UnitOfMeasure, [string, number]> = { Gram: ['kg', 100
           <input matInput type="number" min="0" step="any" [(ngModel)]="reorder" />
           <span matTextSuffix>&nbsp;{{ displayUnit }}</span>
         </mat-form-field>
+        <mat-form-field class="prep-time">
+          <mat-label>Prep time a batch (mins) · وقت تحضير الدفعة</mat-label>
+          <input matInput type="number" min="0" max="1440" step="any" placeholder="10" [(ngModel)]="prepTime" (ngModelChange)="touch()"
+            aria-label="Prep time a batch in minutes" />
+          <span matTextSuffix>&nbsp;min</span>
+          <mat-hint>A dish made with it carries its share, for the burdened plate cost.</mat-hint>
+        </mat-form-field>
+        <mat-form-field class="complexity">
+          <mat-label>Complexity · معامل الصعوبة</mat-label>
+          <input matInput type="number" min="0.1" max="10" step="0.1" [(ngModel)]="complexity" (ngModelChange)="touch()" aria-label="Complexity weight" />
+          <span matTextPrefix>×&nbsp;</span>
+        </mat-form-field>
       </section>
 
       <h3>Recipe for one batch <span class="inline-ar">مكونات الدفعة</span></h3>
@@ -391,6 +403,9 @@ export class PrepItemPage {
   // In the display unit: 10 (kg).
   protected batch: number | null = 10;
   protected reorder: number | null = 0;
+  // A batch's minutes (none: the ordinary 10) and how hard they are: the burdened plate cost's.
+  protected prepTime: number | null = 10;
+  protected complexity: number | null = 1;
 
   // The form is changed in place; this bumps the signal so the costs follow.
   private readonly version = signal(0);
@@ -440,7 +455,11 @@ export class PrepItemPage {
       this.name.trim() !== '' &&
       (this.batch ?? 0) > 0 &&
       lines.every((l) => l.rawMaterialId && (l.quantity ?? 0) > 0 && (l.yieldPercent === null || (l.yieldPercent > 0 && l.yieldPercent <= 100))) &&
-      new Set(ids).size === ids.length
+      new Set(ids).size === ids.length &&
+      (this.prepTime === null || (this.prepTime as unknown) === '' || (this.prepTime >= 0 && this.prepTime <= 1440)) &&
+      this.complexity !== null &&
+      this.complexity >= 0.1 &&
+      this.complexity <= 10
     );
   });
 
@@ -531,6 +550,8 @@ export class PrepItemPage {
       displayUnit: this.displayUnit,
       displayUnitSize: this.displayUnitSize,
       reorderLevel: PrepItemPage.toBase(this.reorder ?? 0, this.displayUnitSize),
+      prepTimeMinutes: this.prepTime === null || (this.prepTime as unknown) === '' ? null : Number(this.prepTime),
+      complexityWeight: Number(this.complexity ?? 1),
     };
     this.saving.set(true);
     try {
@@ -575,6 +596,8 @@ export class PrepItemPage {
     this.displayUnitSize = item.displayUnitSize;
     this.batch = item.batchQuantity / item.displayUnitSize;
     this.reorder = item.reorderLevel / item.displayUnitSize;
+    this.prepTime = item.prepTimeMinutes === undefined ? 10 : item.prepTimeMinutes;
+    this.complexity = item.complexityWeight ?? 1;
     this.lines.set(
       item.ingredients.length
         ? item.ingredients.map((i) => ({ rawMaterialId: i.rawMaterialId, quantity: i.quantity, yieldPercent: i.yieldPercent }))

@@ -23,7 +23,9 @@ public sealed record RecipeDto(
     int? VariantId,
     IReadOnlyList<RecipeIngredientDto> Ingredients,
     int Portions,
-    bool IsDeleted)
+    bool IsDeleted,
+    decimal? PrepTimeMinutes = PlateActivity.DefaultPrepTimeMinutes,
+    decimal ComplexityWeight = PlateActivity.DefaultComplexityWeight)
 {
     public static RecipeDto From(Recipe recipe) => new(
         recipe.Id,
@@ -35,7 +37,9 @@ public sealed record RecipeDto(
         recipe.VariantId,
         recipe.Ingredients.Select(i => new RecipeIngredientDto(i.RawMaterialId, i.Quantity, i.YieldPercent)).ToList(),
         recipe.Portions,
-        recipe.IsDeleted);
+        recipe.IsDeleted,
+        recipe.PrepTimeMinutes,
+        recipe.ComplexityWeight);
 }
 
 internal static class RecipeWriting
@@ -141,7 +145,9 @@ public sealed record SaveRecipeCommand(
     int Portions,
     IReadOnlyList<RecipeIngredientDto> Ingredients,
     Guid? RecipeCategoryId = null,
-    decimal? PlannedPrice = null) : IRequest<RecipeDto>;
+    decimal? PlannedPrice = null,
+    // Its prep time and complexity (معامل وقت وصعوبة التحضير); none keeps them as they are.
+    PlateActivity? Activity = null) : IRequest<RecipeDto>;
 
 internal sealed class SaveRecipeHandler(
     IRecipeRepository recipes,
@@ -181,6 +187,8 @@ internal sealed class SaveRecipeHandler(
         }
 
         await recipe.WriteAsync(materials, request.Ingredients, request.Portions, cancellationToken);
+        if (request.Activity is { } activity)
+            recipe.SetActivity(activity);
         await unitOfWork.SaveChangesAsync(cancellationToken);
         return RecipeDto.From(recipe);
     }

@@ -45,15 +45,17 @@ public class RecipeSheetTests
         await _pos.Send(new SaveRecipeCategoryCommand(meals, "Staff meals"));
         await _pos.Send(new SetRecipeCommand(RecipeTargetKind.MenuItem, TestCosting.Burger, null,
             [new RecipeIngredientDto(ids["Mozzarella"], 150), new RecipeIngredientDto(ids["Pizza dough"], 250)]));
-        await _pos.Send(new SaveRecipeCommand(null, "Staff meal", null, null, null, 4, [new RecipeIngredientDto(ids["Eggs"], 2)], meals));
+        await _pos.Send(new SaveRecipeCommand(null, "Staff meal", null, null, null, 4, [new RecipeIngredientDto(ids["Eggs"], 2)], meals,
+            Activity: new PlateActivity(25, 1)));
 
         var sheet = await _pos.Send(new GetRecipeSheetQuery());
 
+        // The prep time for one plate on its first row: the ordinary 10 until set.
         Assert.Equal(
             [
-                new RecipeSheetLine("1 · Burger", "Mozzarella (Kg)", 0.15m, 1, null),
+                new RecipeSheetLine("1 · Burger", "Mozzarella (Kg)", 0.15m, 1, null, 10),
                 new RecipeSheetLine("1 · Burger", "Pizza dough · مصنّع (Kg)", 0.25m, null, null),
-                new RecipeSheetLine("Staff meal", "Eggs (Piece)", 2, 4, "Staff meals"),
+                new RecipeSheetLine("Staff meal", "Eggs (Piece)", 2, 4, "Staff meals", 25),
             ],
             sheet.Lines);
         // The dropdowns: the menu's items, sizes and add-ons by code, and the recipes off it; every
@@ -181,11 +183,13 @@ public class RecipeSheetTests
         await _pos.Send(new SetRecipeCommand(RecipeTargetKind.MenuItem, TestCosting.Shawarma, TestCosting.KiloTray,
             [new RecipeIngredientDto(ids["Flour"], 1250), new RecipeIngredientDto(ids["Milk"], 333.3m)], Portions: 4));
         await _pos.Send(new SetRecipeCommand(RecipeTargetKind.AddOn, TestCosting.Cheese, null, [new RecipeIngredientDto(ids["Mozzarella"], 30)]));
-        await _pos.Send(new SaveRecipeCommand(null, "Staff meal", null, null, null, 4, [new RecipeIngredientDto(ids["Eggs"], 2)], meals));
+        await _pos.Send(new SaveRecipeCommand(null, "Staff meal", null, null, null, 4, [new RecipeIngredientDto(ids["Eggs"], 2)], meals,
+            Activity: new PlateActivity(12.5m, 1)));
 
         var written = await _pos.Send(new GetRecipeSheetQuery());
         static string? Cell(decimal? value) => value?.ToString(CultureInfo.InvariantCulture);
-        var rows = written.Lines.Select((l, i) => new RecipeSheetRow(i + 2, l.Item, l.Ingredient, Cell(l.Quantity), Cell(l.Portions), l.Category)).ToArray();
+        var rows = written.Lines.Select((l, i) => new RecipeSheetRow(i + 2, l.Item, l.Ingredient, Cell(l.Quantity), Cell(l.Portions), l.Category, Cell(l.PrepTimeMinutes)))
+            .ToArray();
 
         var elsewhere = new TestCosting();
         await SeedAsync(elsewhere);
@@ -196,6 +200,26 @@ public class RecipeSheetTests
 
         var again = await Import(rows);
         Assert.Equal((0, 0, 3), (again.Created.Count, again.Updated.Count, again.Unchanged));
+    }
+
+    [Fact]
+    public async Task A_prep_time_on_the_sheet_sets_the_plate_s_minutes_and_a_blank_one_keeps_them()
+    {
+        await SeedAsync(_pos);
+        var timed = await Import([new RecipeSheetRow(2, "Soup", "Flour (Kg)", "1", PrepTime: "18")]);
+        Assert.Single(timed.Created);
+        Assert.Equal(18m, (await RecipeNamed("Soup")).PrepTimeMinutes);
+
+        // Blank: kept; another: changed and said; not minutes: the recipe left as it was.
+        var kept = await Import([new RecipeSheetRow(2, "Soup", "Flour (Kg)", "2")]);
+        Assert.Equal(18m, (await RecipeNamed("Soup")).PrepTimeMinutes);
+        Assert.Equal(["Ingredients"], Assert.Single(kept.Updated).Changes);
+        var changed = await Import([new RecipeSheetRow(2, "Soup", "Flour (Kg)", "2", PrepTime: "7.5")]);
+        Assert.Equal(7.5m, (await RecipeNamed("Soup")).PrepTimeMinutes);
+        Assert.Equal(["Prep time"], Assert.Single(changed.Updated).Changes);
+        var bad = await Import([new RecipeSheetRow(2, "Soup", "Flour (Kg)", "3", PrepTime: "a while")]);
+        Assert.Contains("is not a prep time", Assert.Single(bad.Skipped).Reason);
+        Assert.Equal(7.5m, (await RecipeNamed("Soup")).PrepTimeMinutes);
     }
 
     [Fact]

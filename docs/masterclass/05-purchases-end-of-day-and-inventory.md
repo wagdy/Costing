@@ -3165,7 +3165,7 @@ internal static class BreakageDtos
 
 أكبر Controller: الخامات والوحدات، الوصفات والمصنعات، أوامر الإنتاج، الجرد، الهالك، الفواتير ويومية المشتريات وتعديلها وصورها، الفئات والمصروفات والموردون، و **طلبات الحذف** (`deletion-requests`). الصلاحيات على كل endpoint (لا تعتمد على السجل)، و `CanApprove` يقرر "200 تنفيذ" أم "202 طلب".
 
-> 📄 **`backend/src/Costing.Api/Controllers/InventoryController.cs`** — 883 سطر
+> 📄 **`backend/src/Costing.Api/Controllers/InventoryController.cs`** — 893 سطر
 
 ```csharp
 using MediatR;
@@ -3983,10 +3983,15 @@ public sealed record SavePrepItemRequest(
     // For a request: made by the till, so a retry is recorded once; and why, for the manager.
     Guid? RequestId = null,
     string? Reason = null,
-    Guid? RecipeCategoryId = null)
+    Guid? RecipeCategoryId = null,
+    // A batch's prep time (null: the ordinary 10 minutes) and complexity, sent together: without
+    // the complexity, neither changes.
+    decimal? PrepTimeMinutes = null,
+    decimal? ComplexityWeight = null)
 {
     public SavePrepItemCommand ToCommand(Guid? id) =>
-        new(id, Name, Unit, BatchQuantity, Ingredients ?? [], Code, CategoryId, DisplayUnit, DisplayUnitSize, ReorderLevel, RecipeCategoryId);
+        new(id, Name, Unit, BatchQuantity, Ingredients ?? [], Code, CategoryId, DisplayUnit, DisplayUnitSize, ReorderLevel, RecipeCategoryId,
+            ComplexityWeight is { } weight ? new PlateActivity(PrepTimeMinutes, weight) : null);
 }
 
 public sealed record SaveRecipeRequest(
@@ -3997,10 +4002,15 @@ public sealed record SaveRecipeRequest(
     int Portions,
     IReadOnlyList<RecipeIngredientDto> Ingredients,
     Guid? RecipeCategoryId = null,
-    decimal? PlannedPrice = null)
+    decimal? PlannedPrice = null,
+    // The prep time for one plate (null: the ordinary 10 minutes) and its complexity, sent
+    // together: without the complexity, neither changes.
+    decimal? PrepTimeMinutes = null,
+    decimal? ComplexityWeight = null)
 {
     public SaveRecipeCommand ToCommand(Guid? id) =>
-        new(id, Name, TargetKind, CatalogItemId, VariantId, Portions, Ingredients ?? [], RecipeCategoryId, PlannedPrice);
+        new(id, Name, TargetKind, CatalogItemId, VariantId, Portions, Ingredients ?? [], RecipeCategoryId, PlannedPrice,
+            ComplexityWeight is { } weight ? new PlateActivity(PrepTimeMinutes, weight) : null);
 }
 
 public sealed record SaveRecipeCategoryRequest(string Name, string? NameAr = null);

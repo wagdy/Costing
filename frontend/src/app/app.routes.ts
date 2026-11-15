@@ -101,6 +101,7 @@ const costingChildren: Routes = [
       { path: 'consumption', loadComponent: () => import('./features/costing/consumption-page').then((m) => m.ConsumptionPage) },
       { path: 'abc', loadComponent: () => import('./features/costing/abc-page').then((m) => m.AbcPage) },
       { path: 'menu', loadComponent: () => import('./features/costing/menu-engineering-page').then((m) => m.MenuEngineeringPage) },
+      { path: 'burdened', loadComponent: () => import('./features/costing/burdened-cost-page').then((m) => m.BurdenedCostPage) },
     ],
   },
   {

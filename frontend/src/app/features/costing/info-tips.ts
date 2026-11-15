@@ -578,6 +578,143 @@ export const infoTips = {
     { en: '(Counted − book) × average cost per unit; flagged when |counted − book| ÷ book × 100 > tolerance %.', ar: '(المجرود − الدفتري) × متوسط تكلفة الوحدة؛ ويُعلّم إذا تجاوز |الفرق| ÷ الدفتري × 100 نسبة السماح.' },
   ),
 
+  // ---- The fully burdened plate cost ----
+  bcLaborPool: tip(
+    { en: 'Labor pool allocated', ar: 'إجمالي العمالة المحملة' },
+    {
+      en: "The period's labor, shared over the plates sold: the payroll approved on HR (or the salaries paid for the month), the wages entered on the KPIs and wages paid as expenses. Each month is spread evenly over its days.",
+      ar: 'عمالة الفترة موزعة على الأطباق المباعة: مسير الرواتب المعتمد (أو الرواتب المصروفة للشهر)، والأجور المدخلة في المؤشرات، والأجور المسجلة كمصروفات. كل شهر يُوزع بالتساوي على أيامه.',
+    },
+    {
+      en: 'Σ each month × the days chosen in it ÷ its days. A month with nothing recorded takes the stand-in figure from Cost settings. Average a plate = allocated ÷ plates sold.',
+      ar: 'مجموع كل شهر × أيام الفترة فيه ÷ عدد أيامه. الشهر الذي لا شيء مسجل له يأخذ الرقم التقديري من الإعدادات. المتوسط للطبق = المحمّل ÷ الأطباق المباعة.',
+    },
+  ),
+  bcOverheadPool: tip(
+    { en: 'Overhead pool allocated', ar: 'إجمالي الإيجار والمرافق والإهلاك' },
+    {
+      en: "Rent, utilities, running costs, interest and depreciation for the period: what is entered for each month on the KPIs, and the expense invoices and vouchers filed under an Occupation, Controllable or Other fixed category.",
+      ar: 'الإيجار والمرافق ومصاريف التشغيل والفوائد والإهلاك للفترة: ما أُدخل لكل شهر في المؤشرات، وفواتير وسندات المصروفات تحت أقسام الإيجار والمصاريف القابلة للتحكم والثابتة.',
+    },
+    {
+      en: 'Σ each month × the days chosen in it ÷ its days; a rent voucher on the 1st is carried by every plate of its month. Average a plate = allocated ÷ plates sold.',
+      ar: 'مجموع كل شهر × أيام الفترة فيه ÷ عدد أيامه؛ سند الإيجار أول الشهر يتحمله كل طبق في الشهر. المتوسط للطبق = المحمّل ÷ الأطباق المباعة.',
+    },
+  ),
+  bcAverageBurdened: tip(
+    { en: 'Average fully burdened cost %', ar: 'متوسط التكلفة الكلية %' },
+    {
+      en: 'Of every pound the plates sold for, how much went on food, labor and overheads together; the rest is the true net margin.',
+      ar: 'من كل جنيه بيعت به الأطباق، كم ذهب للخامات والعمالة والمصاريف معًا؛ والباقي هو صافي الربح الحقيقي.',
+    },
+    {
+      en: 'Σ (fully burdened cost × plates sold) ÷ Σ (selling price × plates sold) × 100; net margin % = 100 − it.',
+      ar: 'مجموع (التكلفة الكلية × الكمية) ÷ مجموع (سعر البيع × الكمية) × 100؛ ونسبة صافي الربح = 100 − هذه النسبة.',
+    },
+  ),
+  bcBleeding: tip(
+    { en: 'Dishes bleeding after overhead', ar: 'أطباق خاسرة بعد تحميل المصاريف' },
+    {
+      en: 'Dishes that look profitable on food cost alone but lose money once their labor and overheads are added: reprice them, cut their time or their cost, or rethink them.',
+      ar: 'أطباق تبدو رابحة على تكلفة الخامات وحدها لكنها تخسر بعد إضافة العمالة والمصاريف: ارفع سعرها أو قلل وقتها أو تكلفتها أو أعد النظر فيها.',
+    },
+    { en: 'Selling price − food cost > 0, and selling price − fully burdened cost < 0.', ar: 'سعر البيع − تكلفة الخامات > 0، وسعر البيع − التكلفة الكلية < 0.' },
+  ),
+  bcActivity: tip(
+    { en: 'Activity-based (prep time)', ar: 'حسب وقت التحضير (ABC)' },
+    {
+      en: "Labor goes where the kitchen's time goes: a dish that takes 20 minutes carries twice the labor of one that takes 10. Overheads (rent, utilities) are shared equally by the plate.",
+      ar: 'العمالة تُحمّل حسب وقت المطبخ: طبق يستغرق 20 دقيقة يتحمل ضعف عمالة طبق يستغرق 10. والمصاريف (الإيجار والمرافق) تُوزع بالتساوي على الأطباق.',
+    },
+    {
+      en: "Labor a plate = labor pool × its weighted minutes ÷ Σ (plates sold × weighted minutes). Weighted minutes = prep time × complexity, plus its prep items' share of their batches' time. Overhead a plate = overhead pool ÷ plates sold.",
+      ar: 'عمالة الطبق = وعاء العمالة × دقائقه الموزونة ÷ مجموع (الكمية × الدقائق الموزونة). الدقائق الموزونة = وقت التحضير × معامل الصعوبة + نصيبه من وقت تشغيلات المصنّعات. مصاريف الطبق = وعاء المصاريف ÷ الأطباق المباعة.',
+    },
+  ),
+  bcEqual: tip(
+    { en: 'Equal per plate', ar: 'بالتساوي للطبق' },
+    { en: 'Every plate sold carries the same labor and the same overheads, whatever it is.', ar: 'كل طبق مباع يتحمل نفس العمالة ونفس المصاريف أيًا كان.' },
+    { en: 'Labor a plate = labor pool ÷ plates sold; overhead a plate = overhead pool ÷ plates sold.', ar: 'عمالة الطبق = وعاء العمالة ÷ الأطباق المباعة؛ مصاريف الطبق = وعاء المصاريف ÷ الأطباق المباعة.' },
+  ),
+  bcRevenue: tip(
+    { en: 'By revenue %', ar: 'بنسبة الإيراد' },
+    {
+      en: 'Each dish carries labor and overheads in proportion to what it brings in: a dish twice the price carries twice the share.',
+      ar: 'كل طبق يتحمل العمالة والمصاريف بنسبة مساهمته في الإيراد: طبق بضعف السعر يتحمل ضعف النصيب.',
+    },
+    {
+      en: "Share = price × plates sold ÷ the period's sales; labor a plate = labor pool × share ÷ plates sold = labor pool × price ÷ sales (the same for the overheads).",
+      ar: 'النسبة = السعر × الكمية ÷ مبيعات الفترة؛ عمالة الطبق = وعاء العمالة × النسبة ÷ الكمية = وعاء العمالة × السعر ÷ المبيعات (ومثلها المصاريف).',
+    },
+  ),
+  bcSource: tip(
+    { en: 'Actual or simulated pools', ar: 'المصاريف الفعلية أو التقديرية' },
+    {
+      en: "Actual: the period's own labor and overheads as recorded. Simulated: monthly figures you type, to test the plates' economics before a month's payroll and bills are in.",
+      ar: 'الفعلية: عمالة ومصاريف الفترة كما سُجلت. التقديرية: أرقام شهرية تكتبها لاختبار ربحية الأطباق قبل اكتمال الرواتب والفواتير.',
+    },
+    {
+      en: 'Simulated pool = the monthly figure × the days chosen in each month ÷ its days. Blank: the stand-in figures from Cost settings.',
+      ar: 'الوعاء التقديري = الرقم الشهري × أيام الفترة في كل شهر ÷ عدد أيامه. فارغ: الأرقام التقديرية من الإعدادات.',
+    },
+  ),
+  bcFood: tip(
+    { en: 'Food cost', ar: 'تكلفة الخامات' },
+    {
+      en: "One plate's ingredients at today's costs, as its recipe card shows them: the moving averages, prep items by their batches, and the shared costs.",
+      ar: 'خامات الطبق الواحد بتكلفة اليوم كما في كارت الوصفة: متوسط التكلفة المتحرك، والمصنّعات بتكلفة تشغيلاتها، والتكاليف المشتركة.',
+    },
+    { en: 'Recipe cost ÷ portions + shared costs a meal; food cost % = it ÷ selling price × 100.', ar: 'تكلفة الوصفة ÷ عدد الحصص + نصيب الوجبة من التكاليف المشتركة؛ النسبة = ÷ سعر البيع × 100.' },
+  ),
+  bcLabor: tip(
+    { en: 'Allocated labor', ar: 'العمالة المحملة' },
+    { en: "The plate's share of the period's labor, by the method chosen.", ar: 'نصيب الطبق من عمالة الفترة حسب الطريقة المختارة.' },
+    {
+      en: 'Activity-based: labor pool × weighted minutes ÷ Σ (plates × weighted minutes); equal: pool ÷ plates; by revenue: pool × price ÷ sales.',
+      ar: 'حسب الوقت: الوعاء × الدقائق الموزونة ÷ مجموع (الكمية × الدقائق)؛ بالتساوي: الوعاء ÷ الأطباق؛ بالإيراد: الوعاء × السعر ÷ المبيعات.',
+    },
+  ),
+  bcOverhead: tip(
+    { en: 'Allocated overheads', ar: 'الإيجار والمرافق والإهلاك المحملة' },
+    { en: "The plate's share of the period's rent, utilities, running costs, interest and depreciation.", ar: 'نصيب الطبق من إيجار ومرافق ومصاريف تشغيل وفوائد وإهلاك الفترة.' },
+    { en: 'Equal and activity-based: overhead pool ÷ plates sold; by revenue: pool × price ÷ sales.', ar: 'بالتساوي وحسب الوقت: وعاء المصاريف ÷ الأطباق المباعة؛ بالإيراد: الوعاء × السعر ÷ المبيعات.' },
+  ),
+  bcBurdened: tip(
+    { en: 'Fully burdened cost', ar: 'التكلفة الكلية للطبق' },
+    { en: 'What one plate really costs the restaurant: its food, its labor and its share of the overheads.', ar: 'ما يكلفه الطبق الواحد فعلًا: خاماته وعمالته ونصيبه من المصاريف.' },
+    {
+      en: 'Food + labor + overheads; prime cost = food + labor; % = ÷ selling price × 100.',
+      ar: 'الخامات + العمالة + المصاريف؛ التكلفة الأولية = الخامات + العمالة؛ النسبة = ÷ سعر البيع × 100.',
+    },
+  ),
+  bcNetProfit: tip(
+    { en: 'True net profit', ar: 'صافي الربح الحقيقي للطبق' },
+    { en: 'What a plate leaves after everything it costs, and over the period, for the plates sold.', ar: 'ما يتبقى من الطبق بعد كل تكاليفه، وعلى الفترة للأطباق المباعة.' },
+    {
+      en: 'Selling price (before VAT) − fully burdened cost; margin % = it ÷ selling price × 100; period = it × plates sold.',
+      ar: 'سعر البيع (قبل الضريبة) − التكلفة الكلية؛ النسبة = ÷ سعر البيع × 100؛ الفترة = × الكمية المباعة.',
+    },
+  ),
+  bcSuggested: tip(
+    { en: 'Suggested price', ar: 'السعر المقترح' },
+    { en: 'The price that leaves the target net margin after food, labor and overheads.', ar: 'السعر الذي يحقق صافي الربح المستهدف بعد الخامات والعمالة والمصاريف.' },
+    {
+      en: 'Equal or activity-based: fully burdened cost ÷ (1 − target %). By revenue (the shares grow with the price): food ÷ (1 − target % − pools ÷ sales); none when the pools take what the margin leaves.',
+      ar: 'بالتساوي أو حسب الوقت: التكلفة الكلية ÷ (1 − النسبة المستهدفة). بالإيراد: الخامات ÷ (1 − النسبة − الأوعية ÷ المبيعات)؛ لا سعر إذا استهلكت الأوعية ما يتبقى.',
+    },
+  ),
+  bcPrepTime: tip(
+    { en: 'Prep time (mins)', ar: 'وقت التحضير بالدقائق' },
+    {
+      en: "The kitchen's minutes of work for one plate (for a prep item, one batch), and how hard they are: 1 is an ordinary minute, 1.5 skilled work. Labor is shared by them on the activity-based method.",
+      ar: 'دقائق عمل المطبخ للطبق الواحد (وللمصنّع: التشغيلة الواحدة)، ومعامل الصعوبة: 1 دقيقة عادية و1.5 عمل ماهر. تُوزع العمالة بها في طريقة حسب الوقت.',
+    },
+    {
+      en: 'Weighted minutes = prep time × complexity + Σ (what a plate takes of each prep item ÷ its batch × the batch\'s weighted minutes). Blank: the ordinary 10 minutes.',
+      ar: 'الدقائق الموزونة = وقت التحضير × معامل الصعوبة + مجموع (ما يأخذه الطبق من كل مصنّع ÷ تشغيلته × دقائق التشغيلة). فارغ: 10 دقائق.',
+    },
+  ),
+
   // ---- The stock card ----
   scOpening: tip(
     { en: 'Opening balance', ar: 'رصيد أول المدة' },

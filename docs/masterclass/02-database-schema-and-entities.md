@@ -1335,7 +1335,7 @@ public sealed class RecipeIngredient : Entity
 ```
 
 
-> 📄 **`backend/src/Costing.Domain/Recipes/Recipe.cs`** — 134 سطر
+> 📄 **`backend/src/Costing.Domain/Recipes/Recipe.cs`** — 148 سطر
 
 ```csharp
 using Costing.Domain.Common;
@@ -1440,6 +1440,20 @@ public sealed class Recipe : AggregateRoot
     // How many portions the quantities below make, as a recipe is written: 15 for a tray of
     // strata. A sold item uses one portion's share.
     public int Portions { get; private set; } = 1;
+
+    // The kitchen's minutes for one plate of it, and how hard they are (PlateActivity): what the
+    // burdened plate cost shares the labor by. A new recipe starts at the ordinary 10 minutes.
+    public decimal? PrepTimeMinutes { get; private set; } = PlateActivity.DefaultPrepTimeMinutes;
+    public decimal ComplexityWeight { get; private set; } = PlateActivity.DefaultComplexityWeight;
+
+    public PlateActivity Activity => new(PrepTimeMinutes, ComplexityWeight);
+
+    public void SetActivity(PlateActivity activity)
+    {
+        var checkedActivity = PlateActivity.Checked(activity.PrepTimeMinutes, activity.ComplexityWeight);
+        PrepTimeMinutes = checkedActivity.PrepTimeMinutes;
+        ComplexityWeight = checkedActivity.ComplexityWeight;
+    }
 
     public IReadOnlyCollection<RecipeIngredient> Ingredients => _ingredients.AsReadOnly();
 
@@ -1623,11 +1637,12 @@ public static class StockRequirements
 ```
 
 
-> 📄 **`backend/src/Costing.Domain/Production/PrepRecipe.cs`** — 99 سطر
+> 📄 **`backend/src/Costing.Domain/Production/PrepRecipe.cs`** — 114 سطر
 
 ```csharp
 using Costing.Domain.Common;
 using Costing.Domain.RawMaterials;
+using Costing.Domain.Recipes;
 
 namespace Costing.Domain.Production;
 
@@ -1658,6 +1673,20 @@ public sealed class PrepRecipe : AggregateRoot
     public Guid? RecipeCategoryId { get; private set; }
 
     public void MoveTo(Guid? categoryId) => RecipeCategoryId = categoryId;
+
+    // The kitchen's minutes for one batch, and how hard they are (PlateActivity): a dish made with
+    // the prep item carries its share of them, by how much of a batch it takes.
+    public decimal? PrepTimeMinutes { get; private set; } = PlateActivity.DefaultPrepTimeMinutes;
+    public decimal ComplexityWeight { get; private set; } = PlateActivity.DefaultComplexityWeight;
+
+    public PlateActivity Activity => new(PrepTimeMinutes, ComplexityWeight);
+
+    public void SetActivity(PlateActivity activity)
+    {
+        var checkedActivity = PlateActivity.Checked(activity.PrepTimeMinutes, activity.ComplexityWeight);
+        PrepTimeMinutes = checkedActivity.PrepTimeMinutes;
+        ComplexityWeight = checkedActivity.ComplexityWeight;
+    }
 
     public IReadOnlyCollection<PrepIngredient> Ingredients => _ingredients.AsReadOnly();
 
@@ -4989,7 +5018,7 @@ internal static class PropertyBuilderExtensions
 
 `InventoryConfigurations.cs`: الخامات، الوصفات، المخزون، الجرد، المشتريات، الخزنة، الموردون، الموافقات. لاحظ: **وصفة فعّالة واحدة لكل هدف** (فهرس فريد مرشّح `NULLS NOT DISTINCT` على `(TargetKind, CatalogItemId, VariantId)`)، فهرس الحركات الفريد، خامة واحدة لكل بند جرد ولكل بند فاتورة، **طلب موافقة معلّق واحد لكل سجل** (فهرس فريد على `RecordId` بشرط `Status = 'Pending'`)، قيد عكسي واحد لكل قيد خزنة، `Cascade` على البنود و `Restrict` على المراجع، وفهرس `PayrollRunId` على قيود الخزنة.
 
-> 📄 **`backend/src/Costing.Infrastructure/Persistence/Configurations/InventoryConfigurations.cs`** — 455 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Persistence/Configurations/InventoryConfigurations.cs`** — 462 سطر
 
 ```csharp
 using System.Text.Json;
@@ -5052,6 +5081,10 @@ internal sealed class RecipeConfiguration : IEntityTypeConfiguration<Recipe>
         builder.Property(r => r.TargetKind).HasConversion<string>().HasMaxLength(32);
         builder.Property(r => r.DeletedBy).HasMaxLength(200);
         builder.Property(r => r.Portions).HasDefaultValue(1);
+        // Null is the ordinary 10 minutes, so it has no database default to stand in for it.
+        builder.Property(r => r.PrepTimeMinutes).HasPrecision(6, 2);
+        builder.Property(r => r.ComplexityWeight).HasPrecision(6, 2).HasDefaultValue(PlateActivity.DefaultComplexityWeight);
+        builder.Ignore(r => r.Activity);
 
         // One active recipe per target; deleted and off-menu ones are left out. NULLS NOT
         // DISTINCT because VariantId is null for a base recipe and an add-on, and PostgreSQL
@@ -5396,6 +5429,9 @@ internal sealed class PrepRecipeConfiguration : IEntityTypeConfiguration<PrepRec
         builder.HasMany(r => r.Ingredients).WithOne().HasForeignKey(i => i.PrepRecipeId).OnDelete(DeleteBehavior.Cascade);
         builder.Navigation(r => r.Ingredients).HasField("_ingredients").UsePropertyAccessMode(PropertyAccessMode.Field);
         builder.HasOne<RecipeCategory>().WithMany().HasForeignKey(r => r.RecipeCategoryId).OnDelete(DeleteBehavior.SetNull);
+        builder.Property(r => r.PrepTimeMinutes).HasPrecision(6, 2);
+        builder.Property(r => r.ComplexityWeight).HasPrecision(6, 2).HasDefaultValue(PlateActivity.DefaultComplexityWeight);
+        builder.Ignore(r => r.Activity);
     }
 }
 
@@ -5759,13 +5795,14 @@ internal sealed class CompanyLogoConfiguration : IEntityTypeConfiguration<Compan
 
 جداول التقارير والإعدادات: نسبة تكلفة الطعام المستهدفة (30% افتراضيًا)، إعدادات الضريبة والخدمة، المصروفات الشهرية، التكاليف المشتركة، وورقة المبيعات اليدوية:
 
-> 📄 **`backend/src/Costing.Infrastructure/Reports/CostingTables.cs`** — 221 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Reports/CostingTables.cs`** — 240 سطر
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using Costing.Domain.Common;
 using Costing.Domain.RawMaterials;
+using Costing.Domain.Recipes;
 using Costing.Infrastructure.Persistence;
 
 namespace Costing.Infrastructure.Reports;
@@ -5793,6 +5830,19 @@ public sealed class CostingSettings
     // The break-even worksheet's four options: weekly sales to try against this year's costs.
     // Empty until the manager sets them.
     public List<decimal> BreakEvenScenarios { get; set; } = [];
+
+    public const decimal DefaultTargetNetMargin = 15;
+
+    // The fully burdened plate cost (التكلفة الكلية للطبق): how labor and overheads are shared over
+    // the plates unless the screen asks otherwise, and the net margin a plate should leave after
+    // them (نسبة صافي الربح المستهدفة للطبق).
+    public OverheadAllocationMethod DefaultOverheadAllocationMethod { get; set; } = OverheadAllocationMethod.ActivityBasedPrepTime;
+    public decimal TargetNetMarginPercent { get; set; } = DefaultTargetNetMargin;
+
+    // A month's labor and overheads to stand in before its payroll and bills are in: for a month
+    // with nothing recorded of either, and as the simulation's starting figures. None until set.
+    public decimal? FallbackMonthlyLaborCost { get; set; }
+    public decimal? FallbackMonthlyOverheadCost { get; set; }
 }
 
 // The treasury's tax and service settings (إعدادات الضريبة والخدمة). The tax rate is not here: it is
@@ -5940,6 +5990,11 @@ internal sealed class CostingSettingsConfiguration : IEntityTypeConfiguration<Co
         builder.Property(s => s.VarianceTolerancePercent).HasPrecision(5, 2).HasDefaultValue(CostingSettings.DefaultVarianceTolerance);
         builder.Property(s => s.BeverageCategories).HasDefaultValueSql("'{}'::text[]");
         builder.Property(s => s.BreakEvenScenarios).HasDefaultValueSql("'{}'::numeric[]");
+        builder.Property(s => s.DefaultOverheadAllocationMethod).HasConversion<string>().HasMaxLength(32)
+            .HasDefaultValue(OverheadAllocationMethod.ActivityBasedPrepTime);
+        builder.Property(s => s.TargetNetMarginPercent).HasPrecision(5, 2).HasDefaultValue(CostingSettings.DefaultTargetNetMargin);
+        builder.Property(s => s.FallbackMonthlyLaborCost).HasPrecision(18, 2);
+        builder.Property(s => s.FallbackMonthlyOverheadCost).HasPrecision(18, 2);
     }
 }
 
@@ -6701,6 +6756,7 @@ dotnet ef migrations add <Name> \
 | 8 | `20261110170004_AddEndOfDayPayouts` | Add End Of Day Payouts |
 | 9 | `20261110175322_AddHrIntegration` | Add Hr Integration |
 | 10 | `20261112143520_AddBlindAndSpotCounts` | Add Blind And Spot Counts |
+| 11 | `20261115215556_AddBurdenedPlateCost` | Add Burdened Plate Cost |
 
 
 ### 14.1 `UnifySafeTakings`: migration تحوّل بيانات لا شكلًا فقط

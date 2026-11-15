@@ -67,7 +67,10 @@ public sealed record PrepItemDto(
     // The kitchen's recipe category it is sorted under; none when not given one.
     Guid? RecipeCategoryId = null,
     // Counted every day, in the daily critical items' spot count.
-    bool IsSpotCheckItem = false);
+    bool IsSpotCheckItem = false,
+    // A batch's prep time (null: the ordinary 10 minutes) and complexity.
+    decimal? PrepTimeMinutes = PlateActivity.DefaultPrepTimeMinutes,
+    decimal ComplexityWeight = PlateActivity.DefaultComplexityWeight);
 
 public sealed record PrepIngredientEntry(Guid RawMaterialId, decimal Quantity, decimal? YieldPercent = null);
 
@@ -133,7 +136,9 @@ internal static class PrepItemCosting
             orders.Where(o => o.PrepItemId == item.Id).Select(o => ProductionOrderDto.From(o, materials)).ToList(),
             item.CategoryId,
             recipe?.RecipeCategoryId,
-            item.IsSpotCheckItem);
+            item.IsSpotCheckItem,
+            recipe is null ? PlateActivity.DefaultPrepTimeMinutes : recipe.PrepTimeMinutes,
+            recipe?.ComplexityWeight ?? PlateActivity.DefaultComplexityWeight);
     }
 
     // Would `prepItemId` end up made from itself, through the ingredients given and the other
@@ -220,7 +225,9 @@ public sealed record PrepItemChange(
     string? DisplayUnit = null,
     decimal? DisplayUnitSize = null,
     decimal ReorderLevel = 0,
-    Guid? RecipeCategoryId = null);
+    Guid? RecipeCategoryId = null,
+    // A batch's prep time and complexity (معامل وقت وصعوبة التحضير); none keeps them as they are.
+    PlateActivity? Activity = null);
 
 // Saves prep items, for a manager's own save and for an approval alike; checks and describes one
 // asked for without changing anything.
@@ -265,6 +272,8 @@ internal sealed class PrepItemWriter(
             recipe.SetBatch(change.BatchQuantity);
         recipe.Replace(ingredients);
         recipe.MoveTo(change.RecipeCategoryId);
+        if (change.Activity is { } activity)
+            recipe.SetActivity(activity);
         all[item.Id] = item;
         return (item, recipe, category);
     }
@@ -288,6 +297,8 @@ internal sealed class PrepItemWriter(
         if (PrepItemCosting.Loop(copy.Id, ingredients.Select(i => i.Material.Id), await recipes.GetAllAsync(cancellationToken), all) is { } through)
             throw new DomainException($"{through} is made with {copy.Name}, so {copy.Name} cannot be made with {through}.");
         new PrepRecipe(copy, change.BatchQuantity).Replace(ingredients);
+        if (change.Activity is { } activity)
+            PlateActivity.Checked(activity.PrepTimeMinutes, activity.ComplexityWeight);
     }
 
     // What a request would add, or change against the prep item as it is, line by line.
@@ -328,6 +339,13 @@ internal sealed class PrepItemWriter(
             PrepItemCosting.Amount(change.BatchQuantity, size, unit));
         Add("Reorder below", existing is null ? null : PrepItemCosting.Amount(existing.ReorderLevel, existing),
             existing is null && change.ReorderLevel == 0 ? null : PrepItemCosting.Amount(change.ReorderLevel, size, unit));
+        if (change.Activity is { } activity)
+        {
+            static string Minutes(PlateActivity a) =>
+                (a.PrepTimeMinutes is { } m ? $"{m.ToString("0.##", CultureInfo.InvariantCulture)} min a batch" : "10 min a batch (ordinary)")
+                + (a.ComplexityWeight == 1 ? "" : $" × {a.ComplexityWeight.ToString("0.##", CultureInfo.InvariantCulture)}");
+            Add("Prep time", recipe is null ? null : Minutes(recipe.Activity), Minutes(activity));
+        }
 
         var before = recipe?.Ingredients.ToDictionary(i => i.RawMaterialId, i => Line(i.RawMaterialId, i.Quantity, i.YieldPercent)) ?? [];
         var after = change.Ingredients.ToDictionary(i => i.RawMaterialId, i => Line(i.RawMaterialId, i.Quantity, i.YieldPercent));
@@ -420,10 +438,11 @@ public sealed record SavePrepItemCommand(
     string? DisplayUnit = null,
     decimal? DisplayUnitSize = null,
     decimal ReorderLevel = 0,
-    Guid? RecipeCategoryId = null) : IRequest<PrepItemDto>
+    Guid? RecipeCategoryId = null,
+    PlateActivity? Activity = null) : IRequest<PrepItemDto>
 {
     public PrepItemChange Change =>
-        new(Name, Unit, BatchQuantity, Ingredients, Code, CategoryId, DisplayUnit, DisplayUnitSize, ReorderLevel, RecipeCategoryId);
+        new(Name, Unit, BatchQuantity, Ingredients, Code, CategoryId, DisplayUnit, DisplayUnitSize, ReorderLevel, RecipeCategoryId, Activity);
 }
 
 internal sealed class SavePrepItemCommandHandler(

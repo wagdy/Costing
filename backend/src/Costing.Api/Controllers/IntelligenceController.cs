@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Costing.Domain.Access;
+using Costing.Domain.Recipes;
 using Costing.Api.Auth;
 using Costing.Infrastructure.Excel;
 using Costing.Infrastructure.Reports;
@@ -9,13 +10,13 @@ namespace Costing.Api.Controllers;
 
 // Material & demand intelligence (تحليلات الخامات والطلبيات): purchase price variance and what it does
 // to the recipes, the order planner and its sheet, theoretical against actual consumption, and ABC
-// with days on hand, and menu engineering. Each as a table, and as a workbook (…/sheet). Costs, so a manager's or a cost
+// with days on hand, menu engineering, and the fully burdened plate cost. Each as a table, and as a workbook (…/sheet). Costs, so a manager's or a cost
 // controller's view; nothing here changes anything.
 [ApiController]
 [Route("api/costing/intelligence")]
 [Authorize(Policy = Permissions.InventoryView)]
 [CostingTab(CostingTabs.Intelligence)]
-public sealed class IntelligenceController(IntelligenceService intelligence, CostingService costing) : ControllerBase
+public sealed class IntelligenceController(IntelligenceService intelligence, CostingService costing, BurdenedCostService burdened) : ControllerBase
 {
     [HttpGet("prices")]
     public Task<PriceVarianceReport> GetPrices([FromQuery] DateOnly from, [FromQuery] DateOnly to, CancellationToken cancellationToken) =>
@@ -79,4 +80,22 @@ public sealed class IntelligenceController(IntelligenceService intelligence, Cos
         [FromQuery] DateOnly from, [FromQuery] DateOnly to, [FromQuery] string? category, CancellationToken cancellationToken) =>
         File(IntelligenceWorkbooks.MenuEngineering(await costing.GetMenuEngineeringAsync(from, to, category, cancellationToken)), ReportWorkbook.ContentType,
             $"menu-engineering-{from:yyyy-MM-dd}-to-{to:yyyy-MM-dd}.xlsx");
+
+    // The fully burdened plate cost (التكلفة الكلية للطبق): each dish's food, its share of the period's
+    // labor and overheads, and its true net profit. method: how they are shared (the cost settings'
+    // when none); source=Simulated with monthlyLabor and monthlyOverhead tries monthly figures instead
+    // of the period's own (the settings' stand-in figures when left out).
+    [HttpGet("burdened-costs")]
+    public Task<BurdenedCostReport> GetBurdenedCosts(
+        [FromQuery] DateOnly from, [FromQuery] DateOnly to, [FromQuery] OverheadAllocationMethod? method, [FromQuery] PoolSource? source,
+        [FromQuery] decimal? monthlyLabor, [FromQuery] decimal? monthlyOverhead, CancellationToken cancellationToken) =>
+        burdened.GetAsync(from, to, method, source ?? PoolSource.Actual, monthlyLabor, monthlyOverhead, cancellationToken);
+
+    [HttpGet("burdened-costs/sheet")]
+    public async Task<IActionResult> GetBurdenedCostsSheet(
+        [FromQuery] DateOnly from, [FromQuery] DateOnly to, [FromQuery] OverheadAllocationMethod? method, [FromQuery] PoolSource? source,
+        [FromQuery] decimal? monthlyLabor, [FromQuery] decimal? monthlyOverhead, CancellationToken cancellationToken) =>
+        File(BurdenedCostWorkbook.Build(
+                await burdened.GetAsync(from, to, method, source ?? PoolSource.Actual, monthlyLabor, monthlyOverhead, cancellationToken)),
+            ReportWorkbook.ContentType, $"burdened-plate-cost-{from:yyyy-MM-dd}-to-{to:yyyy-MM-dd}.xlsx");
 }

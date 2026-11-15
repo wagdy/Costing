@@ -16,7 +16,8 @@ namespace Costing.Api.Controllers;
 [Authorize(Policy = Permissions.InventoryView)]
 public sealed class CostingController(
     CostingService costing, VarianceService variance, KpiService kpis, BreakEvenService breakEven, PurchaseSpendingService spending,
-    TreasuryService treasury, StockCardService stockCard, IntelligenceService intelligence, MediatR.ISender sender, Costing.Application.Common.IBusinessCalendar calendar) : ControllerBase
+    TreasuryService treasury, StockCardService stockCard, IntelligenceService intelligence, BurdenedCostService burdened, MediatR.ISender sender,
+    Costing.Application.Common.IBusinessCalendar calendar) : ControllerBase
 {
     // Raw materials with their costs: what each costs per purchase unit, the last price paid, and
     // the stock's value.
@@ -83,6 +84,13 @@ public sealed class CostingController(
     [CostingTab(CostingTabs.Recipes | CostingTabs.Menu | CostingTabs.Reports)]
     public Task<RecipeCostCard> GetRecipeCardById(Guid recipeId, CancellationToken cancellationToken) =>
         costing.GetRecipeCardAsync(recipeId, cancellationToken);
+
+    // The recipe's fully burdened plate (التكلفة الكلية شاملة التشغيل), for its card: its food, its
+    // share of this month's labor and overheads so far, as the cost settings share them.
+    [HttpGet("recipes/{recipeId:guid}/burdened")]
+    [CostingTab(CostingTabs.Recipes | CostingTabs.Menu | CostingTabs.Reports | CostingTabs.Intelligence)]
+    public Task<BurdenedRecipeCost> GetRecipeBurdenedCost(Guid recipeId, CancellationToken cancellationToken) =>
+        burdened.GetForRecipeAsync(recipeId, cancellationToken);
 
     // The Monthly Theoretical Cost report for a business month: from the till's sales (Pos, the
     // default), or from the quantities typed in for it (Manual).

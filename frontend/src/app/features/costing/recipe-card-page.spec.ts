@@ -4,6 +4,7 @@ import { Router, provideRouter } from '@angular/router';
 import { of } from 'rxjs';
 import { AuthService } from '../../core/auth/auth.service';
 import { CostingApi, MaterialCost, RecipeCategory, RecipeCostCard, RecipeCostLine } from '../../core/costing/costing.api';
+import { BurdenedPlateRow, IntelligenceApi } from '../../core/costing/intelligence.api';
 import { NotifyService } from '../../core/ui/notify.service';
 import { RecipeCardMode, RecipeCardPage } from './recipe-card-page';
 
@@ -103,6 +104,16 @@ const trial = card({
 
 const text = (el: Element) => el.textContent!.replace(/\s+/g, ' ').trim();
 
+// The house burger's plate this month: 6 of food, 15 of labor, 12 of overheads, at 45.
+const burgerPlate: BurdenedPlateRow = {
+  itemCode: '6', menuItemId: 6, variantId: null, recipeId: 'r1', dish: 'House burger', dishAr: null, category: 'Mains', onMenu: true,
+  quantitySold: 120, estimated: false, sellingPrice: 45, prepTimeMinutes: 12, complexityWeight: 1, weightedMinutes: 12, prepTimeAssumed: false,
+  directFoodCost: 6, foodCostPercent: 13.3, allocatedLaborCost: 15, laborCostPercent: 33.3, primeCost: 21, primeCostPercent: 46.7,
+  allocatedOverheadCost: 12, overheadCostPercent: 26.7, fullyBurdenedCost: 33, fullyBurdenedCostPercent: 73.3, trueNetProfitPerPlate: 12,
+  trueNetMarginPercent: 26.7, totalPeriodNetProfit: 1440, suggestedPriceForTargetNetMargin: 38.82, bleedingAfterOverhead: false,
+  missingPrices: false, status: 'Healthy',
+};
+
 describe('a recipe', () => {
   const recipeCard = vi.fn();
   const recipeCardById = vi.fn();
@@ -112,6 +123,7 @@ describe('a recipe', () => {
   const approvalRequests = vi.fn();
   const restoreRecipe = vi.fn();
   const recipeCategories = vi.fn();
+  const recipeBurdenedCost = vi.fn();
   const open = vi.fn();
   const can = vi.fn();
   const notify = { info: vi.fn(), error: vi.fn() };
@@ -139,6 +151,7 @@ describe('a recipe', () => {
         { provide: MatDialog, useValue: { open } },
         { provide: AuthService, useValue: { me: () => null, can } },
         { provide: NotifyService, useValue: notify },
+        { provide: IntelligenceApi, useValue: { recipeBurdenedCost } },
       ],
     });
     navigate = vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true) as unknown as ReturnType<typeof vi.fn>;
@@ -180,6 +193,9 @@ describe('a recipe', () => {
     approvalRequests.mockReset().mockReturnValue(of({ pending: [], decided: [] }));
     restoreRecipe.mockReset().mockReturnValue(of({ id: 'r1', catalogItemId: 6 }));
     recipeCategories.mockReset().mockReturnValue(of([mains, sauces]));
+    recipeBurdenedCost.mockReset().mockImplementation((id: string) =>
+      of({ from: '2026-11-01', to: '2026-11-16', method: 'ActivityBasedPrepTime', targetNetMarginPercent: 15, platesSold: 900, plate: id === 'r1' ? burgerPlate : null }),
+    );
     open.mockReset();
     can.mockReset().mockReturnValue(true);
     notify.info.mockReset();
@@ -285,6 +301,9 @@ describe('a recipe', () => {
         variantId: null,
         portions: 4,
         ingredients: [{ rawMaterialId: 'tomato', quantity: 120, yieldPercent: 85 }],
+        // The kitchen's ordinary 10 minutes, until set.
+        prepTimeMinutes: 10,
+        complexityWeight: 1,
       });
       expect(notify.info).toHaveBeenCalledWith('Recipe saved, off the menu.');
       expect(navigate).toHaveBeenCalledWith(['/costing/recipes/recipe', 'r9']);
@@ -399,6 +418,51 @@ describe('a recipe', () => {
       await page['save']();
 
       expect(writeRecipe).toHaveBeenCalledWith('r2', expect.objectContaining({ catalogItemId: 1, recipeCategoryId: 'mains', plannedPrice: 60 }));
+    });
+  });
+
+  describe('fully burdened (التكلفة الكلية)', () => {
+    it('shows beside its food cost what a plate carries of the labor and overheads, and what is left', async () => {
+      const { el, figures } = await render('view', { recipeId: 'r1' });
+
+      expect(recipeBurdenedCost).toHaveBeenCalledWith('r1');
+      expect(text(el.querySelector('.burdened .equation')!)).toBe(
+        'L.E 6.00 الخامات · food+L.E 15.00 العمالة · labor+L.E 12.00 الإيجار والمرافق · overhead=L.E 33.00 التكلفة الكلية · fully burdened ' +
+          '(صافي الربح · net profit: L.E 12.00 · 26.7%)',
+      );
+      expect(text(el.querySelector('.burdened')!)).toContain('Activity-based (prep time) · حسب وقت التحضير, this month so far (900 plates sold)');
+      expect(text(el.querySelector('.burdened')!)).toContain('15% net margin at L.E 38.82.');
+      expect(figures()).toMatchObject({ 'Prep time (mins)': '10 min' });
+    });
+
+    it('says when nothing sold yet to share the pools over, and shows no box for a new recipe', async () => {
+      recipeBurdenedCost.mockReturnValue(of({
+        from: '2026-11-01', to: '2026-11-01', method: 'ByQuantitySold', targetNetMarginPercent: 15, platesSold: 0,
+        plate: { ...burgerPlate, allocatedLaborCost: null, allocatedOverheadCost: null, primeCost: null, fullyBurdenedCost: null, status: 'NotAllocated' },
+      }));
+      const { el } = await render('view', { recipeId: 'r1' });
+      expect(text(el.querySelector('.burdened')!)).toContain('No plates sold this month yet');
+
+      TestBed.resetTestingModule();
+      recipeBurdenedCost.mockClear();
+      const fresh = await render('new');
+      expect(fresh.el.querySelector('.burdened')).toBeNull();
+      expect(recipeBurdenedCost).not.toHaveBeenCalled();
+    });
+
+    it('saves the prep time for one plate and its complexity, within a day and 0.1 to 10', async () => {
+      recipeCardById.mockImplementation(() => of({ ...r1, prepTimeMinutes: null, complexityWeight: 1 }));
+      const { page } = await render('edit', { recipeId: 'r1' });
+      expect([page['prepTime'](), page['complexity'](), page['dirty']()]).toEqual([null, 1, false]);
+
+      page['prepTime'].set(page['figure']('18'));
+      page['complexity'].set(page['figure']('0'));
+      expect(page['valid']()).toBe(false);
+      page['complexity'].set(1.5);
+      expect(page['valid']()).toBe(true);
+      await page['save']();
+
+      expect(writeRecipe).toHaveBeenCalledWith('r1', expect.objectContaining({ prepTimeMinutes: 18, complexityWeight: 1.5 }));
     });
   });
 

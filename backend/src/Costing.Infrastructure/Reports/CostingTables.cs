@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using Costing.Domain.Common;
 using Costing.Domain.RawMaterials;
+using Costing.Domain.Recipes;
 using Costing.Infrastructure.Persistence;
 
 namespace Costing.Infrastructure.Reports;
@@ -29,6 +30,19 @@ public sealed class CostingSettings
     // The break-even worksheet's four options: weekly sales to try against this year's costs.
     // Empty until the manager sets them.
     public List<decimal> BreakEvenScenarios { get; set; } = [];
+
+    public const decimal DefaultTargetNetMargin = 15;
+
+    // The fully burdened plate cost (التكلفة الكلية للطبق): how labor and overheads are shared over
+    // the plates unless the screen asks otherwise, and the net margin a plate should leave after
+    // them (نسبة صافي الربح المستهدفة للطبق).
+    public OverheadAllocationMethod DefaultOverheadAllocationMethod { get; set; } = OverheadAllocationMethod.ActivityBasedPrepTime;
+    public decimal TargetNetMarginPercent { get; set; } = DefaultTargetNetMargin;
+
+    // A month's labor and overheads to stand in before its payroll and bills are in: for a month
+    // with nothing recorded of either, and as the simulation's starting figures. None until set.
+    public decimal? FallbackMonthlyLaborCost { get; set; }
+    public decimal? FallbackMonthlyOverheadCost { get; set; }
 }
 
 // The treasury's tax and service settings (إعدادات الضريبة والخدمة). The tax rate is not here: it is
@@ -176,6 +190,11 @@ internal sealed class CostingSettingsConfiguration : IEntityTypeConfiguration<Co
         builder.Property(s => s.VarianceTolerancePercent).HasPrecision(5, 2).HasDefaultValue(CostingSettings.DefaultVarianceTolerance);
         builder.Property(s => s.BeverageCategories).HasDefaultValueSql("'{}'::text[]");
         builder.Property(s => s.BreakEvenScenarios).HasDefaultValueSql("'{}'::numeric[]");
+        builder.Property(s => s.DefaultOverheadAllocationMethod).HasConversion<string>().HasMaxLength(32)
+            .HasDefaultValue(OverheadAllocationMethod.ActivityBasedPrepTime);
+        builder.Property(s => s.TargetNetMarginPercent).HasPrecision(5, 2).HasDefaultValue(CostingSettings.DefaultTargetNetMargin);
+        builder.Property(s => s.FallbackMonthlyLaborCost).HasPrecision(18, 2);
+        builder.Property(s => s.FallbackMonthlyOverheadCost).HasPrecision(18, 2);
     }
 }
 

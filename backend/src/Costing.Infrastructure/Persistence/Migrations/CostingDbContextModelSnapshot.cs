@@ -1047,6 +1047,16 @@ namespace Costing.Infrastructure.Persistence.Migrations
                         .HasPrecision(18, 3)
                         .HasColumnType("numeric(18,3)");
 
+                    b.Property<decimal>("ComplexityWeight")
+                        .ValueGeneratedOnAdd()
+                        .HasPrecision(6, 2)
+                        .HasColumnType("numeric(6,2)")
+                        .HasDefaultValue(1m);
+
+                    b.Property<decimal?>("PrepTimeMinutes")
+                        .HasPrecision(6, 2)
+                        .HasColumnType("numeric(6,2)");
+
                     b.Property<Guid?>("RecipeCategoryId")
                         .HasColumnType("uuid");
 
@@ -1416,6 +1426,12 @@ namespace Costing.Infrastructure.Persistence.Migrations
                     b.Property<int?>("CatalogItemId")
                         .HasColumnType("integer");
 
+                    b.Property<decimal>("ComplexityWeight")
+                        .ValueGeneratedOnAdd()
+                        .HasPrecision(6, 2)
+                        .HasColumnType("numeric(6,2)")
+                        .HasDefaultValue(1m);
+
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone");
 
@@ -1438,6 +1454,10 @@ namespace Costing.Infrastructure.Persistence.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("integer")
                         .HasDefaultValue(1);
+
+                    b.Property<decimal?>("PrepTimeMinutes")
+                        .HasPrecision(6, 2)
+                        .HasColumnType("numeric(6,2)");
 
                     b.Property<Guid?>("RecipeCategoryId")
                         .HasColumnType("uuid");
@@ -2445,9 +2465,30 @@ namespace Costing.Infrastructure.Persistence.Migrations
                         .HasColumnType("numeric[]")
                         .HasDefaultValueSql("'{}'::numeric[]");
 
+                    b.Property<string>("DefaultOverheadAllocationMethod")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasDefaultValue("ActivityBasedPrepTime");
+
+                    b.Property<decimal?>("FallbackMonthlyLaborCost")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)");
+
+                    b.Property<decimal?>("FallbackMonthlyOverheadCost")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)");
+
                     b.Property<decimal>("FoodCostTargetPercent")
                         .HasPrecision(5, 2)
                         .HasColumnType("numeric(5,2)");
+
+                    b.Property<decimal>("TargetNetMarginPercent")
+                        .ValueGeneratedOnAdd()
+                        .HasPrecision(5, 2)
+                        .HasColumnType("numeric(5,2)")
+                        .HasDefaultValue(15m);
 
                     b.Property<decimal>("VarianceTolerancePercent")
                         .ValueGeneratedOnAdd()

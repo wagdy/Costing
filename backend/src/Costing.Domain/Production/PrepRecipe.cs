@@ -1,5 +1,6 @@
 using Costing.Domain.Common;
 using Costing.Domain.RawMaterials;
+using Costing.Domain.Recipes;
 
 namespace Costing.Domain.Production;
 
@@ -30,6 +31,20 @@ public sealed class PrepRecipe : AggregateRoot
     public Guid? RecipeCategoryId { get; private set; }
 
     public void MoveTo(Guid? categoryId) => RecipeCategoryId = categoryId;
+
+    // The kitchen's minutes for one batch, and how hard they are (PlateActivity): a dish made with
+    // the prep item carries its share of them, by how much of a batch it takes.
+    public decimal? PrepTimeMinutes { get; private set; } = PlateActivity.DefaultPrepTimeMinutes;
+    public decimal ComplexityWeight { get; private set; } = PlateActivity.DefaultComplexityWeight;
+
+    public PlateActivity Activity => new(PrepTimeMinutes, ComplexityWeight);
+
+    public void SetActivity(PlateActivity activity)
+    {
+        var checkedActivity = PlateActivity.Checked(activity.PrepTimeMinutes, activity.ComplexityWeight);
+        PrepTimeMinutes = checkedActivity.PrepTimeMinutes;
+        ComplexityWeight = checkedActivity.ComplexityWeight;
+    }
 
     public IReadOnlyCollection<PrepIngredient> Ingredients => _ingredients.AsReadOnly();
 

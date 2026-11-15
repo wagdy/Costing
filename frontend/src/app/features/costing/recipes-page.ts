@@ -88,6 +88,12 @@ const recipeSorts: SortOption<RecipeSort>[] = [
       </div>
     </div>
     <div class="toolbar">
+      @if (canSeeBurdened()) {
+        <a mat-button class="burdened-link" routerLink="/costing/intelligence/burdened"
+          matTooltip="Each dish's food, labor and overheads, and its true net profit">
+          <mat-icon>layers</mat-icon> Burdened plate cost <span class="inline-ar">التكلفة الكلية للطبق</span>
+        </a>
+      }
       <span class="spacer"></span>
       @if (canAddToMenu() && toMenu().length) {
         <button mat-stroked-button class="to-menu" (click)="addToMenu(toMenu())" [disabled]="busy()"
@@ -406,6 +412,8 @@ export class RecipesPage {
 
   // Whoever works the menu puts a recipe on it.
   protected readonly canAddToMenu = computed(() => this.access.has('Menu') && this.auth.can(Permissions.InventoryManage));
+  // The fully burdened plate cost is on the intelligence tab: linked for whoever works it.
+  protected readonly canSeeBurdened = computed(() => this.access.has('Intelligence'));
 
   // The standalone ones shown, none waiting for a manager: put on the menu together.
   protected readonly toMenu = computed(() => this.shown().filter((c) => c.isStandalone && !c.isDeleted && !this.pendingOf(c)));

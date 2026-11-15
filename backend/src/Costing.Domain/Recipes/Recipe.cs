@@ -101,6 +101,20 @@ public sealed class Recipe : AggregateRoot
     // strata. A sold item uses one portion's share.
     public int Portions { get; private set; } = 1;
 
+    // The kitchen's minutes for one plate of it, and how hard they are (PlateActivity): what the
+    // burdened plate cost shares the labor by. A new recipe starts at the ordinary 10 minutes.
+    public decimal? PrepTimeMinutes { get; private set; } = PlateActivity.DefaultPrepTimeMinutes;
+    public decimal ComplexityWeight { get; private set; } = PlateActivity.DefaultComplexityWeight;
+
+    public PlateActivity Activity => new(PrepTimeMinutes, ComplexityWeight);
+
+    public void SetActivity(PlateActivity activity)
+    {
+        var checkedActivity = PlateActivity.Checked(activity.PrepTimeMinutes, activity.ComplexityWeight);
+        PrepTimeMinutes = checkedActivity.PrepTimeMinutes;
+        ComplexityWeight = checkedActivity.ComplexityWeight;
+    }
+
     public IReadOnlyCollection<RecipeIngredient> Ingredients => _ingredients.AsReadOnly();
 
     public void SetPortions(int portions) =>

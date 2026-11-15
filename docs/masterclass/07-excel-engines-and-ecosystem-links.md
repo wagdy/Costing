@@ -1428,7 +1428,7 @@ internal static class SheetNumbers
 ```
 
 
-> 📄 **`backend/src/Costing.Application/Recipes/RecipeSheet.cs`** — 416 سطر
+> 📄 **`backend/src/Costing.Application/Recipes/RecipeSheet.cs`** — 438 سطر
 
 ```csharp
 using System.Text.RegularExpressions;
@@ -1459,11 +1459,13 @@ namespace Costing.Application.Recipes;
 // whole, and each such row said why in English and Arabic: never half its ingredients. Nothing on
 // the sheet is a cost: what each recipe costs is worked out from its ingredients' prices now.
 
-public sealed record RecipeSheetRow(int Row, string? Item, string? Ingredient, string? Quantity, string? Portions = null, string? Category = null);
+public sealed record RecipeSheetRow(
+    int Row, string? Item, string? Ingredient, string? Quantity, string? Portions = null, string? Category = null, string? PrepTime = null);
 
 // One row written out: the recipe as the sheet names it, an ingredient by its label, the quantity
-// in that ingredient's unit; the portions and category on a recipe's first row.
-public sealed record RecipeSheetLine(string Item, string Ingredient, decimal Quantity, int? Portions, string? Category);
+// in that ingredient's unit; the portions, category and prep time for one plate on a recipe's
+// first row (the prep time blank when it is the ordinary 10 minutes by default).
+public sealed record RecipeSheetLine(string Item, string Ingredient, decimal Quantity, int? Portions, string? Category, decimal? PrepTimeMinutes = null);
 
 // What the sheet is written from: its rows, and its dropdowns' lists (the recipes and menu items,
 // the ingredients with their units, the kitchen's recipe categories).
@@ -1579,7 +1581,8 @@ internal sealed class GetRecipeSheetHandler(
                 lines.Add(new RecipeSheetLine(
                     name, lookup.LabelOf(material), SheetNumbers.InSheetUnit(ingredient.Quantity, material.Unit),
                     first ? recipe.Portions : null,
-                    first && recipe.RecipeCategoryId is { } category ? categoryNames.GetValueOrDefault(category) : null));
+                    first && recipe.RecipeCategoryId is { } category ? categoryNames.GetValueOrDefault(category) : null,
+                    first ? recipe.PrepTimeMinutes : null));
                 first = false;
             }
         }
@@ -1715,6 +1718,18 @@ internal sealed class ImportRecipesHandler(
                 }
                 portions = (int)p;
             }
+            // Its prep time for one plate, in minutes, from any of its rows: blank leaves it as it is.
+            var prepText = group.Rows.Select(r => SheetText.Clean(r.PrepTime)).FirstOrDefault(p => p is not null);
+            decimal? prepTime = null;
+            if (prepText is not null)
+            {
+                if (SheetText.Amount(prepText) is not { } minutes || minutes < 0 || minutes > PlateActivity.MaxPrepTimeMinutes)
+                {
+                    Skip($"\"{prepText}\" is not a prep time: minutes for one plate, 0 to 1,440.", $"\"{prepText}\" ليس وقت تحضير: دقائق للطبق من 0 إلى 1440.");
+                    continue;
+                }
+                prepTime = Math.Round(minutes, 2, MidpointRounding.AwayFromZero);
+            }
             var categoryName = group.Rows.Select(r => SheetText.Clean(r.Category)).FirstOrDefault(c => c is not null);
             if (categoryName?.Length > 100)
             {
@@ -1780,6 +1795,8 @@ internal sealed class ImportRecipesHandler(
                 else
                     offMenu[SheetText.Key(group.Name)] = recipe;
                 await recipe.WriteAsync(materials, ingredients, portionsNow, cancellationToken);
+                if (prepTime is { } minutes)
+                    recipe.SetActivity(recipe.Activity with { PrepTimeMinutes = minutes });
                 created.Add(new ImportedSheetItem(group.Row, recipe.Id, group.Name));
             }
             else
@@ -1790,6 +1807,11 @@ internal sealed class ImportRecipesHandler(
                     changes.Add("Ingredients");
                 if (portionsNow != recipe.Portions)
                     changes.Add("Portions");
+                if (prepTime is { } minutes && minutes != recipe.PrepTimeMinutes)
+                {
+                    recipe.SetActivity(recipe.Activity with { PrepTimeMinutes = minutes });
+                    changes.Add("Prep time");
+                }
                 if (category is not null && category.Id != recipe.RecipeCategoryId)
                 {
                     recipe.MoveTo(category.Id);
@@ -2313,7 +2335,7 @@ internal sealed class ImportPrepRecipesHandler(
 ```
 
 
-> 📄 **`backend/src/Costing.Infrastructure/Excel/RecipeWorkbooks.cs`** — 160 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Excel/RecipeWorkbooks.cs`** — 164 سطر
 
 ```csharp
 using Costing.Application.Production;
@@ -2341,6 +2363,7 @@ public static class RecipeWorkbook
     public const string QuantityHeader = "Quantity · الكمية";
     public const string PortionsHeader = "Portions · عدد الحصص";
     public const string CategoryHeader = "Recipe Category · قسم الوصفة";
+    public const string PrepTimeHeader = "Prep Time (mins) · وقت التحضير بالدقائق";
 
     private static readonly Column[] Columns =
     [
@@ -2353,6 +2376,8 @@ public static class RecipeWorkbook
             "Optional, on any of its rows: how many portions the quantities make. Blank: as it was, or 1 for a new recipe.", "0"),
         new("Category", CategoryHeader, ["recipe category", "category", "قسم الوصفة", "القسم"],
             "Optional, on any of its rows: the kitchen's own category. A new name is added."),
+        new("PrepTime", PrepTimeHeader, ["prep time (mins)", "prep time", "prep minutes", "minutes", "وقت التحضير بالدقائق", "وقت التحضير"],
+            "Optional, on any of its rows: the kitchen's minutes for one plate, for the burdened plate cost. Blank: as it was, or the ordinary 10 for a new recipe.", "0.##"),
     ];
 
     private static readonly string[] Help =
@@ -2364,20 +2389,21 @@ public static class RecipeWorkbook
         "Ingredient: always from the list. Its name says its unit: write the quantity in it, 0.2 for 200 g. · اكتب الكمية بوحدة المكوّن: 0.2 لـ 200 جرام.",
         "A recipe with a row that cannot be read is left as it was, and each such row is said why. · الوصفة التي بها صف خاطئ لا تُغيَّر.",
         "No prices: each recipe's cost is worked out from its ingredients' prices. · لا أسعار: التكلفة تُحسب من أسعار المكونات.",
+        "Prep Time (mins): optional, the kitchen's minutes for one plate, for the burdened plate cost. · وقت التحضير للطبق بالدقائق، اختياري.",
         "Every material and prep item, with its unit, is on the hidden Ingredients sheet. · كل الخامات والمصنعات بوحداتها في ورقة Ingredients المخفية.",
     ];
 
     private static readonly object[][] Examples =
     [
-        ["6101 · Margherita", "Pizza dough · مصنّع (Kg)", 0.25, 1, "Pizza"],
-        ["", "Mozzarella (Kg)", 0.15, "", ""],
-        ["", "Tomato sauce · مصنّع (Liter)", 0.08, "", ""],
-        ["Staff meal", "Rice (Kg)", 2, 10, "Staff meals"],
+        ["6101 · Margherita", "Pizza dough · مصنّع (Kg)", 0.25, 1, "Pizza", 12],
+        ["", "Mozzarella (Kg)", 0.15, "", "", ""],
+        ["", "Tomato sauce · مصنّع (Liter)", 0.08, "", "", ""],
+        ["Staff meal", "Rice (Kg)", 2, 10, "Staff meals", ""],
     ];
 
     public static Stream Build(RecipeSheet sheet, bool withRows) =>
         SheetBook.Build(DataSheetName, Columns, Help, Examples,
-            withRows ? sheet.Lines.Select(l => new object?[] { l.Item, l.Ingredient, l.Quantity, l.Portions, l.Category }).ToList() : [],
+            withRows ? sheet.Lines.Select(l => new object?[] { l.Item, l.Ingredient, l.Quantity, l.Portions, l.Category, l.PrepTimeMinutes }).ToList() : [],
             new Dictionary<string, SheetList>
             {
                 ["Item"] = new(sheet.Items, true, "A new recipe", "Not on the list: a recipe off the menu of that name is added. · وصفة جديدة بهذا الاسم."),
@@ -2388,7 +2414,7 @@ public static class RecipeWorkbook
 
     public static IReadOnlyList<RecipeSheetRow> Read(Stream stream) =>
         SheetBook.Read(stream, Columns, "Item", "Recipe")
-            .Select(r => new RecipeSheetRow(r.Row, r.Text("Item"), r.Text("Ingredient"), r.Text("Quantity"), r.Text("Portions"), r.Text("Category")))
+            .Select(r => new RecipeSheetRow(r.Row, r.Text("Item"), r.Text("Ingredient"), r.Text("Quantity"), r.Text("Portions"), r.Text("Category"), r.Text("PrepTime")))
             .ToList();
 }
 
@@ -3089,10 +3115,11 @@ public static class DailySalesWorkbook
 ```
 
 
-> 📄 **`backend/src/Costing.Infrastructure/Excel/ReportWorkbook.cs`** — 267 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Excel/ReportWorkbook.cs`** — 340 سطر
 
 ```csharp
 using ClosedXML.Excel;
+using Costing.Domain.Recipes;
 using Costing.Infrastructure.Reports;
 
 namespace Costing.Infrastructure.Excel;
@@ -3319,6 +3346,78 @@ public static class IntelligenceWorkbooks
                 new ReportRow(["", "", "Total · الإجمالي", null, report.QuantitySold, null, null, null, report.FoodCostPercent, report.AverageContribution,
                     report.TotalContribution, null], ReportRowKind.Total),
             ])]);
+}
+
+// The fully burdened plate cost as two sheets: each dish's food, labor, overheads and true net
+// profit, as the screen shows them; and the pools and the rates they were shared at.
+public static class BurdenedCostWorkbook
+{
+    public static string MethodName(OverheadAllocationMethod method) => method switch
+    {
+        OverheadAllocationMethod.ByQuantitySold => "Equal per plate · بالتساوي للطبق",
+        OverheadAllocationMethod.ByRevenueShare => "By revenue % · بنسبة الإيراد",
+        _ => "Activity-based (prep time) · حسب وقت التحضير",
+    };
+
+    public static string StatusName(PlateStatus status) => status switch
+    {
+        PlateStatus.Healthy => "Healthy net margin · ربح صافي جيد",
+        PlateStatus.Thin => "Thin margin · هامش ضعيف",
+        PlateStatus.Losing => "Losing after overhead · خاسر بعد التحميل",
+        PlateStatus.NoRecipe => "No recipe · بدون وصفة",
+        PlateStatus.NoPrice => "No price · بدون سعر",
+        _ => "Not allocated · غير محمّل",
+    };
+
+    public static Stream Build(BurdenedCostReport report)
+    {
+        var source = report.Source == PoolSource.Simulated ? "simulated monthly labor & overheads" : "actual pools";
+        var plates = new ReportSheet(
+            "Burdened plate cost", "Fully burdened plate cost · التكلفة الكلية للطبق",
+            $"{report.From:d MMM yyyy} – {report.To:d MMM yyyy} · {MethodName(report.Method)} · {source} · prices before VAT · "
+                + $"suggested price at a {report.TargetNetMarginPercent:0.#}% net margin",
+            [
+                new("Code · الكود"), new("Dish · الصنف"), new("Category · القسم"), new("Sold · المباع", ReportWorkbook.Quantity),
+                new("Prep min · دقائق التحضير", "0.##"), new("Selling price · سعر البيع", ReportWorkbook.Money),
+                new("Food cost · الخامات", ReportWorkbook.Money), new("Food % · نسبة الخامات", ReportWorkbook.Percent),
+                new("+ Labor · العمالة", ReportWorkbook.Money), new("Labor % · نسبة العمالة", ReportWorkbook.Percent),
+                new("Prime cost · التكلفة الأولية", ReportWorkbook.Money), new("Prime % · النسبة الأولية", ReportWorkbook.Percent),
+                new("+ Overhead · الإيجار والمرافق والإهلاك", ReportWorkbook.Money), new("Overhead % · نسبة التشغيل", ReportWorkbook.Percent),
+                new("= Fully burdened · التكلفة الكلية", ReportWorkbook.Money), new("Burdened % · النسبة الكلية", ReportWorkbook.Percent),
+                new("True net profit · صافي الربح", ReportWorkbook.Money), new("Net margin % · نسبة صافي الربح", ReportWorkbook.Percent),
+                new("Period net profit · صافي ربح الفترة", ReportWorkbook.Money), new("Suggested price · السعر المقترح", ReportWorkbook.Money),
+                new("Status · الحالة"),
+            ],
+            [
+                .. report.Rows.Select(r => new ReportRow(
+                    [r.ItemCode, r.Estimated ? $"{r.Dish} (not sold: estimated)" : r.Dish, r.Category, r.QuantitySold, r.WeightedMinutes, r.SellingPrice,
+                     r.DirectFoodCost, r.FoodCostPercent, r.AllocatedLaborCost, r.LaborCostPercent, r.PrimeCost, r.PrimeCostPercent,
+                     r.AllocatedOverheadCost, r.OverheadCostPercent, r.FullyBurdenedCost, r.FullyBurdenedCostPercent, r.TrueNetProfitPerPlate,
+                     r.TrueNetMarginPercent, r.TotalPeriodNetProfit, r.SuggestedPriceForTargetNetMargin, StatusName(r.Status)],
+                    Flagged: r.Status == PlateStatus.Losing)),
+                new ReportRow(["", "Plates sold · الأطباق المباعة", null, report.PlatesSold, null, null, null, null, report.AverageLaborPerPlate, null, null, null,
+                    report.AverageOverheadPerPlate, null, null, report.AverageFullyBurdenedCostPercent, null, report.AverageTrueNetMarginPercent,
+                    report.TotalPeriodNetProfit, null, $"{report.DishesBleeding} bleeding after overhead"], ReportRowKind.Total),
+            ]);
+        var pools = new ReportSheet(
+            "Cost pools", "Labor & overhead pools · وعاء العمالة والتشغيل",
+            $"{report.From:d MMM yyyy} – {report.To:d MMM yyyy} · each month spread evenly over its days",
+            [new("Pool · الوعاء"), new("Part · البند"), new("Amount · المبلغ", ReportWorkbook.Money)],
+            [
+                new ReportRow(["Labor · العمالة", null, null], ReportRowKind.Group),
+                .. report.Labor.Parts.Select(p => new ReportRow(["", $"{p.Label} · {p.LabelAr}", p.Amount])),
+                new ReportRow(["", "Labor pool · وعاء العمالة", report.Labor.Total], ReportRowKind.Total),
+                new ReportRow(["Overheads · الإيجار والمرافق والإهلاك", null, null], ReportRowKind.Group),
+                .. report.Overhead.Parts.Select(p => new ReportRow(["", $"{p.Label} · {p.LabelAr}", p.Amount])),
+                new ReportRow(["", "Overhead pool · وعاء التشغيل", report.Overhead.Total], ReportRowKind.Total),
+                new ReportRow(["Allocated · المحمّل", null, null], ReportRowKind.Group),
+                new ReportRow(["", "Labor on the plates sold · العمالة المحملة", report.LaborAllocated]),
+                new ReportRow(["", "Overheads on the plates sold · التشغيل المحمّل", report.OverheadAllocated]),
+                new ReportRow(["", "Plates sold · الأطباق المباعة", report.PlatesSold]),
+                new ReportRow(["", "Sales before VAT · المبيعات قبل الضريبة", report.Sales]),
+            ]);
+        return ReportWorkbook.Build([plates, pools]);
+    }
 }
 
 // A material's stock card as a sheet: the period's movements as the screen lists them, its balance

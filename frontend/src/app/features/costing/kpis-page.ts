@@ -10,6 +10,7 @@ import { RouterLink } from '@angular/router';
 import { firstValueFrom } from 'rxjs';
 import { AuthService } from '../../core/auth/auth.service';
 import { Permissions } from '../../core/auth/permissions';
+import { CostingAccess } from '../../core/costing/costing-tabs';
 import { CostingApi, Kpi, KpiKey, KpiReport, MonthlyExpenses, expenseLineLabels, kpiLabels } from '../../core/costing/costing.api';
 import { errorMessage } from '../../core/http/error-message';
 import { Company } from '../../core/settings/company';
@@ -259,7 +260,14 @@ const expenseFields: { key: keyof MonthlyExpenses; en: string; ar: string; hours
         </section>
       </div>
 
-      <h3>Item profitability <span class="inline-ar">ربحية العنصر</span> <app-info-tip tip="dishProfit" /></h3>
+      <h3 class="items-head">
+        Item profitability <span class="inline-ar">ربحية العنصر</span> <app-info-tip tip="dishProfit" />
+        @if (canSeeBurdened) {
+          <a mat-button class="burdened-link" routerLink="/costing/intelligence/burdened">
+            <mat-icon>layers</mat-icon> With labor &amp; overheads: burdened plate cost <span class="inline-ar">التكلفة الكلية للطبق</span>
+          </a>
+        }
+      </h3>
       <div class="table-wrap">
         <table class="grid">
           <thead>
@@ -424,6 +432,8 @@ export class KpisPage {
   protected readonly company = inject(Company);
   private readonly api = inject(CostingApi);
   private readonly auth = inject(AuthService);
+  // Each dish's food against its labor and overheads too: the burdened plate cost, for whoever works the intelligence tab.
+  protected readonly canSeeBurdened = inject(CostingAccess).has('Intelligence');
   private readonly notify = inject(NotifyService);
 
   protected readonly labels = kpiLabels;

@@ -117,7 +117,10 @@ public sealed record RecipeCostCard(
     // The kitchen's own category for it; null until it is sorted.
     Guid? RecipeCategoryId = null,
     string? RecipeCategory = null,
-    string? RecipeCategoryAr = null);
+    string? RecipeCategoryAr = null,
+    // The kitchen's minutes for one plate (null: the ordinary 10) and how hard they are.
+    decimal? PrepTimeMinutes = PlateActivity.DefaultPrepTimeMinutes,
+    decimal ComplexityWeight = PlateActivity.DefaultComplexityWeight);
 
 // Where a theoretical cost report's sales come from: the till's closed orders (and the online ones),
 // or quantities an accountant typed in.
@@ -184,9 +187,23 @@ public sealed record ManualSalesSheetDto(int Year, int Month, IReadOnlyList<Manu
 
 public sealed record ManualSalesLineDto(ManualSalesItemKind Kind, Guid ItemId, decimal Quantity);
 
-// VarianceTolerancePercent and BeverageCategories: left out of a save, they stay as they are.
+// VarianceTolerancePercent, BeverageCategories and PlateCost: left out of a save, they stay as they are.
 public sealed record CostingSettingsDto(
-    decimal FoodCostTargetPercent, decimal? VarianceTolerancePercent = null, IReadOnlyList<string>? BeverageCategories = null);
+    decimal FoodCostTargetPercent, decimal? VarianceTolerancePercent = null, IReadOnlyList<string>? BeverageCategories = null,
+    PlateCostSettingsDto? PlateCost = null);
+
+// The fully burdened plate cost's settings, saved together: how labor and overheads are shared
+// unless asked otherwise, the net margin a plate should leave, and the months' stand-in figures
+// (none: no stand-in).
+public sealed record PlateCostSettingsDto(
+    OverheadAllocationMethod DefaultOverheadAllocationMethod,
+    decimal TargetNetMarginPercent,
+    decimal? FallbackMonthlyLaborCost,
+    decimal? FallbackMonthlyOverheadCost)
+{
+    public static PlateCostSettingsDto Of(CostingSettings s) =>
+        new(s.DefaultOverheadAllocationMethod, s.TargetNetMarginPercent, s.FallbackMonthlyLaborCost, s.FallbackMonthlyOverheadCost);
+}
 
 public sealed record SharedCostDto(Guid Id, string Name, Guid? RawMaterialId, string? RawMaterialName, decimal? MonthlyAmount, string? Category);
 
@@ -233,7 +250,7 @@ public sealed partial class CostingService(CostingDbContext db, IBusinessCalenda
     public async Task<CostingSettingsDto> GetSettingsAsync(CancellationToken cancellationToken)
     {
         var settings = await SettingsAsync(cancellationToken);
-        return new(settings.FoodCostTargetPercent, settings.VarianceTolerancePercent, settings.BeverageCategories);
+        return new(settings.FoodCostTargetPercent, settings.VarianceTolerancePercent, settings.BeverageCategories, PlateCostSettingsDto.Of(settings));
     }
 
     public async Task<CostingSettingsDto> SaveSettingsAsync(CostingSettingsDto settings, CancellationToken cancellationToken)
@@ -249,8 +266,21 @@ public sealed partial class CostingService(CostingDbContext db, IBusinessCalenda
         row.VarianceTolerancePercent = settings.VarianceTolerancePercent ?? row.VarianceTolerancePercent;
         if (settings.BeverageCategories is { } beverages)
             row.BeverageCategories = beverages.Where(c => !string.IsNullOrWhiteSpace(c)).Select(c => c.Trim()).Distinct().ToList();
+        if (settings.PlateCost is { } plate)
+        {
+            if (!Enum.IsDefined(plate.DefaultOverheadAllocationMethod))
+                throw new DomainException("Choose how labor and overheads are shared. · اختر طريقة التحميل.");
+            if (plate.TargetNetMarginPercent is < 0 or >= 100)
+                throw new DomainException("The target net margin is a percentage from 0 to under 100. · نسبة صافي الربح المستهدفة بين 0 و100.");
+            if (plate.FallbackMonthlyLaborCost < 0 || plate.FallbackMonthlyOverheadCost < 0)
+                throw new DomainException("A month's labor or overheads cannot be negative. · المصاريف الشهرية لا تكون سالبة.");
+            row.DefaultOverheadAllocationMethod = plate.DefaultOverheadAllocationMethod;
+            row.TargetNetMarginPercent = plate.TargetNetMarginPercent;
+            row.FallbackMonthlyLaborCost = plate.FallbackMonthlyLaborCost;
+            row.FallbackMonthlyOverheadCost = plate.FallbackMonthlyOverheadCost;
+        }
         await db.SaveChangesAsync(cancellationToken);
-        return new(row.FoodCostTargetPercent, row.VarianceTolerancePercent, row.BeverageCategories);
+        return new(row.FoodCostTargetPercent, row.VarianceTolerancePercent, row.BeverageCategories, PlateCostSettingsDto.Of(row));
     }
 
     public async Task<IReadOnlyList<SharedCostDto>> GetSharedCostsAsync(CancellationToken cancellationToken)
@@ -634,7 +664,8 @@ public sealed partial class CostingService(CostingDbContext db, IBusinessCalenda
             Money(perPortion * 100 / data.FoodCostTarget), missing, status,
             recipe?.Id, usesBaseRecipe ? null : recipe?.Name, linkedTo, standalone, recipe?.PlannedPrice, usesBaseRecipe,
             recipe?.IsDeleted ?? false, recipe?.DeletedAtUtc, recipe?.DeletedBy,
-            usesBaseRecipe ? null : own?.Id, usesBaseRecipe ? null : own?.Name, usesBaseRecipe ? null : own?.NameAr);
+            usesBaseRecipe ? null : own?.Id, usesBaseRecipe ? null : own?.Name, usesBaseRecipe ? null : own?.NameAr,
+            recipe is null ? PlateActivity.DefaultPrepTimeMinutes : recipe.PrepTimeMinutes, recipe?.ComplexityWeight ?? PlateActivity.DefaultComplexityWeight);
     }
 
     // One sold line of a settled order in the month, net of refunds, with what its ingredients

@@ -733,7 +733,7 @@ public static class DependencyInjection
 
 البنية التحتية: كل "منفذ" يُربط بتطبيقه. `Singleton` للساعة وملف الشركة والتشفير؛ `Scoped` لكل ما يلمس `CostingDbContext`؛ `RetryOnConflictBehavior` يلف كل أمر؛ و `AddHttpClient` + `AddHostedService<HrSyncWorker>` للربط مع HR.
 
-> 📄 **`backend/src/Costing.Infrastructure/DependencyInjection.cs`** — 119 سطر
+> 📄 **`backend/src/Costing.Infrastructure/DependencyInjection.cs`** — 120 سطر
 
 ```csharp
 using MediatR;
@@ -847,6 +847,7 @@ public static class DependencyInjection
         services.AddScoped<PurchaseSpendingService>();
         services.AddScoped<TreasuryService>();
         services.AddScoped<IntelligenceService>();
+        services.AddScoped<BurdenedCostService>();
         services.AddScoped<StockCardService>();
 
         // The system's users.
@@ -1545,6 +1546,8 @@ Costing/
                     UnitOfMeasure.cs
                 Recipes/
                     IRecipeRepository.cs
+                    PlateActivity.cs
+                    PlateCostAllocation.cs
                     Recipe.cs
                     RecipeCategory.cs
                     RecipeIngredient.cs
@@ -1615,12 +1618,15 @@ Costing/
                         20261110170004_AddEndOfDayPayouts.cs
                         20261110175322_AddHrIntegration.cs
                         20261112143520_AddBlindAndSpotCounts.cs
+                        20261115215556_AddBurdenedPlateCost.cs
                         CostingDbContextModelSnapshot.cs
                     PosIntegrationPersistence.cs
                     RetryOnConflictBehavior.cs
                 Reports/
                     BreakEvenService.cs
+                    BurdenedCostService.cs
                     CostingService.MenuEngineering.cs
+                    CostingService.PlateCost.cs
                     CostingService.cs
                     CostingTables.cs
                     IntelligenceService.cs
@@ -1632,6 +1638,7 @@ Costing/
                     VarianceService.cs
         tests/
             Costing.Api.Tests/
+                BurdenedCostApiTests.cs
                 Costing.Api.Tests.csproj
                 CostingApiTests.cs
                 HrIntegrationApiTests.cs
@@ -1665,6 +1672,7 @@ Costing/
                 EndOfDayTests.cs
                 MaterialExplosionTests.cs
                 MenuSalesTests.cs
+                PlateCostTests.cs
                 ProductionTests.cs
                 PurchaseInvoiceTests.cs
                 RecipeCostsTests.cs
@@ -1674,6 +1682,7 @@ Costing/
                 SupplierTests.cs
                 TreasuryTests.cs
             Costing.Infrastructure.Tests/
+                BurdenedCostTests.cs
                 Costing.Infrastructure.Tests.csproj
                 CostingTests.cs
                 DatabaseConnectionTests.cs
@@ -1768,6 +1777,8 @@ Costing/
                         approvals.ts
                         break-even-page.spec.ts
                         break-even-page.ts
+                        burdened-cost-page.spec.ts
+                        burdened-cost-page.ts
                         category-delete-dialog.spec.ts
                         category-delete-dialog.ts
                         category-filters.spec.ts

@@ -16,7 +16,7 @@ works it.
 | Recipes (الوصفات) | `/costing/recipes` | Recipe cards, prep items (مصنعات) and recipe categories |
 | Production (الإنتاج) | `/costing/production` | Prep items made in batches |
 | Menu (قائمة الطعام) | `/costing/menu` | Categories, items, sizes, add-ons; an Excel import |
-| Material & demand intelligence (تحليلات الخامات والطلبيات) | `/costing/intelligence` | Purchase price variance and what it does to the recipes, the order planner, theoretical against actual usage, ABC and days on hand; each to Excel |
+| Material & demand intelligence (تحليلات الخامات والطلبيات) | `/costing/intelligence` | Purchase price variance and what it does to the recipes, the order planner, theoretical against actual usage, ABC and days on hand, menu engineering, and the fully burdened plate cost; each to Excel |
 | Sales (المبيعات) | `/costing/sales` | Each day's sales summary, entered or imported from its sheet, for stock and food cost |
 | End of the day (تقفيل اليوم) | `/costing/end-of-day` | Each day's invoices photographed, cash and on credit, and its sales report, handed in for the daily batch and the takings |
 | Purchases (المشتريات) | `/costing/purchases` | Invoices, the day's batch, suppliers, categories |
@@ -25,7 +25,7 @@ works it.
 | Waste (الهالك) | `/costing/waste` | Spoilage, and breakage |
 | Financials (الماليات) | `/costing/financials` | The safe, funding, each day's takings (cash, card, tax, voids), vouchers, suppliers owed and paid, advances, staff, tax and service |
 | Reports (التقارير) | `/costing/reports` | Spending, theoretical cost, variance, KPIs, break-even |
-| Cost settings (إعدادات التكاليف) | `/costing/settings` | Cost targets, beverage categories, shared costs, monthly expenses |
+| Cost settings (إعدادات التكاليف) | `/costing/settings` | Cost targets, plate cost (allocation method, target net margin, stand-in monthly labor and overheads), beverage categories, shared costs, monthly expenses |
 | Approvals (طلبات معلقة) | `/costing/approvals` | What waits for a manager |
 | Permissions (الصلاحيات) | `/costing/permissions` | Who works which section; a manager's |
 
@@ -142,7 +142,7 @@ the same sheet with no rows.
 
 | Sheet | Columns |
 | --- | --- |
-| Recipes | Recipe, Ingredient, Quantity (for the whole recipe); Portions and Recipe Category on any of its rows |
+| Recipes | Recipe, Ingredient, Quantity (for the whole recipe); Portions, Recipe Category and Prep Time (mins, for one plate) on any of its rows |
 | Prep Items | Prep Item, Ingredient, Quantity per Batch; Batch Makes and Kept in (Kg, Liter, Piece) on any of its rows |
 
 - **The ingredient is chosen from a dropdown** that offers only the materials and prep items there
@@ -288,6 +288,83 @@ each dish (or size) sold in the period, as Kasavana and Smith place it:
 - **Suggested price** = food cost a portion ÷ the food cost target. A dish with no recipe or no price
   is listed, not placed, and its quantity is not in the mix. One menu category at a time compares
   like with like.
+
+## The fully burdened plate cost (التكلفة الكلية للطبق)
+
+Food cost alone flatters a dish: a plate also takes the kitchen's time and its share of the rent,
+the utilities and the depreciation. The **Burdened plate cost** tab of Material & demand
+intelligence (`/costing/intelligence/burdened`, `GET api/costing/intelligence/burdened-costs?from&to&method&source&monthlyLabor&monthlyOverhead`,
+and `…/sheet` for Excel) shares the period's labor and overheads over every dish, and shows what is
+truly left of each price. It is linked from Recipes and from the KPIs' item profitability, and each
+recipe card shows its own plate (`GET api/costing/recipes/{id}/burdened`: this month so far, as Cost
+settings share it).
+
+```
+Fully burdened cost  = food cost + allocated labor + allocated overheads
+Prime cost           = food cost + allocated labor
+True net profit      = selling price (before VAT) − fully burdened cost
+True net margin %    = true net profit ÷ selling price × 100
+Period net profit    = true net profit × plates sold
+```
+
+**Food cost** is the recipe card's cost per portion now: each material's moving average, prep items
+by their batches (by their own recipe before the first), and the shared costs.
+
+**The pools.** Each month is taken whole and spread evenly over its days, so a rent voucher paid on
+the 1st, or a payroll approved on the 30th, is carried by every plate of its month, and part of a
+month carries its share by days (16 of 30 days: 16/30).
+
+| Pool | A month's amount |
+| --- | --- |
+| Labor (إجمالي وعاء العمالة) | The payroll HR approved for it (its labor cost), or the salaries paid from the safe for it when HR sent none; the wages and benefits entered on the KPIs; expense invoices and vouchers under a Wages category |
+| Overheads (وعاء الإيجار والمرافق والتشغيل) | The occupation (rent), controllable costs, interest and depreciation entered on the KPIs; expense invoices and vouchers under an Occupation, Controllable or Other fixed category |
+
+A month with nothing recorded for a pool takes the **stand-in monthly figure** from Cost settings
+(Plate cost), when one is set, and the screen names the months that did. **Simulate monthly labor
+& overhead** replaces the pools with monthly figures typed on the screen (blank: the stand-in
+figures), spread the same way, to test the plates before a month's payroll and bills are in.
+
+Costing has no fixed-asset register, prepaid-expense schedule, staff-meal log or card-commission
+record of its own: depreciation is what is entered for the month on the KPIs; a prepaid rent is
+amortised by entering the month's share as its occupation cost (a voucher counts in the month it is
+dated); bank and card charges are expense vouchers or invoices under a Controllable category.
+
+**Sharing them** (طريقة التحميل), over the plates sold in the period:
+
+| Method | Labor a plate | Overheads a plate |
+| --- | --- | --- |
+| Activity-based (prep time) · حسب وقت التحضير (ABC) | labor pool × its weighted minutes ÷ Σ (plates sold × weighted minutes) | overhead pool ÷ plates sold |
+| Equal per plate · بالتساوي حسب الكمية المباعة | labor pool ÷ plates sold | overhead pool ÷ plates sold |
+| By revenue % · بنسبة المساهمة في الإيراد | labor pool × its price ÷ the period's sales (its share = price × quantity ÷ sales, over its quantity) | overhead pool × its price ÷ the period's sales |
+
+Shared over what was sold, the pools are allocated whole: Σ (a plate's share × its quantity) is the
+pool. A dish not sold in the period (on the menu, or a recipe off it at its planned price) is given
+what a plate of it would have carried at the same rates, marked estimated. With nothing sold at all
+there is nothing to share over, and each dish says so.
+
+**Weighted minutes** (معامل وقت وصعوبة التحضير): each recipe has a **prep time** for one plate (minutes,
+0 to 1,440; blank is the ordinary 10) and a **complexity weight** (1 an ordinary minute; 0.1 to 10).
+A prep item has the same for one batch. A plate's weighted minutes are its own prep time ×
+complexity, plus, for each prep item it is made with, what it takes of a batch (as purchased) ÷ what
+the batch makes × the batch's weighted minutes; a pizza with 250 g of a 10 kg dough batch that takes
+60 minutes carries 1.5 of them. Recipes and prep items written before this start at 10 minutes.
+
+**The suggested price** leaves the target net margin (Cost settings, 15% unless set) after
+everything. Equal or activity-based, a plate's labor and overheads do not move with its price:
+`fully burdened cost ÷ (1 − target)`. By revenue they do, at the pools' share of every pound sold:
+`food cost ÷ (1 − target − (labor pool + overhead pool) ÷ sales)`, and there is none when the pools
+take as much as the margin leaves.
+
+**Each dish's status:** *Healthy net margin* (ربح صافي جيد) at or above the target; *Thin margin*
+(هامش ضعيف) profitable, below it; *Losing after overhead* (خاسر بعد التحميل) below zero. **Dishes
+bleeding after overhead** (أطباق خاسرة بعد تحميل المصاريف) are those above their food cost (price −
+food > 0) that lose money once labor and overheads are added.
+
+**The summary:** the labor and overheads the plates sold carried, and on average a plate; the
+average fully burdened cost % and true net margin %, weighted by sales (Σ burdened × plates ÷ Σ price
+× plates); and the dishes bleeding. Each dish's bar shows its price as food (blue), labor (amber),
+overheads (purple) and net profit (green); a loss is the part of the costs past the price, hatched
+red behind a price mark. The Excel sheet has the dishes and the pools with their parts.
 
 ## The item's stock card (كارتة الصنف / حركة الصنف)
 

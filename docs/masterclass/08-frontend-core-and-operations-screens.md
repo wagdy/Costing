@@ -443,7 +443,7 @@ export const appConfig: ApplicationConfig = {
 
 كل قسم بـ `canActivate: [costingTabGuard('Materials')]` و `loadComponent` كسول، والأقسام الفرعية (الوصفات، المشتريات، الماليات، التقارير، التحليلات) كأبناء لـ Shell خاص بها، والمسار الفارغ يفتح أول قسم يملكه المستخدم.
 
-> 📄 **`frontend/src/app/app.routes.ts`** — 277 سطر
+> 📄 **`frontend/src/app/app.routes.ts`** — 278 سطر
 
 ```ts
 import { Routes } from '@angular/router';
@@ -549,6 +549,7 @@ const costingChildren: Routes = [
       { path: 'consumption', loadComponent: () => import('./features/costing/consumption-page').then((m) => m.ConsumptionPage) },
       { path: 'abc', loadComponent: () => import('./features/costing/abc-page').then((m) => m.AbcPage) },
       { path: 'menu', loadComponent: () => import('./features/costing/menu-engineering-page').then((m) => m.MenuEngineeringPage) },
+      { path: 'burdened', loadComponent: () => import('./features/costing/burdened-cost-page').then((m) => m.BurdenedCostPage) },
     ],
   },
   {
@@ -1372,7 +1373,7 @@ function insert(field: HTMLInputElement, text: string): void {
 
 `costing.api.ts`: أكبر ملف: كل الأنواع والنداءات لـ `api/costing` و `api/inventory` و `api/financials` (الخامات، التكاليف، الوصفات، المصنعات، الإنتاج، المشتريات، الجرد، الهالك، الخزنة، التقارير، الموافقات…). الأنواع تطابق DTOs الـ API، والـ enums كـ union types، وقواميس التسميات ثنائية اللغة (`Record<Kind, { en; ar }>`) تجبر TypeScript على تسمية كل حالة.
 
-> 📄 **`frontend/src/app/core/costing/costing.api.ts`** — 2563 سطر
+> 📄 **`frontend/src/app/core/costing/costing.api.ts`** — 2586 سطر
 
 ```ts
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
@@ -1588,6 +1589,10 @@ export interface RecipeCostCard {
   recipeCategoryId: string | null;
   recipeCategory: string | null;
   recipeCategoryAr: string | null;
+  // The kitchen's minutes for one plate (null: the ordinary 10) and how hard they are: what the
+  // burdened plate cost shares the labor by.
+  prepTimeMinutes?: number | null;
+  complexityWeight?: number;
 }
 
 // The kitchen's own grouping of its recipes: Sauces, Staff meals, Catering orders.
@@ -1611,6 +1616,9 @@ export interface SaveRecipe {
   variantId: number | null;
   portions: number;
   ingredients: RecipeLine[];
+  // Sent together; without the complexity, neither changes.
+  prepTimeMinutes?: number | null;
+  complexityWeight?: number;
 }
 
 export interface TheoreticalCostRow {
@@ -1693,6 +1701,16 @@ export interface CostingSettings {
   varianceTolerancePercent?: number | null;
   // Menu categories that are drinks: the beverage cost %. None, everything is food.
   beverageCategories?: string[] | null;
+  // The fully burdened plate cost's, saved together.
+  plateCost?: PlateCostSettings | null;
+}
+
+export interface PlateCostSettings {
+  defaultOverheadAllocationMethod: 'ActivityBasedPrepTime' | 'ByQuantitySold' | 'ByRevenueShare';
+  targetNetMarginPercent: number;
+  // A month's stand-in labor and overheads before its payroll and bills are in; null: none.
+  fallbackMonthlyLaborCost: number | null;
+  fallbackMonthlyOverheadCost: number | null;
 }
 
 export type KpiKey =
@@ -2395,6 +2413,9 @@ export interface PrepItem {
   recipeCategoryId: string | null;
   // Counted every day: in the daily critical items' spot count (جرد يومي سريع).
   isSpotCheckItem?: boolean;
+  // A batch's prep time (null: the ordinary 10 minutes) and how hard it is.
+  prepTimeMinutes?: number | null;
+  complexityWeight?: number;
 }
 
 export interface SavePrepItem {
@@ -2408,6 +2429,9 @@ export interface SavePrepItem {
   displayUnit: string;
   displayUnitSize: number;
   reorderLevel: number;
+  // A batch's prep time and complexity, sent together; without the complexity, neither changes.
+  prepTimeMinutes?: number | null;
+  complexityWeight?: number;
   // For a request: made here, so a retry is recorded once; and why, for the manager.
   requestId?: string;
   reason?: string | null;
@@ -7665,7 +7689,7 @@ export class InfoTip implements OnDestroy {
 ```
 
 
-> 📄 **`frontend/src/app/features/costing/info-tips.ts`** — 630 سطر
+> 📄 **`frontend/src/app/features/costing/info-tips.ts`** — 767 سطر
 
 ```ts
 // What each figure on the costing screens is, and how it is worked out, in Arabic and English: the
@@ -8246,6 +8270,143 @@ export const infoTips = {
     { en: 'Variance value', ar: 'قيمة الفرق' },
     { en: 'What the shortage or surplus is worth. Red: short beyond the tolerance; amber: over it.', ar: 'قيمة العجز أو الزيادة. أحمر: عجز يتجاوز نسبة السماح؛ كهرماني: زيادة تتجاوزها.' },
     { en: '(Counted − book) × average cost per unit; flagged when |counted − book| ÷ book × 100 > tolerance %.', ar: '(المجرود − الدفتري) × متوسط تكلفة الوحدة؛ ويُعلّم إذا تجاوز |الفرق| ÷ الدفتري × 100 نسبة السماح.' },
+  ),
+
+  // ---- The fully burdened plate cost ----
+  bcLaborPool: tip(
+    { en: 'Labor pool allocated', ar: 'إجمالي العمالة المحملة' },
+    {
+      en: "The period's labor, shared over the plates sold: the payroll approved on HR (or the salaries paid for the month), the wages entered on the KPIs and wages paid as expenses. Each month is spread evenly over its days.",
+      ar: 'عمالة الفترة موزعة على الأطباق المباعة: مسير الرواتب المعتمد (أو الرواتب المصروفة للشهر)، والأجور المدخلة في المؤشرات، والأجور المسجلة كمصروفات. كل شهر يُوزع بالتساوي على أيامه.',
+    },
+    {
+      en: 'Σ each month × the days chosen in it ÷ its days. A month with nothing recorded takes the stand-in figure from Cost settings. Average a plate = allocated ÷ plates sold.',
+      ar: 'مجموع كل شهر × أيام الفترة فيه ÷ عدد أيامه. الشهر الذي لا شيء مسجل له يأخذ الرقم التقديري من الإعدادات. المتوسط للطبق = المحمّل ÷ الأطباق المباعة.',
+    },
+  ),
+  bcOverheadPool: tip(
+    { en: 'Overhead pool allocated', ar: 'إجمالي الإيجار والمرافق والإهلاك' },
+    {
+      en: "Rent, utilities, running costs, interest and depreciation for the period: what is entered for each month on the KPIs, and the expense invoices and vouchers filed under an Occupation, Controllable or Other fixed category.",
+      ar: 'الإيجار والمرافق ومصاريف التشغيل والفوائد والإهلاك للفترة: ما أُدخل لكل شهر في المؤشرات، وفواتير وسندات المصروفات تحت أقسام الإيجار والمصاريف القابلة للتحكم والثابتة.',
+    },
+    {
+      en: 'Σ each month × the days chosen in it ÷ its days; a rent voucher on the 1st is carried by every plate of its month. Average a plate = allocated ÷ plates sold.',
+      ar: 'مجموع كل شهر × أيام الفترة فيه ÷ عدد أيامه؛ سند الإيجار أول الشهر يتحمله كل طبق في الشهر. المتوسط للطبق = المحمّل ÷ الأطباق المباعة.',
+    },
+  ),
+  bcAverageBurdened: tip(
+    { en: 'Average fully burdened cost %', ar: 'متوسط التكلفة الكلية %' },
+    {
+      en: 'Of every pound the plates sold for, how much went on food, labor and overheads together; the rest is the true net margin.',
+      ar: 'من كل جنيه بيعت به الأطباق، كم ذهب للخامات والعمالة والمصاريف معًا؛ والباقي هو صافي الربح الحقيقي.',
+    },
+    {
+      en: 'Σ (fully burdened cost × plates sold) ÷ Σ (selling price × plates sold) × 100; net margin % = 100 − it.',
+      ar: 'مجموع (التكلفة الكلية × الكمية) ÷ مجموع (سعر البيع × الكمية) × 100؛ ونسبة صافي الربح = 100 − هذه النسبة.',
+    },
+  ),
+  bcBleeding: tip(
+    { en: 'Dishes bleeding after overhead', ar: 'أطباق خاسرة بعد تحميل المصاريف' },
+    {
+      en: 'Dishes that look profitable on food cost alone but lose money once their labor and overheads are added: reprice them, cut their time or their cost, or rethink them.',
+      ar: 'أطباق تبدو رابحة على تكلفة الخامات وحدها لكنها تخسر بعد إضافة العمالة والمصاريف: ارفع سعرها أو قلل وقتها أو تكلفتها أو أعد النظر فيها.',
+    },
+    { en: 'Selling price − food cost > 0, and selling price − fully burdened cost < 0.', ar: 'سعر البيع − تكلفة الخامات > 0، وسعر البيع − التكلفة الكلية < 0.' },
+  ),
+  bcActivity: tip(
+    { en: 'Activity-based (prep time)', ar: 'حسب وقت التحضير (ABC)' },
+    {
+      en: "Labor goes where the kitchen's time goes: a dish that takes 20 minutes carries twice the labor of one that takes 10. Overheads (rent, utilities) are shared equally by the plate.",
+      ar: 'العمالة تُحمّل حسب وقت المطبخ: طبق يستغرق 20 دقيقة يتحمل ضعف عمالة طبق يستغرق 10. والمصاريف (الإيجار والمرافق) تُوزع بالتساوي على الأطباق.',
+    },
+    {
+      en: "Labor a plate = labor pool × its weighted minutes ÷ Σ (plates sold × weighted minutes). Weighted minutes = prep time × complexity, plus its prep items' share of their batches' time. Overhead a plate = overhead pool ÷ plates sold.",
+      ar: 'عمالة الطبق = وعاء العمالة × دقائقه الموزونة ÷ مجموع (الكمية × الدقائق الموزونة). الدقائق الموزونة = وقت التحضير × معامل الصعوبة + نصيبه من وقت تشغيلات المصنّعات. مصاريف الطبق = وعاء المصاريف ÷ الأطباق المباعة.',
+    },
+  ),
+  bcEqual: tip(
+    { en: 'Equal per plate', ar: 'بالتساوي للطبق' },
+    { en: 'Every plate sold carries the same labor and the same overheads, whatever it is.', ar: 'كل طبق مباع يتحمل نفس العمالة ونفس المصاريف أيًا كان.' },
+    { en: 'Labor a plate = labor pool ÷ plates sold; overhead a plate = overhead pool ÷ plates sold.', ar: 'عمالة الطبق = وعاء العمالة ÷ الأطباق المباعة؛ مصاريف الطبق = وعاء المصاريف ÷ الأطباق المباعة.' },
+  ),
+  bcRevenue: tip(
+    { en: 'By revenue %', ar: 'بنسبة الإيراد' },
+    {
+      en: 'Each dish carries labor and overheads in proportion to what it brings in: a dish twice the price carries twice the share.',
+      ar: 'كل طبق يتحمل العمالة والمصاريف بنسبة مساهمته في الإيراد: طبق بضعف السعر يتحمل ضعف النصيب.',
+    },
+    {
+      en: "Share = price × plates sold ÷ the period's sales; labor a plate = labor pool × share ÷ plates sold = labor pool × price ÷ sales (the same for the overheads).",
+      ar: 'النسبة = السعر × الكمية ÷ مبيعات الفترة؛ عمالة الطبق = وعاء العمالة × النسبة ÷ الكمية = وعاء العمالة × السعر ÷ المبيعات (ومثلها المصاريف).',
+    },
+  ),
+  bcSource: tip(
+    { en: 'Actual or simulated pools', ar: 'المصاريف الفعلية أو التقديرية' },
+    {
+      en: "Actual: the period's own labor and overheads as recorded. Simulated: monthly figures you type, to test the plates' economics before a month's payroll and bills are in.",
+      ar: 'الفعلية: عمالة ومصاريف الفترة كما سُجلت. التقديرية: أرقام شهرية تكتبها لاختبار ربحية الأطباق قبل اكتمال الرواتب والفواتير.',
+    },
+    {
+      en: 'Simulated pool = the monthly figure × the days chosen in each month ÷ its days. Blank: the stand-in figures from Cost settings.',
+      ar: 'الوعاء التقديري = الرقم الشهري × أيام الفترة في كل شهر ÷ عدد أيامه. فارغ: الأرقام التقديرية من الإعدادات.',
+    },
+  ),
+  bcFood: tip(
+    { en: 'Food cost', ar: 'تكلفة الخامات' },
+    {
+      en: "One plate's ingredients at today's costs, as its recipe card shows them: the moving averages, prep items by their batches, and the shared costs.",
+      ar: 'خامات الطبق الواحد بتكلفة اليوم كما في كارت الوصفة: متوسط التكلفة المتحرك، والمصنّعات بتكلفة تشغيلاتها، والتكاليف المشتركة.',
+    },
+    { en: 'Recipe cost ÷ portions + shared costs a meal; food cost % = it ÷ selling price × 100.', ar: 'تكلفة الوصفة ÷ عدد الحصص + نصيب الوجبة من التكاليف المشتركة؛ النسبة = ÷ سعر البيع × 100.' },
+  ),
+  bcLabor: tip(
+    { en: 'Allocated labor', ar: 'العمالة المحملة' },
+    { en: "The plate's share of the period's labor, by the method chosen.", ar: 'نصيب الطبق من عمالة الفترة حسب الطريقة المختارة.' },
+    {
+      en: 'Activity-based: labor pool × weighted minutes ÷ Σ (plates × weighted minutes); equal: pool ÷ plates; by revenue: pool × price ÷ sales.',
+      ar: 'حسب الوقت: الوعاء × الدقائق الموزونة ÷ مجموع (الكمية × الدقائق)؛ بالتساوي: الوعاء ÷ الأطباق؛ بالإيراد: الوعاء × السعر ÷ المبيعات.',
+    },
+  ),
+  bcOverhead: tip(
+    { en: 'Allocated overheads', ar: 'الإيجار والمرافق والإهلاك المحملة' },
+    { en: "The plate's share of the period's rent, utilities, running costs, interest and depreciation.", ar: 'نصيب الطبق من إيجار ومرافق ومصاريف تشغيل وفوائد وإهلاك الفترة.' },
+    { en: 'Equal and activity-based: overhead pool ÷ plates sold; by revenue: pool × price ÷ sales.', ar: 'بالتساوي وحسب الوقت: وعاء المصاريف ÷ الأطباق المباعة؛ بالإيراد: الوعاء × السعر ÷ المبيعات.' },
+  ),
+  bcBurdened: tip(
+    { en: 'Fully burdened cost', ar: 'التكلفة الكلية للطبق' },
+    { en: 'What one plate really costs the restaurant: its food, its labor and its share of the overheads.', ar: 'ما يكلفه الطبق الواحد فعلًا: خاماته وعمالته ونصيبه من المصاريف.' },
+    {
+      en: 'Food + labor + overheads; prime cost = food + labor; % = ÷ selling price × 100.',
+      ar: 'الخامات + العمالة + المصاريف؛ التكلفة الأولية = الخامات + العمالة؛ النسبة = ÷ سعر البيع × 100.',
+    },
+  ),
+  bcNetProfit: tip(
+    { en: 'True net profit', ar: 'صافي الربح الحقيقي للطبق' },
+    { en: 'What a plate leaves after everything it costs, and over the period, for the plates sold.', ar: 'ما يتبقى من الطبق بعد كل تكاليفه، وعلى الفترة للأطباق المباعة.' },
+    {
+      en: 'Selling price (before VAT) − fully burdened cost; margin % = it ÷ selling price × 100; period = it × plates sold.',
+      ar: 'سعر البيع (قبل الضريبة) − التكلفة الكلية؛ النسبة = ÷ سعر البيع × 100؛ الفترة = × الكمية المباعة.',
+    },
+  ),
+  bcSuggested: tip(
+    { en: 'Suggested price', ar: 'السعر المقترح' },
+    { en: 'The price that leaves the target net margin after food, labor and overheads.', ar: 'السعر الذي يحقق صافي الربح المستهدف بعد الخامات والعمالة والمصاريف.' },
+    {
+      en: 'Equal or activity-based: fully burdened cost ÷ (1 − target %). By revenue (the shares grow with the price): food ÷ (1 − target % − pools ÷ sales); none when the pools take what the margin leaves.',
+      ar: 'بالتساوي أو حسب الوقت: التكلفة الكلية ÷ (1 − النسبة المستهدفة). بالإيراد: الخامات ÷ (1 − النسبة − الأوعية ÷ المبيعات)؛ لا سعر إذا استهلكت الأوعية ما يتبقى.',
+    },
+  ),
+  bcPrepTime: tip(
+    { en: 'Prep time (mins)', ar: 'وقت التحضير بالدقائق' },
+    {
+      en: "The kitchen's minutes of work for one plate (for a prep item, one batch), and how hard they are: 1 is an ordinary minute, 1.5 skilled work. Labor is shared by them on the activity-based method.",
+      ar: 'دقائق عمل المطبخ للطبق الواحد (وللمصنّع: التشغيلة الواحدة)، ومعامل الصعوبة: 1 دقيقة عادية و1.5 عمل ماهر. تُوزع العمالة بها في طريقة حسب الوقت.',
+    },
+    {
+      en: 'Weighted minutes = prep time × complexity + Σ (what a plate takes of each prep item ÷ its batch × the batch\'s weighted minutes). Blank: the ordinary 10 minutes.',
+      ar: 'الدقائق الموزونة = وقت التحضير × معامل الصعوبة + مجموع (ما يأخذه الطبق من كل مصنّع ÷ تشغيلته × دقائق التشغيلة). فارغ: 10 دقائق.',
+    },
   ),
 
   // ---- The stock card ----
@@ -10832,7 +10993,7 @@ export class RecipesShell {
 ```
 
 
-> 📄 **`frontend/src/app/features/costing/recipes-page.ts`** — 581 سطر
+> 📄 **`frontend/src/app/features/costing/recipes-page.ts`** — 589 سطر
 
 ```ts
 import { DatePipe, DecimalPipe } from '@angular/common';
@@ -10925,6 +11086,12 @@ const recipeSorts: SortOption<RecipeSort>[] = [
       </div>
     </div>
     <div class="toolbar">
+      @if (canSeeBurdened()) {
+        <a mat-button class="burdened-link" routerLink="/costing/intelligence/burdened"
+          matTooltip="Each dish's food, labor and overheads, and its true net profit">
+          <mat-icon>layers</mat-icon> Burdened plate cost <span class="inline-ar">التكلفة الكلية للطبق</span>
+        </a>
+      }
       <span class="spacer"></span>
       @if (canAddToMenu() && toMenu().length) {
         <button mat-stroked-button class="to-menu" (click)="addToMenu(toMenu())" [disabled]="busy()"
@@ -11243,6 +11410,8 @@ export class RecipesPage {
 
   // Whoever works the menu puts a recipe on it.
   protected readonly canAddToMenu = computed(() => this.access.has('Menu') && this.auth.can(Permissions.InventoryManage));
+  // The fully burdened plate cost is on the intelligence tab: linked for whoever works it.
+  protected readonly canSeeBurdened = computed(() => this.access.has('Intelligence'));
 
   // The standalone ones shown, none waiting for a manager: put on the menu together.
   protected readonly toMenu = computed(() => this.shown().filter((c) => c.isStandalone && !c.isDeleted && !this.pendingOf(c)));
@@ -11423,7 +11592,7 @@ export class RecipesPage {
 
 لكل سطر، كما في القالب الورقي: `EP$/وحدة = AP$/وحدة ÷ Yield`، وتكلفة السطر = كمية EP × EP$ (بوحدات الشراء). ثم تكلفة الحصة، سعر البيع، نسبة التكلفة، والحالة مقابل الهدف. المصنّع بلا دفعات يظهر "حسب وصفته". الربط بصنف/حجم/إضافة من المنيو، والأسطر بـ `GridKeys`.
 
-> 📄 **`frontend/src/app/features/costing/recipe-card-page.ts`** — 900 سطر
+> 📄 **`frontend/src/app/features/costing/recipe-card-page.ts`** — 1070 سطر
 
 ```ts
 import { DatePipe, DecimalPipe } from '@angular/common';
@@ -11452,6 +11621,8 @@ import {
   unitLabels,
   recipeCostOf,
 } from '../../core/costing/costing.api';
+import { CostingAccess } from '../../core/costing/costing-tabs';
+import { BurdenedRecipeCost, IntelligenceApi, allocationMethodLabels } from '../../core/costing/intelligence.api';
 import { errorMessage } from '../../core/http/error-message';
 import { Company } from '../../core/settings/company';
 import { MoneyPipe } from '../../core/ui/money.pipe';
@@ -11661,6 +11832,26 @@ const linkKey = (kind: RecipeTargetKind | null, catalogItemId: number | null, va
             }
           </div>
           <div class="box">
+            <span class="label">Prep time (mins) <app-info-tip tip="bcPrepTime" /><span class="ar">وقت التحضير بالدقائق</span></span>
+            @if (editing()) {
+              <div class="prep">
+                <mat-form-field subscriptSizing="dynamic" class="minutes">
+                  <input matInput type="number" min="0" max="1440" step="any" placeholder="10" [ngModel]="prepTime()"
+                    (ngModelChange)="prepTime.set(figure($event))" aria-label="Prep time in minutes for one plate" />
+                </mat-form-field>
+                <span class="times" aria-hidden="true">×</span>
+                <mat-form-field subscriptSizing="dynamic" class="weight">
+                  <input matInput type="number" min="0.1" max="10" step="0.1" [ngModel]="complexity()"
+                    (ngModelChange)="complexity.set(figure($event))" aria-label="Complexity weight" />
+                </mat-form-field>
+              </div>
+              <small class="muted">One plate; × complexity (1 ordinary) · للطبق × معامل الصعوبة</small>
+            } @else {
+              <strong>{{ prepTime() === null ? '10' : (prepTime() | number: '1.0-2') }} min</strong>
+              <small class="muted">{{ prepTime() === null ? 'Default · افتراضي' : '' }}{{ complexity() !== 1 ? ' × ' + complexity() + ' complexity' : '' }}</small>
+            }
+          </div>
+          <div class="box">
             <span class="label">{{ linked() ? 'Menu price' : 'Planned price' }} <app-info-tip tip="sellingPrice" /><span class="ar">{{ linked() ? 'سعر البيع' : 'السعر المخطط' }}</span></span>
             <strong>{{ price() === null ? '—' : (price() | money) }}</strong>
           </div>
@@ -11677,6 +11868,52 @@ const linkKey = (kind: RecipeTargetKind | null, catalogItemId: number | null, va
             <strong>{{ lines().length ? (idealPrice() | money) : '—' }}</strong>
           </div>
         </div>
+
+        @if (burdened(); as b) {
+          @if (b.plate; as p) {
+            <section class="burdened" aria-label="Fully burdened cost breakdown">
+              <h3>
+                Fully burdened cost breakdown <span class="inline-ar">التكلفة الكلية شاملة التشغيل</span>
+                <app-info-tip tip="bcBurdened" />
+              </h3>
+              @if (p.fullyBurdenedCost !== null && p.directFoodCost !== null) {
+                <p class="equation">
+                  <span class="term food"><strong>{{ p.directFoodCost | money }}</strong> الخامات · food</span>
+                  <span class="op">+</span>
+                  <span class="term labor"><strong>{{ p.allocatedLaborCost | money }}</strong> العمالة · labor</span>
+                  <span class="op">+</span>
+                  <span class="term overhead"><strong>{{ p.allocatedOverheadCost | money }}</strong> الإيجار والمرافق · overhead</span>
+                  <span class="op">=</span>
+                  <span class="term total"><strong>{{ p.fullyBurdenedCost | money }}</strong> التكلفة الكلية · fully burdened</span>
+                  @if (p.trueNetProfitPerPlate !== null) {
+                    <span class="net" [class.loss]="p.trueNetProfitPerPlate < 0">
+                      (صافي الربح · net profit: {{ p.trueNetProfitPerPlate | money }} · {{ p.trueNetMarginPercent | number: '1.1-1' }}%)
+                    </span>
+                  }
+                </p>
+              } @else {
+                <p class="muted">
+                  {{ p.status === 'NotAllocated'
+                    ? 'No plates sold this month yet: nothing to share the labor and overheads over. · لا مبيعات هذا الشهر بعد.'
+                    : 'Give it a price to see its true net profit. · حدد السعر.' }}
+                </p>
+              }
+              <p class="muted basis">
+                {{ methodLabels[b.method].en }} · {{ methodLabels[b.method].ar }}, this month so far ({{ b.platesSold | number: '1.0-0' }} plates sold),
+                {{ p.weightedMinutes | number: '1.0-2' }} weighted min a plate{{ p.estimated ? '; not sold yet: estimated' : '' }}.
+                @if (p.suggestedPriceForTargetNetMargin !== null) {
+                  {{ b.targetNetMarginPercent | number: '1.0-1' }}% net margin at {{ p.suggestedPriceForTargetNetMargin | money }}.
+                }
+                @if (dirty()) {
+                  <strong>As last saved · حسب آخر حفظ.</strong>
+                }
+                @if (canSeeBurdened) {
+                  <a routerLink="/costing/intelligence/burdened">Every dish · كل الأطباق</a>
+                }
+              </p>
+            </section>
+          }
+        }
 
         <div class="table-wrap">
           <table class="grid" appGridKeys (appGridKeysAppend)="add()">
@@ -11888,6 +12125,66 @@ const linkKey = (kind: RecipeTargetKind | null, catalogItemId: number | null, va
       grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
       gap: 8px;
     }
+    .prep {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      .minutes {
+        width: 76px;
+      }
+      .weight {
+        width: 64px;
+      }
+    }
+    .burdened {
+      margin: 12px 0;
+      padding: 12px 14px;
+      border-radius: 12px;
+      border: 1px solid var(--mat-sys-outline-variant);
+      background: var(--mat-sys-surface-container-lowest);
+
+      h3 {
+        margin: 0 0 6px;
+        font: var(--mat-sys-title-small);
+      }
+      .equation {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        gap: 6px 8px;
+        margin: 0 0 6px;
+      }
+      .term {
+        padding-inline-start: 8px;
+        border-inline-start: 4px solid;
+      }
+      .term.food {
+        border-color: #2563eb;
+      }
+      .term.labor {
+        border-color: #d97706;
+      }
+      .term.overhead {
+        border-color: #7c3aed;
+      }
+      .term.total {
+        border-color: var(--mat-sys-on-surface);
+      }
+      .op {
+        color: var(--mat-sys-on-surface-variant);
+      }
+      .net {
+        font-weight: 600;
+        color: var(--app-ok);
+      }
+      .net.loss {
+        color: var(--mat-sys-error);
+      }
+      .basis {
+        font-size: 0.85em;
+        margin: 0;
+      }
+    }
     .box {
       display: flex;
       flex-direction: column;
@@ -11989,6 +12286,14 @@ export class RecipeCardPage {
   protected readonly link = signal<string | null>(null);
   protected readonly lines = signal<Line[]>([]);
   protected readonly portions = signal<number | null>(1);
+  // The kitchen's minutes for one plate (none: the ordinary 10) and how hard they are.
+  protected readonly prepTime = signal<number | null>(10);
+  protected readonly complexity = signal<number | null>(1);
+  // This month's labor and overheads on a plate of it, as last saved.
+  protected readonly burdened = signal<BurdenedRecipeCost | null>(null);
+  protected readonly methodLabels = allocationMethodLabels;
+  private readonly intelligence = inject(IntelligenceApi);
+  protected readonly canSeeBurdened = inject(CostingAccess).has('Intelligence');
   // The recipe as saved, to tell a change from none.
   private readonly saved = signal('');
 
@@ -12114,9 +12419,21 @@ export class RecipeCardPage {
       !this.duplicate() &&
       this.categoryId() !== null &&
       (this.linked() !== null || this.name().trim() !== '') &&
-      (price === null || price >= 0)
+      (price === null || price >= 0) &&
+      this.activityValid()
     );
   });
+
+  // Minutes 0 to a day's 1,440, or none; complexity 0.1 to 10.
+  protected readonly activityValid = computed(() => {
+    const [minutes, weight] = [this.prepTime(), this.complexity()];
+    return (minutes === null || (minutes >= 0 && minutes <= 1440)) && weight !== null && weight >= 0.1 && weight <= 10;
+  });
+
+  // A typed figure; cleared, none.
+  protected figure(value: unknown): number | null {
+    return value === null || value === '' || value === undefined || Number.isNaN(Number(value)) ? null : Number(value);
+  }
 
   // The same ingredient on two lines: one line, with the quantities added together, is meant.
   protected readonly duplicate = computed(() => {
@@ -12202,6 +12519,8 @@ export class RecipeCardPage {
       variantId: linked?.variantId ?? null,
       portions: this.portions() ?? 1,
       ingredients: this.lines().map((l) => ({ rawMaterialId: l.rawMaterialId!, quantity: l.quantity!, yieldPercent: l.yieldPercent })),
+      prepTimeMinutes: this.prepTime(),
+      complexityWeight: this.complexity() ?? 1,
     };
     this.saving.set(true);
     this.problem.set(null);
@@ -12263,6 +12582,8 @@ export class RecipeCardPage {
       link: this.link(),
       lines: this.lines(),
       portions: this.portions(),
+      prepTime: this.prepTime(),
+      complexity: this.complexity(),
     });
   }
 
@@ -12297,6 +12618,8 @@ export class RecipeCardPage {
         this.link.set(card.isStandalone ? null : linkKey(card.targetKind, card.catalogItemId, card.variantId));
         this.lines.set(card.lines.map((l) => ({ rawMaterialId: l.rawMaterialId, quantity: l.quantity, yieldPercent: l.yieldPercent })));
         this.portions.set(card.portions);
+        this.prepTime.set(card.prepTimeMinutes === undefined ? 10 : card.prepTimeMinutes);
+        this.complexity.set(card.complexityWeight ?? 1);
       } else {
         this.name.set('');
         this.categoryId.set(null);
@@ -12304,12 +12627,28 @@ export class RecipeCardPage {
         this.link.set(start.kind && start.id ? linkKey(start.kind, Number(start.id), start.variant ? Number(start.variant) : null) : null);
         this.lines.set([{ rawMaterialId: null, quantity: null, yieldPercent: 100 }]);
         this.portions.set(1);
+        this.prepTime.set(10);
+        this.complexity.set(1);
       }
       this.saved.set(this.snapshot());
+      this.burdened.set(null);
+      if (card?.recipeId) {
+        void this.loadBurdened(card.recipeId);
+      }
     } catch (error) {
       this.error.set(errorMessage(error, 'The recipe could not be loaded.'));
     } finally {
       this.loading.set(false);
+    }
+  }
+
+  // Its plate's share of this month's labor and overheads: the box beside its food cost. Without
+  // it, the card is whole all the same.
+  private async loadBurdened(recipeId: string): Promise<void> {
+    try {
+      this.burdened.set(await firstValueFrom(this.intelligence.recipeBurdenedCost(recipeId)));
+    } catch {
+      this.burdened.set(null);
     }
   }
 
@@ -13075,7 +13414,7 @@ export class PrepItemsPage {
 ```
 
 
-> 📄 **`frontend/src/app/features/costing/prep-item-page.ts`** — 618 سطر
+> 📄 **`frontend/src/app/features/costing/prep-item-page.ts`** — 641 سطر
 
 ```ts
 import { DatePipe, DecimalPipe } from '@angular/common';
@@ -13240,6 +13579,18 @@ const displayUnits: Record<UnitOfMeasure, [string, number]> = { Gram: ['kg', 100
           <mat-label>Reorder below · حد إعادة الطلب</mat-label>
           <input matInput type="number" min="0" step="any" [(ngModel)]="reorder" />
           <span matTextSuffix>&nbsp;{{ displayUnit }}</span>
+        </mat-form-field>
+        <mat-form-field class="prep-time">
+          <mat-label>Prep time a batch (mins) · وقت تحضير الدفعة</mat-label>
+          <input matInput type="number" min="0" max="1440" step="any" placeholder="10" [(ngModel)]="prepTime" (ngModelChange)="touch()"
+            aria-label="Prep time a batch in minutes" />
+          <span matTextSuffix>&nbsp;min</span>
+          <mat-hint>A dish made with it carries its share, for the burdened plate cost.</mat-hint>
+        </mat-form-field>
+        <mat-form-field class="complexity">
+          <mat-label>Complexity · معامل الصعوبة</mat-label>
+          <input matInput type="number" min="0.1" max="10" step="0.1" [(ngModel)]="complexity" (ngModelChange)="touch()" aria-label="Complexity weight" />
+          <span matTextPrefix>×&nbsp;</span>
         </mat-form-field>
       </section>
 
@@ -13471,6 +13822,9 @@ export class PrepItemPage {
   // In the display unit: 10 (kg).
   protected batch: number | null = 10;
   protected reorder: number | null = 0;
+  // A batch's minutes (none: the ordinary 10) and how hard they are: the burdened plate cost's.
+  protected prepTime: number | null = 10;
+  protected complexity: number | null = 1;
 
   // The form is changed in place; this bumps the signal so the costs follow.
   private readonly version = signal(0);
@@ -13520,7 +13874,11 @@ export class PrepItemPage {
       this.name.trim() !== '' &&
       (this.batch ?? 0) > 0 &&
       lines.every((l) => l.rawMaterialId && (l.quantity ?? 0) > 0 && (l.yieldPercent === null || (l.yieldPercent > 0 && l.yieldPercent <= 100))) &&
-      new Set(ids).size === ids.length
+      new Set(ids).size === ids.length &&
+      (this.prepTime === null || (this.prepTime as unknown) === '' || (this.prepTime >= 0 && this.prepTime <= 1440)) &&
+      this.complexity !== null &&
+      this.complexity >= 0.1 &&
+      this.complexity <= 10
     );
   });
 
@@ -13611,6 +13969,8 @@ export class PrepItemPage {
       displayUnit: this.displayUnit,
       displayUnitSize: this.displayUnitSize,
       reorderLevel: PrepItemPage.toBase(this.reorder ?? 0, this.displayUnitSize),
+      prepTimeMinutes: this.prepTime === null || (this.prepTime as unknown) === '' ? null : Number(this.prepTime),
+      complexityWeight: Number(this.complexity ?? 1),
     };
     this.saving.set(true);
     try {
@@ -13655,6 +14015,8 @@ export class PrepItemPage {
     this.displayUnitSize = item.displayUnitSize;
     this.batch = item.batchQuantity / item.displayUnitSize;
     this.reorder = item.reorderLevel / item.displayUnitSize;
+    this.prepTime = item.prepTimeMinutes === undefined ? 10 : item.prepTimeMinutes;
+    this.complexity = item.complexityWeight ?? 1;
     this.lines.set(
       item.ingredients.length
         ? item.ingredients.map((i) => ({ rawMaterialId: i.rawMaterialId, quantity: i.quantity, yieldPercent: i.yieldPercent }))
