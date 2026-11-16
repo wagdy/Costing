@@ -9,6 +9,9 @@ public interface IRecipeRepository : IRepository<Recipe>
     // them and read back against them.
     Task<IReadOnlyList<Recipe>> GetAllAsync(CancellationToken cancellationToken = default);
 
+    // These recipes, by id, deleted or not: a combo's dishes.
+    Task<IReadOnlyList<Recipe>> GetByIdsAsync(IReadOnlyCollection<Guid> ids, CancellationToken cancellationToken = default);
+
     // The active recipe linked to the target, if any.
     Task<Recipe?> GetByTargetAsync(RecipeTarget target, CancellationToken cancellationToken = default);
 

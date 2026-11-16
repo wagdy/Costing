@@ -953,6 +953,56 @@ export const infoTips = {
     },
     { en: '(Price − fully burdened cost) ÷ price × 100, as Cost settings share the labor and overheads.', ar: '(السعر − التكلفة الكلية) ÷ السعر × 100، بطريقة التحميل في إعدادات التكاليف.' },
   ),
+
+  // ---- Combo offers ----
+  coTotalCost: tip(
+    { en: 'Total combo cost', ar: 'إجمالي تكلفة العرض' },
+    { en: 'What the dishes in the combo cost together today, from their own recipes: nothing is entered twice.', ar: 'تكلفة أصناف العرض معًا اليوم، من وصفاتها نفسها: لا تُكرر أي خامة.' },
+    { en: 'Σ each dish\'s cost a portion × how many of it the combo holds.', ar: 'مجموع (تكلفة حصة كل صنف × عدده في العرض).' },
+  ),
+  coOriginal: tip(
+    { en: 'Original separate price', ar: 'السعر الأصلي منفصلًا' },
+    { en: 'What the same dishes would sell for one by one, at their own prices: the customer\'s saving is the difference.', ar: 'سعر نفس الأصناف لو بيعت منفصلة بأسعارها: والتوفير للعميل هو الفرق.' },
+    { en: 'Σ each dish\'s price (the menu\'s, or a planned price off it) × its quantity.', ar: 'مجموع (سعر كل صنف × عدده).' },
+  ),
+  coFoodCost: tip(
+    { en: 'Combo food cost %', ar: 'نسبة تكلفة العرض' },
+    {
+      en: 'The share of the combo\'s price its food takes. A combo sells cheaper than its dishes apart, so this is above theirs: keep it under the target.',
+      ar: 'نسبة الخامات من سعر العرض. العرض أرخص من أصنافه منفصلة، فتكون نسبته أعلى: أبقها تحت المستهدف.',
+    },
+    { en: 'Total combo cost ÷ the combo\'s selling price × 100.', ar: 'إجمالي تكلفة العرض ÷ سعر بيع العرض × 100.' },
+  ),
+
+  // ---- Promos and discounts against the margin ----
+  deDiscounts: tip(
+    { en: 'Total discounts', ar: 'إجمالي الخصومات' },
+    { en: 'What was taken off the menu prices in the month before the money was collected: never in the till or the safe.', ar: 'ما خُصم من أسعار المنيو في الشهر قبل التحصيل: لا يدخل الدرج ولا الخزنة.' },
+    { en: 'Σ each day\'s discounts on its takings; the share is of the standard gross revenue (net sales + discounts).', ar: 'مجموع خصومات كل يوم في توريده؛ والنسبة من الإيراد القياسي (صافي المبيعات + الخصومات).' },
+  ),
+  deStandard: tip(
+    { en: 'Standard food cost %', ar: 'نسبة التكلفة القياسية' },
+    { en: 'The food cost % had every dish sold at its full menu price.', ar: 'نسبة التكلفة لو بيع كل صنف بسعر المنيو كاملًا.' },
+    { en: 'Theoretical cost ÷ (net sales + discounts) × 100.', ar: 'التكلفة النظرية ÷ (صافي المبيعات + الخصومات) × 100.' },
+  ),
+  deActual: tip(
+    { en: 'Actual food cost %', ar: 'نسبة التكلفة الفعلية' },
+    {
+      en: 'The real food cost percentage after accounting for money lost to discounts.',
+      ar: 'نسبة التكلفة الحقيقية بعد احتساب المال الضائع في الخصومات.',
+    },
+    { en: 'Theoretical cost ÷ net revenue after discounts (cash + card, before tax) × 100.', ar: 'التكلفة النظرية ÷ صافي الإيراد بعد الخصومات (كاش + فيزا قبل الضريبة) × 100.' },
+  ),
+  deErosion: tip(
+    { en: 'Margin erosion', ar: 'تآكل الهامش' },
+    { en: 'How many points of food cost the discounts added: the kitchen cost the same, the money that came in was less.', ar: 'كم نقطة أضافتها الخصومات لنسبة التكلفة: تكلفة المطبخ نفسها، والمال المحصل أقل.' },
+    { en: 'Actual food cost % − standard food cost %.', ar: 'نسبة التكلفة الفعلية − نسبة التكلفة القياسية.' },
+  ),
+  deReasons: tip(
+    { en: 'Top discount reasons', ar: 'أهم أسباب الخصومات' },
+    { en: 'Why the discounts were given, the largest first, with how many bills.', ar: 'أسباب الخصومات، الأكبر أولًا، مع عدد الفواتير.' },
+    { en: 'Each reason\'s amounts and counts over the month\'s takings; a voided day\'s taken back out.', ar: 'مجموع مبالغ وعدد كل سبب في توريدات الشهر؛ ويُطرح اليوم الملغى.' },
+  ),
 } satisfies Record<string, InfoTipContent>;
 
 export type InfoTipKey = keyof typeof infoTips;

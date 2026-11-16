@@ -733,7 +733,7 @@ public static class DependencyInjection
 
 البنية التحتية: كل "منفذ" يُربط بتطبيقه. `Singleton` للساعة وملف الشركة والتشفير؛ `Scoped` لكل ما يلمس `CostingDbContext`؛ `RetryOnConflictBehavior` يلف كل أمر؛ و `AddHttpClient` + `AddHostedService<HrSyncWorker>` للربط مع HR.
 
-> 📄 **`backend/src/Costing.Infrastructure/DependencyInjection.cs`** — 123 سطر
+> 📄 **`backend/src/Costing.Infrastructure/DependencyInjection.cs`** — 124 سطر
 
 ```csharp
 using MediatR;
@@ -795,6 +795,7 @@ public static class DependencyInjection
 
         // The menu, its sales, and the staff the safe pays.
         services.AddScoped<IMenuRepository, MenuRepository>();
+        services.AddScoped<IComboOfferRepository, ComboOfferRepository>();
         services.AddScoped<Domain.Integrations.IPosLinkStore, PosLinkStore>();
         services.AddScoped<Domain.Integrations.IPosZReportRepository, PosZReportRepository>();
         services.AddScoped<Domain.Integrations.IPosDayRepository, PosDayRepository>();
@@ -1473,6 +1474,7 @@ Costing/
                     HrIntegration.cs
                     PosIntegration.cs
                 Menu/
+                    Combos.cs
                     Menu.cs
                 Production/
                     PrepItemImport.cs
@@ -1496,6 +1498,7 @@ Costing/
                     RecipeSheet.cs
                     Recipes.cs
                     RecipesToMenu.cs
+                    SaleRecipes.cs
                 Sales/
                     DailySales.cs
                     Sales.cs
@@ -1537,6 +1540,7 @@ Costing/
                     HrIntegration.cs
                     PosIntegration.cs
                 Menu/
+                    ComboOffer.cs
                     MenuItem.cs
                 Production/
                     MaterialExplosion.cs
@@ -1561,6 +1565,7 @@ Costing/
                     RecipeTarget.cs
                     StockRequirements.cs
                 Sales/
+                    Discounts.cs
                     SalesReceipt.cs
                 Staff/
                     PayrollRun.cs
@@ -1627,12 +1632,15 @@ Costing/
                         20261112143520_AddBlindAndSpotCounts.cs
                         20261115215556_AddBurdenedPlateCost.cs
                         20261116112941_AddSupplierTermsAndStaffMeals.cs
+                        20261116193324_AddCombosAndDiscounts.cs
                         CostingDbContextModelSnapshot.cs
                     PosIntegrationPersistence.cs
                     RetryOnConflictBehavior.cs
                 Reports/
                     BreakEvenService.cs
                     BurdenedCostService.cs
+                    ComboLoading.cs
+                    CostingService.Combos.cs
                     CostingService.Inflation.cs
                     CostingService.MenuEngineering.cs
                     CostingService.PlateCost.cs
@@ -1653,6 +1661,7 @@ Costing/
             Costing.Api.Tests/
                 BulkSwapApiTests.cs
                 BurdenedCostApiTests.cs
+                CombosAndDiscountsApiTests.cs
                 ControllershipApiTests.cs
                 Costing.Api.Tests.csproj
                 CostingApiTests.cs
@@ -1682,6 +1691,7 @@ Costing/
                 TreasuryTests.cs
             Costing.Domain.Tests/
                 ApprovalTests.cs
+                CombosAndDiscountsTests.cs
                 CompanySettingsTests.cs
                 Costing.Domain.Tests.csproj
                 CostingTests.cs
@@ -1702,6 +1712,7 @@ Costing/
             Costing.Infrastructure.Tests/
                 BulkSwapTests.cs
                 BurdenedCostTests.cs
+                CombosAndDiscountsTests.cs
                 Costing.Infrastructure.Tests.csproj
                 CostingTests.cs
                 DailyBreakEvenTests.cs
@@ -1807,6 +1818,9 @@ Costing/
                         category-delete-dialog.spec.ts
                         category-delete-dialog.ts
                         category-filters.spec.ts
+                        combo-dialog.ts
+                        combos-page.ts
+                        combos.spec.ts
                         consumption-page.ts
                         controllership.spec.ts
                         costing-navigation.spec.ts

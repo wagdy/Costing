@@ -1,6 +1,7 @@
 using System.Globalization;
 using Costing.Domain.Common;
 using Costing.Domain.Purchases;
+using Costing.Domain.Sales;
 
 namespace Costing.Domain.EndOfDay;
 
@@ -67,6 +68,7 @@ public sealed class EndOfDayReport : AggregateRoot
 
     private readonly List<EndOfDayInvoice> _invoices = [];
     private readonly List<EndOfDayPayout> _payouts = [];
+    private readonly List<DiscountReason> _discountReasons = [];
 
     private EndOfDayReport() { }
 
@@ -89,6 +91,11 @@ public sealed class EndOfDayReport : AggregateRoot
     public decimal? TaxAmount { get; private set; }
     public decimal? VoidsAmount { get; private set; }
     public string? Notes { get; private set; }
+
+    // Discounts and promos (الخصومات والعروض) the Z report gives, and why: taken off the menu prices
+    // before the money was collected, so never in the drawer, and nothing in the cash expected below.
+    public decimal? DiscountsAmount { get; private set; }
+    public IReadOnlyList<DiscountReason> DiscountReasons => _discountReasons.AsReadOnly();
 
     // The cash the drawer opened the day with (العهدة / الفكة).
     public decimal? OpeningFloat { get; private set; }
@@ -142,7 +149,8 @@ public sealed class EndOfDayReport : AggregateRoot
     public decimal CashPaidOut => TotalOf(EndOfDayInvoiceKind.Cash) + TotalOf(EndOfDayPayoutKind.SupplierPayment) + TotalOf(EndOfDayPayoutKind.EmployeeAdvance);
 
     // The cash that should be in the drawer at the close (الصافي الفعلي المتبقي في الكاش): the float
-    // and the cash sales, less what was paid out of it. The Visa never reaches the drawer.
+    // and the cash sales, less what was paid out of it. The Visa never reaches the drawer, and the
+    // discounts never do: they were never collected (the cash is after them).
     public decimal NetCashInTill => (OpeningFloat ?? 0) + CashSalesCollected - CashPaidOut;
 
     // What should reach the safe: everything the day took in, less all that was paid out of it, as
@@ -152,9 +160,12 @@ public sealed class EndOfDayReport : AggregateRoot
     public EndOfDayInvoice Invoice(Guid invoiceId) =>
         _invoices.SingleOrDefault(i => i.Id == invoiceId) ?? throw new NotFoundException("End-of-day invoice", invoiceId);
 
-    public void RecordSales(decimal? cash, decimal? card, decimal? tax, decimal? voids, string? notes, string by, decimal? openingFloat = null)
+    public void RecordSales(
+        decimal? cash, decimal? card, decimal? tax, decimal? voids, string? notes, string by, decimal? openingFloat = null,
+        decimal? discounts = null, IReadOnlyList<DiscountReason>? discountReasons = null)
     {
         EnsureDraft();
+        var reasons = Discounts.Clean(discounts ?? 0, discountReasons);
         if (new[] { cash, card, tax, voids }.Any(n => n < 0))
             throw new DomainException("The cash, Visa, tax and voids are zero or more. · المبالغ صفر أو أكثر.");
         if (openingFloat < 0)
@@ -166,6 +177,9 @@ public sealed class EndOfDayReport : AggregateRoot
         CardAmount = Money(card);
         TaxAmount = Money(tax);
         VoidsAmount = Money(voids);
+        DiscountsAmount = Money(discounts);
+        _discountReasons.Clear();
+        _discountReasons.AddRange(reasons);
         OpeningFloat = Money(openingFloat);
         Notes = cleaned;
         Touch(by);

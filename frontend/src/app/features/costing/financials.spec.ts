@@ -202,6 +202,34 @@ describe('a day’s takings from its Z report', () => {
     endOfDay.day.mockReset().mockReturnValue(of(null));
   });
 
+  it('carries the end of day\'s discounts and why, said and never in the safe', async () => {
+    const closed = {
+      id: 'day-13', date: '2026-10-13', status: 'Submitted', cashAmount: 5_000, cardAmount: 2_500, taxAmount: 1_050, voidsAmount: 0, notes: null,
+      salesPhoto: null, submittedBy: 'Hany', discountsAmount: 600, discountReasons: [{ reason: 'Loyalty', amount: 400, count: 3 }, { reason: 'Staff', amount: 0, count: 1 }],
+    } as unknown as EndOfDay;
+    endOfDay.day.mockReturnValue(of(closed));
+    const { fixture, el, page } = await dialog({ revenueDate: '2026-10-13' });
+    await fixture.whenStable();
+    fixture.detectChanges();
+
+    expect(page['discounts']).toBe(600);
+    expect(text(el.querySelector('.reasons')!)).toBe('Why · الأسباب: Loyalty L.E 400.00 · Staff');
+    // Into the safe: cash, Visa and tax only.
+    expect(text(el.querySelector('.breakdown .net dd')!)).toBe('L.E 8,550.00');
+    expect([...el.querySelectorAll('.breakdown dt')].map(text).some((t) => t.startsWith('Discounts & promos'))).toBe(true);
+    expect(text([...el.querySelectorAll('.breakdown div')].find((d) => text(d).startsWith('Discounts'))!.querySelector('dd')!)).toBe('L.E 600.00');
+
+    page['done']();
+    expect(close.mock.lastCall![0]).toMatchObject({
+      discountsAmount: 600, discountReasons: [{ reason: 'Loyalty', amount: 400, count: 3 }, { reason: 'Staff', amount: 0, count: 1 }],
+    });
+
+    // Lowered below what its reasons say: refused.
+    page['discounts'] = 300;
+    page['touch']();
+    expect(page['problem']()).toBe("The end of day's reasons add up to more than the discounts. · مجموع الأسباب أكبر من الخصومات.");
+  });
+
   it('starts from the end of day handed in for the day, and goes back to it once something is typed over it', async () => {
     const closed = {
       id: 'day-13', date: '2026-10-13', status: 'Submitted', cashAmount: 5_000, cardAmount: 2_500, taxAmount: 1_050, voidsAmount: 80, notes: 'Two voids',
@@ -244,6 +272,7 @@ describe('a day’s takings from its Z report', () => {
       'Visa / Card · إيراد الفيزا',
       'Total tax collected · إجمالي الضريبة المحصلة',
       'Voids & refunds · قيمة الفويد والمرتجعات',
+      'Discounts & promos · الخصومات والعروض',
       'Void reasons / notes · أسباب الفويد وملاحظات اليومية',
     ]);
     expect(takingsPreview).toHaveBeenCalledWith('2026-10-14');
@@ -276,7 +305,7 @@ describe('a day’s takings from its Z report', () => {
     fill({ cash: 100, card: 50, tax: 200 });
     expect(page['problem']()).toBe("The tax collected cannot be more than the day's sales. · الضريبة لا تزيد عن إجمالي المبيعات.");
     fill({ cash: 100, card: -5, tax: 0 });
-    expect(page['problem']()).toBe('The cash, card, tax and voids are zero or more. · المبالغ صفر أو أكثر.');
+    expect(page['problem']()).toBe('The cash, card, tax, voids and discounts are zero or more. · المبالغ صفر أو أكثر.');
 
     fill({ cash: 100, card: 0, tax: 0 });
     page['revenueDate'] = '2026-10-15';

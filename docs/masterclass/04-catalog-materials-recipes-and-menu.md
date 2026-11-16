@@ -1646,15 +1646,17 @@ internal sealed class RestoreExpenseItemHandler(
 
 `Recipes.cs`: `SetRecipeCommand` (وصفة طبق: المكونات بـ EP والـ Yield، الحصص، الفئة، والهدف في المنيو)، الحذف كعلامة (`DeletedAtUtc`) والاستعادة. وصفة فعّالة واحدة لكل هدف (فهرس فريد، الفصل 02).
 
-> 📄 **`backend/src/Costing.Application/Recipes/Recipes.cs`** — 226 سطر
+> 📄 **`backend/src/Costing.Application/Recipes/Recipes.cs`** — 248 سطر
 
 ```csharp
 using MediatR;
 using Costing.Domain.Common;
 using Costing.Application.Approvals;
 using Costing.Application.Common;
+using Costing.Application.Menu;
 using Costing.Application.RawMaterials;
 using Costing.Domain.Approvals;
+using Costing.Domain.Menu;
 using Costing.Domain.RawMaterials;
 using Costing.Domain.Recipes;
 
@@ -1711,6 +1713,20 @@ internal static class RecipeWriting
             recipe.SetIngredient(byId[ingredient.RawMaterialId], ingredient.Quantity, ingredient.YieldPercent);
     }
 
+    // A combo's number sells by its dishes, never by a recipe of its own.
+    public static async Task EnsureNotComboAsync(this IMenuRepository menu, RecipeTarget? target, CancellationToken cancellationToken)
+    {
+        if (target is { Kind: RecipeTargetKind.MenuItem } t && await menu.GetItemAsync(t.CatalogItemId, cancellationToken) is { IsCombo: true } combo)
+            throw new DomainException($"{combo.Name} is a combo offer: it is costed and sold by the dishes in it, not a recipe. · العرض المجمع يُحسب من أصنافه.");
+    }
+
+    // Not while a combo has it: the combo would sell a dish that is gone.
+    public static async Task EnsureNotInComboAsync(this IComboOfferRepository combos, Recipe recipe, CancellationToken cancellationToken)
+    {
+        if (await combos.GetUsingRecipeAsync(recipe.Id, cancellationToken) is { Count: > 0 } inCombos)
+            throw new DomainException(ComboRules.InCombo(recipe.Name ?? "This recipe", inCombos.Select(c => c.Name)));
+    }
+
     // One active recipe per menu item: the one it sells by.
     public static async Task EnsureFreeAsync(this IRecipeRepository recipes, RecipeTarget? target, Guid recipeId, CancellationToken cancellationToken)
     {
@@ -1741,12 +1757,14 @@ public sealed record SetRecipeCommand(
     bool CanDelete = true) : IRequest<RecipeDto?>;
 
 internal sealed class SetRecipeHandler(
-    IRecipeRepository recipes, IRawMaterialRepository materials, IApprovalRequestRepository approvals, IUnitOfWork unitOfWork)
+    IRecipeRepository recipes, IRawMaterialRepository materials, IApprovalRequestRepository approvals, IMenuRepository menu, IComboOfferRepository combos,
+    IUnitOfWork unitOfWork)
     : IRequestHandler<SetRecipeCommand, RecipeDto?>
 {
     public async Task<RecipeDto?> Handle(SetRecipeCommand request, CancellationToken cancellationToken)
     {
         var target = new RecipeTarget(request.TargetKind, request.CatalogItemId, request.VariantId);
+        await menu.EnsureNotComboAsync(target, cancellationToken);
         var recipe = await recipes.GetByTargetAsync(target, cancellationToken);
         if (recipe is not null)
             await approvals.EnsureNotPendingAsync(recipe.Id, cancellationToken);
@@ -1757,6 +1775,7 @@ internal sealed class SetRecipeHandler(
             {
                 if (!request.CanDelete)
                     throw new DomainException("Deleting a recipe goes to a manager: delete it from the recipes list to ask.");
+                await combos.EnsureNotInComboAsync(recipe, cancellationToken);
                 recipe.Delete(request.StaffName);
                 await unitOfWork.SaveChangesAsync(cancellationToken);
             }
@@ -1802,6 +1821,7 @@ public sealed record SaveRecipeCommand(
 
 internal sealed class SaveRecipeHandler(
     IRecipeRepository recipes,
+    IMenuRepository menu,
     IRecipeCategoryRepository categories,
     IRawMaterialRepository materials,
     IApprovalRequestRepository approvals,
@@ -1819,6 +1839,7 @@ internal sealed class SaveRecipeHandler(
         if (await categories.GetByIdAsync(categoryId, cancellationToken) is null)
             throw new DomainException("That category is no longer there. Choose another.");
         RecipeTarget? target = request.TargetKind is { } kind && request.CatalogItemId is { } id ? new RecipeTarget(kind, id, request.VariantId) : null;
+        await menu.EnsureNotComboAsync(target, cancellationToken);
 
         Recipe recipe;
         if (request.RecipeId is { } recipeId)
@@ -1849,11 +1870,12 @@ internal sealed class SaveRecipeHandler(
 // Deleting it again changes nothing.
 public sealed record DeleteRecipeCommand(Guid RecipeId, string StaffName = "") : IRequest;
 
-internal sealed class DeleteRecipeHandler(IRecipeRepository recipes, IUnitOfWork unitOfWork) : IRequestHandler<DeleteRecipeCommand>
+internal sealed class DeleteRecipeHandler(IRecipeRepository recipes, IComboOfferRepository combos, IUnitOfWork unitOfWork) : IRequestHandler<DeleteRecipeCommand>
 {
     public async Task Handle(DeleteRecipeCommand request, CancellationToken cancellationToken)
     {
         var recipe = await recipes.GetRequiredAsync(request.RecipeId, cancellationToken);
+        await combos.EnsureNotInComboAsync(recipe, cancellationToken);
         recipe.Delete(request.StaffName);
         await unitOfWork.SaveChangesAsync(cancellationToken);
     }
@@ -3248,7 +3270,7 @@ internal sealed class GetProductionOrderQueryHandler(IProductionOrderRepository 
 
 `Menu.cs`: الفئات، الأصناف بأرقامها (الرقم **يُعطى** وهو كود الصنف في التقارير، أو التالي بعد الأعلى من 1001)، الأحجام بأكوادها وأسعارها، والإضافات. والاستيراد من شيت (الفصل 07). `MenuReader` يبني المنيو كاملًا للعرض ولنقطة البيع.
 
-> 📄 **`backend/src/Costing.Application/Menu/Menu.cs`** — 346 سطر
+> 📄 **`backend/src/Costing.Application/Menu/Menu.cs`** — 353 سطر
 
 ```csharp
 using MediatR;
@@ -3268,14 +3290,15 @@ public sealed record MenuCategoryDto(int Id, string Name, string? NameAr, int Di
 
 public sealed record MenuSizeDto(int Id, string Name, string? NameAr, decimal Price);
 
+// ComboOfferId: a combo offer sold under this number, changed on Recipes → Combos & offers only.
 public sealed record MenuItemDto(
     int Id, string Name, string? NameAr, string Category, decimal Price, bool IsPriceBasedOnAddons, bool IsAvailable, bool IsDeleted,
-    IReadOnlyList<MenuSizeDto> Sizes, IReadOnlyList<int> AddOnIds)
+    IReadOnlyList<MenuSizeDto> Sizes, IReadOnlyList<int> AddOnIds, Guid? ComboOfferId = null)
 {
     public static MenuItemDto From(MenuItem item) => new(
         item.Id, item.Name, item.NameAr, item.Category, item.Price, item.IsPriceBasedOnAddons, item.IsAvailable, item.IsDeleted,
         item.Variants.OrderBy(v => v.DisplayOrder).ThenBy(v => v.Id).Select(v => new MenuSizeDto(v.Id, v.Name, v.NameAr, v.Price)).ToList(),
-        item.AddOnIds);
+        item.AddOnIds, item.ComboOfferId);
 }
 
 public sealed record AddOnDto(int Id, string Name, string? NameAr, decimal Price, bool IsDeleted);
@@ -3382,6 +3405,8 @@ internal sealed class SaveMenuItemHandler(IMenuRepository menu, IUnitOfWork unit
         if (request.Id is { } id)
         {
             item = await menu.GetItemAsync(id, cancellationToken) ?? throw new NotFoundException("Menu item", id);
+            if (item.IsCombo)
+                throw new DomainException(ComboRules.ComboOnMenu);
             item.Change(request.Name, request.NameAr, category.Name, request.Price, request.IsPriceBasedOnAddons);
         }
         else
@@ -3409,6 +3434,8 @@ internal sealed class SetMenuItemDeletedHandler(IMenuRepository menu, IUnitOfWor
     public async Task<MenuItemDto> Handle(SetMenuItemDeletedCommand request, CancellationToken cancellationToken)
     {
         var item = await menu.GetItemAsync(request.Id, cancellationToken) ?? throw new NotFoundException("Menu item", request.Id);
+        if (item.IsCombo)
+            throw new DomainException(ComboRules.ComboOnMenu);
         if (request.Deleted)
             item.Delete();
         else
@@ -3526,6 +3553,8 @@ internal sealed class ImportMenuHandler(IMenuRepository menu, IUnitOfWork unitOf
                 var name = row.Name?.Trim();
                 var item = row.Number is { } number ? items.GetValueOrDefault(number) : null;
                 item ??= name is { Length: > 0 } ? byName.GetValueOrDefault(name) : null;
+                if (item is { IsCombo: true })
+                    throw new DomainException(ComboRules.ComboOnMenu);
 
                 if (item is null)
                 {
@@ -3600,6 +3629,142 @@ internal sealed class ImportMenuHandler(IMenuRepository menu, IUnitOfWork unitOf
 ```
 
 
+**حفظ العرض المجمع (`SaveComboOfferCommand`):** يتحقق من الوصفات، ويرفض رقمًا مستخدمًا لصنف آخر أو تغيير كود عرض محفوظ، ثم ينشئ أو يحدّث صنف المنيو بنفس الحفظ (وقسم العروض أول مرة). وحراسات حوله: شاشة المنيو واستيراده يرفضان صنف العرض (`ComboRules.ComboOnMenu`)، ولا تُربط وصفة برقم عرض (`EnsureNotComboAsync`)، ولا تُحذف وصفة داخل عرض قائم (`EnsureNotInComboAsync`، وفي مسار الموافقات أيضًا).
+
+> 📄 **`backend/src/Costing.Application/Menu/Combos.cs`** — 101 سطر
+
+```csharp
+using MediatR;
+using Costing.Application.Common;
+using Costing.Domain.Common;
+using Costing.Domain.Menu;
+using Costing.Domain.Recipes;
+
+namespace Costing.Application.Menu;
+
+// Combo offers (العروض والوجبات المجمعة), built on Recipes → Combos & offers: existing recipes and how
+// many of each, at a price of the combo's own. Saved, its menu item is made or brought in line
+// (ComboOffer, MenuItem.SellAs) in the same save, in the Combos & offers category, so the sales and
+// the point of sale sell it under its code. What it costs is worked out whenever it is read.
+
+public sealed record ComboItemInput(Guid RecipeId, int Quantity);
+
+// Added (an id not saved yet) or changed. Code: the menu number it is sold under, kept once saved.
+public sealed record SaveComboOfferCommand(
+    Guid Id, int Code, string Name, string? NameAr, decimal SellingPrice, bool IsActive, IReadOnlyList<ComboItemInput> Items)
+    : IRequest<ComboOfferSaved>, IRetryOnConflict;
+
+public sealed record ComboOfferSaved(Guid Id, int Code);
+
+// Off the menu and the list, kept for the sales that name it.
+public sealed record DeleteComboOfferCommand(Guid Id, string StaffName = "") : IRequest;
+
+public static class ComboRules
+{
+    public static string InCombo(string dish, IEnumerable<string> combos) =>
+        $"{dish} is in the combo {string.Join(", ", combos)}: take it out of the combo first. · الصنف داخل عرض مجمع.";
+
+    public const string ComboOnMenu =
+        "This is a combo offer: change it on Recipes → Combos & offers. · هذا عرض مجمع: عدّله من الوصفات ← العروض المجمعة.";
+}
+
+internal sealed class SaveComboOfferHandler(IComboOfferRepository combos, IRecipeRepository recipes, IMenuRepository menu, IUnitOfWork unitOfWork)
+    : IRequestHandler<SaveComboOfferCommand, ComboOfferSaved>
+{
+    public async Task<ComboOfferSaved> Handle(SaveComboOfferCommand request, CancellationToken cancellationToken)
+    {
+        var items = (request.Items ?? []).Select(i => new ComboPart(i.RecipeId, i.Quantity)).ToList();
+        var dishes = (await recipes.GetByIdsAsync(items.Select(i => i.RecipeId).Distinct().ToList(), cancellationToken)).ToDictionary(r => r.Id);
+        foreach (var item in items)
+        {
+            var recipe = dishes.GetValueOrDefault(item.RecipeId) ?? throw new NotFoundException(nameof(Recipe), item.RecipeId);
+            if (recipe.IsDeleted)
+                throw new DomainException($"{recipe.Name ?? "A recipe"} is deleted: it cannot go in a combo. · الوصفة محذوفة.");
+        }
+
+        var combo = await combos.GetByIdAsync(request.Id, cancellationToken);
+        MenuItem? menuItem;
+        if (combo is null)
+        {
+            if (await menu.GetItemAsync(request.Code, cancellationToken) is { } taken)
+                throw new DomainException($"Number {request.Code} is {taken.Name}'s on the menu: choose another. · الرقم مستخدم.");
+            combo = new ComboOffer(request.Id, request.Code, request.Name, request.NameAr, request.SellingPrice, request.IsActive, items);
+            combos.Add(combo);
+            await EnsureCategoryAsync(cancellationToken);
+            menuItem = new MenuItem(combo.Code, combo.Name, combo.NameAr, ComboOffer.MenuCategory, combo.SellingPrice, false);
+            menu.AddItem(menuItem);
+        }
+        else
+        {
+            if (combo.Code != request.Code)
+                throw new DomainException("A combo keeps its code: its sales are under it. · كود العرض لا يتغير.");
+            combo.Change(request.Name, request.NameAr, request.SellingPrice, request.IsActive, items);
+            menuItem = await menu.GetItemAsync(combo.Code, cancellationToken);
+            if (menuItem is null)
+            {
+                await EnsureCategoryAsync(cancellationToken);
+                menuItem = new MenuItem(combo.Code, combo.Name, combo.NameAr, ComboOffer.MenuCategory, combo.SellingPrice, false);
+                menu.AddItem(menuItem);
+            }
+        }
+
+        menuItem.SellAs(combo);
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+        return new ComboOfferSaved(combo.Id, combo.Code);
+    }
+
+    // The combos' own category on the menu, last, added the first time.
+    private async Task EnsureCategoryAsync(CancellationToken cancellationToken)
+    {
+        var categories = await menu.GetCategoriesAsync(cancellationToken);
+        if (categories.Any(c => string.Equals(c.Name, ComboOffer.MenuCategory, StringComparison.OrdinalIgnoreCase)))
+            return;
+        menu.AddCategory(new MenuCategory(ComboOffer.MenuCategory, ComboOffer.MenuCategoryAr, categories.Count == 0 ? 1 : categories.Max(c => c.DisplayOrder) + 1));
+    }
+}
+
+internal sealed class DeleteComboOfferHandler(IComboOfferRepository combos, IMenuRepository menu, IUnitOfWork unitOfWork)
+    : IRequestHandler<DeleteComboOfferCommand>
+{
+    public async Task Handle(DeleteComboOfferCommand request, CancellationToken cancellationToken)
+    {
+        var combo = await combos.GetRequiredAsync(request.Id, cancellationToken);
+        combo.Delete(request.StaffName);
+        if (await menu.GetItemAsync(combo.Code, cancellationToken) is { } menuItem)
+            menuItem.SellAs(combo);
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+    }
+}
+```
+
+
+**تفجير المبيعات:** `StockRequirements.For` صار يأخذ أجزاء العروض: صنف العرض يأخذ مخزون كل وصفة × الكمية المباعة × عددها في العرض. و`ForSaleAsync` يحمّل في مرة واحدة وصفات الأرقام المباعة ووصفات أصناف العروض وأجزاءها، ويستخدمه ترحيل المبيعات وتقرير Z.
+
+> 📄 **`backend/src/Costing.Application/Recipes/SaleRecipes.cs`** — 19 سطر
+
+```csharp
+using Costing.Domain.Menu;
+using Costing.Domain.Recipes;
+
+namespace Costing.Application.Recipes;
+
+internal static class SaleRecipes
+{
+    // The recipes sold items could need, in one go: those their menu numbers sell by, the dishes of
+    // the combos among them, and what each combo is made of (StockRequirements.For).
+    public static async Task<(IReadOnlyList<Recipe> Recipes, IReadOnlyDictionary<int, IReadOnlyList<ComboPart>> Combos)> ForSaleAsync(
+        this IRecipeRepository recipes, IComboOfferRepository combos, IReadOnlyCollection<SoldItem> items, CancellationToken cancellationToken)
+    {
+        var parts = await combos.GetPartsAsync(items.Select(i => i.MenuItemId).Distinct().ToList(), cancellationToken);
+        var byTarget = await recipes.GetByTargetsAsync(StockRequirements.TargetsFor(items), cancellationToken);
+        var ids = StockRequirements.RecipeIdsFor(items, parts);
+        var byId = ids.Count == 0 ? [] : await recipes.GetByIdsAsync(ids, cancellationToken);
+        return (byTarget.Concat(byId).ToList(), parts);
+    }
+}
+```
+
+
 ## 6. محرك التكلفة والتقرير النظري: `CostingService`
 
 خدمة قراءة في Infrastructure (استعلامات تجميعية):
@@ -3609,12 +3774,13 @@ internal sealed class ImportMenuHandler(IMenuRepository menu, IUnitOfWork unitOf
 - **التقرير النظري (`TheoreticalCostReport`):** لكل صنف مُباع في الفترة: الكمية × تكلفة وصفته = تكلفة المبيعات النظرية، مقابل إيراده. (يُستخدم في الـ KPIs والفروقات، الفصل 06.)
 - **ورقة المبيعات اليدوية** والإعدادات (الهدف، التكاليف المشتركة).
 
-> 📄 **`backend/src/Costing.Infrastructure/Reports/CostingService.cs`** — 806 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Reports/CostingService.cs`** — 817 سطر
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
 using Costing.Application.Common;
 using Costing.Domain.Common;
+using Costing.Domain.Menu;
 using Costing.Domain.Production;
 using Costing.Domain.Sales;
 using Costing.Domain.Categories;
@@ -3734,7 +3900,9 @@ public sealed record RecipeCostCard(
     string? RecipeCategoryAr = null,
     // The kitchen's minutes for one plate (null: the ordinary 10) and how hard they are.
     decimal? PrepTimeMinutes = PlateActivity.DefaultPrepTimeMinutes,
-    decimal ComplexityWeight = PlateActivity.DefaultComplexityWeight);
+    decimal ComplexityWeight = PlateActivity.DefaultComplexityWeight,
+    // A combo offer sold under this number: costed by the dishes in it (ComboOffer).
+    Guid? ComboOfferId = null);
 
 // Where a theoretical cost report's sales come from: the till's closed orders (and the online ones),
 // or quantities an accountant typed in.
@@ -4187,7 +4355,9 @@ public sealed partial class CostingService(CostingDbContext db, IBusinessCalenda
         decimal FoodCostTarget,
         SharedPerMeal Shared,
         // What each material is costed at in a recipe: a prep item never made, by its own recipe.
-        RecipeCosts Costs);
+        RecipeCosts Costs,
+        // The combos on the menu, not deleted, by the number each is sold under.
+        IReadOnlyDictionary<int, ComboOffer> Combos);
 
     private async Task<MenuData> LoadMenuAsync(CancellationToken cancellationToken)
     {
@@ -4220,13 +4390,18 @@ public sealed partial class CostingService(CostingDbContext db, IBusinessCalenda
         var shared = await SharedPerMealAsync(lastFirst, lastLast, await SalesAsync(lastFirst, lastLast, cancellationToken), cancellationToken);
 
         var categories = await db.RecipeCategories.AsNoTracking().ToDictionaryAsync(c => c.Id, cancellationToken);
+        var combos = await db.ComboOffers.AsNoTracking().Where(c => c.DeletedAtUtc == null).ToDictionaryAsync(c => c.Code, cancellationToken);
 
-        return new MenuData(targets, recipes, allRecipes, categories, materials, (await SettingsAsync(cancellationToken)).FoodCostTargetPercent, shared, costs);
+        return new MenuData(
+            targets, recipes, allRecipes, categories, materials, (await SettingsAsync(cancellationToken)).FoodCostTargetPercent, shared, costs, combos);
     }
 
-    // A menu row, by the recipe it sells by: a size with none of its own, by the dish's.
+    // A menu row, by the recipe it sells by: a size with none of its own, by the dish's; a combo by
+    // the dishes in it.
     private static RecipeCostCard Card(Target target, MenuData data)
     {
+        if (ComboOf(target, data) is { } combo)
+            return ComboCard(target, combo, data);
         var own = data.Recipes.GetValueOrDefault(new RecipeTarget(target.Kind, target.CatalogItemId, target.VariantId));
         var recipe = own ?? (target.VariantId is not null ? data.Recipes.GetValueOrDefault(RecipeTarget.ForMenuItem(target.CatalogItemId)) : null);
         return Card(target, recipe, own is null && recipe is not null, data);
@@ -4328,6 +4503,7 @@ public sealed partial class CostingService(CostingDbContext db, IBusinessCalenda
         // its own recipe (RecipeCosts). So is a prep item taken off the shelf before its first
         // batch, at no cost then: the dish is costed by its recipe now.
         var recipes = await db.Recipes.AsNoTracking().Include(r => r.Ingredients).ToListAsync(cancellationToken);
+        var combos = await db.ComboPartsAsync(cancellationToken);
         var materials = await db.RawMaterials.AsNoTracking().ToDictionaryAsync(m => m.Id, cancellationToken);
         var costs = new RecipeCosts(materials, await db.PrepRecipes.AsNoTracking().Include(r => r.Ingredients).ToListAsync(cancellationToken));
         bool IsPrep(Guid id) => materials.GetValueOrDefault(id)?.IsPrepItem == true;
@@ -4354,7 +4530,7 @@ public sealed partial class CostingService(CostingDbContext db, IBusinessCalenda
                     costedNow);
             }
 
-            var needs = StockRequirements.For(new SoldItem(l.MenuItemId, l.VariantId, l.AddOnIds, l.Quantity), recipes);
+            var needs = StockRequirements.For(new SoldItem(l.MenuItemId, l.VariantId, l.AddOnIds, l.Quantity), recipes, combos);
             return new SoldLine(l.MenuItemId, l.VariantId, name, nameAr, item?.Category ?? string.Empty, l.Quantity, l.LineTotal,
                 needs.Sum(n => n.Value * (costs.Of(n.Key).PerUnit ?? 0)), needs.Count > 0,
                 needs.Keys.Any(id => costs.Of(id).Missing.Count > 0), needs.Count > 0);
@@ -4425,7 +4601,7 @@ public sealed partial class CostingService(CostingDbContext db, IBusinessCalenda
 
 `CostingController` (`api/costing`): التكاليف والتقارير الغذائية (المواد، البطاقات، النظري، الإعدادات، التكاليف المشتركة).
 
-> 📄 **`backend/src/Costing.Api/Controllers/CostingController.cs`** — 275 سطر
+> 📄 **`backend/src/Costing.Api/Controllers/CostingController.cs`** — 281 سطر
 
 ```csharp
 using Microsoft.AspNetCore.Authorization;
@@ -4511,6 +4687,12 @@ public sealed class CostingController(
     [CostingTab(CostingTabs.Recipes | CostingTabs.Menu | CostingTabs.Reports)]
     public Task<IReadOnlyList<RecipeCostCard>> GetRecipes([FromQuery] bool includeDeleted, CancellationToken cancellationToken) =>
         costing.GetRecipesAsync(includeDeleted, cancellationToken);
+
+    // The combo offers (العروض المجمعة) and what each costs, by its dishes, against its price.
+    [HttpGet("combos")]
+    [CostingTab(CostingTabs.Recipes | CostingTabs.Menu | CostingTabs.Reports)]
+    public Task<ComboOffersReport> GetCombos([FromQuery] bool includeDeleted, CancellationToken cancellationToken) =>
+        costing.GetComboOffersAsync(includeDeleted, cancellationToken);
 
     // One recipe's costing card, deleted or not.
     [HttpGet("recipes/{recipeId:guid}")]

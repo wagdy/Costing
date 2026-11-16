@@ -9,6 +9,7 @@ import { MatInputModule } from '@angular/material/input';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatSelectModule } from '@angular/material/select';
 import { MatTooltipModule } from '@angular/material/tooltip';
+import { RouterLink } from '@angular/router';
 import { firstValueFrom } from 'rxjs';
 import { AuthService } from '../../core/auth/auth.service';
 import { Permissions } from '../../core/auth/permissions';
@@ -226,6 +227,7 @@ export class MenuItemDialog {
     MatProgressBarModule,
     MatTooltipModule,
     MoneyPipe,
+    RouterLink,
     SearchField,
     SortControl,
   ],
@@ -308,6 +310,9 @@ export class MenuItemDialog {
                   @if (item.isDeleted) {
                     <span class="tag bad">Deleted<span class="ar">محذوف</span></span>
                   }
+                  @if (item.comboOfferId) {
+                    <span class="tag">Combo<span class="ar">عرض مجمع</span></span>
+                  }
                 </td>
                 <td>{{ item.category }}</td>
                 <td class="num">{{ item.isPriceBasedOnAddons ? 'By add-ons' : item.sizes.length ? '—' : (item.price | money) }}</td>
@@ -320,7 +325,10 @@ export class MenuItemDialog {
                 </td>
                 <td class="small">{{ addOnNames(item) }}</td>
                 <td class="num actions">
-                  @if (canChange) {
+                  @if (item.comboOfferId) {
+                    <a mat-icon-button routerLink="/costing/recipes/combos" [attr.aria-label]="'Change ' + item.name + ' on Combos & offers'"
+                      matTooltip="A combo: changed on Recipes → Combos & offers · يُعدل من العروض المجمعة"><mat-icon>lunch_dining</mat-icon></a>
+                  } @else if (canChange) {
                     @if (item.isDeleted) {
                       <button mat-icon-button (click)="restore(item)" [attr.aria-label]="'Restore ' + item.name" matTooltip="Restore · استعادة"><mat-icon>restore</mat-icon></button>
                     } @else {

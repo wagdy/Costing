@@ -75,7 +75,9 @@ public sealed partial class CostingService
             rows.Add(new PlateBase(
                 card.ItemCode, target.CatalogItemId, target.VariantId, recipe?.Id, target.Name, target.NameAr, target.Category, true,
                 sale.Quantity, sale.NetSales, price, card.HasRecipe ? card.CostPerPortion : null, card.HasRecipe, card.MissingPrices.Count > 0,
-                recipe?.PrepTimeMinutes, recipe?.ComplexityWeight ?? PlateActivity.DefaultComplexityWeight, Weighted(recipe),
+                recipe?.PrepTimeMinutes, recipe?.ComplexityWeight ?? PlateActivity.DefaultComplexityWeight,
+                // A combo's plate is its dishes': their weighted minutes, as many as it holds.
+                ComboOf(target, data) is { } combo ? combo.Parts.Sum(p => Weighted(data.AllRecipes.FirstOrDefault(r => r.Id == p.RecipeId)) * p.Quantity) : Weighted(recipe),
                 recipe is null || recipe.PrepTimeMinutes is null));
         }
 
@@ -104,6 +106,8 @@ public sealed partial class CostingService
 
         RecipeCostCard CardOf(Target target)
         {
+            if (ComboOf(target, data) is not null)
+                return Card(target, data);
             var own = data.Recipes.GetValueOrDefault(new RecipeTarget(target.Kind, target.CatalogItemId, target.VariantId));
             var recipe = own ?? (target.VariantId is not null ? data.Recipes.GetValueOrDefault(RecipeTarget.ForMenuItem(target.CatalogItemId)) : null);
             return CostingService.Card(target, recipe, own is null && recipe is not null, data);

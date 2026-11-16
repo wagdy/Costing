@@ -1,4 +1,5 @@
 using Costing.Domain.Common;
+using Costing.Domain.Sales;
 
 namespace Costing.Domain.Integrations;
 
@@ -87,6 +88,8 @@ public sealed class PosZReport : AggregateRoot
 // nothing a person entered.
 public sealed class PosDay : AggregateRoot
 {
+    private readonly List<DiscountReason> _discountReasons = [];
+
     private PosDay() { }
 
     public PosDay(Guid id, DateOnly date)
@@ -100,10 +103,17 @@ public sealed class PosDay : AggregateRoot
     public Guid? TakingsId { get; private set; }
     public DateTime UpdatedAtUtc { get; private set; }
 
-    public void Recorded(Guid? saleId, Guid? takingsId)
+    // The day's discounts and why, every shift's together, as the reports gave them.
+    public decimal DiscountsAmount { get; private set; }
+    public IReadOnlyList<DiscountReason> DiscountReasons => _discountReasons.AsReadOnly();
+
+    public void Recorded(Guid? saleId, Guid? takingsId, decimal discounts = 0, IReadOnlyList<DiscountReason>? discountReasons = null)
     {
         SaleId = saleId;
         TakingsId = takingsId;
+        DiscountsAmount = Discounts.Money(discounts);
+        _discountReasons.Clear();
+        _discountReasons.AddRange(discountReasons ?? []);
         UpdatedAtUtc = DateTime.UtcNow;
     }
 }

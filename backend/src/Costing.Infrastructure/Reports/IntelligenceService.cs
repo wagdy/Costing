@@ -767,7 +767,9 @@ public sealed class IntelligenceService(CostingDbContext db, IBusinessCalendar c
         IReadOnlyDictionary<Guid, PurchaseCategory> categories,
         IReadOnlyList<Recipe> recipes,
         IReadOnlyList<PrepRecipe> prepRecipes,
-        IReadOnlyDictionary<RecipeTarget, Target> targets)
+        IReadOnlyDictionary<RecipeTarget, Target> targets,
+        // What each combo is made of, by its menu number: a combo sold takes its dishes' stock.
+        IReadOnlyDictionary<int, IReadOnlyList<ComboPart>> combos)
     {
         private readonly Dictionary<SaleKey, IReadOnlyDictionary<Guid, decimal>> _requirements = [];
         private readonly IReadOnlyDictionary<RecipeTarget, Recipe> _active =
@@ -791,7 +793,7 @@ public sealed class IntelligenceService(CostingDbContext db, IBusinessCalendar c
         public IReadOnlyDictionary<Guid, decimal> Requirements(SaleKey key)
         {
             if (!_requirements.TryGetValue(key, out var per))
-                _requirements[key] = per = StockRequirements.For(key.Item(1), recipes);
+                _requirements[key] = per = StockRequirements.For(key.Item(1), recipes, combos);
             return per;
         }
     }
@@ -819,7 +821,7 @@ public sealed class IntelligenceService(CostingDbContext db, IBusinessCalendar c
         foreach (var addOn in addOns)
             targets[RecipeTarget.ForAddOn(addOn.Id)] = new Target(addOn.Name, addOn.NameAr, addOn.Price, false);
 
-        return new Catalog(materials, categories, recipes, prepRecipes, targets);
+        return new Catalog(materials, categories, recipes, prepRecipes, targets, await db.ComboPartsAsync(cancellationToken));
     }
 
     // The period's sales, each dish, size and add-ons together: what was sold on the bill.

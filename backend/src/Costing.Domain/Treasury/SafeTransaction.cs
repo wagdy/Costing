@@ -1,4 +1,5 @@
 using Costing.Domain.Common;
+using Costing.Domain.Sales;
 
 namespace Costing.Domain.Treasury;
 
@@ -81,6 +82,8 @@ public sealed class SafeTransaction : AggregateRoot
         SafeTransactionKind.InvoicePayment, SafeTransactionKind.SupplierPayment, SafeTransactionKind.EmployeeAdvance, SafeTransactionKind.SalaryPayment,
     ];
 
+    private readonly List<DiscountReason> _discountReasons = [];
+
     private SafeTransaction() { }
 
     public const int MaxNotesLength = 500;
@@ -153,6 +156,12 @@ public sealed class SafeTransaction : AggregateRoot
     // cash and card takings are what was collected after them. Why is in the notes.
     public decimal VoidsAmount { get; private set; }
 
+    // Taken off the menu prices on the day (الخصومات والعروض), and why: never collected, so never in
+    // the safe; the cash and card are what was collected after them. The P&L reads them to set the
+    // revenue the menu prices would have brought against what came in.
+    public decimal DiscountsAmount { get; private set; }
+    public IReadOnlyList<DiscountReason> DiscountReasons => _discountReasons.AsReadOnly();
+
     // All a day's takings collected (إجمالي الوارد): cash, card and the tax on them; and its net
     // sales, the cash and card before tax: the restaurant's revenue. Amount is what reached the
     // safe: all of it less what had been paid straight out of the day's takings by then (PaidOut).
@@ -198,11 +207,14 @@ public sealed class SafeTransaction : AggregateRoot
     // on them. All of it goes into the safe, less paidOut, what was paid straight out of the day's
     // takings before they were entered; when that is more, the rest comes out of the safe. With
     // taxPercent instead of tax, the cash and card include tax at that rate: it is worked out and
-    // taken off them (Takings). voids: voided and refunded on the day, said.
+    // taken off them (Takings). voids: voided and refunded on the day, said. discounts: taken off the
+    // menu prices, and why (Discounts.Clean), said and never collected.
     public static SafeTransaction RevenueTransfer(
         Guid id, decimal cash, DateOnly date, DateOnly revenueDate, string? notes, string recordedBy, string? approvedBy = null,
-        decimal? taxPercent = null, decimal paidOut = 0, decimal card = 0, decimal? tax = null, decimal voids = 0)
+        decimal? taxPercent = null, decimal paidOut = 0, decimal card = 0, decimal? tax = null, decimal voids = 0,
+        decimal discounts = 0, IReadOnlyList<DiscountReason>? discountReasons = null)
     {
+        var reasons = Discounts.Clean(discounts, discountReasons);
         if (revenueDate > date)
             throw new DomainException("A day's takings are moved into the safe on that day or after it.");
         if (paidOut < 0)
@@ -220,7 +232,9 @@ public sealed class SafeTransaction : AggregateRoot
             IncludesTax = (taxPercent is not null && tax is null) || collected > 0,
             TaxPercent = tax is null ? taxPercent : null,
             VoidsAmount = Round(voids),
+            DiscountsAmount = Round(discounts),
         };
+        entry._discountReasons.AddRange(reasons);
         return entry;
     }
 
@@ -387,11 +401,12 @@ public sealed class SafeTransaction : AggregateRoot
         VoidedAtUtc = DateTime.UtcNow;
         VoidedBy = voidedBy;
         var fund = Fund == CashFund.DayRevenue && takingsInSafe ? CashFund.Safe : Fund;
-        return new SafeTransaction(reversalId, Kind, fund, -Amount, today, "Voided", voidedBy, null)
+        var reversal = new SafeTransaction(reversalId, Kind, fund, -Amount, today, "Voided", voidedBy, null)
         {
             GrossAmount = -GrossAmount,
             CardAmount = -CardAmount,
             VoidsAmount = -VoidsAmount,
+            DiscountsAmount = -DiscountsAmount,
             IncludesTax = IncludesTax,
             TaxPercent = TaxPercent,
             TaxAmount = -TaxAmount,
@@ -405,6 +420,8 @@ public sealed class SafeTransaction : AggregateRoot
             PayrollRunId = PayrollRunId,
             ReversalOf = Id,
         };
+        reversal._discountReasons.AddRange(Discounts.Negated(_discountReasons));
+        return reversal;
     }
 
     private static decimal Positive(decimal amount) =>

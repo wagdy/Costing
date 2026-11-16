@@ -6,6 +6,7 @@ using Costing.Application.Treasury;
 using Costing.Domain.Approvals;
 using Costing.Domain.Common;
 using Costing.Domain.EndOfDay;
+using Costing.Domain.Sales;
 using Costing.Domain.Staff;
 using Costing.Domain.Suppliers;
 using Costing.Domain.Treasury;
@@ -113,7 +114,10 @@ public sealed record EndOfDayDto(
     decimal CashTax,
     decimal CashSalesCollected,
     decimal CashPaidOut,
-    decimal NetCashInTill);
+    decimal NetCashInTill,
+    // The discounts and promos the Z report gives, and why: never collected, never in the till.
+    decimal? DiscountsAmount = null,
+    IReadOnlyList<DiscountReason>? DiscountReasons = null);
 
 public sealed record EndOfDayPhotoFile(string FileName, string ContentType, byte[] Content);
 
@@ -124,7 +128,7 @@ public sealed record GetEndOfDaysQuery(DateOnly From, DateOnly To) : IRequest<IR
 
 public sealed record SaveEndOfDaySalesCommand(
     DateOnly Date, decimal? CashAmount, decimal? CardAmount, decimal? TaxAmount, decimal? VoidsAmount, string? Notes, string StaffName = "",
-    decimal? OpeningFloat = null)
+    decimal? OpeningFloat = null, decimal? DiscountsAmount = null, IReadOnlyList<DiscountReason>? DiscountReasons = null)
     : IRequest<EndOfDayDto>;
 
 public sealed record AddEndOfDayInvoiceCommand(
@@ -386,7 +390,7 @@ internal sealed class EndOfDayDays(
                 day.OpeningFloat, payouts,
                 day.CountOf(EndOfDayPayoutKind.SupplierPayment), day.TotalOf(EndOfDayPayoutKind.SupplierPayment),
                 day.CountOf(EndOfDayPayoutKind.EmployeeAdvance), day.TotalOf(EndOfDayPayoutKind.EmployeeAdvance),
-                day.CashTax, day.CashSalesCollected, day.CashPaidOut, day.NetCashInTill));
+                day.CashTax, day.CashSalesCollected, day.CashPaidOut, day.NetCashInTill, day.DiscountsAmount, day.DiscountReasons.ToList()));
         }
         return dtos;
     }
@@ -416,7 +420,9 @@ internal sealed class SaveEndOfDaySalesCommandHandler(EndOfDayDays shared, IUnit
     public async Task<EndOfDayDto> Handle(SaveEndOfDaySalesCommand request, CancellationToken cancellationToken)
     {
         var day = await shared.OpenAsync(request.Date, request.StaffName, cancellationToken);
-        day.RecordSales(request.CashAmount, request.CardAmount, request.TaxAmount, request.VoidsAmount, request.Notes, request.StaffName, request.OpeningFloat);
+        day.RecordSales(
+            request.CashAmount, request.CardAmount, request.TaxAmount, request.VoidsAmount, request.Notes, request.StaffName, request.OpeningFloat,
+            request.DiscountsAmount, request.DiscountReasons);
         await unitOfWork.SaveChangesAsync(cancellationToken);
         return await shared.DtoAsync(day, cancellationToken);
     }

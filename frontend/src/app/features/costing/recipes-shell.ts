@@ -3,7 +3,7 @@ import { RouterOutlet } from '@angular/router';
 import { SubNav, SubNavTab } from '../shared/sub-nav';
 
 // Recipes: the dishes' recipe cards, the prep items made in the kitchen from their own recipes,
-// and the recipe categories. The production orders that make the prep items are a section of
+// the combo offers made of those dishes, and the recipe categories. The production orders that make the prep items are a section of
 // their own (Production).
 @Component({
   selector: 'app-recipes-shell',
@@ -19,6 +19,7 @@ export class RecipesShell {
   protected readonly tabs: SubNavTab[] = [
     { path: '.', icon: 'restaurant_menu', en: 'Dishes', ar: 'الأطباق', fallback: true },
     { path: 'prep', icon: 'blender', en: 'Prep items', ar: 'الأصناف نصف المصنعة' },
+    { path: 'combos', icon: 'lunch_dining', en: 'Combos & offers', ar: 'العروض المجمعة' },
     { path: 'categories', icon: 'category', en: 'Categories', ar: 'أقسام الوصفات' },
   ];
 }

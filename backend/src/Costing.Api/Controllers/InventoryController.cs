@@ -699,6 +699,25 @@ public sealed class InventoryController(ISender sender) : ControllerBase
         return NoContent();
     }
 
+    // A combo offer (عرض مجمع) added or changed: its dishes, its price and code, and its menu item
+    // with it. For whoever writes recipes.
+    [HttpPut("combos/{comboId:guid}")]
+    [CostingTab(CostingTabs.Recipes)]
+    [Authorize(Policy = Permissions.InventoryManage)]
+    public Task<Costing.Application.Menu.ComboOfferSaved> SaveCombo(Guid comboId, SaveComboRequest request, CancellationToken cancellationToken) =>
+        sender.Send(new Costing.Application.Menu.SaveComboOfferCommand(
+            comboId, request.Code, request.Name, request.NameAr, request.SellingPrice, request.IsActive, request.Items ?? []), cancellationToken);
+
+    // Off the menu and the list; its sales keep it.
+    [HttpDelete("combos/{comboId:guid}")]
+    [CostingTab(CostingTabs.Recipes)]
+    [Authorize(Policy = Permissions.InventoryManage)]
+    public async Task<IActionResult> DeleteCombo(Guid comboId, CancellationToken cancellationToken)
+    {
+        await sender.Send(new Costing.Application.Menu.DeleteComboOfferCommand(comboId, StaffName), cancellationToken);
+        return NoContent();
+    }
+
     // Marks it deleted: kept for the record, gone from the screens and the sales.
     // Deleted (204) by someone who may approve deletions; asked of a manager otherwise (202).
     [HttpDelete("recipes/{recipeId:guid}")]
@@ -770,6 +789,9 @@ public sealed class InventoryController(ISender sender) : ControllerBase
     private RequestDeletionCommand DeletionOf(Guid requestId, ApprovalModule module, Guid recordId, string? reason) =>
         new(requestId, module, recordId, reason, StaffId, StaffName, CanApprove);
 }
+
+public sealed record SaveComboRequest(
+    int Code, string Name, string? NameAr, decimal SellingPrice, bool IsActive, IReadOnlyList<Costing.Application.Menu.ComboItemInput>? Items);
 
 // Kind: periodic or opening stock; none keeps the draft's (a new one is periodic).
 public sealed record SaveStockCountRequest(

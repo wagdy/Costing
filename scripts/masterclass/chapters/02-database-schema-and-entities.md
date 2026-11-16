@@ -171,6 +171,10 @@
 
 @@file backend/src/Costing.Domain/Menu/MenuItem.cs
 
+**العرض المجمع (`ComboOffer`):** كود (رقم منيو) واسم وسعر وحالة بيع، وأصناف هي وصفات موجودة بعدد كل منها (`ComboOfferItem` مع `Position` للترتيب كما أُدخل). لا قائمة خامات له: تكلفته وخصم مخزونه من وصفات أصنافه. ويُباع تحت كوده كصنف منيو (`MenuItem.ComboOfferId` و`SellAs`): نفس الرقم والاسم والسعر في قسم "Combos & offers"، فالمبيعات وتقرير Z ونقطة البيع تبيعه كأي صنف دون تعديل عليها، ولا يُعدّل من شاشة المنيو.
+
+@@file backend/src/Costing.Domain/Menu/ComboOffer.cs
+
 @@file backend/src/Costing.Domain/Sales/SalesReceipt.cs
 
 ## 8. المشتريات
@@ -217,6 +221,10 @@ ExpectedIntoSafe   = إجمالي الإيراد − CashPaidOut                
 ```
 
 @@file backend/src/Costing.Domain/EndOfDay/EndOfDayReport.cs
+
+**الخصومات والعروض (`Discounts`):** ما خُصم من أسعار المنيو قبل التحصيل، وأسبابه (`DiscountReason`: السبب والمبلغ وعدد الفواتير) مخزنة JSON (`HasDiscountReasons`). تُحفظ في تقفيل اليوم والتوريد (`SafeTransaction`) وملخص المبيعات ويوم نقطة البيع. لا تدخل الدرج ولا الخزنة: `NetCashInTill` لا يقرأها أصلًا، والإلغاء يعكسها بأسبابها (`Negated`). `Clean` يوحد السبب المكرر ويرفض أسبابًا أكبر من الخصومات أو بلا خصم.
+
+@@file backend/src/Costing.Domain/Sales/Discounts.cs
 
 ## 12. الموظفون
 

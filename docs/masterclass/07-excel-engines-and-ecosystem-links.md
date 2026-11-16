@@ -4175,10 +4175,11 @@ export const recipeSheetRules: { en: string; ar: string }[] = [
 6. **يوم أُدخل يدويًا يُترك:** إن كان ملخص اليوم أو توريده مُدخلًا يدويًا (أو بالشيت)، يُرفض التقرير 422 مع تسمية ما يمنعه. ألغِ اليدوي لتسمح بالتقرير.
 7. تصادم مع تعديل آخر في نفس اللحظة ⇐ يُعاد تلقائيًا؛ إن استمر ⇐ 503 فيعيد الـ POS الإرسال لاحقًا.
 
-> 📄 **`backend/src/Costing.Domain/Integrations/PosIntegration.cs`** — 188 سطر
+> 📄 **`backend/src/Costing.Domain/Integrations/PosIntegration.cs`** — 198 سطر
 
 ```csharp
 using Costing.Domain.Common;
+using Costing.Domain.Sales;
 
 namespace Costing.Domain.Integrations;
 
@@ -4267,6 +4268,8 @@ public sealed class PosZReport : AggregateRoot
 // nothing a person entered.
 public sealed class PosDay : AggregateRoot
 {
+    private readonly List<DiscountReason> _discountReasons = [];
+
     private PosDay() { }
 
     public PosDay(Guid id, DateOnly date)
@@ -4280,10 +4283,17 @@ public sealed class PosDay : AggregateRoot
     public Guid? TakingsId { get; private set; }
     public DateTime UpdatedAtUtc { get; private set; }
 
-    public void Recorded(Guid? saleId, Guid? takingsId)
+    // The day's discounts and why, every shift's together, as the reports gave them.
+    public decimal DiscountsAmount { get; private set; }
+    public IReadOnlyList<DiscountReason> DiscountReasons => _discountReasons.AsReadOnly();
+
+    public void Recorded(Guid? saleId, Guid? takingsId, decimal discounts = 0, IReadOnlyList<DiscountReason>? discountReasons = null)
     {
         SaleId = saleId;
         TakingsId = takingsId;
+        DiscountsAmount = Discounts.Money(discounts);
+        _discountReasons.Clear();
+        _discountReasons.AddRange(discountReasons ?? []);
         UpdatedAtUtc = DateTime.UtcNow;
     }
 }
@@ -4369,7 +4379,7 @@ public interface IPosSyncJournal
 ```
 
 
-> 📄 **`backend/src/Costing.Application/Integrations/PosIntegration.cs`** — 517 سطر
+> 📄 **`backend/src/Costing.Application/Integrations/PosIntegration.cs`** — 535 سطر
 
 ```csharp
 using System.Globalization;
@@ -4521,8 +4531,11 @@ public sealed record ZReportItem(string ItemCode, int Quantity, string? Size = n
 public sealed record ZReportVoidReason(string Reason, int Count, decimal Amount);
 
 // The day's takings as the Z report gives them, as the safe keeps them: the cash and the card
-// (Visa, wallets) before tax, the tax collected on them, and the voids and why.
-public sealed record ZReportTakings(decimal Cash, decimal Card, decimal Tax, decimal VoidsAmount, IReadOnlyList<ZReportVoidReason>? VoidReasons = null);
+// (Visa, wallets) before tax, the tax collected on them, the voids and why, and the discounts and
+// promos taken off the menu prices before the money was collected, and why.
+public sealed record ZReportTakings(
+    decimal Cash, decimal Card, decimal Tax, decimal VoidsAmount, IReadOnlyList<ZReportVoidReason>? VoidReasons = null,
+    decimal DiscountsAmount = 0, IReadOnlyList<DiscountReason>? DiscountReasons = null);
 
 // A shift's Z report: ZReportId is the POS's id for the shift, the same each time it is sent.
 // WastedItems: voided after the kitchen had made them (waste): their stock taken as waste.
@@ -4541,6 +4554,7 @@ internal sealed class ReceiveZReportHandler(
     IPosDayRepository days,
     IMenuRepository menu,
     IRecipeRepository recipes,
+    IComboOfferRepository combos,
     ISalesReceiptRepository sales,
     ISafeTransactionRepository safe,
     IStockMovementRepository movements,
@@ -4677,6 +4691,10 @@ internal sealed class ReceiveZReportHandler(
             return (null, null, []);
         }
 
+        // The discounts, every shift's together, and why: each reason once, its amounts and counts added.
+        var discounts = dayReports.Sum(r => r.Takings.DiscountsAmount);
+        var discountReasons = Discounts.Clean(discounts, dayReports.SelectMany(r => r.Takings.DiscountReasons ?? []));
+
         // The sales summary: each item sold, and each made and voided after the kitchen, as waste.
         var sold = new Dictionary<(int Item, int? Variant), int>();
         var wasted = new Dictionary<(int Item, int? Variant), int>();
@@ -4696,9 +4714,17 @@ internal sealed class ReceiveZReportHandler(
         if (lines.Count > 0)
         {
             var shifts = string.Join(", ", dayReports.Select(r => r.ShiftNumber).OfType<int>().Order());
+            // The summary's lines are at the menu's prices; the discounts come off them, no more than they come to.
+            var value = SaleWriter.ValueOf(lines, known);
+            var discounted = Math.Min(discounts, value);
+            if (discounted < discounts)
+                warnings.Add($"The discounts ({discounts.ToString("N2", Invariant)}) are more than the items at the menu's prices " +
+                    $"({value.ToString("N2", Invariant)}): the sales summary takes {discounted.ToString("N2", Invariant)}, the takings all of them.");
             var receipt = await saleWriter.RecordAsync(
                 new SaleInput(Guid.NewGuid(), null, date, null, SalesChannel.DineIn, PaymentMethod.Cash, lines,
-                    Notes: shifts.Length > 0 ? $"POS Z reports, shifts {shifts}" : "POS Z report"),
+                    DiscountAmount: discounted,
+                    Notes: shifts.Length > 0 ? $"POS Z reports, shifts {shifts}" : "POS Z report",
+                    DiscountReasons: discounted == discounts ? discountReasons : null),
                 SalesSource.DailySummary, By, known, cancellationToken);
             saleId = receipt.Id;
             warnings.AddRange(await WithoutRecipesAsync(lines, known, cancellationToken));
@@ -4720,7 +4746,8 @@ internal sealed class ReceiveZReportHandler(
             if (notes.Length > SafeTransaction.MaxNotesLength)
                 notes = notes[..SafeTransaction.MaxNotesLength];
             var entry = SafeTransaction.RevenueTransfer(
-                Guid.NewGuid(), cash, date, date, notes, By, null, null, await safe.PaidOutOfTakingsAsync(date, cancellationToken), card, tax, voids);
+                Guid.NewGuid(), cash, date, date, notes, By, null, null, await safe.PaidOutOfTakingsAsync(date, cancellationToken), card, tax, voids,
+                discounts, discountReasons);
             safe.Add(entry);
             takingsId = entry.Id;
         }
@@ -4729,7 +4756,7 @@ internal sealed class ReceiveZReportHandler(
             throw new DomainException("Tax was collected on a day with no cash or card takings: check the Z report. · ضريبة بدون إيراد.");
         }
 
-        day.Recorded(saleId, takingsId);
+        day.Recorded(saleId, takingsId, discounts, discountReasons);
         return (saleId, takingsId, warnings);
     }
 
@@ -4790,6 +4817,7 @@ internal sealed class ReceiveZReportHandler(
             throw new DomainException("The cash, card, tax and voids are zero or more. · المبالغ صفر أو أكثر.");
         if (t.Tax > t.Cash + t.Card)
             throw new DomainException("The tax collected cannot be more than the day's sales. · الضريبة لا تزيد عن إجمالي المبيعات.");
+        Discounts.Clean(t.DiscountsAmount, t.DiscountReasons);
         var lines = report.SoldItems ?? throw new DomainException("A Z report lists its sold items (none: an empty list).");
         if (lines.Count + (report.WastedItems?.Count ?? 0) > MaxLines)
             throw new DomainException($"A Z report has {MaxLines:N0} lines at most.");
@@ -4808,8 +4836,8 @@ internal sealed class ReceiveZReportHandler(
     private async Task<IReadOnlyList<string>> WithoutRecipesAsync(IReadOnlyList<SaleLineInput> lines, SaleWriter.Menu known, CancellationToken cancellationToken)
     {
         var items = lines.Select(l => new SoldItem(l.MenuItemId, l.VariantId, [], l.Quantity)).ToList();
-        var relevant = await recipes.GetByTargetsAsync(StockRequirements.TargetsFor(items), cancellationToken);
-        return items.Where(i => StockRequirements.For(i, relevant).Count == 0)
+        var (relevant, parts) = await recipes.ForSaleAsync(combos, items, cancellationToken);
+        return items.Where(i => StockRequirements.For(i, relevant, parts).Count == 0)
             .Select(i => known.Items[i.MenuItemId] is var item && i.VariantId is { } v
                 ? $"{item.Name} ({item.Variants.Single(x => x.Id == v).Name})"
                 : known.Items[i.MenuItemId].Name)
@@ -4892,7 +4920,7 @@ public static class PosEvents
 ```
 
 
-> 📄 **`backend/src/Costing.Infrastructure/Persistence/PosIntegrationPersistence.cs`** — 109 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Persistence/PosIntegrationPersistence.cs`** — 111 سطر
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
@@ -4934,6 +4962,8 @@ internal sealed class PosDayConfiguration : IEntityTypeConfiguration<PosDay>
         builder.ToTable("PosDays", CostingDbContext.CostingSchema);
         // One a business day.
         builder.HasIndex(d => d.Date).IsUnique();
+        builder.Property(d => d.DiscountsAmount).HasPrecision(18, 2);
+        Configurations.PropertyBuilderExtensions.HasDiscountReasons(builder);
     }
 }
 
@@ -5009,7 +5039,7 @@ internal sealed class PosSyncJournal(IServiceScopeFactory scopes, CostingDbConte
 
 `PosIntegrationController`: `PosKeyFilter` (Action Filter يتحقق من المفتاح ويسجل الرفض بلا المفتاح نفسه)، ونماذج الطلب، و `PosIntegrationSettingsController` لصفحة الإعدادات.
 
-> 📄 **`backend/src/Costing.Api/Controllers/PosIntegrationController.cs`** — 155 سطر
+> 📄 **`backend/src/Costing.Api/Controllers/PosIntegrationController.cs`** — 173 سطر
 
 ```csharp
 using System.Text.Json;
@@ -5133,9 +5163,23 @@ public sealed record ZReportRequest(
 {
     public ZReportInput ToInput() => new(
         ZReportId, Date, ShiftNumber,
-        Takings is { } t ? new ZReportTakings(t.TotalCash, t.TotalCard, t.TotalTax, t.VoidsAmount, t.VoidReasons) : null!,
+        Takings is { } t
+            ? new ZReportTakings(t.TotalCash, t.TotalCard, t.TotalTax, t.VoidsAmount, t.VoidReasons, t.DiscountsAmount ?? 0, Reasons(t.DiscountReasons))
+            : null!,
         (SoldItems ?? []).Select(i => new ZReportItem(Code(i.ItemCode), i.QuantitySold, i.Size, i.Name)).ToList(),
         (WastedItems ?? []).Select(i => new ZReportItem(Code(i.ItemCode), i.Quantity, i.Size, i.Name, i.Reason)).ToList());
+
+    // Each discount reason as a name ("Loyalty": once, its amount not said) or as { reason, amount, count }.
+    private static IReadOnlyList<Costing.Domain.Sales.DiscountReason>? Reasons(IReadOnlyList<JsonElement>? reasons) =>
+        reasons?.Select(r => r.ValueKind switch
+        {
+            JsonValueKind.String => new Costing.Domain.Sales.DiscountReason(r.GetString() ?? string.Empty, 0, 1),
+            JsonValueKind.Object => new Costing.Domain.Sales.DiscountReason(
+                r.TryGetProperty("reason", out var name) && name.ValueKind == JsonValueKind.String ? name.GetString() ?? string.Empty : string.Empty,
+                r.TryGetProperty("amount", out var amount) && amount.ValueKind == JsonValueKind.Number ? amount.GetDecimal() : 0,
+                r.TryGetProperty("count", out var count) && count.ValueKind == JsonValueKind.Number ? count.GetInt32() : 0),
+            _ => new Costing.Domain.Sales.DiscountReason(string.Empty),
+        }).ToList();
 
     // A code written as a number or as text.
     private static string Code(JsonElement? code) => code switch
@@ -5146,7 +5190,11 @@ public sealed record ZReportRequest(
     };
 }
 
-public sealed record ZReportTakingsRequest(decimal TotalCash, decimal TotalCard, decimal TotalTax, decimal VoidsAmount, IReadOnlyList<ZReportVoidReason>? VoidReasons);
+// DiscountsAmount: taken off the menu prices before the money was collected; DiscountReasons, each a
+// name ("Loyalty") or { reason, amount, count }.
+public sealed record ZReportTakingsRequest(
+    decimal TotalCash, decimal TotalCard, decimal TotalTax, decimal VoidsAmount, IReadOnlyList<ZReportVoidReason>? VoidReasons,
+    decimal? DiscountsAmount = null, IReadOnlyList<JsonElement>? DiscountReasons = null);
 
 public sealed record ZReportSoldItem(JsonElement? ItemCode, int QuantitySold, string? Size = null, string? Name = null);
 

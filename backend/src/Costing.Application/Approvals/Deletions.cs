@@ -40,7 +40,8 @@ internal sealed class DeletionTargets(
     TreasuryWriter treasury,
     IRecordDescriptions descriptions,
     ISalesReceiptRepository sales,
-    IBreakageEntryRepository breakage)
+    IBreakageEntryRepository breakage,
+    Costing.Domain.Menu.IComboOfferRepository combos)
 {
     private static readonly CultureInfo Invariant = CultureInfo.InvariantCulture;
 
@@ -161,6 +162,7 @@ internal sealed class DeletionTargets(
         var recipe = await recipes.GetByIdAsync(id, cancellationToken) ?? throw new NotFoundException(nameof(Recipe), id);
         if (recipe.IsDeleted)
             throw new DomainException("This recipe has already been deleted.");
+        await Costing.Application.Recipes.RecipeWriting.EnsureNotInComboAsync(combos, recipe, cancellationToken);
         return recipe;
     }
 

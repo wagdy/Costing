@@ -7,6 +7,7 @@ using Costing.Application.Common;
 using Costing.Domain.Approvals;
 using Costing.Domain.Expenses;
 using Costing.Domain.Purchases;
+using Costing.Domain.Sales;
 using Costing.Domain.Suppliers;
 using Costing.Domain.Treasury;
 
@@ -54,7 +55,10 @@ public sealed record SafeVoucher(
     decimal? TaxAmount = null,
     decimal? VoidsAmount = null,
     // A payroll payment's: the payroll run from HR it pays.
-    Guid? PayrollRunId = null);
+    Guid? PayrollRunId = null,
+    // A day's takings': the discounts and promos taken off the menu prices, and why (Discounts).
+    decimal? DiscountsAmount = null,
+    IReadOnlyList<DiscountReason>? DiscountReasons = null);
 
 // The tax rate the bills are charged, as set on Tax & service.
 public interface ITaxRate
@@ -88,12 +92,15 @@ public sealed record SafeTransactionDto(
     DateOnly? PayrollMonth,
     decimal CardAmount = 0,
     decimal VoidsAmount = 0,
-    decimal NetAmount = 0)
+    decimal NetAmount = 0,
+    decimal DiscountsAmount = 0,
+    IReadOnlyList<DiscountReason>? DiscountReasons = null)
 {
     public static SafeTransactionDto From(SafeTransaction t) => new(
         t.Id, t.Kind, t.Fund, t.Amount, t.BusinessDate, t.RevenueDate, t.Source, t.SupplierId, t.PurchaseInvoiceId, t.ExpenseItemId, t.Notes,
         t.RecordedBy, t.RecordedAtUtc, t.ApprovedBy, t.ReversalOf, t.VoidedAtUtc, t.VoidedBy, t.IncludesTax, t.TaxPercent, t.TaxAmount,
-        t.GrossAmount, t.EmployeeId, t.PayrollMonth, t.CardAmount, t.VoidsAmount, t.Kind == SafeTransactionKind.RevenueTransfer ? t.NetAmount : 0);
+        t.GrossAmount, t.EmployeeId, t.PayrollMonth, t.CardAmount, t.VoidsAmount, t.Kind == SafeTransactionKind.RevenueTransfer ? t.NetAmount : 0,
+        t.DiscountsAmount, t.DiscountReasons.ToList());
 }
 
 // Checks, describes and enters safe entries: for a manager's own and for an approval alike. What
@@ -158,8 +165,9 @@ internal sealed class TreasuryWriter(
             throw new DomainException("A day's takings are used on that day or after it.");
         if (voucher.Notes?.Trim().Length > SafeTransaction.MaxNotesLength)
             throw new DomainException($"Keep the notes under {SafeTransaction.MaxNotesLength} characters. · الملاحظات {SafeTransaction.MaxNotesLength} حرف على الأكثر.");
-        if (voucher.Kind != SafeTransactionKind.RevenueTransfer && (voucher.CardAmount is not null || voucher.TaxAmount is not null || voucher.VoidsAmount is not null))
-            throw new DomainException("Only a day's takings have card takings, tax and voids.");
+        if (voucher.Kind != SafeTransactionKind.RevenueTransfer && (voucher.CardAmount is not null || voucher.TaxAmount is not null || voucher.VoidsAmount is not null
+            || voucher.DiscountsAmount is not null || voucher.DiscountReasons is { Count: > 0 }))
+            throw new DomainException("Only a day's takings have card takings, tax, voids and discounts.");
         switch (voucher.Kind)
         {
             case SafeTransactionKind.OpeningBalance:
@@ -182,6 +190,7 @@ internal sealed class TreasuryWriter(
                         "إيراد هذا اليوم مسجل بالفعل: ألغه من الخزنة ثم أدخله من جديد.");
                 if (voucher.VoidsAmount < 0)
                     throw new DomainException("The cash, card, tax and voids are zero or more. · المبالغ صفر أو أكثر.");
+                Discounts.Clean(voucher.DiscountsAmount ?? 0, voucher.DiscountReasons);
                 Takings(voucher);
                 // Checked: zero cash with card takings is a day's takings all the same.
                 return;
@@ -256,7 +265,7 @@ internal sealed class TreasuryWriter(
                 entry = SafeTransaction.RevenueTransfer(
                     id, voucher.Amount, voucher.Date, voucher.RevenueDate!.Value, voucher.Notes, recordedBy, approvedBy,
                     voucher.IncludesTax ? voucher.TaxPercent : null, await safe.PaidOutOfTakingsAsync(voucher.RevenueDate.Value, cancellationToken),
-                    voucher.CardAmount ?? 0, voucher.TaxAmount, voucher.VoidsAmount ?? 0);
+                    voucher.CardAmount ?? 0, voucher.TaxAmount, voucher.VoidsAmount ?? 0, voucher.DiscountsAmount ?? 0, voucher.DiscountReasons);
                 break;
             case SafeTransactionKind.ExpenseVoucher:
                 entry = SafeTransaction.ExpenseVoucher(id, voucher.Amount, voucher.Date, voucher.ExpenseItemId!.Value, voucher.Notes, recordedBy, approvedBy);
@@ -405,6 +414,9 @@ internal sealed class TreasuryWriter(
                 changes.Add(new ApprovalChange("Net sales · صافي المبيعات", null, Money(cash + card)));
                 if (voucher.VoidsAmount is > 0 and var voids)
                     changes.Add(new ApprovalChange("Voids and refunds · الفويد والمرتجعات", null, Money(voids)));
+                if (voucher.DiscountsAmount is > 0 and var discounts)
+                    changes.Add(new ApprovalChange("Discounts & promos · الخصومات والعروض", null,
+                        Money(discounts) + (voucher.DiscountReasons is { Count: > 0 } why ? $" ({string.Join(", ", why.Select(r => r.Reason))})" : "")));
                 changes.Add(new ApprovalChange("Paid out of them", null, Money(paidOut)));
                 changes.Add(new ApprovalChange("Into the safe · إجمالي الوارد للخزنة", null, Money(cash + card + tax - paidOut)));
                 break;

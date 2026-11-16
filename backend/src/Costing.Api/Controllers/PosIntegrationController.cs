@@ -119,9 +119,23 @@ public sealed record ZReportRequest(
 {
     public ZReportInput ToInput() => new(
         ZReportId, Date, ShiftNumber,
-        Takings is { } t ? new ZReportTakings(t.TotalCash, t.TotalCard, t.TotalTax, t.VoidsAmount, t.VoidReasons) : null!,
+        Takings is { } t
+            ? new ZReportTakings(t.TotalCash, t.TotalCard, t.TotalTax, t.VoidsAmount, t.VoidReasons, t.DiscountsAmount ?? 0, Reasons(t.DiscountReasons))
+            : null!,
         (SoldItems ?? []).Select(i => new ZReportItem(Code(i.ItemCode), i.QuantitySold, i.Size, i.Name)).ToList(),
         (WastedItems ?? []).Select(i => new ZReportItem(Code(i.ItemCode), i.Quantity, i.Size, i.Name, i.Reason)).ToList());
+
+    // Each discount reason as a name ("Loyalty": once, its amount not said) or as { reason, amount, count }.
+    private static IReadOnlyList<Costing.Domain.Sales.DiscountReason>? Reasons(IReadOnlyList<JsonElement>? reasons) =>
+        reasons?.Select(r => r.ValueKind switch
+        {
+            JsonValueKind.String => new Costing.Domain.Sales.DiscountReason(r.GetString() ?? string.Empty, 0, 1),
+            JsonValueKind.Object => new Costing.Domain.Sales.DiscountReason(
+                r.TryGetProperty("reason", out var name) && name.ValueKind == JsonValueKind.String ? name.GetString() ?? string.Empty : string.Empty,
+                r.TryGetProperty("amount", out var amount) && amount.ValueKind == JsonValueKind.Number ? amount.GetDecimal() : 0,
+                r.TryGetProperty("count", out var count) && count.ValueKind == JsonValueKind.Number ? count.GetInt32() : 0),
+            _ => new Costing.Domain.Sales.DiscountReason(string.Empty),
+        }).ToList();
 
     // A code written as a number or as text.
     private static string Code(JsonElement? code) => code switch
@@ -132,7 +146,11 @@ public sealed record ZReportRequest(
     };
 }
 
-public sealed record ZReportTakingsRequest(decimal TotalCash, decimal TotalCard, decimal TotalTax, decimal VoidsAmount, IReadOnlyList<ZReportVoidReason>? VoidReasons);
+// DiscountsAmount: taken off the menu prices before the money was collected; DiscountReasons, each a
+// name ("Loyalty") or { reason, amount, count }.
+public sealed record ZReportTakingsRequest(
+    decimal TotalCash, decimal TotalCard, decimal TotalTax, decimal VoidsAmount, IReadOnlyList<ZReportVoidReason>? VoidReasons,
+    decimal? DiscountsAmount = null, IReadOnlyList<JsonElement>? DiscountReasons = null);
 
 public sealed record ZReportSoldItem(JsonElement? ItemCode, int QuantitySold, string? Size = null, string? Name = null);
 

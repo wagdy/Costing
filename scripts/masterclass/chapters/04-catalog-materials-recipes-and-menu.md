@@ -197,6 +197,14 @@ EP$/وحدة = AP$/وحدة ÷ Yield%
 
 @@file backend/src/Costing.Application/Menu/Menu.cs
 
+**حفظ العرض المجمع (`SaveComboOfferCommand`):** يتحقق من الوصفات، ويرفض رقمًا مستخدمًا لصنف آخر أو تغيير كود عرض محفوظ، ثم ينشئ أو يحدّث صنف المنيو بنفس الحفظ (وقسم العروض أول مرة). وحراسات حوله: شاشة المنيو واستيراده يرفضان صنف العرض (`ComboRules.ComboOnMenu`)، ولا تُربط وصفة برقم عرض (`EnsureNotComboAsync`)، ولا تُحذف وصفة داخل عرض قائم (`EnsureNotInComboAsync`، وفي مسار الموافقات أيضًا).
+
+@@file backend/src/Costing.Application/Menu/Combos.cs
+
+**تفجير المبيعات:** `StockRequirements.For` صار يأخذ أجزاء العروض: صنف العرض يأخذ مخزون كل وصفة × الكمية المباعة × عددها في العرض. و`ForSaleAsync` يحمّل في مرة واحدة وصفات الأرقام المباعة ووصفات أصناف العروض وأجزاءها، ويستخدمه ترحيل المبيعات وتقرير Z.
+
+@@file backend/src/Costing.Application/Recipes/SaleRecipes.cs
+
 ## 6. محرك التكلفة والتقرير النظري: `CostingService`
 
 خدمة قراءة في Infrastructure (استعلامات تجميعية):

@@ -44,6 +44,7 @@ public sealed class CostingDbContext(DbContextOptions<CostingDbContext> options)
 
     public DbSet<MenuCategory> MenuCategories => Set<MenuCategory>();
     public DbSet<MenuItem> MenuItems => Set<MenuItem>();
+    public DbSet<ComboOffer> ComboOffers => Set<ComboOffer>();
     public DbSet<MenuItemVariant> MenuItemVariants => Set<MenuItemVariant>();
     public DbSet<AddOn> AddOns => Set<AddOn>();
     public DbSet<SalesReceipt> SalesReceipts => Set<SalesReceipt>();

@@ -37,6 +37,8 @@ internal sealed class PosDayConfiguration : IEntityTypeConfiguration<PosDay>
         builder.ToTable("PosDays", CostingDbContext.CostingSchema);
         // One a business day.
         builder.HasIndex(d => d.Date).IsUnique();
+        builder.Property(d => d.DiscountsAmount).HasPrecision(18, 2);
+        Configurations.PropertyBuilderExtensions.HasDiscountReasons(builder);
     }
 }
 

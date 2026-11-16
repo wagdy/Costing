@@ -42,7 +42,8 @@ public sealed class EndOfDayController(ISender sender) : ControllerBase
     [CostingTab(CostingTabs.EndOfDay)]
     public Task<EndOfDayDto> SaveSales(DateOnly date, EndOfDaySalesRequest request, CancellationToken cancellationToken) =>
         sender.Send(new SaveEndOfDaySalesCommand(
-            date, request.CashAmount, request.CardAmount, request.TaxAmount, request.VoidsAmount, request.Notes, StaffName, request.OpeningFloat), cancellationToken);
+            date, request.CashAmount, request.CardAmount, request.TaxAmount, request.VoidsAmount, request.Notes, StaffName, request.OpeningFloat,
+            request.DiscountsAmount, request.DiscountReasons), cancellationToken);
 
     // An invoice handed in, with its photo: a form of invoiceId (made by the till), kind (Cash or
     // Credit), supplierId, reportedTotal, note and file.
@@ -212,7 +213,9 @@ public sealed class EndOfDayController(ISender sender) : ControllerBase
     private bool CanApprove => UserClaims.RoleOf(User) is { } role && RolePermissions.Has(role, Permissions.ApprovalDecide);
 }
 
-public sealed record EndOfDaySalesRequest(decimal? CashAmount, decimal? CardAmount, decimal? TaxAmount, decimal? VoidsAmount, string? Notes, decimal? OpeningFloat = null);
+public sealed record EndOfDaySalesRequest(
+    decimal? CashAmount, decimal? CardAmount, decimal? TaxAmount, decimal? VoidsAmount, string? Notes, decimal? OpeningFloat = null,
+    decimal? DiscountsAmount = null, IReadOnlyList<Costing.Domain.Sales.DiscountReason>? DiscountReasons = null);
 
 // A payment changed: the supplier paid (a supplier payment's) or the employee advanced (an advance's).
 public sealed record EndOfDayPayoutRequest(Guid? SupplierId, Guid? EmployeeId, decimal Amount, string? Note);

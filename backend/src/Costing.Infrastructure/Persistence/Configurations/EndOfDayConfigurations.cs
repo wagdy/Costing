@@ -17,6 +17,8 @@ internal sealed class EndOfDayReportConfiguration : IEntityTypeConfiguration<End
         builder.Property(d => d.CardAmount).HasPrecision(18, 2);
         builder.Property(d => d.TaxAmount).HasPrecision(18, 2);
         builder.Property(d => d.VoidsAmount).HasPrecision(18, 2);
+        builder.Property(d => d.DiscountsAmount).HasPrecision(18, 2);
+        builder.HasDiscountReasons();
         builder.Property(d => d.OpeningFloat).HasPrecision(18, 2);
         builder.Property(d => d.Notes).HasMaxLength(EndOfDayReport.MaxNotes);
         builder.Property(d => d.SalesPhotoFileName).HasMaxLength(200);

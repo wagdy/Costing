@@ -62,6 +62,8 @@ const report: KpiReport = {
   salesWithoutRecipe: 0,
 };
 
+const text = (el: Element) => el.textContent!.replace(/\s+/g, ' ').trim();
+
 describe('the KPIs', () => {
   const kpis = vi.fn();
   const saveExpenses = vi.fn();
@@ -180,5 +182,33 @@ describe('the KPIs', () => {
     expect(cells('Revenue (net sales)')).toEqual(['Revenue (net sales) · صافي المبيعات', 'L.E 420.00', '100%']);
     expect(el.querySelector('.report-head')!.textContent!.replace(/\s+/g, ' ')).toContain('1 day of takings entered');
     expect(el.querySelector('.note.small')!.textContent).toContain('Voids and refunds on the days: L.E 25.00');
+  });
+
+  it('sets the food cost at the menu prices against what was collected after the discounts, and says why they were given', async () => {
+    kpis.mockReturnValue(of({
+      ...report,
+      discounts: {
+        discounts: 120, actualNetRevenue: 750, standardGrossRevenue: 870, discountSharePercent: 13.8, theoreticalCost: 257,
+        standardFoodCostPercent: 29.5, actualFoodCostPercent: 34.3, erosionPoints: 4.8,
+        reasons: [{ reason: 'Loyalty', amount: 80, count: 2 }, { reason: 'Staff', amount: 40, count: 1 }],
+      },
+    } satisfies KpiReport));
+    const { fixture } = await render();
+    const el = fixture.nativeElement as HTMLElement;
+    const section = el.querySelector('.discount-impact')!;
+    const tiles = [...section.querySelectorAll('.tile')];
+
+    expect(text(section.querySelector('h3')!)).toBe('Promos & discount impact أثر الخصومات والعروض');
+    expect(text(tiles[0].querySelector('strong')!)).toBe('L.E 120.00');
+    expect(text(tiles[0].querySelector('.chip')!)).toBe('13.8% of standard gross L.E 870.00');
+    expect([...tiles[1].querySelectorAll('.pair strong')].map(text)).toEqual(['29.5%', '34.3%']);
+    expect(tiles[1].classList).toContain('amber');
+    expect(text(tiles[1].querySelector('.erosion-badge')!)).toBe('warning +4.8 pts erosion · تآكل');
+    expect([...tiles[2].querySelectorAll('.reason')].map(text)).toEqual(['LoyaltyL.E 80.00 · 2×', 'StaffL.E 40.00 · 1×']);
+    expect(section.querySelectorAll('app-info-tip').length).toBe(5);
+
+    // Five points or more: red.
+    expect(fixture.componentInstance['erosionTone'](6.2)).toBe('red');
+    expect(fixture.componentInstance['erosionTone'](0)).toBe('');
   });
 });

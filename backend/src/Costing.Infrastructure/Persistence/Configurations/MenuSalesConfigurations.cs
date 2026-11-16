@@ -33,6 +33,37 @@ internal sealed class MenuItemConfiguration : IEntityTypeConfiguration<MenuItem>
         builder.HasIndex(m => m.Category);
         builder.HasMany(m => m.Variants).WithOne().HasForeignKey(v => v.MenuItemId).OnDelete(DeleteBehavior.Cascade);
         builder.Navigation(m => m.Variants).AutoInclude();
+        builder.Ignore(m => m.IsCombo);
+        builder.HasOne<ComboOffer>().WithMany().HasForeignKey(m => m.ComboOfferId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasIndex(m => m.ComboOfferId).IsUnique().HasFilter("\"ComboOfferId\" IS NOT NULL");
+    }
+}
+
+// A combo offer and its dishes (recipes). Its code is a menu number: one combo to a number.
+internal sealed class ComboOfferConfiguration : IEntityTypeConfiguration<ComboOffer>
+{
+    public void Configure(EntityTypeBuilder<ComboOffer> builder)
+    {
+        builder.ToTable("ComboOffers", CostingDbContext.CostingSchema);
+        builder.Property(c => c.Name).HasMaxLength(MenuItem.MaxNameLength);
+        builder.Property(c => c.NameAr).HasMaxLength(MenuItem.MaxNameLength);
+        builder.Property(c => c.SellingPrice).HasPrecision(18, 2);
+        builder.Property(c => c.DeletedBy).HasMaxLength(200);
+        builder.HasIndex(c => c.Code).IsUnique();
+        builder.Ignore(c => c.IsDeleted);
+        builder.Ignore(c => c.Parts);
+        builder.HasMany(c => c.Items).WithOne().HasForeignKey(i => i.ComboOfferId).OnDelete(DeleteBehavior.Cascade);
+        builder.Navigation(c => c.Items).HasField("_items").UsePropertyAccessMode(PropertyAccessMode.Field).AutoInclude();
+    }
+}
+
+internal sealed class ComboOfferItemConfiguration : IEntityTypeConfiguration<ComboOfferItem>
+{
+    public void Configure(EntityTypeBuilder<ComboOfferItem> builder)
+    {
+        builder.ToTable("ComboOfferItems", CostingDbContext.CostingSchema);
+        builder.HasOne<Domain.Recipes.Recipe>().WithMany().HasForeignKey(i => i.RecipeId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasIndex(i => new { i.ComboOfferId, i.RecipeId }).IsUnique();
     }
 }
 
@@ -76,6 +107,7 @@ internal sealed class SalesReceiptConfiguration : IEntityTypeConfiguration<Sales
         builder.Ignore(r => r.IsOnline);
         builder.Ignore(r => r.BilledSubtotal);
         builder.Ignore(r => r.IsVoided);
+        builder.HasDiscountReasons();
         builder.OwnsMany(r => r.Lines, line =>
         {
             line.ToTable("SalesReceiptLines", CostingDbContext.CostingSchema);

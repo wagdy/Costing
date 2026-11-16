@@ -147,8 +147,11 @@ public sealed record ZReportItem(string ItemCode, int Quantity, string? Size = n
 public sealed record ZReportVoidReason(string Reason, int Count, decimal Amount);
 
 // The day's takings as the Z report gives them, as the safe keeps them: the cash and the card
-// (Visa, wallets) before tax, the tax collected on them, and the voids and why.
-public sealed record ZReportTakings(decimal Cash, decimal Card, decimal Tax, decimal VoidsAmount, IReadOnlyList<ZReportVoidReason>? VoidReasons = null);
+// (Visa, wallets) before tax, the tax collected on them, the voids and why, and the discounts and
+// promos taken off the menu prices before the money was collected, and why.
+public sealed record ZReportTakings(
+    decimal Cash, decimal Card, decimal Tax, decimal VoidsAmount, IReadOnlyList<ZReportVoidReason>? VoidReasons = null,
+    decimal DiscountsAmount = 0, IReadOnlyList<DiscountReason>? DiscountReasons = null);
 
 // A shift's Z report: ZReportId is the POS's id for the shift, the same each time it is sent.
 // WastedItems: voided after the kitchen had made them (waste): their stock taken as waste.
@@ -167,6 +170,7 @@ internal sealed class ReceiveZReportHandler(
     IPosDayRepository days,
     IMenuRepository menu,
     IRecipeRepository recipes,
+    IComboOfferRepository combos,
     ISalesReceiptRepository sales,
     ISafeTransactionRepository safe,
     IStockMovementRepository movements,
@@ -303,6 +307,10 @@ internal sealed class ReceiveZReportHandler(
             return (null, null, []);
         }
 
+        // The discounts, every shift's together, and why: each reason once, its amounts and counts added.
+        var discounts = dayReports.Sum(r => r.Takings.DiscountsAmount);
+        var discountReasons = Discounts.Clean(discounts, dayReports.SelectMany(r => r.Takings.DiscountReasons ?? []));
+
         // The sales summary: each item sold, and each made and voided after the kitchen, as waste.
         var sold = new Dictionary<(int Item, int? Variant), int>();
         var wasted = new Dictionary<(int Item, int? Variant), int>();
@@ -322,9 +330,17 @@ internal sealed class ReceiveZReportHandler(
         if (lines.Count > 0)
         {
             var shifts = string.Join(", ", dayReports.Select(r => r.ShiftNumber).OfType<int>().Order());
+            // The summary's lines are at the menu's prices; the discounts come off them, no more than they come to.
+            var value = SaleWriter.ValueOf(lines, known);
+            var discounted = Math.Min(discounts, value);
+            if (discounted < discounts)
+                warnings.Add($"The discounts ({discounts.ToString("N2", Invariant)}) are more than the items at the menu's prices " +
+                    $"({value.ToString("N2", Invariant)}): the sales summary takes {discounted.ToString("N2", Invariant)}, the takings all of them.");
             var receipt = await saleWriter.RecordAsync(
                 new SaleInput(Guid.NewGuid(), null, date, null, SalesChannel.DineIn, PaymentMethod.Cash, lines,
-                    Notes: shifts.Length > 0 ? $"POS Z reports, shifts {shifts}" : "POS Z report"),
+                    DiscountAmount: discounted,
+                    Notes: shifts.Length > 0 ? $"POS Z reports, shifts {shifts}" : "POS Z report",
+                    DiscountReasons: discounted == discounts ? discountReasons : null),
                 SalesSource.DailySummary, By, known, cancellationToken);
             saleId = receipt.Id;
             warnings.AddRange(await WithoutRecipesAsync(lines, known, cancellationToken));
@@ -346,7 +362,8 @@ internal sealed class ReceiveZReportHandler(
             if (notes.Length > SafeTransaction.MaxNotesLength)
                 notes = notes[..SafeTransaction.MaxNotesLength];
             var entry = SafeTransaction.RevenueTransfer(
-                Guid.NewGuid(), cash, date, date, notes, By, null, null, await safe.PaidOutOfTakingsAsync(date, cancellationToken), card, tax, voids);
+                Guid.NewGuid(), cash, date, date, notes, By, null, null, await safe.PaidOutOfTakingsAsync(date, cancellationToken), card, tax, voids,
+                discounts, discountReasons);
             safe.Add(entry);
             takingsId = entry.Id;
         }
@@ -355,7 +372,7 @@ internal sealed class ReceiveZReportHandler(
             throw new DomainException("Tax was collected on a day with no cash or card takings: check the Z report. · ضريبة بدون إيراد.");
         }
 
-        day.Recorded(saleId, takingsId);
+        day.Recorded(saleId, takingsId, discounts, discountReasons);
         return (saleId, takingsId, warnings);
     }
 
@@ -416,6 +433,7 @@ internal sealed class ReceiveZReportHandler(
             throw new DomainException("The cash, card, tax and voids are zero or more. · المبالغ صفر أو أكثر.");
         if (t.Tax > t.Cash + t.Card)
             throw new DomainException("The tax collected cannot be more than the day's sales. · الضريبة لا تزيد عن إجمالي المبيعات.");
+        Discounts.Clean(t.DiscountsAmount, t.DiscountReasons);
         var lines = report.SoldItems ?? throw new DomainException("A Z report lists its sold items (none: an empty list).");
         if (lines.Count + (report.WastedItems?.Count ?? 0) > MaxLines)
             throw new DomainException($"A Z report has {MaxLines:N0} lines at most.");
@@ -434,8 +452,8 @@ internal sealed class ReceiveZReportHandler(
     private async Task<IReadOnlyList<string>> WithoutRecipesAsync(IReadOnlyList<SaleLineInput> lines, SaleWriter.Menu known, CancellationToken cancellationToken)
     {
         var items = lines.Select(l => new SoldItem(l.MenuItemId, l.VariantId, [], l.Quantity)).ToList();
-        var relevant = await recipes.GetByTargetsAsync(StockRequirements.TargetsFor(items), cancellationToken);
-        return items.Where(i => StockRequirements.For(i, relevant).Count == 0)
+        var (relevant, parts) = await recipes.ForSaleAsync(combos, items, cancellationToken);
+        return items.Where(i => StockRequirements.For(i, relevant, parts).Count == 0)
             .Select(i => known.Items[i.MenuItemId] is var item && i.VariantId is { } v
                 ? $"{item.Name} ({item.Variants.Single(x => x.Id == v).Name})"
                 : known.Items[i.MenuItemId].Name)

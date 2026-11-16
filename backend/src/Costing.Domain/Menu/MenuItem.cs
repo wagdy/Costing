@@ -67,6 +67,27 @@ public sealed class MenuItem
     // The add-ons it can be sold with, by their numbers.
     public int[] AddOnIds { get; private set; } = [];
 
+    // A combo offer sold under this number (ComboOffer): its name, price and availability are the
+    // combo's, and its stock is its dishes'. Never changed on the Menu tab.
+    public Guid? ComboOfferId { get; private set; }
+    public bool IsCombo => ComboOfferId is not null;
+
+    // As the combo is now: its name, its price, on sale or not, in the combos' category.
+    public void SellAs(ComboOffer combo)
+    {
+        if (combo.Code != Id)
+            throw new DomainException("A combo is sold under its own number.");
+        ComboOfferId = combo.Id;
+        Change(combo.Name, combo.NameAr, ComboOffer.MenuCategory, combo.SellingPrice, false);
+        SetAvailable(combo.IsActive);
+        _variants.Clear();
+        AddOnIds = [];
+        if (combo.IsDeleted)
+            Delete();
+        else
+            Restore();
+    }
+
     public IReadOnlyCollection<MenuItemVariant> Variants => _variants.AsReadOnly();
 
     public void Change(string name, string? nameAr, string category, decimal price, bool isPriceBasedOnAddons)

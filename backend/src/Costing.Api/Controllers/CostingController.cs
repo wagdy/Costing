@@ -82,6 +82,12 @@ public sealed class CostingController(
     public Task<IReadOnlyList<RecipeCostCard>> GetRecipes([FromQuery] bool includeDeleted, CancellationToken cancellationToken) =>
         costing.GetRecipesAsync(includeDeleted, cancellationToken);
 
+    // The combo offers (العروض المجمعة) and what each costs, by its dishes, against its price.
+    [HttpGet("combos")]
+    [CostingTab(CostingTabs.Recipes | CostingTabs.Menu | CostingTabs.Reports)]
+    public Task<ComboOffersReport> GetCombos([FromQuery] bool includeDeleted, CancellationToken cancellationToken) =>
+        costing.GetComboOffersAsync(includeDeleted, cancellationToken);
+
     // One recipe's costing card, deleted or not.
     [HttpGet("recipes/{recipeId:guid}")]
     [CostingTab(CostingTabs.Recipes | CostingTabs.Menu | CostingTabs.Reports)]

@@ -13,7 +13,7 @@
 - `PayInvoiceDialog`, `SupplierOpeningDialog`.
 - **`Treasury`**: خدمة "أدخل قيدًا": للمدير تنفيذ، ولغيره طلب موافقة، والرسالة تقول أيهما حدث.
 
-> 📄 **`frontend/src/app/features/costing/financials.ts`** — 1075 سطر
+> 📄 **`frontend/src/app/features/costing/financials.ts`** — 1107 سطر
 
 ```ts
 import { Component, Injectable, computed, inject, signal } from '@angular/core';
@@ -30,6 +30,7 @@ import { MatSelectModule } from '@angular/material/select';
 import { firstValueFrom } from 'rxjs';
 import {
   CostingApi,
+  DiscountReason,
   ExpenseItem,
   FundingSource,
   InvoicePaymentStatus,
@@ -601,6 +602,15 @@ export interface TakingsDialogData {
           <input matInput type="number" min="0" step="any" [(ngModel)]="voids" (ngModelChange)="touch()" aria-label="Voids and refunds" placeholder="0" />
           <span matTextSuffix>&nbsp;{{ company.currency() }}</span>
         </mat-form-field>
+        <mat-form-field floatLabel="always" class="wide">
+          <mat-label>Discounts &amp; promos · الخصومات والعروض</mat-label>
+          <input matInput type="number" min="0" step="any" [(ngModel)]="discounts" (ngModelChange)="touch()" aria-label="Discounts and promos" placeholder="0" />
+          <span matTextSuffix>&nbsp;{{ company.currency() }}</span>
+          <mat-hint>Taken off the menu prices, never collected: not in the safe · لا تدخل الخزنة</mat-hint>
+        </mat-form-field>
+        @if (reasons.length) {
+          <p class="wide muted small reasons">Why · الأسباب: {{ reasonsText() }}</p>
+        }
         <mat-form-field class="wide">
           <mat-label>Void reasons / notes · أسباب الفويد وملاحظات اليومية</mat-label>
           <textarea matInput rows="3" [(ngModel)]="notes" (ngModelChange)="touch()" maxlength="500" aria-label="Void reasons and notes"></textarea>
@@ -616,6 +626,12 @@ export interface TakingsDialogData {
           <dt>Tax collected <span class="inline-ar">الضريبة المحصلة - التزام ضريبي بالخزنة</span> <span class="muted small">owed, never revenue</span></dt>
           <dd>{{ figures().tax | money }}</dd>
         </div>
+        @if (figures().discounts) {
+          <div>
+            <dt>Discounts &amp; promos <span class="inline-ar">الخصومات والعروض</span> <span class="muted small">said, never collected</span></dt>
+            <dd class="muted">{{ figures().discounts | money }}</dd>
+          </div>
+        }
         @if (paidOut()) {
           <div>
             <dt>Paid straight out of them <span class="inline-ar">المنصرف من الإيراد</span></dt>
@@ -736,6 +752,9 @@ export class TakingsDialog {
   protected card: number | null = null;
   protected tax: number | null = null;
   protected voids: number | null = null;
+  // The day's discounts and promos, and why: the reasons come from the end of day handed in.
+  protected discounts: number | null = null;
+  protected reasons: DiscountReason[] = [];
   protected notes = '';
   // What was paid straight out of the day's takings, and what is entered for it already.
   protected readonly preview = signal<TakingsPreview | null>(null);
@@ -751,20 +770,22 @@ export class TakingsDialog {
   protected readonly differs = computed(() => {
     this.version();
     const d = this.handedIn();
-    return !!d && [[this.cash, d.cashAmount], [this.card, d.cardAmount], [this.tax, d.taxAmount], [this.voids, d.voidsAmount]]
+    return !!d && [[this.cash, d.cashAmount], [this.card, d.cardAmount], [this.tax, d.taxAmount], [this.voids, d.voidsAmount], [this.discounts, d.discountsAmount ?? null]]
       .some(([typed, given]) => (Number(typed) || 0) !== (given ?? 0));
   });
 
   protected readonly figures = computed(() => {
     this.version();
-    const [cash, card, tax] = [this.cash, this.card, this.tax].map((n) => Number(n) || 0);
-    return { net: round(cash + card), tax: round(tax), total: round(cash + card + tax), intoSafe: round(cash + card + tax - this.paidOut()) };
+    const [cash, card, tax, discounts] = [this.cash, this.card, this.tax, this.discounts].map((n) => Number(n) || 0);
+    return {
+      net: round(cash + card), tax: round(tax), total: round(cash + card + tax), intoSafe: round(cash + card + tax - this.paidOut()), discounts: round(discounts),
+    };
   });
 
   // What stops it being sent, said plainly in both languages.
   protected readonly problem = computed(() => {
     this.version();
-    const figures = [this.cash, this.card, this.tax, this.voids];
+    const figures = [this.cash, this.card, this.tax, this.voids, this.discounts];
     if (!this.revenueDate) {
       return 'Choose the date of the takings. · اختر تاريخ اليومية.';
     }
@@ -776,7 +797,10 @@ export class TakingsDialog {
       return `These takings are entered already: ${this.company.money(entered)}. To change them, void that entry on the Safe tab and enter them again. · إيراد هذا اليوم مسجل بالفعل.`;
     }
     if (figures.some((n) => n !== null && `${n}` !== '' && (!Number.isFinite(Number(n)) || Number(n) < 0))) {
-      return 'The cash, card, tax and voids are zero or more. · المبالغ صفر أو أكثر.';
+      return 'The cash, card, tax, voids and discounts are zero or more. · المبالغ صفر أو أكثر.';
+    }
+    if (this.reasons.reduce((sum, r) => sum + r.amount, 0) > this.figures().discounts + 0.001) {
+      return "The end of day's reasons add up to more than the discounts. · مجموع الأسباب أكبر من الخصومات.";
     }
     if (this.figures().net <= 0) {
       return "Enter the day's cash or card takings. · أدخل إيراد الكاش أو الفيزا.";
@@ -810,6 +834,8 @@ export class TakingsDialog {
       return;
     }
     [this.cash, this.card, this.tax, this.voids] = [d.cashAmount, d.cardAmount, d.taxAmount, d.voidsAmount];
+    this.discounts = d.discountsAmount ?? null;
+    this.reasons = d.discountReasons ?? [];
     this.notes = d.notes ?? '';
     this.typed = false;
     this.version.update((v) => v + 1);
@@ -840,7 +866,13 @@ export class TakingsDialog {
       cardAmount: amount(this.card),
       taxAmount: amount(this.tax),
       voidsAmount: amount(this.voids),
+      discountsAmount: amount(this.discounts),
+      discountReasons: this.figures().discounts > 0 ? this.reasons : [],
     });
+  }
+
+  protected reasonsText(): string {
+    return this.reasons.map((r) => (r.amount ? `${r.reason} ${this.company.money(r.amount)}` : r.reason)).join(' · ');
   }
 
   // Without it the breakdown shows nothing paid out; the server takes it off all the same.
@@ -11652,7 +11684,7 @@ export class VariancePage {
 ```
 
 
-> 📄 **`frontend/src/app/features/costing/kpis-page.ts`** — 601 سطر
+> 📄 **`frontend/src/app/features/costing/kpis-page.ts`** — 742 سطر
 
 ```ts
 import { DecimalPipe } from '@angular/common';
@@ -11668,7 +11700,7 @@ import { firstValueFrom } from 'rxjs';
 import { AuthService } from '../../core/auth/auth.service';
 import { Permissions } from '../../core/auth/permissions';
 import { CostingAccess } from '../../core/costing/costing-tabs';
-import { CostingApi, Kpi, KpiKey, KpiReport, MonthlyExpenses, expenseLineLabels, kpiLabels } from '../../core/costing/costing.api';
+import { CostingApi, DiscountImpact, Kpi, KpiKey, KpiReport, MonthlyExpenses, expenseLineLabels, kpiLabels } from '../../core/costing/costing.api';
 import { errorMessage } from '../../core/http/error-message';
 import { Company } from '../../core/settings/company';
 import { MoneyPipe } from '../../core/ui/money.pipe';
@@ -11777,6 +11809,55 @@ const expenseFields: { key: keyof MonthlyExpenses; en: string; ar: string; hours
           </div>
         }
       </div>
+
+      @if (r.discounts; as d) {
+        <section class="discount-impact" aria-label="Promos and discount impact">
+          <h3>Promos &amp; discount impact <span class="inline-ar">أثر الخصومات والعروض</span></h3>
+          <div class="tiles">
+            <div class="tile">
+              <span class="label">Total discounts · إجمالي الخصومات <app-info-tip tip="deDiscounts" /></span>
+              <strong>{{ d.discounts | money }}</strong>
+              <small class="chip">
+                {{ d.discountSharePercent === null ? 'no sales yet' : (d.discountSharePercent | number: '1.1-1') + '% of standard gross ' + (d.standardGrossRevenue | money) }}
+              </small>
+            </div>
+            <div class="tile erosion" [class]="erosionTone(d.erosionPoints)">
+              <span class="label">Standard vs actual food cost · التكلفة القياسية مقابل الفعلية <app-info-tip tip="deErosion" /></span>
+              <div class="pair">
+                <div>
+                  <small class="muted">Standard <app-info-tip tip="deStandard" /></small>
+                  <strong>{{ d.standardFoodCostPercent === null ? '—' : (d.standardFoodCostPercent | number: '1.1-1') + '%' }}</strong>
+                </div>
+                <mat-icon aria-hidden="true">arrow_forward</mat-icon>
+                <div>
+                  <small class="muted">Actual <app-info-tip tip="deActual" /></small>
+                  <strong>{{ d.actualFoodCostPercent === null ? '—' : (d.actualFoodCostPercent | number: '1.1-1') + '%' }}</strong>
+                </div>
+              </div>
+              @if (d.erosionPoints !== null && d.erosionPoints > 0) {
+                <span class="erosion-badge">
+                  <mat-icon aria-hidden="true">{{ d.erosionPoints >= 5 ? 'error' : 'warning' }}</mat-icon>
+                  +{{ d.erosionPoints | number: '1.1-1' }} pts erosion · تآكل
+                </span>
+              } @else {
+                <small class="muted">No erosion · لا يوجد تآكل</small>
+              }
+            </div>
+            <div class="tile reasons">
+              <span class="label">Top discount reasons · أهم الأسباب <app-info-tip tip="deReasons" /></span>
+              @for (reason of d.reasons.slice(0, 5); track reason.reason) {
+                <div class="reason">
+                  <span class="name">{{ reason.reason }}</span>
+                  <span class="bar" aria-hidden="true"><span [style.width.%]="barOf(reason.amount, d)"></span></span>
+                  <span class="figure">{{ reason.amount ? (reason.amount | money) : '—' }}{{ reason.count ? ' · ' + reason.count + '×' : '' }}</span>
+                </div>
+              } @empty {
+                <small class="muted">{{ d.discounts ? 'No reasons given · لا أسباب' : 'No discounts this month · لا خصومات' }}</small>
+              }
+            </div>
+          </div>
+        </section>
+      }
 
       @if (r.itemsWithoutRecipe > 0) {
         <p class="note warn">
@@ -12056,6 +12137,87 @@ const expenseFields: { key: keyof MonthlyExpenses; en: string; ar: string; hours
         grid-template-columns: 1fr;
       }
     }
+    .discount-impact {
+      margin: 8px 0 16px;
+
+      h3 {
+        margin: 0 0 8px;
+        font: var(--mat-sys-title-small);
+      }
+      .tiles {
+        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      }
+      .chip {
+        justify-self: start;
+        padding: 0 8px;
+        border-radius: 999px;
+        font: var(--mat-sys-label-small);
+        background: var(--mat-sys-surface-container-high);
+      }
+      .pair {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+
+        div {
+          display: grid;
+        }
+      }
+      .erosion-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        justify-self: start;
+        padding: 0 8px;
+        border-radius: 999px;
+        font: var(--mat-sys-label-medium);
+        line-height: 24px;
+
+        mat-icon {
+          width: 16px;
+          height: 16px;
+          font-size: 16px;
+        }
+      }
+      .tile.amber {
+        border-color: color-mix(in srgb, var(--app-warn) 55%, transparent);
+        .erosion-badge {
+          background: color-mix(in srgb, var(--app-warn) 16%, transparent);
+          color: var(--app-warn);
+        }
+      }
+      .tile.red {
+        border-color: color-mix(in srgb, var(--mat-sys-error) 55%, transparent);
+        .erosion-badge {
+          background: color-mix(in srgb, var(--mat-sys-error) 12%, transparent);
+          color: var(--mat-sys-error);
+        }
+      }
+      .reason {
+        display: grid;
+        grid-template-columns: minmax(80px, 1fr) 2fr auto;
+        align-items: center;
+        gap: 8px;
+        font: var(--mat-sys-body-small);
+      }
+      .bar {
+        height: 8px;
+        border-radius: 4px;
+        background: var(--mat-sys-surface-container-high);
+        overflow: hidden;
+
+        span {
+          display: block;
+          height: 100%;
+          border-radius: 4px;
+          background: #2563eb;
+        }
+      }
+      .figure {
+        white-space: nowrap;
+        font-variant-numeric: tabular-nums;
+      }
+    }
     .statement tr.takings td {
       color: var(--mat-sys-on-surface-variant);
     }
@@ -12173,6 +12335,17 @@ export class KpisPage {
 
   protected share(part: number, whole: number): number | null {
     return whole > 0 ? (part / whole) * 100 : null;
+  }
+
+  // The erosion's badge: amber under 5 points, red from 5.
+  protected erosionTone(points: number | null): string {
+    return points === null || points <= 0 ? '' : points >= 5 ? 'red' : 'amber';
+  }
+
+  // A reason's bar: its share of the largest reason's amount.
+  protected barOf(amount: number, impact: DiscountImpact): number {
+    const largest = Math.max(...impact.reasons.map((r) => r.amount), 0);
+    return largest > 0 ? Math.max(2, (amount / largest) * 100) : 0;
   }
 
   // As a share of revenue, for the statement's last column.

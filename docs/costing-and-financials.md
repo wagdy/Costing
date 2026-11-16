@@ -13,7 +13,7 @@ works it.
 | Section | Path | What it holds |
 | --- | --- | --- |
 | Raw materials (الخامات) | `/costing/materials` | Materials, their units, prices and stock; an Excel import |
-| Recipes (الوصفات) | `/costing/recipes` | Recipe cards, prep items (مصنعات) and recipe categories; advanced filters and the bulk material swap |
+| Recipes (الوصفات) | `/costing/recipes` | Recipe cards, prep items (مصنعات), combo offers and recipe categories; advanced filters and the bulk material swap |
 | Production (الإنتاج) | `/costing/production` | Prep items made in batches |
 | Menu (قائمة الطعام) | `/costing/menu` | Categories, items, sizes, add-ons; an Excel import |
 | Material & demand intelligence (تحليلات الخامات والطلبيات) | `/costing/intelligence` | Purchase price variance and what it does to the recipes, the order planner, theoretical against actual usage, ABC and days on hand, menu engineering, the fully burdened plate cost, the vendor price comparison and the inflation what-if simulator; each to Excel |
@@ -24,7 +24,7 @@ works it.
 | Stock counts (الجرد) | `/costing/counts` | Full and spot counts drafted, blind for who counts, reconciled, then posted |
 | Waste (الهالك) | `/costing/waste` | Spoilage and breakage; staff meals, hospitality and recipe tastings |
 | Financials (الماليات) | `/costing/financials` | The safe, funding, each day's takings (cash, card, tax, voids), vouchers, suppliers owed and paid, the AP aging, advances, staff, tax and service |
-| Reports (التقارير) | `/costing/reports` | Spending, theoretical cost, variance, the daily break-even, KPIs, break-even |
+| Reports (التقارير) | `/costing/reports` | Spending, theoretical cost, variance, the daily break-even, KPIs (with the discounts' margin erosion), break-even |
 | Cost settings (إعدادات التكاليف) | `/costing/settings` | Cost targets, plate cost (allocation method, target net margin, stand-in monthly labor and overheads), beverage categories, shared costs, monthly expenses, the daily staff meal budget |
 | Approvals (طلبات معلقة) | `/costing/approvals` | What waits for a manager |
 | Permissions (الصلاحيات) | `/costing/permissions` | Who works which section; a manager's |
@@ -234,6 +234,45 @@ none is changed at all. Answers how many recipes and prep items were swapped.
   and prep items for anyone who may not approve. A dish's recipe is anyone's who writes recipes (the
   Recipes tab and `inventory.manage`); a prep item's recipe is a manager's, so for anyone else they
   are shown in the preview and left out.
+
+## Combo offers (العروض والوجبات المجمعة)
+
+Recipes → **Combos & offers** (`/costing/recipes/combos`) builds a combo from the recipes the
+kitchen already has: no bill of materials is entered again. A combo (`ComboOffers`) has a **code**,
+a name and Arabic name, its **selling price** and whether it is **on sale**; its dishes
+(`ComboOfferItems`) are existing recipes (a menu item's, a size's, an add-on's or one off the menu),
+each with how many of it one combo takes (1 to 99, each recipe once, 20 at most, two dishes at
+least or two of one). Endpoints: `GET api/costing/combos` (Recipes, Menu or Reports; `nextCode`
+for a new one), `PUT api/inventory/combos/{id}` and `DELETE api/inventory/combos/{id}` (Recipes and
+`inventory.manage`).
+
+```
+Total combo cost        = Σ each dish's cost a portion × its quantity
+Original separate price = Σ each dish's own price × its quantity   (none when a dish has no price)
+Combo food cost %       = total combo cost ÷ combo selling price × 100
+Savings                 = original separate price − combo selling price
+```
+
+A dish's cost a portion is its recipe card's now (moving averages, prep items by their batches,
+its shared costs a meal), and its price the menu's, or a planned price off the menu. The builder
+works these out as the dishes, quantities and price are typed, each total with its (ⓘ), and marks
+a food cost over the target.
+
+**Sold under its code.** The code is a menu number (as 6101 is), free when the combo is made and
+kept after. Saving a combo makes or brings in line its **menu item**: the same number, name and
+price, in the **Combos & offers** category (added the first time), available while the combo is
+on sale (`MenuItems.ComboOfferId`). So the Sales tab, a sheet, the Z reports and a point of sale
+reading the menu sell it as any item. Its name, price and availability are changed only here: the
+Menu tab marks it and refuses changes, a menu sheet leaves it, and no recipe can be linked to its
+number. Deleted, it leaves the list and its menu item is deleted; past sales keep it.
+
+**Stock.** A combo sold takes no stock of its own: each dish takes its recipe's stock for the
+quantity sold × how many of it the combo holds, and through its prep items what they were made
+from, exactly as that many sales of the dish would (`StockRequirements`). Three "two burgers and
+two lemonades" take six burgers' and six lemonades' ingredients. So the theoretical cost, the
+consumption, the menu engineering and the daily break-even count a combo by its dishes, and its
+menu row is costed the same way (a card with no lines of its own). A recipe in a combo cannot be
+deleted until it is taken out of the combo.
 
 ## The menu
 
@@ -681,8 +720,10 @@ safe when it is submitted.
    of the signed receipt (required). Each is deducted from the employee's pay in the payroll month
    it is paid in, as every advance out of the safe is.
 6. **The daily sales report** (ريبورت المبيعات): the drawer's **opening float** (العهدة / الفكة),
-   the Z report's cash and Visa before tax, the tax on them and the voids, kept a moment after they
-   are typed, and a photo of the report if there is one. Total revenue = cash + Visa + tax.
+   the Z report's cash and Visa before tax, the tax on them and the voids, the **discounts &
+   promos** (الخصومات والعروض) with why (each reason and what it took off: loyalty, staff, a
+   manager's promo; their amounts no more than the discounts), kept a moment after they are typed,
+   and a photo of the report if there is one. Total revenue = cash + Visa + tax.
 
 Under them, **Net cash expected in till** (الصافي الفعلي المتبقي في الكاش), worked out as the
 figures are typed, to count the drawer against:
@@ -690,7 +731,9 @@ figures are typed, to count the drawer against:
     Net cash = (opening float + cash sales with their tax)
              − (cash invoices + supplier cash payments + employee cash advances)
 
-The Visa, Instapay and other online takings never reach the drawer, so they are not in it. The Z
+The Visa, Instapay and other online takings never reach the drawer, so they are not in it; nor
+are the discounts: they were taken off before the money was collected, the cash is after them,
+and the till card says so when there are any. The Z
 report gives the tax on the cash and Visa together; the cash's share of it is in proportion (tax ×
 cash ÷ (cash + Visa)), as the safe splits a day's tax. Each payment and advance, once handed in,
 has its receipt with it, and the payments and advances are taken, like the cash invoices, out of
@@ -857,6 +900,7 @@ Safe → Takings in (or a day on Funding with sales and no takings yet), in this
 | Visa / Card (إيراد الفيزا) | `CardAmount` | Visa sales before tax: revenue, into the safe |
 | Total tax collected (إجمالي الضريبة المحصلة) | `TaxAmount` | Collected on top: into the safe, owed to the tax authority, never revenue |
 | Voids & refunds (قيمة الفويد والمرتجعات) | `VoidsAmount` | Said, not taken off again (cash and Visa are after them) |
+| Discounts & promos (الخصومات والعروض) | `DiscountsAmount`, `DiscountReasons` | Taken off the menu prices before the money was collected: said, never in the safe; read by the KPIs' margin erosion. The reasons come with the end of day handed in, or from the POS |
 | Void reasons / notes (أسباب الفويد وملاحظات اليومية) | `Notes`, up to 500 characters | Why |
 
 Cash or Visa must be more than nothing, and the tax no more than both. A day entered already is
@@ -904,6 +948,30 @@ to what reached the safe: from then on the safe's balances, earlier months' too,
 The tax rate on Financials → Tax & service (`FinancialSettings.TaxPercent`, a manager's) is kept for
 the bills entered as printed; a day's takings carry the tax as the Z report gives it.
 
+## Promos and discounts against the margin (أثر الخصومات وتآكل الهامش)
+
+A discount makes the kitchen's cost a larger share of what came in: the dishes cost the same, the
+money collected is less. Reports → **KPIs** sets the month's food cost at the menu prices against
+what was actually collected (`KpiReport.Discounts`), from the month's takings (a voided day taken
+back out with its reversal):
+
+```
+Standard gross revenue (الإيراد القياسي) = net sales + discounts
+Actual net revenue (الإيراد الفعلي)      = net sales (cash + card collected, before tax)
+Standard food cost %                    = theoretical cost ÷ standard gross revenue × 100
+Actual food cost %                      = theoretical cost ÷ actual net revenue × 100
+Margin erosion (تآكل الهامش)            = actual food cost % − standard food cost %, in points
+```
+
+The theoretical cost is the recipes' cost of what was sold in the month (food and drinks, combos
+by their dishes). **Promos & discount impact** (أثر الخصومات والعروض), under the KPI cards:
+
+1. **Total discounts**, and their share of the standard gross revenue.
+2. **Standard vs actual food cost %**, with the erosion in points: amber under 5, red from 5.
+3. **Top discount reasons**, each with what it took off and on how many bills, the largest first.
+
+Each figure has its (ⓘ). With no takings in the month the percentages are not shown.
+
 ## The POS link (ربط نقطة البيع)
 
 A point of sale can send each shift's Z report here, and read the menu from here, over HTTP; it
@@ -938,7 +1006,8 @@ A Z report:
 {
   "zReportId": "a09d376d-…", "date": "2026-11-10", "shiftNumber": 1,
   "takings": { "totalCash": 220.0, "totalCard": 30.0, "totalTax": 35.0, "voidsAmount": 330.0,
-               "voidReasons": [{ "reason": "Item quality", "count": 1, "amount": 140.0 }] },
+               "voidReasons": [{ "reason": "Item quality", "count": 1, "amount": 140.0 }],
+               "discountsAmount": 60.0, "discountReasons": ["Staff", { "reason": "Loyalty", "amount": 50.0, "count": 2 }] },
   "soldItems": [{ "itemCode": "6101-17", "quantitySold": 1 }, { "itemCode": 9003, "quantitySold": 2 }],
   "wastedItems": [{ "itemCode": "6101-18", "quantity": 1, "reason": "Item quality" }]
 }
@@ -948,7 +1017,9 @@ A Z report:
 before tax, with the tax collected on them apart, as the day's takings are kept. An item is found
 by its code, or a size by its code (`6101-17`); an item sold by size without one names its size
 in `size`, and a line with no code is found by its `name`. `wastedItems` were made and then voided
-after the kitchen.
+after the kitchen. `discountsAmount` (optional) is what was taken off the menu prices before the
+money was collected; each of `discountReasons` is a name (counted once, its amount not said) or `{
+reason, amount, count }`. A combo is sold by its code, as any item.
 
 ### What a Z report makes
 
@@ -958,7 +1029,11 @@ after the kitchen.
   its recipe (`Sale`); each wasted one is a line voided after the kitchen, its stock taken as waste
   (`Waste`), not charged. An item with no recipe is recorded and the answer warns of it.
 - **The day's takings in the safe** (توريد إيراد يومية): the cash and card before tax, the tax,
-  the voids and their reasons in the notes, for that business day.
+  the voids and their reasons in the notes, and the discounts with their reasons (every shift's
+  together, each reason once), for that business day.
+- **The discounts on the sales summary too**: its lines are at the menu's prices, and the day's
+  discounts come off them (`DiscountAmount`, with the reasons), never more than they come to (the
+  answer warns if they were; the takings keep all of them). The POS day keeps them as well.
 - **All of it or none**: both are written in one save.
 - **Sent again as it was**: nothing changes (`Unchanged`). **Sent changed** (the shift corrected
   on the POS): what it made is voided, the stock put back and the takings reversed, and the day

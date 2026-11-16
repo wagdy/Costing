@@ -15,14 +15,15 @@ public sealed record MenuCategoryDto(int Id, string Name, string? NameAr, int Di
 
 public sealed record MenuSizeDto(int Id, string Name, string? NameAr, decimal Price);
 
+// ComboOfferId: a combo offer sold under this number, changed on Recipes → Combos & offers only.
 public sealed record MenuItemDto(
     int Id, string Name, string? NameAr, string Category, decimal Price, bool IsPriceBasedOnAddons, bool IsAvailable, bool IsDeleted,
-    IReadOnlyList<MenuSizeDto> Sizes, IReadOnlyList<int> AddOnIds)
+    IReadOnlyList<MenuSizeDto> Sizes, IReadOnlyList<int> AddOnIds, Guid? ComboOfferId = null)
 {
     public static MenuItemDto From(MenuItem item) => new(
         item.Id, item.Name, item.NameAr, item.Category, item.Price, item.IsPriceBasedOnAddons, item.IsAvailable, item.IsDeleted,
         item.Variants.OrderBy(v => v.DisplayOrder).ThenBy(v => v.Id).Select(v => new MenuSizeDto(v.Id, v.Name, v.NameAr, v.Price)).ToList(),
-        item.AddOnIds);
+        item.AddOnIds, item.ComboOfferId);
 }
 
 public sealed record AddOnDto(int Id, string Name, string? NameAr, decimal Price, bool IsDeleted);
@@ -129,6 +130,8 @@ internal sealed class SaveMenuItemHandler(IMenuRepository menu, IUnitOfWork unit
         if (request.Id is { } id)
         {
             item = await menu.GetItemAsync(id, cancellationToken) ?? throw new NotFoundException("Menu item", id);
+            if (item.IsCombo)
+                throw new DomainException(ComboRules.ComboOnMenu);
             item.Change(request.Name, request.NameAr, category.Name, request.Price, request.IsPriceBasedOnAddons);
         }
         else
@@ -156,6 +159,8 @@ internal sealed class SetMenuItemDeletedHandler(IMenuRepository menu, IUnitOfWor
     public async Task<MenuItemDto> Handle(SetMenuItemDeletedCommand request, CancellationToken cancellationToken)
     {
         var item = await menu.GetItemAsync(request.Id, cancellationToken) ?? throw new NotFoundException("Menu item", request.Id);
+        if (item.IsCombo)
+            throw new DomainException(ComboRules.ComboOnMenu);
         if (request.Deleted)
             item.Delete();
         else
@@ -273,6 +278,8 @@ internal sealed class ImportMenuHandler(IMenuRepository menu, IUnitOfWork unitOf
                 var name = row.Name?.Trim();
                 var item = row.Number is { } number ? items.GetValueOrDefault(number) : null;
                 item ??= name is { Length: > 0 } ? byName.GetValueOrDefault(name) : null;
+                if (item is { IsCombo: true })
+                    throw new DomainException(ComboRules.ComboOnMenu);
 
                 if (item is null)
                 {

@@ -2,6 +2,7 @@ using MediatR;
 using Microsoft.Extensions.Logging;
 using Costing.Application.Common;
 using Costing.Application.RawMaterials;
+using Costing.Application.Recipes;
 using Costing.Domain.Common;
 using Costing.Domain.Menu;
 using Costing.Domain.RawMaterials;
@@ -81,7 +82,9 @@ public sealed record SaleInput(
     decimal TaxAmount = 0,
     decimal PointsAmount = 0,
     decimal RefundedAmount = 0,
-    string? Notes = null);
+    string? Notes = null,
+    // Why the discount was given (a day's summary from the POS: its Z reports' reasons).
+    IReadOnlyList<DiscountReason>? DiscountReasons = null);
 
 // Turns sold lines into stock movements, each material's share as purchased, by the recipe each
 // sells by: Sale for a line charged, then VoidReturn for one refunded after payment, and Waste for
@@ -89,6 +92,7 @@ public sealed record SaleInput(
 // retried sale posts once. Adds the movements; the caller saves.
 internal sealed class SaleStockPoster(
     IRecipeRepository recipes,
+    IComboOfferRepository combos,
     IRawMaterialRepository materials,
     IStockMovementRepository movements,
     ILogger<SaleStockPoster> logger)
@@ -120,8 +124,8 @@ internal sealed class SaleStockPoster(
         if (pending.Count == 0)
             return;
 
-        var relevant = await recipes.GetByTargetsAsync(StockRequirements.TargetsFor(pending.Select(p => p.Item)), cancellationToken);
-        var needs = pending.Select(p => (p.LineId, p.Reason, Needs: StockRequirements.For(p.Item, relevant))).ToList();
+        var (relevant, parts) = await recipes.ForSaleAsync(combos, pending.Select(p => p.Item).ToList(), cancellationToken);
+        var needs = pending.Select(p => (p.LineId, p.Reason, Needs: StockRequirements.For(p.Item, relevant, parts))).ToList();
         var materialsById = (await materials.GetByIdsAsync(needs.SelectMany(n => n.Needs.Keys).Distinct().ToList(), cancellationToken))
             .ToDictionary(m => m.Id);
 
@@ -167,11 +171,15 @@ internal sealed class SaleWriter(IMenuRepository menu, ISalesReceiptRepository s
 
         var receipt = new SalesReceipt(
             input.Id, input.Reference, soldAt, input.Date, input.Channel, input.PaymentMethod, lines, Money(input.DiscountAmount), Money(input.DeliveryFee),
-            Money(input.TaxAmount), Money(input.PointsAmount), Money(input.RefundedAmount), input.Notes, source, by);
+            Money(input.TaxAmount), Money(input.PointsAmount), Money(input.RefundedAmount), input.Notes, source, by, input.DiscountReasons);
         sales.Add(receipt);
         await poster.PostAsync(receipt.Lines, cancellationToken);
         return receipt;
     }
+
+    // What the lines charged come to at the menu's prices (or as given): a sale's subtotal before it is made.
+    public static decimal ValueOf(IEnumerable<SaleLineInput> lines, Menu known) =>
+        lines.Where(l => l.Voided is LineVoid.None or LineVoid.AfterPayment).Sum(l => Line(l, known).LineTotal);
 
     private static SalesReceiptLine Line(SaleLineInput line, Menu known)
     {

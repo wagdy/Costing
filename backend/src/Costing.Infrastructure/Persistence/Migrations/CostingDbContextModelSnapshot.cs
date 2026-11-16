@@ -390,6 +390,10 @@ namespace Costing.Infrastructure.Persistence.Migrations
                     b.Property<DateOnly>("Date")
                         .HasColumnType("date");
 
+                    b.Property<decimal?>("DiscountsAmount")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)");
+
                     b.Property<string>("Notes")
                         .HasMaxLength(500)
                         .HasColumnType("character varying(500)");
@@ -449,6 +453,13 @@ namespace Costing.Infrastructure.Persistence.Migrations
                     b.Property<decimal?>("VoidsAmount")
                         .HasPrecision(18, 2)
                         .HasColumnType("numeric(18,2)");
+
+                    b.Property<string>("_discountReasons")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("jsonb")
+                        .HasColumnName("DiscountReasons")
+                        .HasDefaultValueSql("'[]'::jsonb");
 
                     b.HasKey("Id");
 
@@ -681,6 +692,10 @@ namespace Costing.Infrastructure.Persistence.Migrations
                     b.Property<DateOnly>("Date")
                         .HasColumnType("date");
 
+                    b.Property<decimal>("DiscountsAmount")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)");
+
                     b.Property<Guid?>("SaleId")
                         .HasColumnType("uuid");
 
@@ -695,6 +710,13 @@ namespace Costing.Infrastructure.Persistence.Migrations
                         .ValueGeneratedOnAddOrUpdate()
                         .HasColumnType("xid")
                         .HasColumnName("xmin");
+
+                    b.Property<string>("_discountReasons")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("jsonb")
+                        .HasColumnName("DiscountReasons")
+                        .HasDefaultValueSql("'[]'::jsonb");
 
                     b.HasKey("Id");
 
@@ -902,6 +924,81 @@ namespace Costing.Infrastructure.Persistence.Migrations
                     b.ToTable("AddOns", "costing");
                 });
 
+            modelBuilder.Entity("Costing.Domain.Menu.ComboOffer", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("Code")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime?>("DeletedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("DeletedBy")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<string>("NameAr")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<decimal>("SellingPrice")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)");
+
+                    b.Property<uint>("Version")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("xid")
+                        .HasColumnName("xmin");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Code")
+                        .IsUnique();
+
+                    b.ToTable("ComboOffers", "costing");
+                });
+
+            modelBuilder.Entity("Costing.Domain.Menu.ComboOfferItem", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("ComboOfferId")
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("Position")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("Quantity")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid>("RecipeId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("RecipeId");
+
+                    b.HasIndex("ComboOfferId", "RecipeId")
+                        .IsUnique();
+
+                    b.ToTable("ComboOfferItems", "costing");
+                });
+
             modelBuilder.Entity("Costing.Domain.Menu.MenuCategory", b =>
                 {
                     b.Property<int>("Id")
@@ -946,6 +1043,9 @@ namespace Costing.Infrastructure.Persistence.Migrations
                         .HasMaxLength(100)
                         .HasColumnType("character varying(100)");
 
+                    b.Property<Guid?>("ComboOfferId")
+                        .HasColumnType("uuid");
+
                     b.Property<bool>("IsAvailable")
                         .HasColumnType("boolean");
 
@@ -971,6 +1071,10 @@ namespace Costing.Infrastructure.Persistence.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("Category");
+
+                    b.HasIndex("ComboOfferId")
+                        .IsUnique()
+                        .HasFilter("\"ComboOfferId\" IS NOT NULL");
 
                     b.ToTable("MenuItems", "costing");
                 });
@@ -1634,6 +1738,13 @@ namespace Costing.Infrastructure.Persistence.Migrations
                         .HasMaxLength(200)
                         .HasColumnType("character varying(200)");
 
+                    b.Property<string>("_discountReasons")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("jsonb")
+                        .HasColumnName("DiscountReasons")
+                        .HasDefaultValueSql("'[]'::jsonb");
+
                     b.HasKey("Id");
 
                     b.HasIndex("BusinessDate");
@@ -2124,6 +2235,10 @@ namespace Costing.Infrastructure.Persistence.Migrations
                         .HasPrecision(18, 2)
                         .HasColumnType("numeric(18,2)");
 
+                    b.Property<decimal>("DiscountsAmount")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)");
+
                     b.Property<Guid?>("EmployeeId")
                         .HasColumnType("uuid");
 
@@ -2205,6 +2320,13 @@ namespace Costing.Infrastructure.Persistence.Migrations
                     b.Property<decimal>("VoidsAmount")
                         .HasPrecision(18, 2)
                         .HasColumnType("numeric(18,2)");
+
+                    b.Property<string>("_discountReasons")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("jsonb")
+                        .HasColumnName("DiscountReasons")
+                        .HasDefaultValueSql("'[]'::jsonb");
 
                     b.HasKey("Id");
 
@@ -2706,6 +2828,29 @@ namespace Costing.Infrastructure.Persistence.Migrations
                         .IsRequired();
                 });
 
+            modelBuilder.Entity("Costing.Domain.Menu.ComboOfferItem", b =>
+                {
+                    b.HasOne("Costing.Domain.Menu.ComboOffer", null)
+                        .WithMany("Items")
+                        .HasForeignKey("ComboOfferId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("Costing.Domain.Recipes.Recipe", null)
+                        .WithMany()
+                        .HasForeignKey("RecipeId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Costing.Domain.Menu.MenuItem", b =>
+                {
+                    b.HasOne("Costing.Domain.Menu.ComboOffer", null)
+                        .WithMany()
+                        .HasForeignKey("ComboOfferId")
+                        .OnDelete(DeleteBehavior.Restrict);
+                });
+
             modelBuilder.Entity("Costing.Domain.Menu.MenuItemVariant", b =>
                 {
                     b.HasOne("Costing.Domain.Menu.MenuItem", null)
@@ -3022,6 +3167,11 @@ namespace Costing.Infrastructure.Persistence.Migrations
                     b.Navigation("Invoices");
 
                     b.Navigation("Payouts");
+                });
+
+            modelBuilder.Entity("Costing.Domain.Menu.ComboOffer", b =>
+                {
+                    b.Navigation("Items");
                 });
 
             modelBuilder.Entity("Costing.Domain.Menu.MenuItem", b =>

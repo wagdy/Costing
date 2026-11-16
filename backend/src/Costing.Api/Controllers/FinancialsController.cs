@@ -131,7 +131,8 @@ public sealed class FinancialsController(ISender sender, TreasuryService treasur
             new SafeVoucher(
                 request.TransactionId, request.Kind, request.Amount, request.Date ?? treasury.Today, request.Source, request.RevenueDate,
                 request.SupplierId, request.ExpenseItemId, null, request.Notes, request.IncludesTax, EmployeeId: request.EmployeeId,
-                PayrollMonth: request.PayrollMonth, CardAmount: request.CardAmount, TaxAmount: request.TaxAmount, VoidsAmount: request.VoidsAmount),
+                PayrollMonth: request.PayrollMonth, CardAmount: request.CardAmount, TaxAmount: request.TaxAmount, VoidsAmount: request.VoidsAmount,
+                DiscountsAmount: request.DiscountsAmount, DiscountReasons: request.DiscountReasons),
             request.Reason, UserClaims.IdOf(User) ?? string.Empty, StaffName, CanApprove), cancellationToken);
         return result.Outcome == ApprovalOutcome.Requested
             ? Accepted(new ApprovalResultDto(result.Outcome, result.Request!))
@@ -164,6 +165,9 @@ public sealed record SafeVoucherRequest(
     // collected in both, and the day's voids and refunds.
     decimal? CardAmount = null,
     decimal? TaxAmount = null,
-    decimal? VoidsAmount = null);
+    decimal? VoidsAmount = null,
+    // The day's discounts and promos, and why: said, never collected.
+    decimal? DiscountsAmount = null,
+    IReadOnlyList<Costing.Domain.Sales.DiscountReason>? DiscountReasons = null);
 
 public sealed record SupplierOpeningBalanceRequest(Guid EntryId, decimal Owed, DateOnly? Date = null);

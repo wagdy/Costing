@@ -220,13 +220,45 @@ describe('the end of the day', () => {
     await page['flushSales']();
     fixture.detectChanges();
     expect(api.saveSales).toHaveBeenCalledWith('2026-11-04', {
-      cashAmount: 5_000, cardAmount: 2_500, taxAmount: 1_050, voidsAmount: 80, notes: 'Two voids', openingFloat: null,
+      cashAmount: 5_000, cardAmount: 2_500, taxAmount: 1_050, voidsAmount: 80, notes: 'Two voids', openingFloat: null, discountsAmount: null, discountReasons: [],
     });
     expect(text(el.querySelector('.z-photo .muted.small')!)).toBe('Saved · تم الحفظ');
 
     page['setSale']('cashAmount', -1);
     expect(await page['flushSales']()).toBe(false);
-    expect(page['salesProblem']()).toBe('The float, cash, Visa, tax and voids are zero or more. · المبالغ صفر أو أكثر.');
+    expect(page['salesProblem']()).toBe('The float, cash, Visa, tax, voids and discounts are zero or more. · المبالغ صفر أو أكثر.');
+  });
+
+  it('keeps the discounts and why with the sales, never in the cash expected in the till', async () => {
+    api.saveSales.mockImplementation((_: string, s: Record<string, unknown>) => of(day({ ...s })));
+    const { fixture, el, page } = await render();
+    page['setSale']('openingFloat', 500);
+    page['setSale']('cashAmount', 3_000);
+    fixture.detectChanges();
+    const before = text(el.querySelector('.till-net')!);
+    expect(el.querySelector('.discount-reasons')).toBeNull();
+
+    // 400 of discounts: why, a reason at a time, one left blank and not sent.
+    page['setSale']('discountsAmount', 400);
+    page['addReason']();
+    page['setReason'](0, { reason: ' Loyalty ', amount: 250 });
+    page['addReason']();
+    page['setReason'](1, { reason: 'Staff', amount: 150 });
+    page['addReason']();
+    fixture.detectChanges();
+    expect(el.querySelectorAll('.discount-reasons .reason').length).toBe(3);
+    expect(text(el.querySelector('.till-net')!)).toBe(before);
+    expect(text(el.querySelector('.discount-note')!)).toContain('Discounts & promos of L.E 400.00 are not in it');
+
+    expect(await page['flushSales']()).toBe(true);
+    expect(api.saveSales.mock.lastCall![1]).toMatchObject({
+      discountsAmount: 400, discountReasons: [{ reason: 'Loyalty', amount: 250, count: 1 }, { reason: 'Staff', amount: 150, count: 1 }],
+    });
+
+    // The reasons are never more than the discounts.
+    page['setReason'](0, { amount: 300 });
+    expect(await page['flushSales']()).toBe(false);
+    expect(page['salesProblem']()).toBe('The reasons add up to more than the discounts. · مجموع الأسباب أكبر من الخصومات.');
   });
 
   it('is reviewed before it is submitted: not without its sales or with an invoice left unadded, then locked once confirmed', async () => {

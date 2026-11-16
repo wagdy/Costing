@@ -38,6 +38,7 @@ public sealed class TestCosting
 
     public InventoryStore Inventory { get; } = new();
     public MenuStore Menu { get; } = new();
+    public ComboStore Combos { get; } = new();
     public SalesStore Sales { get; } = new();
     public StaffStore Staff { get; } = new();
     public BreakageStore Breakage { get; } = new();
@@ -81,6 +82,7 @@ public sealed class TestCosting
         services.AddSingleton<Costing.Application.RawMaterials.IMaterialUnits>(Inventory.Units);
         services.AddSingleton<Costing.Application.Categories.IItemConversions>(new NoItemConversions());
         services.AddSingleton<IMenuRepository>(Menu);
+        services.AddSingleton<Costing.Domain.Menu.IComboOfferRepository>(Combos);
         services.AddSingleton<ISalesReceiptRepository>(Sales);
         services.AddSingleton<IStaffMemberRepository>(Staff);
         services.AddSingleton<IBreakageEntryRepository>(Breakage);
@@ -492,6 +494,8 @@ public sealed class RecipeStore : IRecipeRepository
     public Task<Recipe?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default) => Task.FromResult(_recipes.SingleOrDefault(r => r.Id == id));
     public void Add(Recipe aggregate) => _recipes.Add(aggregate);
     public Task<IReadOnlyList<Recipe>> GetAllAsync(CancellationToken cancellationToken = default) => Task.FromResult<IReadOnlyList<Recipe>>(_recipes.ToList());
+    public Task<IReadOnlyList<Recipe>> GetByIdsAsync(IReadOnlyCollection<Guid> ids, CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyList<Recipe>>(_recipes.Where(r => ids.Contains(r.Id)).ToList());
     public Task<int> CountUsingAsync(Guid rawMaterialId, CancellationToken cancellationToken = default) =>
         Task.FromResult(_recipes.Count(r => !r.IsDeleted && r.Ingredients.Any(i => i.RawMaterialId == rawMaterialId)));
     // The ones sales go by: not deleted, and linked to the menu.
@@ -501,6 +505,20 @@ public sealed class RecipeStore : IRecipeRepository
     public Task<IReadOnlyList<Recipe>> GetInCategoryAsync(Guid categoryId, CancellationToken cancellationToken = default) => Task.FromResult<IReadOnlyList<Recipe>>(_recipes.Where(r => r.RecipeCategoryId == categoryId).ToList());
     public Task<IReadOnlyDictionary<Guid, int>> CountByCategoryAsync(CancellationToken cancellationToken = default) =>
         Task.FromResult<IReadOnlyDictionary<Guid, int>>(_recipes.Where(r => !r.IsDeleted && r.RecipeCategoryId != null).GroupBy(r => r.RecipeCategoryId!.Value).ToDictionary(g => g.Key, g => g.Count()));
+}
+
+public sealed class ComboStore : Costing.Domain.Menu.IComboOfferRepository
+{
+    public List<Costing.Domain.Menu.ComboOffer> All { get; } = new();
+
+    public Task<Costing.Domain.Menu.ComboOffer?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default) => Task.FromResult(All.SingleOrDefault(c => c.Id == id));
+    public void Add(Costing.Domain.Menu.ComboOffer aggregate) => All.Add(aggregate);
+    public Task<IReadOnlyList<Costing.Domain.Menu.ComboOffer>> GetAllAsync(CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyList<Costing.Domain.Menu.ComboOffer>>(All.ToList());
+    public Task<IReadOnlyDictionary<int, IReadOnlyList<ComboPart>>> GetPartsAsync(IReadOnlyCollection<int> menuItemIds, CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyDictionary<int, IReadOnlyList<ComboPart>>>(All.Where(c => menuItemIds.Contains(c.Code)).ToDictionary(c => c.Code, c => c.Parts));
+    public Task<IReadOnlyList<Costing.Domain.Menu.ComboOffer>> GetUsingRecipeAsync(Guid recipeId, CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyList<Costing.Domain.Menu.ComboOffer>>(All.Where(c => !c.IsDeleted && c.Items.Any(i => i.RecipeId == recipeId)).ToList());
 }
 
 public sealed class MovementStore : IStockMovementRepository

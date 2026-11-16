@@ -1647,7 +1647,7 @@ public interface IRecipeCategoryRepository : IRepository<RecipeCategory>
 ```
 
 
-> 📄 **`backend/src/Costing.Domain/Recipes/IRecipeRepository.cs`** — 27 سطر
+> 📄 **`backend/src/Costing.Domain/Recipes/IRecipeRepository.cs`** — 30 سطر
 
 ```csharp
 using Costing.Domain.Common;
@@ -1660,6 +1660,9 @@ public interface IRecipeRepository : IRepository<Recipe>
     // Every recipe, on the menu or off it, the deleted ones too: a recipes sheet is written from
     // them and read back against them.
     Task<IReadOnlyList<Recipe>> GetAllAsync(CancellationToken cancellationToken = default);
+
+    // These recipes, by id, deleted or not: a combo's dishes.
+    Task<IReadOnlyList<Recipe>> GetByIdsAsync(IReadOnlyCollection<Guid> ids, CancellationToken cancellationToken = default);
 
     // The active recipe linked to the target, if any.
     Task<Recipe?> GetByTargetAsync(RecipeTarget target, CancellationToken cancellationToken = default);
@@ -1680,7 +1683,7 @@ public interface IRecipeRepository : IRepository<Recipe>
 ```
 
 
-> 📄 **`backend/src/Costing.Domain/Recipes/StockRequirements.cs`** — 49 سطر
+> 📄 **`backend/src/Costing.Domain/Recipes/StockRequirements.cs`** — 72 سطر
 
 ```csharp
 namespace Costing.Domain.Recipes;
@@ -1690,6 +1693,10 @@ namespace Costing.Domain.Recipes;
 // handing it over, which is the whole interface between the two modules.
 public sealed record SoldItem(int MenuItemId, int? VariantId, IReadOnlyList<int> AddOnIds, int Quantity);
 
+// A dish in a combo sold under a menu number (ComboOffer): its recipe, by id, and how many of it one
+// combo takes.
+public sealed record ComboPart(Guid RecipeId, int Quantity);
+
 public static class StockRequirements
 {
     // What `item` draws from stock, summed per raw material:
@@ -1698,31 +1705,50 @@ public static class StockRequirements
     //   all multiplied by the quantity.
     // The variant recipe replaces the base rather than adding to it: a 1 kg tray is not a
     // base portion plus a tray.
-    public static IReadOnlyDictionary<Guid, decimal> For(SoldItem item, IReadOnlyCollection<Recipe> recipes)
+    //
+    // A combo (combos, by the number it is sold under) has no recipe of its own: each dish in it
+    // takes its recipe's stock for the quantity sold × how many of it one combo takes, and through
+    // its prep items the stock they were made from, as a sale of that dish would. `recipes` holds
+    // the combos' recipes too, by id (RecipeIdsFor). A deleted recipe takes nothing.
+    public static IReadOnlyDictionary<Guid, decimal> For(
+        SoldItem item, IReadOnlyCollection<Recipe> recipes, IReadOnlyDictionary<int, IReadOnlyList<ComboPart>>? combos = null)
     {
         // Only the active recipes on the menu take stock: one per target.
-        var byTarget = recipes.Where(r => !r.IsDeleted && r.Target is not null).ToDictionary(r => r.Target!.Value);
+        var byTarget = recipes.Where(r => !r.IsDeleted && r.Target is not null)
+            .GroupBy(r => r.Target!.Value).ToDictionary(g => g.Key, g => g.First());
         var totals = new Dictionary<Guid, decimal>();
 
-        var main = item.VariantId is { } variantId && byTarget.TryGetValue(RecipeTarget.ForVariant(item.MenuItemId, variantId), out var forVariant)
-            ? forVariant
-            : byTarget.GetValueOrDefault(RecipeTarget.ForMenuItem(item.MenuItemId));
-
-        Add(main);
+        if (combos?.GetValueOrDefault(item.MenuItemId) is { } parts)
+        {
+            var byId = recipes.GroupBy(r => r.Id).ToDictionary(g => g.Key, g => g.First());
+            foreach (var part in parts)
+                Add(byId.GetValueOrDefault(part.RecipeId) is { IsDeleted: false } dish ? dish : null, item.Quantity * part.Quantity);
+        }
+        else
+        {
+            var main = item.VariantId is { } variantId && byTarget.TryGetValue(RecipeTarget.ForVariant(item.MenuItemId, variantId), out var forVariant)
+                ? forVariant
+                : byTarget.GetValueOrDefault(RecipeTarget.ForMenuItem(item.MenuItemId));
+            Add(main, item.Quantity);
+        }
         foreach (var addOnId in item.AddOnIds)
-            Add(byTarget.GetValueOrDefault(RecipeTarget.ForAddOn(addOnId)));
+            Add(byTarget.GetValueOrDefault(RecipeTarget.ForAddOn(addOnId)), item.Quantity);
 
         return totals;
 
-        void Add(Recipe? recipe)
+        void Add(Recipe? recipe, int units)
         {
             if (recipe is null)
                 return;
 
-            foreach (var (rawMaterialId, quantity) in recipe.RequirementsFor(item.Quantity))
+            foreach (var (rawMaterialId, quantity) in recipe.RequirementsFor(units))
                 totals[rawMaterialId] = totals.GetValueOrDefault(rawMaterialId) + quantity;
         }
     }
+
+    // The recipes the combos among the items are made of, by id, to load with the rest.
+    public static IReadOnlyCollection<Guid> RecipeIdsFor(IEnumerable<SoldItem> items, IReadOnlyDictionary<int, IReadOnlyList<ComboPart>> combos) =>
+        items.SelectMany(i => combos.GetValueOrDefault(i.MenuItemId) ?? []).Select(p => p.RecipeId).ToHashSet();
 
     // Every recipe the given items could need, so they can be loaded in one query.
     public static IReadOnlyCollection<RecipeTarget> TargetsFor(IEnumerable<SoldItem> items) =>
@@ -2058,7 +2084,7 @@ public interface IProductionOrderRepository : IRepository<ProductionOrder>
 
 `MenuItem` برقمه (كوده في كل التقارير، مثل `6101`)، وأحجامه (`6101-17`)، والإضافات (`A3`)، والفئات. `SalesReceipt`: إيصال مبيعات أو **ملخص يومي** (`SalesSource.DailySummary`، واحد لكل يوم)، بسطوره، والقناة وطريقة الدفع والإلغاءات.
 
-> 📄 **`backend/src/Costing.Domain/Menu/MenuItem.cs`** — 224 سطر
+> 📄 **`backend/src/Costing.Domain/Menu/MenuItem.cs`** — 245 سطر
 
 ```csharp
 using Costing.Domain.Common;
@@ -2129,6 +2155,27 @@ public sealed class MenuItem
 
     // The add-ons it can be sold with, by their numbers.
     public int[] AddOnIds { get; private set; } = [];
+
+    // A combo offer sold under this number (ComboOffer): its name, price and availability are the
+    // combo's, and its stock is its dishes'. Never changed on the Menu tab.
+    public Guid? ComboOfferId { get; private set; }
+    public bool IsCombo => ComboOfferId is not null;
+
+    // As the combo is now: its name, its price, on sale or not, in the combos' category.
+    public void SellAs(ComboOffer combo)
+    {
+        if (combo.Code != Id)
+            throw new DomainException("A combo is sold under its own number.");
+        ComboOfferId = combo.Id;
+        Change(combo.Name, combo.NameAr, ComboOffer.MenuCategory, combo.SellingPrice, false);
+        SetAvailable(combo.IsActive);
+        _variants.Clear();
+        AddOnIds = [];
+        if (combo.IsDeleted)
+            Delete();
+        else
+            Restore();
+    }
 
     public IReadOnlyCollection<MenuItemVariant> Variants => _variants.AsReadOnly();
 
@@ -2288,7 +2335,154 @@ public interface IMenuRepository
 ```
 
 
-> 📄 **`backend/src/Costing.Domain/Sales/SalesReceipt.cs`** — 294 سطر
+**العرض المجمع (`ComboOffer`):** كود (رقم منيو) واسم وسعر وحالة بيع، وأصناف هي وصفات موجودة بعدد كل منها (`ComboOfferItem` مع `Position` للترتيب كما أُدخل). لا قائمة خامات له: تكلفته وخصم مخزونه من وصفات أصنافه. ويُباع تحت كوده كصنف منيو (`MenuItem.ComboOfferId` و`SellAs`): نفس الرقم والاسم والسعر في قسم "Combos & offers"، فالمبيعات وتقرير Z ونقطة البيع تبيعه كأي صنف دون تعديل عليها، ولا يُعدّل من شاشة المنيو.
+
+> 📄 **`backend/src/Costing.Domain/Menu/ComboOffer.cs`** — 139 سطر
+
+```csharp
+using Costing.Domain.Common;
+using Costing.Domain.Recipes;
+
+namespace Costing.Domain.Menu;
+
+// A combo offer (عرض / وجبة مجمعة): dishes the kitchen already makes, sold together at a price of
+// their own, with no bill of materials of its own. Each item is an existing recipe and how many of
+// it one combo takes (two pizzas, a drink): what it costs is theirs, worked out whenever asked, and
+// a sale of it takes each recipe's stock as that many sales of the dish would (StockRequirements).
+//
+// Sold under its code, a menu number (as 6101 is): the menu carries it as an item (MenuItem with
+// ComboOfferId, in the Combos & offers category, at its price, available while it is active), so
+// the sales, the Z reports and a point of sale reading the menu sell it as any other item. Its name,
+// price and availability are the combo's, changed here and never on the Menu tab.
+//
+// Deleted, it is only marked so, with its menu item: past sales still name it.
+public sealed class ComboOffer : AggregateRoot
+{
+    public const int MaxItems = 20;
+    public const int MaxQuantity = 99;
+    public const string MenuCategory = "Combos & offers";
+    public const string MenuCategoryAr = "العروض والوجبات المجمعة";
+
+    private readonly List<ComboOfferItem> _items = [];
+
+    private ComboOffer() { }
+
+    public ComboOffer(Guid id, int code, string name, string? nameAr, decimal sellingPrice, bool isActive, IReadOnlyList<ComboPart> items)
+    {
+        if (code <= 0)
+            throw new DomainException("A combo's code is a menu number, 1 or more. · كود العرض رقم 1 أو أكثر.");
+        Id = id;
+        Code = code;
+        CreatedAtUtc = DateTime.UtcNow;
+        Change(name, nameAr, sellingPrice, isActive, items);
+    }
+
+    // The menu number it is sold under: its item's on the menu, on every sale and Z report.
+    public int Code { get; private set; }
+    public string Name { get; private set; } = string.Empty;
+    public string? NameAr { get; private set; }
+
+    // What the combo sells at, the dishes together (السعر بعد الخصم).
+    public decimal SellingPrice { get; private set; }
+
+    // On sale: its menu item available.
+    public bool IsActive { get; private set; }
+
+    public DateTime CreatedAtUtc { get; private set; }
+    public DateTime? DeletedAtUtc { get; private set; }
+    public string? DeletedBy { get; private set; }
+    public bool IsDeleted => DeletedAtUtc is not null;
+
+    public IReadOnlyCollection<ComboOfferItem> Items => _items.AsReadOnly();
+
+    // What it is made of, for the stock and the costs: each recipe and how many of it one combo takes.
+    public IReadOnlyList<ComboPart> Parts => _items.OrderBy(i => i.Position).Select(i => new ComboPart(i.RecipeId, i.Quantity)).ToList();
+
+    // Each recipe once, 1 to 99 of it, 20 at most, two dishes at least (two of one is a combo).
+    // A recipe kept keeps its line.
+    public void Change(string name, string? nameAr, decimal sellingPrice, bool isActive, IReadOnlyList<ComboPart> items)
+    {
+        if (IsDeleted)
+            throw new DomainException("This combo is deleted. · هذا العرض محذوف.");
+        if (sellingPrice <= 0)
+            throw new DomainException("A combo sells at more than nothing. · سعر العرض أكبر من صفر.");
+        if (items.Count == 0)
+            throw new DomainException("Add the dishes the combo is made of. · أضف أصناف العرض.");
+        if (items.Count > MaxItems)
+            throw new DomainException($"A combo has {MaxItems} dishes at most. · {MaxItems} صنفًا على الأكثر.");
+        if (items.Select(i => i.RecipeId).Distinct().Count() != items.Count)
+            throw new DomainException("Each dish goes on the combo once: set how many of it instead. · كل صنف مرة واحدة.");
+        if (items.Any(i => i.Quantity is < 1 or > MaxQuantity))
+            throw new DomainException($"Each dish is 1 to {MaxQuantity} in a combo. · الكمية من 1 إلى {MaxQuantity}.");
+        if (items.Sum(i => i.Quantity) < 2)
+            throw new DomainException("A combo is two dishes at least, or two of one. · العرض صنفان على الأقل.");
+
+        Name = MenuText.Name(name, "the combo");
+        NameAr = MenuText.Optional(nameAr, MenuItem.MaxNameLength);
+        SellingPrice = Math.Round(sellingPrice, 2, MidpointRounding.AwayFromZero);
+        IsActive = isActive;
+        _items.RemoveAll(i => items.All(x => x.RecipeId != i.RecipeId));
+        for (var position = 0; position < items.Count; position++)
+        {
+            var part = items[position];
+            if (_items.SingleOrDefault(i => i.RecipeId == part.RecipeId) is { } kept)
+                kept.Change(part.Quantity, position);
+            else
+                _items.Add(new ComboOfferItem(Id, part.RecipeId, part.Quantity, position));
+        }
+    }
+
+    public void Delete(string deletedBy)
+    {
+        if (IsDeleted)
+            return;
+        DeletedAtUtc = DateTime.UtcNow;
+        DeletedBy = deletedBy;
+        IsActive = false;
+    }
+}
+
+// A dish in a combo: an existing recipe (a menu item's, a size's, an add-on's or one off the menu),
+// how many of it one combo takes, and where it comes in the combo (as entered).
+public sealed class ComboOfferItem : Entity
+{
+    private ComboOfferItem() { }
+
+    internal ComboOfferItem(Guid comboOfferId, Guid recipeId, int quantity, int position)
+    {
+        ComboOfferId = comboOfferId;
+        RecipeId = recipeId;
+        Change(quantity, position);
+    }
+
+    public Guid ComboOfferId { get; private set; }
+    public Guid RecipeId { get; private set; }
+    public int Quantity { get; private set; }
+    public int Position { get; private set; }
+
+    internal void Change(int quantity, int position)
+    {
+        Quantity = quantity;
+        Position = position;
+    }
+}
+
+public interface IComboOfferRepository : IRepository<ComboOffer>
+{
+    // Deleted ones too.
+    Task<IReadOnlyList<ComboOffer>> GetAllAsync(CancellationToken cancellationToken = default);
+
+    // What the combos sold under these menu numbers are made of (deleted ones' too: a sale of one
+    // still takes its stock), by number.
+    Task<IReadOnlyDictionary<int, IReadOnlyList<ComboPart>>> GetPartsAsync(IReadOnlyCollection<int> menuItemIds, CancellationToken cancellationToken = default);
+
+    // Those not deleted with the recipe in them.
+    Task<IReadOnlyList<ComboOffer>> GetUsingRecipeAsync(Guid recipeId, CancellationToken cancellationToken = default);
+}
+```
+
+
+> 📄 **`backend/src/Costing.Domain/Sales/SalesReceipt.cs`** — 300 سطر
 
 ```csharp
 using Costing.Domain.Common;
@@ -2365,6 +2559,7 @@ public sealed class SalesReceipt : AggregateRoot
     public const int MaxReferenceLength = 64;
 
     private readonly List<SalesReceiptLine> _lines = [];
+    private readonly List<DiscountReason> _discountReasons = [];
 
     private SalesReceipt() { }
 
@@ -2383,7 +2578,8 @@ public sealed class SalesReceipt : AggregateRoot
         decimal refundedAmount,
         string? notes,
         SalesSource source,
-        string enteredBy)
+        string enteredBy,
+        IReadOnlyList<DiscountReason>? discountReasons = null)
     {
         if (!Enum.IsDefined(channel) || !Enum.IsDefined(paymentMethod))
             throw new DomainException("Say where the sale was made and how it was paid.");
@@ -2405,6 +2601,7 @@ public sealed class SalesReceipt : AggregateRoot
         PaymentMethod = paymentMethod;
         _lines.AddRange(lines);
         DiscountAmount = discountAmount;
+        _discountReasons.AddRange(Discounts.Clean(discountAmount, discountReasons));
         DeliveryFee = deliveryFee;
         TaxAmount = taxAmount;
         PointsAmount = pointsAmount;
@@ -2442,6 +2639,9 @@ public sealed class SalesReceipt : AggregateRoot
 
     // Off the items, before tax (a promotion).
     public decimal DiscountAmount { get; private set; }
+
+    // Why the discount was given: a day's sales summary from the POS carries its Z reports' reasons.
+    public IReadOnlyList<DiscountReason> DiscountReasons => _discountReasons.AsReadOnly();
 
     // Charged for delivery, after any delivery discount.
     public decimal DeliveryFee { get; private set; }
@@ -3500,10 +3700,11 @@ public interface IBreakageEntryRepository : IRepository<BreakageEntry>
 
 `SafeTransaction`: كل قيد في الخزنة. **صندوقان** (`CashFund`): الخزنة (`Safe`)، و **درج اليوم** (`DayRevenue`: إيراد يوم لم يُورَّد بعد؛ يمكن الدفع منه مباشرة). الأنواع: رصيد افتتاحي، تمويل، **توريد إيراد** (`RevenueTransfer`: كاش وفيزا **قبل الضريبة** + الضريبة فوقها)، إذن صرف مصروفات، سداد مورد، سداد فاتورة، سلفة موظف، صرف راتب، **سداد ضرائب** (`TaxPayment`)، و **صرف مسير رواتب** (`PayrollPayment`). و `Takings(...)` تفصل الضريبة من مبلغ شامل **بحيث يرجع الجمع للمبلغ المُدخل بالقرش** (الفصل 06).
 
-> 📄 **`backend/src/Costing.Domain/Treasury/SafeTransaction.cs`** — 450 سطر
+> 📄 **`backend/src/Costing.Domain/Treasury/SafeTransaction.cs`** — 467 سطر
 
 ```csharp
 using Costing.Domain.Common;
+using Costing.Domain.Sales;
 
 namespace Costing.Domain.Treasury;
 
@@ -3586,6 +3787,8 @@ public sealed class SafeTransaction : AggregateRoot
         SafeTransactionKind.InvoicePayment, SafeTransactionKind.SupplierPayment, SafeTransactionKind.EmployeeAdvance, SafeTransactionKind.SalaryPayment,
     ];
 
+    private readonly List<DiscountReason> _discountReasons = [];
+
     private SafeTransaction() { }
 
     public const int MaxNotesLength = 500;
@@ -3658,6 +3861,12 @@ public sealed class SafeTransaction : AggregateRoot
     // cash and card takings are what was collected after them. Why is in the notes.
     public decimal VoidsAmount { get; private set; }
 
+    // Taken off the menu prices on the day (الخصومات والعروض), and why: never collected, so never in
+    // the safe; the cash and card are what was collected after them. The P&L reads them to set the
+    // revenue the menu prices would have brought against what came in.
+    public decimal DiscountsAmount { get; private set; }
+    public IReadOnlyList<DiscountReason> DiscountReasons => _discountReasons.AsReadOnly();
+
     // All a day's takings collected (إجمالي الوارد): cash, card and the tax on them; and its net
     // sales, the cash and card before tax: the restaurant's revenue. Amount is what reached the
     // safe: all of it less what had been paid straight out of the day's takings by then (PaidOut).
@@ -3703,11 +3912,14 @@ public sealed class SafeTransaction : AggregateRoot
     // on them. All of it goes into the safe, less paidOut, what was paid straight out of the day's
     // takings before they were entered; when that is more, the rest comes out of the safe. With
     // taxPercent instead of tax, the cash and card include tax at that rate: it is worked out and
-    // taken off them (Takings). voids: voided and refunded on the day, said.
+    // taken off them (Takings). voids: voided and refunded on the day, said. discounts: taken off the
+    // menu prices, and why (Discounts.Clean), said and never collected.
     public static SafeTransaction RevenueTransfer(
         Guid id, decimal cash, DateOnly date, DateOnly revenueDate, string? notes, string recordedBy, string? approvedBy = null,
-        decimal? taxPercent = null, decimal paidOut = 0, decimal card = 0, decimal? tax = null, decimal voids = 0)
+        decimal? taxPercent = null, decimal paidOut = 0, decimal card = 0, decimal? tax = null, decimal voids = 0,
+        decimal discounts = 0, IReadOnlyList<DiscountReason>? discountReasons = null)
     {
+        var reasons = Discounts.Clean(discounts, discountReasons);
         if (revenueDate > date)
             throw new DomainException("A day's takings are moved into the safe on that day or after it.");
         if (paidOut < 0)
@@ -3725,7 +3937,9 @@ public sealed class SafeTransaction : AggregateRoot
             IncludesTax = (taxPercent is not null && tax is null) || collected > 0,
             TaxPercent = tax is null ? taxPercent : null,
             VoidsAmount = Round(voids),
+            DiscountsAmount = Round(discounts),
         };
+        entry._discountReasons.AddRange(reasons);
         return entry;
     }
 
@@ -3892,11 +4106,12 @@ public sealed class SafeTransaction : AggregateRoot
         VoidedAtUtc = DateTime.UtcNow;
         VoidedBy = voidedBy;
         var fund = Fund == CashFund.DayRevenue && takingsInSafe ? CashFund.Safe : Fund;
-        return new SafeTransaction(reversalId, Kind, fund, -Amount, today, "Voided", voidedBy, null)
+        var reversal = new SafeTransaction(reversalId, Kind, fund, -Amount, today, "Voided", voidedBy, null)
         {
             GrossAmount = -GrossAmount,
             CardAmount = -CardAmount,
             VoidsAmount = -VoidsAmount,
+            DiscountsAmount = -DiscountsAmount,
             IncludesTax = IncludesTax,
             TaxPercent = TaxPercent,
             TaxAmount = -TaxAmount,
@@ -3910,6 +4125,8 @@ public sealed class SafeTransaction : AggregateRoot
             PayrollRunId = PayrollRunId,
             ReversalOf = Id,
         };
+        reversal._discountReasons.AddRange(Discounts.Negated(_discountReasons));
+        return reversal;
     }
 
     private static decimal Positive(decimal amount) =>
@@ -4058,12 +4275,13 @@ NetCashInTill      = العُهدة + CashSalesCollected − CashPaidOut      (�
 ExpectedIntoSafe   = إجمالي الإيراد − CashPaidOut                    (ما يجب أن يصل الخزنة)
 ```
 
-> 📄 **`backend/src/Costing.Domain/EndOfDay/EndOfDayReport.cs`** — 485 سطر
+> 📄 **`backend/src/Costing.Domain/EndOfDay/EndOfDayReport.cs`** — 499 سطر
 
 ```csharp
 using System.Globalization;
 using Costing.Domain.Common;
 using Costing.Domain.Purchases;
+using Costing.Domain.Sales;
 
 namespace Costing.Domain.EndOfDay;
 
@@ -4130,6 +4348,7 @@ public sealed class EndOfDayReport : AggregateRoot
 
     private readonly List<EndOfDayInvoice> _invoices = [];
     private readonly List<EndOfDayPayout> _payouts = [];
+    private readonly List<DiscountReason> _discountReasons = [];
 
     private EndOfDayReport() { }
 
@@ -4152,6 +4371,11 @@ public sealed class EndOfDayReport : AggregateRoot
     public decimal? TaxAmount { get; private set; }
     public decimal? VoidsAmount { get; private set; }
     public string? Notes { get; private set; }
+
+    // Discounts and promos (الخصومات والعروض) the Z report gives, and why: taken off the menu prices
+    // before the money was collected, so never in the drawer, and nothing in the cash expected below.
+    public decimal? DiscountsAmount { get; private set; }
+    public IReadOnlyList<DiscountReason> DiscountReasons => _discountReasons.AsReadOnly();
 
     // The cash the drawer opened the day with (العهدة / الفكة).
     public decimal? OpeningFloat { get; private set; }
@@ -4205,7 +4429,8 @@ public sealed class EndOfDayReport : AggregateRoot
     public decimal CashPaidOut => TotalOf(EndOfDayInvoiceKind.Cash) + TotalOf(EndOfDayPayoutKind.SupplierPayment) + TotalOf(EndOfDayPayoutKind.EmployeeAdvance);
 
     // The cash that should be in the drawer at the close (الصافي الفعلي المتبقي في الكاش): the float
-    // and the cash sales, less what was paid out of it. The Visa never reaches the drawer.
+    // and the cash sales, less what was paid out of it. The Visa never reaches the drawer, and the
+    // discounts never do: they were never collected (the cash is after them).
     public decimal NetCashInTill => (OpeningFloat ?? 0) + CashSalesCollected - CashPaidOut;
 
     // What should reach the safe: everything the day took in, less all that was paid out of it, as
@@ -4215,9 +4440,12 @@ public sealed class EndOfDayReport : AggregateRoot
     public EndOfDayInvoice Invoice(Guid invoiceId) =>
         _invoices.SingleOrDefault(i => i.Id == invoiceId) ?? throw new NotFoundException("End-of-day invoice", invoiceId);
 
-    public void RecordSales(decimal? cash, decimal? card, decimal? tax, decimal? voids, string? notes, string by, decimal? openingFloat = null)
+    public void RecordSales(
+        decimal? cash, decimal? card, decimal? tax, decimal? voids, string? notes, string by, decimal? openingFloat = null,
+        decimal? discounts = null, IReadOnlyList<DiscountReason>? discountReasons = null)
     {
         EnsureDraft();
+        var reasons = Discounts.Clean(discounts ?? 0, discountReasons);
         if (new[] { cash, card, tax, voids }.Any(n => n < 0))
             throw new DomainException("The cash, Visa, tax and voids are zero or more. · المبالغ صفر أو أكثر.");
         if (openingFloat < 0)
@@ -4229,6 +4457,9 @@ public sealed class EndOfDayReport : AggregateRoot
         CardAmount = Money(card);
         TaxAmount = Money(tax);
         VoidsAmount = Money(voids);
+        DiscountsAmount = Money(discounts);
+        _discountReasons.Clear();
+        _discountReasons.AddRange(reasons);
         OpeningFloat = Money(openingFloat);
         Notes = cleaned;
         Touch(by);
@@ -4545,6 +4776,67 @@ public interface IEndOfDayPhotoStore
     Task<byte[]?> GetAsync(Guid id, CancellationToken cancellationToken = default);
 
     void Remove(Guid id);
+}
+```
+
+
+**الخصومات والعروض (`Discounts`):** ما خُصم من أسعار المنيو قبل التحصيل، وأسبابه (`DiscountReason`: السبب والمبلغ وعدد الفواتير) مخزنة JSON (`HasDiscountReasons`). تُحفظ في تقفيل اليوم والتوريد (`SafeTransaction`) وملخص المبيعات ويوم نقطة البيع. لا تدخل الدرج ولا الخزنة: `NetCashInTill` لا يقرأها أصلًا، والإلغاء يعكسها بأسبابها (`Negated`). `Clean` يوحد السبب المكرر ويرفض أسبابًا أكبر من الخصومات أو بلا خصم.
+
+> 📄 **`backend/src/Costing.Domain/Sales/Discounts.cs`** — 53 سطر
+
+```csharp
+using Costing.Domain.Common;
+
+namespace Costing.Domain.Sales;
+
+// Why a day's discounts were given (أسباب الخصومات): "Loyalty", "Staff", "Manager promo", with what
+// each took off the menu prices (0 when only the reason is known) and on how many bills.
+public sealed record DiscountReason(string Reason, decimal Amount = 0, int Count = 0);
+
+// A day's discounts and promos (الخصومات والعروض): what was taken off the menu prices before the cash
+// and card were collected. Never collected, so never in the till or the safe; the P&L reads it to
+// set the revenue the menu prices would have brought against what was collected.
+public static class Discounts
+{
+    public const int MaxReasons = 20;
+    public const int MaxReasonLength = 60;
+
+    // The reasons checked and tidied: none blank or long, each once (the same reason in any case
+    // added together, the first spelling kept), at most 20, amounts and counts zero or more, and
+    // their amounts together no more than the day's discounts. None without a discount.
+    public static IReadOnlyList<DiscountReason> Clean(decimal discounts, IEnumerable<DiscountReason>? reasons)
+    {
+        if (discounts < 0)
+            throw new DomainException("The discounts are zero or more. · الخصومات صفر أو أكثر.");
+        var given = (reasons ?? []).Where(r => r is not null).ToList();
+        foreach (var reason in given)
+        {
+            if (string.IsNullOrWhiteSpace(reason.Reason))
+                throw new DomainException("Name each discount's reason. · اكتب سبب كل خصم.");
+            if (reason.Reason.Trim().Length > MaxReasonLength)
+                throw new DomainException($"Keep each reason under {MaxReasonLength} characters. · السبب {MaxReasonLength} حرفًا على الأكثر.");
+            if (reason.Amount < 0 || reason.Count < 0)
+                throw new DomainException("A reason's amount and count are zero or more. · المبلغ والعدد صفر أو أكثر.");
+        }
+
+        var cleaned = given
+            .GroupBy(r => r.Reason.Trim(), StringComparer.OrdinalIgnoreCase)
+            .Select(g => new DiscountReason(g.First().Reason.Trim(), Money(g.Sum(r => r.Amount)), g.Sum(r => r.Count)))
+            .ToList();
+        if (cleaned.Count > MaxReasons)
+            throw new DomainException($"At most {MaxReasons} discount reasons a day. · {MaxReasons} سببًا على الأكثر.");
+        if (cleaned.Count > 0 && discounts == 0)
+            throw new DomainException("Enter the discounts the reasons are for. · أدخل قيمة الخصومات.");
+        if (cleaned.Sum(r => r.Amount) > Money(discounts))
+            throw new DomainException("The reasons add up to more than the discounts. · مجموع الأسباب أكبر من الخصومات.");
+        return cleaned;
+    }
+
+    // The same reasons taken back: what a voided day's reversal carries.
+    public static IReadOnlyList<DiscountReason> Negated(IEnumerable<DiscountReason> reasons) =>
+        reasons.Select(r => r with { Amount = -r.Amount, Count = -r.Count }).ToList();
+
+    public static decimal Money(decimal value) => Math.Round(value, 2, MidpointRounding.AwayFromZero);
 }
 ```
 
@@ -4906,7 +5198,7 @@ public static class DatabaseConnection
 - `ConfigureConventions`: كل `decimal` بدقة (10,2) افتراضيًا (والكميات تتجاوزه صراحة بـ `IsQuantity()`).
 - `SaveChangesAsync`: `TouchRootsOfChangedChildren` (تعديل ابن يعلّم أباه معدّلًا ليُفحص `xmin` الخاص به)، وترجمة أخطاء EF/Npgsql (تزامن، تكرار فريد، مفتاح أجنبي) إلى `ConflictException`، فلا تعرف الطبقات العليا شيئًا عن EF.
 
-> 📄 **`backend/src/Costing.Infrastructure/Persistence/CostingDbContext.cs`** — 168 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Persistence/CostingDbContext.cs`** — 169 سطر
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
@@ -4955,6 +5247,7 @@ public sealed class CostingDbContext(DbContextOptions<CostingDbContext> options)
 
     public DbSet<MenuCategory> MenuCategories => Set<MenuCategory>();
     public DbSet<MenuItem> MenuItems => Set<MenuItem>();
+    public DbSet<ComboOffer> ComboOffers => Set<ComboOffer>();
     public DbSet<MenuItemVariant> MenuItemVariants => Set<MenuItemVariant>();
     public DbSet<AddOn> AddOns => Set<AddOn>();
     public DbSet<SalesReceipt> SalesReceipts => Set<SalesReceipt>();
@@ -5109,15 +5402,37 @@ internal sealed class CostingDbContextFactory : IDesignTimeDbContextFactory<Cost
 
 `IsQuantity()` (دقة الكميات) و `IsEnumName()`:
 
-> 📄 **`backend/src/Costing.Infrastructure/Persistence/Configurations/PropertyBuilderExtensions.cs`** — 24 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Persistence/Configurations/PropertyBuilderExtensions.cs`** — 46 سطر
 
 ```csharp
+using System.Text.Json;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.ChangeTracking;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
+using Costing.Domain.Sales;
 
 namespace Costing.Infrastructure.Persistence.Configurations;
 
 internal static class PropertyBuilderExtensions
 {
+    // A day's discount reasons (أسباب الخصومات), kept as JSON in the entity's _discountReasons, read
+    // and written whole; the property itself is not mapped.
+    public static void HasDiscountReasons<TEntity>(this EntityTypeBuilder<TEntity> builder) where TEntity : class
+    {
+        builder.Ignore("DiscountReasons");
+        builder.Property<List<DiscountReason>>("_discountReasons")
+            .HasColumnName("DiscountReasons")
+            .HasColumnType("jsonb")
+            .HasConversion(
+                reasons => JsonSerializer.Serialize(reasons, (JsonSerializerOptions?)null),
+                json => JsonSerializer.Deserialize<List<DiscountReason>>(json, (JsonSerializerOptions?)null) ?? new List<DiscountReason>(),
+                new ValueComparer<List<DiscountReason>>(
+                    (a, b) => a!.SequenceEqual(b!),
+                    reasons => reasons.Aggregate(0, (hash, reason) => HashCode.Combine(hash, reason.GetHashCode())),
+                    reasons => reasons.ToList()))
+            .HasDefaultValueSql("'[]'::jsonb");
+    }
+
     // Stock quantities are in grams, millilitres or pieces, and a recipe can call for 2.5 g.
     // Money's two decimal places would round that away.
     public static PropertyBuilder<decimal> IsQuantity(this PropertyBuilder<decimal> property) =>
@@ -5141,7 +5456,7 @@ internal static class PropertyBuilderExtensions
 
 `InventoryConfigurations.cs`: الخامات، الوصفات، المخزون، الجرد، المشتريات، الخزنة، الموردون، الموافقات. لاحظ: **وصفة فعّالة واحدة لكل هدف** (فهرس فريد مرشّح `NULLS NOT DISTINCT` على `(TargetKind, CatalogItemId, VariantId)`)، فهرس الحركات الفريد، خامة واحدة لكل بند جرد ولكل بند فاتورة، **طلب موافقة معلّق واحد لكل سجل** (فهرس فريد على `RecordId` بشرط `Status = 'Pending'`)، قيد عكسي واحد لكل قيد خزنة، `Cascade` على البنود و `Restrict` على المراجع، وفهرس `PayrollRunId` على قيود الخزنة.
 
-> 📄 **`backend/src/Costing.Infrastructure/Persistence/Configurations/InventoryConfigurations.cs`** — 462 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Persistence/Configurations/InventoryConfigurations.cs`** — 464 سطر
 
 ```csharp
 using System.Text.Json;
@@ -5363,6 +5678,8 @@ internal sealed class SafeTransactionConfiguration : IEntityTypeConfiguration<Sa
         builder.Property(t => t.GrossAmount).HasPrecision(18, 2);
         builder.Property(t => t.CardAmount).HasPrecision(18, 2);
         builder.Property(t => t.VoidsAmount).HasPrecision(18, 2);
+        builder.Property(t => t.DiscountsAmount).HasPrecision(18, 2);
+        builder.HasDiscountReasons();
         builder.Property(t => t.Notes).HasMaxLength(SafeTransaction.MaxNotesLength);
         builder.Property(t => t.RecordedBy).HasMaxLength(200);
         builder.Property(t => t.ApprovedBy).HasMaxLength(200);
@@ -5611,7 +5928,7 @@ internal sealed class ProductionOrderLineConfiguration : IEntityTypeConfiguratio
 
 `MenuSalesConfigurations.cs`: رقم الصنف **يُعطى ولا يُولَّد** (هو كوده في التقارير)، والمبيعات، والموظفون، و `UserTabAccess`.
 
-> 📄 **`backend/src/Costing.Infrastructure/Persistence/Configurations/MenuSalesConfigurations.cs`** — 117 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Persistence/Configurations/MenuSalesConfigurations.cs`** — 149 سطر
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
@@ -5649,6 +5966,37 @@ internal sealed class MenuItemConfiguration : IEntityTypeConfiguration<MenuItem>
         builder.HasIndex(m => m.Category);
         builder.HasMany(m => m.Variants).WithOne().HasForeignKey(v => v.MenuItemId).OnDelete(DeleteBehavior.Cascade);
         builder.Navigation(m => m.Variants).AutoInclude();
+        builder.Ignore(m => m.IsCombo);
+        builder.HasOne<ComboOffer>().WithMany().HasForeignKey(m => m.ComboOfferId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasIndex(m => m.ComboOfferId).IsUnique().HasFilter("\"ComboOfferId\" IS NOT NULL");
+    }
+}
+
+// A combo offer and its dishes (recipes). Its code is a menu number: one combo to a number.
+internal sealed class ComboOfferConfiguration : IEntityTypeConfiguration<ComboOffer>
+{
+    public void Configure(EntityTypeBuilder<ComboOffer> builder)
+    {
+        builder.ToTable("ComboOffers", CostingDbContext.CostingSchema);
+        builder.Property(c => c.Name).HasMaxLength(MenuItem.MaxNameLength);
+        builder.Property(c => c.NameAr).HasMaxLength(MenuItem.MaxNameLength);
+        builder.Property(c => c.SellingPrice).HasPrecision(18, 2);
+        builder.Property(c => c.DeletedBy).HasMaxLength(200);
+        builder.HasIndex(c => c.Code).IsUnique();
+        builder.Ignore(c => c.IsDeleted);
+        builder.Ignore(c => c.Parts);
+        builder.HasMany(c => c.Items).WithOne().HasForeignKey(i => i.ComboOfferId).OnDelete(DeleteBehavior.Cascade);
+        builder.Navigation(c => c.Items).HasField("_items").UsePropertyAccessMode(PropertyAccessMode.Field).AutoInclude();
+    }
+}
+
+internal sealed class ComboOfferItemConfiguration : IEntityTypeConfiguration<ComboOfferItem>
+{
+    public void Configure(EntityTypeBuilder<ComboOfferItem> builder)
+    {
+        builder.ToTable("ComboOfferItems", CostingDbContext.CostingSchema);
+        builder.HasOne<Domain.Recipes.Recipe>().WithMany().HasForeignKey(i => i.RecipeId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasIndex(i => new { i.ComboOfferId, i.RecipeId }).IsUnique();
     }
 }
 
@@ -5692,6 +6040,7 @@ internal sealed class SalesReceiptConfiguration : IEntityTypeConfiguration<Sales
         builder.Ignore(r => r.IsOnline);
         builder.Ignore(r => r.BilledSubtotal);
         builder.Ignore(r => r.IsVoided);
+        builder.HasDiscountReasons();
         builder.OwnsMany(r => r.Lines, line =>
         {
             line.ToTable("SalesReceiptLines", CostingDbContext.CostingSchema);
@@ -5736,7 +6085,7 @@ internal sealed class UserTabAccessConfiguration : IEntityTypeConfiguration<User
 
 `EndOfDayConfigurations.cs`: تقرير واحد لكل يوم تجاري (فهرس فريد على التاريخ)، والصور في جدول منفصل.
 
-> 📄 **`backend/src/Costing.Infrastructure/Persistence/Configurations/EndOfDayConfigurations.cs`** — 91 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Persistence/Configurations/EndOfDayConfigurations.cs`** — 93 سطر
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
@@ -5758,6 +6107,8 @@ internal sealed class EndOfDayReportConfiguration : IEntityTypeConfiguration<End
         builder.Property(d => d.CardAmount).HasPrecision(18, 2);
         builder.Property(d => d.TaxAmount).HasPrecision(18, 2);
         builder.Property(d => d.VoidsAmount).HasPrecision(18, 2);
+        builder.Property(d => d.DiscountsAmount).HasPrecision(18, 2);
+        builder.HasDiscountReasons();
         builder.Property(d => d.OpeningFloat).HasPrecision(18, 2);
         builder.Property(d => d.Notes).HasMaxLength(EndOfDayReport.MaxNotes);
         builder.Property(d => d.SalesPhotoFileName).HasMaxLength(200);
@@ -6173,7 +6524,7 @@ internal sealed class FinancialSettingsConfiguration : IEntityTypeConfiguration<
 
 قراءات العرض `AsNoTracking`، وقراءات التعديل متتبَّعة؛ ودوال بأسماء دقيقة بدل `IQueryable` يتسرب للأعلى.
 
-> 📄 **`backend/src/Costing.Infrastructure/Persistence/InventoryRepositories.cs`** — 460 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Persistence/InventoryRepositories.cs`** — 463 سطر
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
@@ -6227,6 +6578,9 @@ internal sealed class RecipeRepository(CostingDbContext db) : IRecipeRepository
 
     public async Task<IReadOnlyList<Recipe>> GetAllAsync(CancellationToken cancellationToken = default) =>
         await WithIngredients.ToListAsync(cancellationToken);
+
+    public async Task<IReadOnlyList<Recipe>> GetByIdsAsync(IReadOnlyCollection<Guid> ids, CancellationToken cancellationToken = default) =>
+        await WithIngredients.Where(r => ids.Contains(r.Id)).ToListAsync(cancellationToken);
 
     // The ones sales go by: not deleted, and linked to the menu.
     private IQueryable<Recipe> Active => WithIngredients.Where(r => r.DeletedAtUtc == null && r.CatalogItemId != null);
@@ -6639,7 +6993,7 @@ internal sealed class BreakageEntryRepository(CostingDbContext db) : IBreakageEn
 ```
 
 
-> 📄 **`backend/src/Costing.Infrastructure/Persistence/MenuSalesRepositories.cs`** — 114 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Persistence/MenuSalesRepositories.cs`** — 133 سطر
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
@@ -6755,6 +7109,25 @@ internal sealed class FinancialTaxRate(CostingDbContext db) : Costing.Applicatio
     public async Task<decimal> PercentAsync(CancellationToken cancellationToken) =>
         (await db.FinancialSettings.AsNoTracking().SingleOrDefaultAsync(cancellationToken))?.TaxPercent
         ?? throw new Costing.Domain.Common.DomainException("Set the tax rate on Financials → Tax & service first.");
+}
+
+internal sealed class ComboOfferRepository(CostingDbContext db) : IComboOfferRepository
+{
+    public Task<ComboOffer?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default) =>
+        db.ComboOffers.SingleOrDefaultAsync(c => c.Id == id, cancellationToken);
+
+    public void Add(ComboOffer aggregate) => db.ComboOffers.Add(aggregate);
+
+    public async Task<IReadOnlyList<ComboOffer>> GetAllAsync(CancellationToken cancellationToken = default) =>
+        await db.ComboOffers.OrderBy(c => c.Code).ToListAsync(cancellationToken);
+
+    public async Task<IReadOnlyDictionary<int, IReadOnlyList<Domain.Recipes.ComboPart>>> GetPartsAsync(
+        IReadOnlyCollection<int> menuItemIds, CancellationToken cancellationToken = default) =>
+        (await db.ComboOffers.AsNoTracking().Where(c => menuItemIds.Contains(c.Code)).ToListAsync(cancellationToken))
+            .ToDictionary(c => c.Code, c => c.Parts);
+
+    public async Task<IReadOnlyList<ComboOffer>> GetUsingRecipeAsync(Guid recipeId, CancellationToken cancellationToken = default) =>
+        await db.ComboOffers.Where(c => c.DeletedAtUtc == null && c.Items.Any(i => i.RecipeId == recipeId)).ToListAsync(cancellationToken);
 }
 ```
 
@@ -6886,6 +7259,7 @@ dotnet ef migrations add <Name> \
 | 10 | `20261112143520_AddBlindAndSpotCounts` | Add Blind And Spot Counts |
 | 11 | `20261115215556_AddBurdenedPlateCost` | Add Burdened Plate Cost |
 | 12 | `20261116112941_AddSupplierTermsAndStaffMeals` | Add Supplier Terms And Staff Meals |
+| 13 | `20261116193324_AddCombosAndDiscounts` | Add Combos And Discounts |
 
 
 ### 14.1 `UnifySafeTakings`: migration تحوّل بيانات لا شكلًا فقط

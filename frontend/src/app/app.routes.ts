@@ -44,6 +44,10 @@ const costingChildren: Routes = [
         loadComponent: () => import('./features/costing/prep-items-page').then((m) => m.PrepItemsPage),
       },
       {
+        path: 'combos',
+        loadComponent: () => import('./features/costing/combos-page').then((m) => m.CombosPage),
+      },
+      {
         // 'new' for one not saved yet.
         path: 'prep/:id',
         loadComponent: () => import('./features/costing/prep-item-page').then((m) => m.PrepItemPage),

@@ -1,6 +1,7 @@
 import { HttpErrorResponse } from '@angular/common/http';
 import { TestBed } from '@angular/core/testing';
 import { MAT_DIALOG_DATA, MatDialog, MatDialogRef } from '@angular/material/dialog';
+import { provideRouter } from '@angular/router';
 import { of, throwError } from 'rxjs';
 import { AuthService } from '../../core/auth/auth.service';
 import { Menu, MenuItem, MenuSalesApi } from '../../core/costing/menu-sales.api';
@@ -39,6 +40,7 @@ describe('the menu', () => {
   async function render(canChange = true) {
     TestBed.configureTestingModule({
       providers: [
+        provideRouter([]),
         { provide: MenuSalesApi, useValue: api },
         { provide: AuthService, useValue: { me: () => null, can: () => canChange } },
         { provide: NotifyService, useValue: notify },
@@ -118,6 +120,16 @@ describe('the menu', () => {
 
     expect(el.querySelectorAll('tbody button')).toHaveLength(0);
     expect([...el.querySelectorAll('.toolbar > button')].map(text)).toEqual([]);
+  });
+
+  it('marks a combo offer and sends its changes to Recipes, never changing it here', async () => {
+    const duo = item({ id: 9001, name: 'Burger duo', category: 'Combos & offers', price: 250, comboOfferId: 'duo' });
+    api.menu.mockReturnValue(of({ ...menu, items: [...menu.items, duo] }));
+    const { el } = await render();
+    const row = [...el.querySelectorAll('tbody tr')].find((r) => text(r).includes('Burger duo'))!;
+    expect(text(row)).toContain('Comboعرض مجمع');
+    expect(row.querySelectorAll('button')).toHaveLength(0);
+    expect(row.querySelector('a')!.getAttribute('href')).toBe('/costing/recipes/combos');
   });
 });
 

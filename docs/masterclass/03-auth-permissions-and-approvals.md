@@ -1536,7 +1536,7 @@ internal sealed class GetApprovalPreviewHandler(IApprovalRequestRepository reque
 
 **في الدفاتر لا يُحذف شيء مُرحّل؛ يُلغى (Void).** حذف فاتورة مرحّلة = حركات مخزون عكسية بنفس تكلفتها + عكس قيد الخزنة أو حساب المورد. حذف قيد خزنة = قيد عكسي بتاريخ اليوم. `DeletionTargets` يعرف لكل وحدة كيف "يلغي" سجلها، و `RequestDeletionCommand`: من يملك القرار يلغي فورًا (ويُسجل كموافَق منه)، وغيره يطلب. نقطة النهاية `POST api/inventory/deletion-requests` في `InventoryController` (الفصل 05).
 
-> 📄 **`backend/src/Costing.Application/Approvals/Deletions.cs`** — 383 سطر
+> 📄 **`backend/src/Costing.Application/Approvals/Deletions.cs`** — 385 سطر
 
 ```csharp
 using System.Globalization;
@@ -1581,7 +1581,8 @@ internal sealed class DeletionTargets(
     TreasuryWriter treasury,
     IRecordDescriptions descriptions,
     ISalesReceiptRepository sales,
-    IBreakageEntryRepository breakage)
+    IBreakageEntryRepository breakage,
+    Costing.Domain.Menu.IComboOfferRepository combos)
 {
     private static readonly CultureInfo Invariant = CultureInfo.InvariantCulture;
 
@@ -1702,6 +1703,7 @@ internal sealed class DeletionTargets(
         var recipe = await recipes.GetByIdAsync(id, cancellationToken) ?? throw new NotFoundException(nameof(Recipe), id);
         if (recipe.IsDeleted)
             throw new DomainException("This recipe has already been deleted.");
+        await Costing.Application.Recipes.RecipeWriting.EnsureNotInComboAsync(combos, recipe, cancellationToken);
         return recipe;
     }
 

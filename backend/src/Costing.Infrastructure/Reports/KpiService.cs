@@ -115,7 +115,30 @@ public sealed record KpiReport(
     IReadOnlyList<ItemProfit> Items,
     // Sold with no recipe: in the sales at no ingredient cost, so the cost % reads low.
     int ItemsWithoutRecipe,
-    decimal SalesWithoutRecipe);
+    decimal SalesWithoutRecipe,
+    // What the month's discounts and promos did to the margin.
+    DiscountImpact? Discounts = null);
+
+// Promos and discounts against the margin (أثر الخصومات وتآكل الهامش), from the month's takings:
+//
+//   Standard gross revenue = net sales + discounts        (what the menu prices would have brought)
+//   Actual net revenue     = net sales                    (the cash and card collected, before tax)
+//   Standard food cost %   = theoretical cost ÷ standard gross revenue × 100
+//   Actual food cost %     = theoretical cost ÷ actual net revenue × 100
+//   Margin erosion         = actual food cost % − standard food cost %, in points
+//
+// The theoretical cost is the recipes' cost of what was sold (food and drinks). Reasons: each with
+// what it took off and on how many bills, the largest first; a voided day's taken back out.
+public sealed record DiscountImpact(
+    decimal Discounts,
+    decimal ActualNetRevenue,
+    decimal StandardGrossRevenue,
+    decimal? DiscountSharePercent,
+    decimal TheoreticalCost,
+    decimal? StandardFoodCostPercent,
+    decimal? ActualFoodCostPercent,
+    decimal? ErosionPoints,
+    IReadOnlyList<DiscountReason> Reasons);
 
 // Pillar 4: the template's financial KPIs for a business month. Sales and recipe costs come
 // from the till; losses from the stock ledger; wages, hours and overheads from what the manager
@@ -290,7 +313,27 @@ public sealed class KpiService(CostingDbContext db, IBusinessCalendar clock, Cos
                 Money(takings.Sum(t => t.TaxAmount)), Money(takings.Sum(t => t.VoidsAmount)),
                 takingsDays, Money(soldAtMenuPrices), staffMeals, hospitality, tasting),
             ToDto(expenses), kpis, items,
-            withoutRecipe.Count, withoutRecipe.Sum(r => r.NetSales));
+            withoutRecipe.Count, withoutRecipe.Sum(r => r.NetSales),
+            Erosion(takings, Money(revenueTotal), Money(foodRecipe + drinksRecipe)));
+    }
+
+    // The month's discounts against its revenue and its theoretical cost (DiscountImpact).
+    internal static DiscountImpact Erosion(IReadOnlyCollection<SafeTransaction> takings, decimal netRevenue, decimal theoreticalCost)
+    {
+        var discounts = Money(takings.Sum(t => t.DiscountsAmount));
+        var standard = Money(netRevenue + discounts);
+        decimal? Share(decimal part, decimal whole) => whole > 0 ? Percent(part / whole) : null;
+        var (standardPercent, actualPercent) = (Share(theoreticalCost, standard), Share(theoreticalCost, netRevenue));
+        var reasons = takings.SelectMany(t => t.DiscountReasons)
+            .GroupBy(r => r.Reason.Trim(), StringComparer.OrdinalIgnoreCase)
+            .Select(g => new DiscountReason(g.First().Reason.Trim(), Money(g.Sum(r => r.Amount)), g.Sum(r => r.Count)))
+            .Where(r => r.Amount != 0 || r.Count != 0)
+            .OrderByDescending(r => r.Amount).ThenByDescending(r => r.Count).ThenBy(r => r.Reason)
+            .ToList();
+        return new DiscountImpact(
+            discounts, netRevenue, standard, Share(discounts, standard), theoreticalCost, standardPercent, actualPercent,
+            actualPercent is { } actual && standardPercent is { } std ? Math.Round(actual - std, 1, MidpointRounding.AwayFromZero) : null,
+            reasons);
     }
 
     public async Task<MonthlyExpensesDto> SaveExpensesAsync(int year, int month, MonthlyExpensesDto request, string? by, CancellationToken cancellationToken)

@@ -2,8 +2,10 @@ using MediatR;
 using Costing.Domain.Common;
 using Costing.Application.Approvals;
 using Costing.Application.Common;
+using Costing.Application.Menu;
 using Costing.Application.RawMaterials;
 using Costing.Domain.Approvals;
+using Costing.Domain.Menu;
 using Costing.Domain.RawMaterials;
 using Costing.Domain.Recipes;
 
@@ -60,6 +62,20 @@ internal static class RecipeWriting
             recipe.SetIngredient(byId[ingredient.RawMaterialId], ingredient.Quantity, ingredient.YieldPercent);
     }
 
+    // A combo's number sells by its dishes, never by a recipe of its own.
+    public static async Task EnsureNotComboAsync(this IMenuRepository menu, RecipeTarget? target, CancellationToken cancellationToken)
+    {
+        if (target is { Kind: RecipeTargetKind.MenuItem } t && await menu.GetItemAsync(t.CatalogItemId, cancellationToken) is { IsCombo: true } combo)
+            throw new DomainException($"{combo.Name} is a combo offer: it is costed and sold by the dishes in it, not a recipe. · العرض المجمع يُحسب من أصنافه.");
+    }
+
+    // Not while a combo has it: the combo would sell a dish that is gone.
+    public static async Task EnsureNotInComboAsync(this IComboOfferRepository combos, Recipe recipe, CancellationToken cancellationToken)
+    {
+        if (await combos.GetUsingRecipeAsync(recipe.Id, cancellationToken) is { Count: > 0 } inCombos)
+            throw new DomainException(ComboRules.InCombo(recipe.Name ?? "This recipe", inCombos.Select(c => c.Name)));
+    }
+
     // One active recipe per menu item: the one it sells by.
     public static async Task EnsureFreeAsync(this IRecipeRepository recipes, RecipeTarget? target, Guid recipeId, CancellationToken cancellationToken)
     {
@@ -90,12 +106,14 @@ public sealed record SetRecipeCommand(
     bool CanDelete = true) : IRequest<RecipeDto?>;
 
 internal sealed class SetRecipeHandler(
-    IRecipeRepository recipes, IRawMaterialRepository materials, IApprovalRequestRepository approvals, IUnitOfWork unitOfWork)
+    IRecipeRepository recipes, IRawMaterialRepository materials, IApprovalRequestRepository approvals, IMenuRepository menu, IComboOfferRepository combos,
+    IUnitOfWork unitOfWork)
     : IRequestHandler<SetRecipeCommand, RecipeDto?>
 {
     public async Task<RecipeDto?> Handle(SetRecipeCommand request, CancellationToken cancellationToken)
     {
         var target = new RecipeTarget(request.TargetKind, request.CatalogItemId, request.VariantId);
+        await menu.EnsureNotComboAsync(target, cancellationToken);
         var recipe = await recipes.GetByTargetAsync(target, cancellationToken);
         if (recipe is not null)
             await approvals.EnsureNotPendingAsync(recipe.Id, cancellationToken);
@@ -106,6 +124,7 @@ internal sealed class SetRecipeHandler(
             {
                 if (!request.CanDelete)
                     throw new DomainException("Deleting a recipe goes to a manager: delete it from the recipes list to ask.");
+                await combos.EnsureNotInComboAsync(recipe, cancellationToken);
                 recipe.Delete(request.StaffName);
                 await unitOfWork.SaveChangesAsync(cancellationToken);
             }
@@ -151,6 +170,7 @@ public sealed record SaveRecipeCommand(
 
 internal sealed class SaveRecipeHandler(
     IRecipeRepository recipes,
+    IMenuRepository menu,
     IRecipeCategoryRepository categories,
     IRawMaterialRepository materials,
     IApprovalRequestRepository approvals,
@@ -168,6 +188,7 @@ internal sealed class SaveRecipeHandler(
         if (await categories.GetByIdAsync(categoryId, cancellationToken) is null)
             throw new DomainException("That category is no longer there. Choose another.");
         RecipeTarget? target = request.TargetKind is { } kind && request.CatalogItemId is { } id ? new RecipeTarget(kind, id, request.VariantId) : null;
+        await menu.EnsureNotComboAsync(target, cancellationToken);
 
         Recipe recipe;
         if (request.RecipeId is { } recipeId)
@@ -198,11 +219,12 @@ internal sealed class SaveRecipeHandler(
 // Deleting it again changes nothing.
 public sealed record DeleteRecipeCommand(Guid RecipeId, string StaffName = "") : IRequest;
 
-internal sealed class DeleteRecipeHandler(IRecipeRepository recipes, IUnitOfWork unitOfWork) : IRequestHandler<DeleteRecipeCommand>
+internal sealed class DeleteRecipeHandler(IRecipeRepository recipes, IComboOfferRepository combos, IUnitOfWork unitOfWork) : IRequestHandler<DeleteRecipeCommand>
 {
     public async Task Handle(DeleteRecipeCommand request, CancellationToken cancellationToken)
     {
         var recipe = await recipes.GetRequiredAsync(request.RecipeId, cancellationToken);
+        await combos.EnsureNotInComboAsync(recipe, cancellationToken);
         recipe.Delete(request.StaffName);
         await unitOfWork.SaveChangesAsync(cancellationToken);
     }

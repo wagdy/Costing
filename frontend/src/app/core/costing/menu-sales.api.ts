@@ -34,6 +34,8 @@ export interface MenuItem {
   isDeleted: boolean;
   sizes: MenuSize[];
   addOnIds: number[];
+  // A combo offer sold under this number: changed on Recipes → Combos & offers only.
+  comboOfferId?: string | null;
 }
 
 export interface MenuAddOn {

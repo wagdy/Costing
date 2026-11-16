@@ -50,6 +50,9 @@ internal sealed class RecipeRepository(CostingDbContext db) : IRecipeRepository
     public async Task<IReadOnlyList<Recipe>> GetAllAsync(CancellationToken cancellationToken = default) =>
         await WithIngredients.ToListAsync(cancellationToken);
 
+    public async Task<IReadOnlyList<Recipe>> GetByIdsAsync(IReadOnlyCollection<Guid> ids, CancellationToken cancellationToken = default) =>
+        await WithIngredients.Where(r => ids.Contains(r.Id)).ToListAsync(cancellationToken);
+
     // The ones sales go by: not deleted, and linked to the menu.
     private IQueryable<Recipe> Active => WithIngredients.Where(r => r.DeletedAtUtc == null && r.CatalogItemId != null);
 

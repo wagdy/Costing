@@ -72,6 +72,7 @@ public sealed class SalesReceipt : AggregateRoot
     public const int MaxReferenceLength = 64;
 
     private readonly List<SalesReceiptLine> _lines = [];
+    private readonly List<DiscountReason> _discountReasons = [];
 
     private SalesReceipt() { }
 
@@ -90,7 +91,8 @@ public sealed class SalesReceipt : AggregateRoot
         decimal refundedAmount,
         string? notes,
         SalesSource source,
-        string enteredBy)
+        string enteredBy,
+        IReadOnlyList<DiscountReason>? discountReasons = null)
     {
         if (!Enum.IsDefined(channel) || !Enum.IsDefined(paymentMethod))
             throw new DomainException("Say where the sale was made and how it was paid.");
@@ -112,6 +114,7 @@ public sealed class SalesReceipt : AggregateRoot
         PaymentMethod = paymentMethod;
         _lines.AddRange(lines);
         DiscountAmount = discountAmount;
+        _discountReasons.AddRange(Discounts.Clean(discountAmount, discountReasons));
         DeliveryFee = deliveryFee;
         TaxAmount = taxAmount;
         PointsAmount = pointsAmount;
@@ -149,6 +152,9 @@ public sealed class SalesReceipt : AggregateRoot
 
     // Off the items, before tax (a promotion).
     public decimal DiscountAmount { get; private set; }
+
+    // Why the discount was given: a day's sales summary from the POS carries its Z reports' reasons.
+    public IReadOnlyList<DiscountReason> DiscountReasons => _discountReasons.AsReadOnly();
 
     // Charged for delivery, after any delivery discount.
     public decimal DeliveryFee { get; private set; }

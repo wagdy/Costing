@@ -10,7 +10,7 @@ import { MatInputModule } from '@angular/material/input';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { ActivatedRoute, RouterLink } from '@angular/router';
 import { firstValueFrom } from 'rxjs';
-import { CostingApi } from '../../core/costing/costing.api';
+import { CostingApi, DiscountReason } from '../../core/costing/costing.api';
 import { CostingAccess } from '../../core/costing/costing-tabs';
 import {
   EndOfDay,
@@ -733,6 +733,13 @@ export class EndOfDaySummaryDialog {
               [disabled]="locked()" placeholder="0" data-western-digits aria-label="Voids" />
             <span matTextSuffix>&nbsp;{{ company.currency() }}</span>
           </mat-form-field>
+          <mat-form-field subscriptSizing="dynamic" floatLabel="always" class="discounts">
+            <mat-label>Discounts &amp; promos · الخصومات والعروض</mat-label>
+            <input matInput type="number" min="0" step="any" inputmode="decimal" [ngModel]="sales().discountsAmount" (ngModelChange)="setSale('discountsAmount', $event)"
+              [disabled]="locked()" placeholder="0" data-western-digits aria-label="Discounts and promos" />
+            <span matTextSuffix>&nbsp;{{ company.currency() }}</span>
+            <mat-hint>Never collected: not in the till · لا تدخل الدرج</mat-hint>
+          </mat-form-field>
           <div class="revenue">
             <span class="label">Total revenue · إجمالي الإيراد</span>
             <strong>{{ totalRevenue() | money }}</strong>
@@ -742,6 +749,36 @@ export class EndOfDaySummaryDialog {
             <mat-label>Notes (void reasons) · ملاحظات</mat-label>
             <input matInput [ngModel]="sales().notes" (ngModelChange)="setSale('notes', $event)" [disabled]="locked()" maxlength="500" aria-label="Sales notes" />
           </mat-form-field>
+          @if ((sales().discountsAmount ?? 0) > 0 || (sales().discountReasons?.length ?? 0) > 0) {
+            <div class="wide discount-reasons" role="group" aria-label="Discount reasons">
+              <span class="label">Why · أسباب الخصومات</span>
+              @for (r of sales().discountReasons ?? []; track $index; let i = $index) {
+                <div class="reason">
+                  <mat-form-field subscriptSizing="dynamic">
+                    <input matInput [ngModel]="r.reason" (ngModelChange)="setReason(i, { reason: $event })" [disabled]="locked()" maxlength="60"
+                      list="discount-reasons" placeholder="Loyalty, Staff…" [attr.aria-label]="'Discount reason ' + (i + 1)" />
+                  </mat-form-field>
+                  <mat-form-field subscriptSizing="dynamic" class="amount">
+                    <input matInput type="number" min="0" step="any" inputmode="decimal" [ngModel]="r.amount || null"
+                      (ngModelChange)="setReason(i, { amount: $event === null || $event === '' ? 0 : +$event })" [disabled]="locked()" placeholder="0"
+                      data-western-digits [attr.aria-label]="'Discount reason amount ' + (i + 1)" />
+                    <span matTextSuffix>&nbsp;{{ company.currency() }}</span>
+                  </mat-form-field>
+                  @if (!locked()) {
+                    <button mat-icon-button type="button" (click)="removeReason(i)" [attr.aria-label]="'Remove reason ' + (i + 1)"><mat-icon>close</mat-icon></button>
+                  }
+                </div>
+              }
+              @if (!locked()) {
+                <button mat-button type="button" (click)="addReason()"><mat-icon>add</mat-icon> Reason · سبب</button>
+              }
+              <datalist id="discount-reasons">
+                @for (s of reasonSuggestions; track s) {
+                  <option [value]="s"></option>
+                }
+              </datalist>
+            </div>
+          }
         </div>
         <div class="z-photo">
           <input #zCamera type="file" accept="image/*" capture="environment" hidden (change)="zPhoto(zCamera)" aria-label="Z report, take a photo" />
@@ -788,6 +825,10 @@ export class EndOfDaySummaryDialog {
           <div class="minus"><dt>Supplier payments <span class="inline-ar">مدفوعات الموردين</span></dt><dd>− {{ payoutTotal('SupplierPayment') | money }}</dd></div>
           <div class="minus"><dt>Employee advances <span class="inline-ar">السلفيات</span></dt><dd>− {{ payoutTotal('EmployeeAdvance') | money }}</dd></div>
         </dl>
+        @if ((sales().discountsAmount ?? 0) > 0) {
+          <p class="muted small discount-note">Discounts &amp; promos of {{ sales().discountsAmount! | money }} are not in it: they were never collected (the cash is after them).
+            <span class="line-ar" lang="ar" dir="rtl">الخصومات لا تدخل الدرج: لم تُحصّل أصلًا.</span></p>
+        }
         @if (till.net < 0) {
           <p class="error small" role="status">More was paid out than the drawer took in: check the amounts. · المصروف أكبر من الكاش.</p>
         }
@@ -1052,6 +1093,35 @@ export class EndOfDaySummaryDialog {
         grid-column: 1 / -1;
       }
     }
+    .discount-reasons {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px 12px;
+
+      .label {
+        font: var(--mat-sys-label-large);
+        color: var(--mat-sys-on-surface-variant);
+      }
+      .reason {
+        display: flex;
+        flex: 1 1 320px;
+        align-items: center;
+        gap: 6px;
+        min-width: 0;
+        max-width: 100%;
+
+        mat-form-field:first-child {
+          flex: 1 1 auto;
+          width: auto;
+          min-width: 0;
+        }
+      }
+      .amount {
+        flex: 0 0 120px;
+        width: 120px;
+      }
+    }
     .revenue {
       display: grid;
       padding: 8px 12px;
@@ -1268,6 +1338,30 @@ export class EndOfDayPage {
   }
 
   // A figure typed: kept a moment later, unless another follows.
+  protected readonly reasonSuggestions = ['Loyalty', 'Staff', 'Manager promo', 'Happy hour', 'Delivery app promo', 'Complaint'];
+
+  // A day's discount reasons: each its name and what it took off, saved with the sales.
+  protected setReason(index: number, patch: Partial<DiscountReason>): void {
+    this.changeReasons((reasons) => reasons.map((r, i) => (i === index ? { ...r, ...patch } : r)));
+  }
+
+  protected addReason(): void {
+    this.changeReasons((reasons) => [...reasons, { reason: '', amount: 0, count: 1 }]);
+  }
+
+  protected removeReason(index: number): void {
+    this.changeReasons((reasons) => reasons.filter((_, i) => i !== index));
+  }
+
+  private changeReasons(change: (reasons: DiscountReason[]) => DiscountReason[]): void {
+    this.sales.update((s) => ({ ...s, discountReasons: change(s.discountReasons ?? []) }));
+    this.salesProblem.set(null);
+    if (this.salesTimer) {
+      clearTimeout(this.salesTimer);
+    }
+    this.salesTimer = setTimeout(() => void this.flushSales(), 900);
+  }
+
   protected setSale(field: keyof EndOfDaySales, value: number | string | null): void {
     const cleaned = field === 'notes' ? ((value as string | null) ?? '') : value === '' || value === null ? null : Number(value);
     this.sales.update((s) => ({ ...s, [field]: cleaned }));
@@ -1366,14 +1460,21 @@ export class EndOfDayPage {
       return true;
     }
     const sales = this.sales();
-    if ([sales.cashAmount, sales.cardAmount, sales.taxAmount, sales.voidsAmount, sales.openingFloat].some((n) => n !== null && (!Number.isFinite(n) || n < 0))) {
-      this.salesProblem.set('The float, cash, Visa, tax and voids are zero or more. · المبالغ صفر أو أكثر.');
+    if ([sales.cashAmount, sales.cardAmount, sales.taxAmount, sales.voidsAmount, sales.openingFloat, sales.discountsAmount ?? null]
+      .some((n) => n !== null && (!Number.isFinite(n) || n < 0))) {
+      this.salesProblem.set('The float, cash, Visa, tax, voids and discounts are zero or more. · المبالغ صفر أو أكثر.');
+      return false;
+    }
+    // A reason still blank is not sent; their amounts no more than the discounts.
+    const reasons = (sales.discountReasons ?? []).filter((r) => r.reason.trim()).map((r) => ({ ...r, reason: r.reason.trim(), amount: Number(r.amount) || 0 }));
+    if (reasons.some((r) => r.amount < 0) || reasons.reduce((sum, r) => sum + r.amount, 0) > (sales.discountsAmount ?? 0) + 0.001) {
+      this.salesProblem.set('The reasons add up to more than the discounts. · مجموع الأسباب أكبر من الخصومات.');
       return false;
     }
     const date = this.date();
     this.savingSales.set(true);
     try {
-      const day = await firstValueFrom(this.api.saveSales(date, { ...sales, notes: sales.notes?.trim() || null }));
+      const day = await firstValueFrom(this.api.saveSales(date, { ...sales, notes: sales.notes?.trim() || null, discountReasons: reasons }));
       this.savedSales.set(sales);
       if (this.date() === date) {
         this.day.set(day);
@@ -1471,19 +1572,20 @@ export class EndOfDayPage {
 }
 
 function blankSales(): EndOfDaySales {
-  return { cashAmount: null, cardAmount: null, taxAmount: null, voidsAmount: null, notes: '', openingFloat: null };
+  return { cashAmount: null, cardAmount: null, taxAmount: null, voidsAmount: null, notes: '', openingFloat: null, discountsAmount: null, discountReasons: [] };
 }
 
 function salesOf(day: EndOfDay): EndOfDaySales {
   return {
     cashAmount: day.cashAmount, cardAmount: day.cardAmount, taxAmount: day.taxAmount, voidsAmount: day.voidsAmount, notes: day.notes ?? '',
-    openingFloat: day.openingFloat ?? null,
+    openingFloat: day.openingFloat ?? null, discountsAmount: day.discountsAmount ?? null, discountReasons: day.discountReasons ?? [],
   };
 }
 
 function sameSales(a: EndOfDaySales, b: EndOfDaySales): boolean {
   return a.cashAmount === b.cashAmount && a.cardAmount === b.cardAmount && a.taxAmount === b.taxAmount && a.voidsAmount === b.voidsAmount
-    && a.openingFloat === b.openingFloat && (a.notes ?? '').trim() === (b.notes ?? '').trim();
+    && a.openingFloat === b.openingFloat && (a.notes ?? '').trim() === (b.notes ?? '').trim()
+    && (a.discountsAmount ?? null) === (b.discountsAmount ?? null) && JSON.stringify(a.discountReasons ?? []) === JSON.stringify(b.discountReasons ?? []);
 }
 
 function todayIso(): string {

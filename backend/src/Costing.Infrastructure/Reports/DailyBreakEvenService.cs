@@ -120,6 +120,7 @@ public sealed class DailyBreakEvenService(CostingDbContext db, IBusinessCalendar
             return new Dictionary<DateOnly, DaySales>();
 
         var recipes = await db.Recipes.AsNoTracking().Include(r => r.Ingredients).Where(r => r.DeletedAtUtc == null).ToListAsync(cancellationToken);
+        var combos = await db.ComboPartsAsync(cancellationToken);
         var materials = await db.RawMaterials.AsNoTracking().ToDictionaryAsync(m => m.Id, cancellationToken);
         var costs = new RecipeCosts(materials, await db.PrepRecipes.AsNoTracking().Include(r => r.Ingredients).ToListAsync(cancellationToken));
 
@@ -140,7 +141,7 @@ public sealed class DailyBreakEvenService(CostingDbContext db, IBusinessCalendar
                         var revenue = line.LineTotal * kept;
                         net += revenue;
                         plates += line.Quantity;
-                        var needs = StockRequirements.For(new SoldItem(line.MenuItemId, line.VariantId, line.AddOnIds, line.Quantity), recipes);
+                        var needs = StockRequirements.For(new SoldItem(line.MenuItemId, line.VariantId, line.AddOnIds, line.Quantity), recipes, combos);
                         if (needs.Count == 0)
                         {
                             platesWithoutRecipe += line.Quantity;

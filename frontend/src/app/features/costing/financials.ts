@@ -12,6 +12,7 @@ import { MatSelectModule } from '@angular/material/select';
 import { firstValueFrom } from 'rxjs';
 import {
   CostingApi,
+  DiscountReason,
   ExpenseItem,
   FundingSource,
   InvoicePaymentStatus,
@@ -583,6 +584,15 @@ export interface TakingsDialogData {
           <input matInput type="number" min="0" step="any" [(ngModel)]="voids" (ngModelChange)="touch()" aria-label="Voids and refunds" placeholder="0" />
           <span matTextSuffix>&nbsp;{{ company.currency() }}</span>
         </mat-form-field>
+        <mat-form-field floatLabel="always" class="wide">
+          <mat-label>Discounts &amp; promos · الخصومات والعروض</mat-label>
+          <input matInput type="number" min="0" step="any" [(ngModel)]="discounts" (ngModelChange)="touch()" aria-label="Discounts and promos" placeholder="0" />
+          <span matTextSuffix>&nbsp;{{ company.currency() }}</span>
+          <mat-hint>Taken off the menu prices, never collected: not in the safe · لا تدخل الخزنة</mat-hint>
+        </mat-form-field>
+        @if (reasons.length) {
+          <p class="wide muted small reasons">Why · الأسباب: {{ reasonsText() }}</p>
+        }
         <mat-form-field class="wide">
           <mat-label>Void reasons / notes · أسباب الفويد وملاحظات اليومية</mat-label>
           <textarea matInput rows="3" [(ngModel)]="notes" (ngModelChange)="touch()" maxlength="500" aria-label="Void reasons and notes"></textarea>
@@ -598,6 +608,12 @@ export interface TakingsDialogData {
           <dt>Tax collected <span class="inline-ar">الضريبة المحصلة - التزام ضريبي بالخزنة</span> <span class="muted small">owed, never revenue</span></dt>
           <dd>{{ figures().tax | money }}</dd>
         </div>
+        @if (figures().discounts) {
+          <div>
+            <dt>Discounts &amp; promos <span class="inline-ar">الخصومات والعروض</span> <span class="muted small">said, never collected</span></dt>
+            <dd class="muted">{{ figures().discounts | money }}</dd>
+          </div>
+        }
         @if (paidOut()) {
           <div>
             <dt>Paid straight out of them <span class="inline-ar">المنصرف من الإيراد</span></dt>
@@ -718,6 +734,9 @@ export class TakingsDialog {
   protected card: number | null = null;
   protected tax: number | null = null;
   protected voids: number | null = null;
+  // The day's discounts and promos, and why: the reasons come from the end of day handed in.
+  protected discounts: number | null = null;
+  protected reasons: DiscountReason[] = [];
   protected notes = '';
   // What was paid straight out of the day's takings, and what is entered for it already.
   protected readonly preview = signal<TakingsPreview | null>(null);
@@ -733,20 +752,22 @@ export class TakingsDialog {
   protected readonly differs = computed(() => {
     this.version();
     const d = this.handedIn();
-    return !!d && [[this.cash, d.cashAmount], [this.card, d.cardAmount], [this.tax, d.taxAmount], [this.voids, d.voidsAmount]]
+    return !!d && [[this.cash, d.cashAmount], [this.card, d.cardAmount], [this.tax, d.taxAmount], [this.voids, d.voidsAmount], [this.discounts, d.discountsAmount ?? null]]
       .some(([typed, given]) => (Number(typed) || 0) !== (given ?? 0));
   });
 
   protected readonly figures = computed(() => {
     this.version();
-    const [cash, card, tax] = [this.cash, this.card, this.tax].map((n) => Number(n) || 0);
-    return { net: round(cash + card), tax: round(tax), total: round(cash + card + tax), intoSafe: round(cash + card + tax - this.paidOut()) };
+    const [cash, card, tax, discounts] = [this.cash, this.card, this.tax, this.discounts].map((n) => Number(n) || 0);
+    return {
+      net: round(cash + card), tax: round(tax), total: round(cash + card + tax), intoSafe: round(cash + card + tax - this.paidOut()), discounts: round(discounts),
+    };
   });
 
   // What stops it being sent, said plainly in both languages.
   protected readonly problem = computed(() => {
     this.version();
-    const figures = [this.cash, this.card, this.tax, this.voids];
+    const figures = [this.cash, this.card, this.tax, this.voids, this.discounts];
     if (!this.revenueDate) {
       return 'Choose the date of the takings. · اختر تاريخ اليومية.';
     }
@@ -758,7 +779,10 @@ export class TakingsDialog {
       return `These takings are entered already: ${this.company.money(entered)}. To change them, void that entry on the Safe tab and enter them again. · إيراد هذا اليوم مسجل بالفعل.`;
     }
     if (figures.some((n) => n !== null && `${n}` !== '' && (!Number.isFinite(Number(n)) || Number(n) < 0))) {
-      return 'The cash, card, tax and voids are zero or more. · المبالغ صفر أو أكثر.';
+      return 'The cash, card, tax, voids and discounts are zero or more. · المبالغ صفر أو أكثر.';
+    }
+    if (this.reasons.reduce((sum, r) => sum + r.amount, 0) > this.figures().discounts + 0.001) {
+      return "The end of day's reasons add up to more than the discounts. · مجموع الأسباب أكبر من الخصومات.";
     }
     if (this.figures().net <= 0) {
       return "Enter the day's cash or card takings. · أدخل إيراد الكاش أو الفيزا.";
@@ -792,6 +816,8 @@ export class TakingsDialog {
       return;
     }
     [this.cash, this.card, this.tax, this.voids] = [d.cashAmount, d.cardAmount, d.taxAmount, d.voidsAmount];
+    this.discounts = d.discountsAmount ?? null;
+    this.reasons = d.discountReasons ?? [];
     this.notes = d.notes ?? '';
     this.typed = false;
     this.version.update((v) => v + 1);
@@ -822,7 +848,13 @@ export class TakingsDialog {
       cardAmount: amount(this.card),
       taxAmount: amount(this.tax),
       voidsAmount: amount(this.voids),
+      discountsAmount: amount(this.discounts),
+      discountReasons: this.figures().discounts > 0 ? this.reasons : [],
     });
+  }
+
+  protected reasonsText(): string {
+    return this.reasons.map((r) => (r.amount ? `${r.reason} ${this.company.money(r.amount)}` : r.reason)).join(' · ');
   }
 
   // Without it the breakdown shows nothing paid out; the server takes it off all the same.

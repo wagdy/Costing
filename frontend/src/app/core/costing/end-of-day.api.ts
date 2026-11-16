@@ -1,6 +1,7 @@
 import { HttpClient } from '@angular/common/http';
 import { Injectable, inject } from '@angular/core';
 import { Observable } from 'rxjs';
+import { DiscountReason } from './costing.api';
 
 // The end of the day (تقفيل اليوم), as the API keeps it: a day's invoices handed in with their
 // photos, cash and on credit; the cash paid out of the till to suppliers and as advances to
@@ -95,6 +96,9 @@ export interface EndOfDay {
   cashSalesCollected: number;
   cashPaidOut: number;
   netCashInTill: number;
+  // The Z report's discounts and promos, and why: never collected, never in the till.
+  discountsAmount?: number | null;
+  discountReasons?: DiscountReason[] | null;
 }
 
 export interface EndOfDaySales {
@@ -104,6 +108,8 @@ export interface EndOfDaySales {
   voidsAmount: number | null;
   notes: string | null;
   openingFloat: number | null;
+  discountsAmount?: number | null;
+  discountReasons?: DiscountReason[] | null;
 }
 
 // A payment as it is entered: the supplier paid or the employee advanced (payeeId), how much, a note.

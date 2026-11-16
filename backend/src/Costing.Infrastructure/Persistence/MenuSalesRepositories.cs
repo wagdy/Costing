@@ -112,3 +112,22 @@ internal sealed class FinancialTaxRate(CostingDbContext db) : Costing.Applicatio
         (await db.FinancialSettings.AsNoTracking().SingleOrDefaultAsync(cancellationToken))?.TaxPercent
         ?? throw new Costing.Domain.Common.DomainException("Set the tax rate on Financials → Tax & service first.");
 }
+
+internal sealed class ComboOfferRepository(CostingDbContext db) : IComboOfferRepository
+{
+    public Task<ComboOffer?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default) =>
+        db.ComboOffers.SingleOrDefaultAsync(c => c.Id == id, cancellationToken);
+
+    public void Add(ComboOffer aggregate) => db.ComboOffers.Add(aggregate);
+
+    public async Task<IReadOnlyList<ComboOffer>> GetAllAsync(CancellationToken cancellationToken = default) =>
+        await db.ComboOffers.OrderBy(c => c.Code).ToListAsync(cancellationToken);
+
+    public async Task<IReadOnlyDictionary<int, IReadOnlyList<Domain.Recipes.ComboPart>>> GetPartsAsync(
+        IReadOnlyCollection<int> menuItemIds, CancellationToken cancellationToken = default) =>
+        (await db.ComboOffers.AsNoTracking().Where(c => menuItemIds.Contains(c.Code)).ToListAsync(cancellationToken))
+            .ToDictionary(c => c.Code, c => c.Parts);
+
+    public async Task<IReadOnlyList<ComboOffer>> GetUsingRecipeAsync(Guid recipeId, CancellationToken cancellationToken = default) =>
+        await db.ComboOffers.Where(c => c.DeletedAtUtc == null && c.Items.Any(i => i.RecipeId == recipeId)).ToListAsync(cancellationToken);
+}

@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Costing.Application.Common;
 using Costing.Domain.Common;
+using Costing.Domain.Menu;
 using Costing.Domain.Production;
 using Costing.Domain.Sales;
 using Costing.Domain.Categories;
@@ -120,7 +121,9 @@ public sealed record RecipeCostCard(
     string? RecipeCategoryAr = null,
     // The kitchen's minutes for one plate (null: the ordinary 10) and how hard they are.
     decimal? PrepTimeMinutes = PlateActivity.DefaultPrepTimeMinutes,
-    decimal ComplexityWeight = PlateActivity.DefaultComplexityWeight);
+    decimal ComplexityWeight = PlateActivity.DefaultComplexityWeight,
+    // A combo offer sold under this number: costed by the dishes in it (ComboOffer).
+    Guid? ComboOfferId = null);
 
 // Where a theoretical cost report's sales come from: the till's closed orders (and the online ones),
 // or quantities an accountant typed in.
@@ -573,7 +576,9 @@ public sealed partial class CostingService(CostingDbContext db, IBusinessCalenda
         decimal FoodCostTarget,
         SharedPerMeal Shared,
         // What each material is costed at in a recipe: a prep item never made, by its own recipe.
-        RecipeCosts Costs);
+        RecipeCosts Costs,
+        // The combos on the menu, not deleted, by the number each is sold under.
+        IReadOnlyDictionary<int, ComboOffer> Combos);
 
     private async Task<MenuData> LoadMenuAsync(CancellationToken cancellationToken)
     {
@@ -606,13 +611,18 @@ public sealed partial class CostingService(CostingDbContext db, IBusinessCalenda
         var shared = await SharedPerMealAsync(lastFirst, lastLast, await SalesAsync(lastFirst, lastLast, cancellationToken), cancellationToken);
 
         var categories = await db.RecipeCategories.AsNoTracking().ToDictionaryAsync(c => c.Id, cancellationToken);
+        var combos = await db.ComboOffers.AsNoTracking().Where(c => c.DeletedAtUtc == null).ToDictionaryAsync(c => c.Code, cancellationToken);
 
-        return new MenuData(targets, recipes, allRecipes, categories, materials, (await SettingsAsync(cancellationToken)).FoodCostTargetPercent, shared, costs);
+        return new MenuData(
+            targets, recipes, allRecipes, categories, materials, (await SettingsAsync(cancellationToken)).FoodCostTargetPercent, shared, costs, combos);
     }
 
-    // A menu row, by the recipe it sells by: a size with none of its own, by the dish's.
+    // A menu row, by the recipe it sells by: a size with none of its own, by the dish's; a combo by
+    // the dishes in it.
     private static RecipeCostCard Card(Target target, MenuData data)
     {
+        if (ComboOf(target, data) is { } combo)
+            return ComboCard(target, combo, data);
         var own = data.Recipes.GetValueOrDefault(new RecipeTarget(target.Kind, target.CatalogItemId, target.VariantId));
         var recipe = own ?? (target.VariantId is not null ? data.Recipes.GetValueOrDefault(RecipeTarget.ForMenuItem(target.CatalogItemId)) : null);
         return Card(target, recipe, own is null && recipe is not null, data);
@@ -714,6 +724,7 @@ public sealed partial class CostingService(CostingDbContext db, IBusinessCalenda
         // its own recipe (RecipeCosts). So is a prep item taken off the shelf before its first
         // batch, at no cost then: the dish is costed by its recipe now.
         var recipes = await db.Recipes.AsNoTracking().Include(r => r.Ingredients).ToListAsync(cancellationToken);
+        var combos = await db.ComboPartsAsync(cancellationToken);
         var materials = await db.RawMaterials.AsNoTracking().ToDictionaryAsync(m => m.Id, cancellationToken);
         var costs = new RecipeCosts(materials, await db.PrepRecipes.AsNoTracking().Include(r => r.Ingredients).ToListAsync(cancellationToken));
         bool IsPrep(Guid id) => materials.GetValueOrDefault(id)?.IsPrepItem == true;
@@ -740,7 +751,7 @@ public sealed partial class CostingService(CostingDbContext db, IBusinessCalenda
                     costedNow);
             }
 
-            var needs = StockRequirements.For(new SoldItem(l.MenuItemId, l.VariantId, l.AddOnIds, l.Quantity), recipes);
+            var needs = StockRequirements.For(new SoldItem(l.MenuItemId, l.VariantId, l.AddOnIds, l.Quantity), recipes, combos);
             return new SoldLine(l.MenuItemId, l.VariantId, name, nameAr, item?.Category ?? string.Empty, l.Quantity, l.LineTotal,
                 needs.Sum(n => n.Value * (costs.Of(n.Key).PerUnit ?? 0)), needs.Count > 0,
                 needs.Keys.Any(id => costs.Of(id).Missing.Count > 0), needs.Count > 0);

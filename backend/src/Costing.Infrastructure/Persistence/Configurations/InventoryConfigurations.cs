@@ -217,6 +217,8 @@ internal sealed class SafeTransactionConfiguration : IEntityTypeConfiguration<Sa
         builder.Property(t => t.GrossAmount).HasPrecision(18, 2);
         builder.Property(t => t.CardAmount).HasPrecision(18, 2);
         builder.Property(t => t.VoidsAmount).HasPrecision(18, 2);
+        builder.Property(t => t.DiscountsAmount).HasPrecision(18, 2);
+        builder.HasDiscountReasons();
         builder.Property(t => t.Notes).HasMaxLength(SafeTransaction.MaxNotesLength);
         builder.Property(t => t.RecordedBy).HasMaxLength(200);
         builder.Property(t => t.ApprovedBy).HasMaxLength(200);

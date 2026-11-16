@@ -218,6 +218,8 @@ export interface RecipeCostCard {
   // burdened plate cost shares the labor by.
   prepTimeMinutes?: number | null;
   complexityWeight?: number;
+  // A combo offer sold under this number: costed by its dishes.
+  comboOfferId?: string | null;
 }
 
 // The kitchen's own grouping of its recipes: Sauces, Staff meals, Catering orders.
@@ -565,6 +567,31 @@ export interface KpiReport {
   items: ItemProfit[];
   itemsWithoutRecipe: number;
   salesWithoutRecipe: number;
+  // What the month's discounts and promos did to the margin.
+  discounts?: DiscountImpact | null;
+}
+
+// Why a day's discounts were given (أسباب الخصومات), with what each took off (0 when only its reason
+// is known) and on how many bills.
+export interface DiscountReason {
+  reason: string;
+  amount: number;
+  count: number;
+}
+
+// Promos and discounts against the margin (أثر الخصومات وتآكل الهامش), from the month's takings:
+// standard gross = net sales + discounts; standard FC% = theoretical cost ÷ standard gross; actual
+// FC% = theoretical cost ÷ net sales; erosion = actual − standard, in points.
+export interface DiscountImpact {
+  discounts: number;
+  actualNetRevenue: number;
+  standardGrossRevenue: number;
+  discountSharePercent: number | null;
+  theoreticalCost: number;
+  standardFoodCostPercent: number | null;
+  actualFoodCostPercent: number | null;
+  erosionPoints: number | null;
+  reasons: DiscountReason[];
 }
 
 // Voided: posted, then deleted with a manager's approval, its adjustments reversed.
@@ -1799,6 +1826,18 @@ export class CostingApi {
   }
 
   // Staff meals, hospitality and recipe tastings (وجبات العاملين والضيافة).
+  combos(includeDeleted = false): Observable<ComboOffersReport> {
+    return this.http.get<ComboOffersReport>('/api/costing/combos', { params: { includeDeleted } });
+  }
+
+  saveCombo(id: string, combo: SaveComboOffer): Observable<{ id: string; code: number }> {
+    return this.http.put<{ id: string; code: number }>(`/api/inventory/combos/${id}`, combo);
+  }
+
+  deleteCombo(id: string): Observable<void> {
+    return this.http.delete<void>(`/api/inventory/combos/${id}`);
+  }
+
   whereUsed(materialId: string): Observable<WhereUsedReport> {
     return this.http.get<WhereUsedReport>(`/api/costing/intelligence/where-used/${materialId}`);
   }
@@ -2602,6 +2641,9 @@ export interface SafeVoucherInput {
   cardAmount?: number | null;
   taxAmount?: number | null;
   voidsAmount?: number | null;
+  // Its discounts and promos, and why: said, never collected.
+  discountsAmount?: number | null;
+  discountReasons?: DiscountReason[] | null;
 }
 
 export interface SafeTransaction {
@@ -2620,6 +2662,8 @@ export interface SafeTransaction {
   voidsAmount?: number;
   // A day's takings: cash + card − tax.
   netAmount?: number;
+  discountsAmount?: number;
+  discountReasons?: DiscountReason[] | null;
 }
 
 // Tax and service (إعدادات الضريبة والخدمة): the till's tax rate, as the delivery system set it
@@ -2748,6 +2792,58 @@ export interface SupplierAccount {
   owedBefore: number;
   lines: SupplierAccountLine[];
   openInvoices: { invoiceId: string; supplierInvoiceNumber: string | null; date: string; total: number; paid: number; remaining: number; status: 'Unpaid' | 'PartlyPaid' }[];
+}
+
+// ---- Combo offers (العروض والوجبات المجمعة) ----
+
+// A dish in a combo, as its recipe costs it today, and how many of it the combo holds.
+export interface ComboDish {
+  recipeId: string;
+  dish: string;
+  itemCode: string | null;
+  quantity: number;
+  costPerPortion: number;
+  lineCost: number;
+  price: number | null;
+  linePrice: number | null;
+  isDeleted: boolean;
+  missingPrices: string[];
+}
+
+// A combo and its roll-up: total cost = Σ dish cost × quantity; original price = Σ dish price ×
+// quantity (none when a dish has no price); food cost % = total cost ÷ the combo's price.
+export interface ComboOffer {
+  id: string;
+  code: number;
+  name: string;
+  nameAr: string | null;
+  sellingPrice: number;
+  isActive: boolean;
+  isDeleted: boolean;
+  items: ComboDish[];
+  totalCost: number;
+  originalPrice: number | null;
+  savings: number | null;
+  savingsPercent: number | null;
+  foodCostPercent: number | null;
+  foodCostTargetPercent: number;
+  status: CostStatus;
+  missingPrices: string[];
+}
+
+export interface ComboOffersReport {
+  nextCode: number;
+  foodCostTargetPercent: number;
+  combos: ComboOffer[];
+}
+
+export interface SaveComboOffer {
+  code: number;
+  name: string;
+  nameAr: string | null;
+  sellingPrice: number;
+  isActive: boolean;
+  items: { recipeId: string; quantity: number }[];
 }
 
 // ---- Where an item is used, and the bulk material swap ----

@@ -443,7 +443,7 @@ export const appConfig: ApplicationConfig = {
 
 كل قسم بـ `canActivate: [costingTabGuard('Materials')]` و `loadComponent` كسول، والأقسام الفرعية (الوصفات، المشتريات، الماليات، التقارير، التحليلات) كأبناء لـ Shell خاص بها، والمسار الفارغ يفتح أول قسم يملكه المستخدم.
 
-> 📄 **`frontend/src/app/app.routes.ts`** — 295 سطر
+> 📄 **`frontend/src/app/app.routes.ts`** — 299 سطر
 
 ```ts
 import { Routes } from '@angular/router';
@@ -490,6 +490,10 @@ const costingChildren: Routes = [
       {
         path: 'prep',
         loadComponent: () => import('./features/costing/prep-items-page').then((m) => m.PrepItemsPage),
+      },
+      {
+        path: 'combos',
+        loadComponent: () => import('./features/costing/combos-page').then((m) => m.CombosPage),
       },
       {
         // 'new' for one not saved yet.
@@ -1390,7 +1394,7 @@ function insert(field: HTMLInputElement, text: string): void {
 
 `costing.api.ts`: أكبر ملف: كل الأنواع والنداءات لـ `api/costing` و `api/inventory` و `api/financials` (الخامات، التكاليف، الوصفات، المصنعات، الإنتاج، المشتريات، الجرد، الهالك، الخزنة، التقارير، الموافقات…). الأنواع تطابق DTOs الـ API، والـ enums كـ union types، وقواميس التسميات ثنائية اللغة (`Record<Kind, { en; ar }>`) تجبر TypeScript على تسمية كل حالة.
 
-> 📄 **`frontend/src/app/core/costing/costing.api.ts`** — 2906 سطر
+> 📄 **`frontend/src/app/core/costing/costing.api.ts`** — 3002 سطر
 
 ```ts
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
@@ -1613,6 +1617,8 @@ export interface RecipeCostCard {
   // burdened plate cost shares the labor by.
   prepTimeMinutes?: number | null;
   complexityWeight?: number;
+  // A combo offer sold under this number: costed by its dishes.
+  comboOfferId?: string | null;
 }
 
 // The kitchen's own grouping of its recipes: Sauces, Staff meals, Catering orders.
@@ -1960,6 +1966,31 @@ export interface KpiReport {
   items: ItemProfit[];
   itemsWithoutRecipe: number;
   salesWithoutRecipe: number;
+  // What the month's discounts and promos did to the margin.
+  discounts?: DiscountImpact | null;
+}
+
+// Why a day's discounts were given (أسباب الخصومات), with what each took off (0 when only its reason
+// is known) and on how many bills.
+export interface DiscountReason {
+  reason: string;
+  amount: number;
+  count: number;
+}
+
+// Promos and discounts against the margin (أثر الخصومات وتآكل الهامش), from the month's takings:
+// standard gross = net sales + discounts; standard FC% = theoretical cost ÷ standard gross; actual
+// FC% = theoretical cost ÷ net sales; erosion = actual − standard, in points.
+export interface DiscountImpact {
+  discounts: number;
+  actualNetRevenue: number;
+  standardGrossRevenue: number;
+  discountSharePercent: number | null;
+  theoreticalCost: number;
+  standardFoodCostPercent: number | null;
+  actualFoodCostPercent: number | null;
+  erosionPoints: number | null;
+  reasons: DiscountReason[];
 }
 
 // Voided: posted, then deleted with a manager's approval, its adjustments reversed.
@@ -3194,6 +3225,18 @@ export class CostingApi {
   }
 
   // Staff meals, hospitality and recipe tastings (وجبات العاملين والضيافة).
+  combos(includeDeleted = false): Observable<ComboOffersReport> {
+    return this.http.get<ComboOffersReport>('/api/costing/combos', { params: { includeDeleted } });
+  }
+
+  saveCombo(id: string, combo: SaveComboOffer): Observable<{ id: string; code: number }> {
+    return this.http.put<{ id: string; code: number }>(`/api/inventory/combos/${id}`, combo);
+  }
+
+  deleteCombo(id: string): Observable<void> {
+    return this.http.delete<void>(`/api/inventory/combos/${id}`);
+  }
+
   whereUsed(materialId: string): Observable<WhereUsedReport> {
     return this.http.get<WhereUsedReport>(`/api/costing/intelligence/where-used/${materialId}`);
   }
@@ -3997,6 +4040,9 @@ export interface SafeVoucherInput {
   cardAmount?: number | null;
   taxAmount?: number | null;
   voidsAmount?: number | null;
+  // Its discounts and promos, and why: said, never collected.
+  discountsAmount?: number | null;
+  discountReasons?: DiscountReason[] | null;
 }
 
 export interface SafeTransaction {
@@ -4015,6 +4061,8 @@ export interface SafeTransaction {
   voidsAmount?: number;
   // A day's takings: cash + card − tax.
   netAmount?: number;
+  discountsAmount?: number;
+  discountReasons?: DiscountReason[] | null;
 }
 
 // Tax and service (إعدادات الضريبة والخدمة): the till's tax rate, as the delivery system set it
@@ -4143,6 +4191,58 @@ export interface SupplierAccount {
   owedBefore: number;
   lines: SupplierAccountLine[];
   openInvoices: { invoiceId: string; supplierInvoiceNumber: string | null; date: string; total: number; paid: number; remaining: number; status: 'Unpaid' | 'PartlyPaid' }[];
+}
+
+// ---- Combo offers (العروض والوجبات المجمعة) ----
+
+// A dish in a combo, as its recipe costs it today, and how many of it the combo holds.
+export interface ComboDish {
+  recipeId: string;
+  dish: string;
+  itemCode: string | null;
+  quantity: number;
+  costPerPortion: number;
+  lineCost: number;
+  price: number | null;
+  linePrice: number | null;
+  isDeleted: boolean;
+  missingPrices: string[];
+}
+
+// A combo and its roll-up: total cost = Σ dish cost × quantity; original price = Σ dish price ×
+// quantity (none when a dish has no price); food cost % = total cost ÷ the combo's price.
+export interface ComboOffer {
+  id: string;
+  code: number;
+  name: string;
+  nameAr: string | null;
+  sellingPrice: number;
+  isActive: boolean;
+  isDeleted: boolean;
+  items: ComboDish[];
+  totalCost: number;
+  originalPrice: number | null;
+  savings: number | null;
+  savingsPercent: number | null;
+  foodCostPercent: number | null;
+  foodCostTargetPercent: number;
+  status: CostStatus;
+  missingPrices: string[];
+}
+
+export interface ComboOffersReport {
+  nextCode: number;
+  foodCostTargetPercent: number;
+  combos: ComboOffer[];
+}
+
+export interface SaveComboOffer {
+  code: number;
+  name: string;
+  nameAr: string | null;
+  sellingPrice: number;
+  isActive: boolean;
+  items: { recipeId: string; quantity: number }[];
 }
 
 // ---- Where an item is used, and the bulk material swap ----
@@ -4302,12 +4402,13 @@ export interface StaffMealReport {
 ```
 
 
-> 📄 **`frontend/src/app/core/costing/end-of-day.api.ts`** — 295 سطر
+> 📄 **`frontend/src/app/core/costing/end-of-day.api.ts`** — 301 سطر
 
 ```ts
 import { HttpClient } from '@angular/common/http';
 import { Injectable, inject } from '@angular/core';
 import { Observable } from 'rxjs';
+import { DiscountReason } from './costing.api';
 
 // The end of the day (تقفيل اليوم), as the API keeps it: a day's invoices handed in with their
 // photos, cash and on credit; the cash paid out of the till to suppliers and as advances to
@@ -4402,6 +4503,9 @@ export interface EndOfDay {
   cashSalesCollected: number;
   cashPaidOut: number;
   netCashInTill: number;
+  // The Z report's discounts and promos, and why: never collected, never in the till.
+  discountsAmount?: number | null;
+  discountReasons?: DiscountReason[] | null;
 }
 
 export interface EndOfDaySales {
@@ -4411,6 +4515,8 @@ export interface EndOfDaySales {
   voidsAmount: number | null;
   notes: string | null;
   openingFloat: number | null;
+  discountsAmount?: number | null;
+  discountReasons?: DiscountReason[] | null;
 }
 
 // A payment as it is entered: the supplier paid or the employee advanced (payeeId), how much, a note.
@@ -4603,7 +4709,7 @@ export function photoProblem(file: File): string | null {
 ```
 
 
-> 📄 **`frontend/src/app/core/costing/menu-sales.api.ts`** — 327 سطر
+> 📄 **`frontend/src/app/core/costing/menu-sales.api.ts`** — 329 سطر
 
 ```ts
 import { HttpClient } from '@angular/common/http';
@@ -4642,6 +4748,8 @@ export interface MenuItem {
   isDeleted: boolean;
   sizes: MenuSize[];
   addOnIds: number[];
+  // A combo offer sold under this number: changed on Recipes → Combos & offers only.
+  comboOfferId?: string | null;
 }
 
 export interface MenuAddOn {
@@ -8026,7 +8134,7 @@ export class InfoTip implements OnDestroy {
 ```
 
 
-> 📄 **`frontend/src/app/features/costing/info-tips.ts`** — 958 سطر
+> 📄 **`frontend/src/app/features/costing/info-tips.ts`** — 1008 سطر
 
 ```ts
 // What each figure on the costing screens is, and how it is worked out, in Arabic and English: the
@@ -8983,6 +9091,56 @@ export const infoTips = {
       ar: 'ما يتبقى من السعر بعد الخامات والعمالة والمصاريف: التكلفة الكلية للطبق لهذا الشهر حتى الآن.',
     },
     { en: '(Price − fully burdened cost) ÷ price × 100, as Cost settings share the labor and overheads.', ar: '(السعر − التكلفة الكلية) ÷ السعر × 100، بطريقة التحميل في إعدادات التكاليف.' },
+  ),
+
+  // ---- Combo offers ----
+  coTotalCost: tip(
+    { en: 'Total combo cost', ar: 'إجمالي تكلفة العرض' },
+    { en: 'What the dishes in the combo cost together today, from their own recipes: nothing is entered twice.', ar: 'تكلفة أصناف العرض معًا اليوم، من وصفاتها نفسها: لا تُكرر أي خامة.' },
+    { en: 'Σ each dish\'s cost a portion × how many of it the combo holds.', ar: 'مجموع (تكلفة حصة كل صنف × عدده في العرض).' },
+  ),
+  coOriginal: tip(
+    { en: 'Original separate price', ar: 'السعر الأصلي منفصلًا' },
+    { en: 'What the same dishes would sell for one by one, at their own prices: the customer\'s saving is the difference.', ar: 'سعر نفس الأصناف لو بيعت منفصلة بأسعارها: والتوفير للعميل هو الفرق.' },
+    { en: 'Σ each dish\'s price (the menu\'s, or a planned price off it) × its quantity.', ar: 'مجموع (سعر كل صنف × عدده).' },
+  ),
+  coFoodCost: tip(
+    { en: 'Combo food cost %', ar: 'نسبة تكلفة العرض' },
+    {
+      en: 'The share of the combo\'s price its food takes. A combo sells cheaper than its dishes apart, so this is above theirs: keep it under the target.',
+      ar: 'نسبة الخامات من سعر العرض. العرض أرخص من أصنافه منفصلة، فتكون نسبته أعلى: أبقها تحت المستهدف.',
+    },
+    { en: 'Total combo cost ÷ the combo\'s selling price × 100.', ar: 'إجمالي تكلفة العرض ÷ سعر بيع العرض × 100.' },
+  ),
+
+  // ---- Promos and discounts against the margin ----
+  deDiscounts: tip(
+    { en: 'Total discounts', ar: 'إجمالي الخصومات' },
+    { en: 'What was taken off the menu prices in the month before the money was collected: never in the till or the safe.', ar: 'ما خُصم من أسعار المنيو في الشهر قبل التحصيل: لا يدخل الدرج ولا الخزنة.' },
+    { en: 'Σ each day\'s discounts on its takings; the share is of the standard gross revenue (net sales + discounts).', ar: 'مجموع خصومات كل يوم في توريده؛ والنسبة من الإيراد القياسي (صافي المبيعات + الخصومات).' },
+  ),
+  deStandard: tip(
+    { en: 'Standard food cost %', ar: 'نسبة التكلفة القياسية' },
+    { en: 'The food cost % had every dish sold at its full menu price.', ar: 'نسبة التكلفة لو بيع كل صنف بسعر المنيو كاملًا.' },
+    { en: 'Theoretical cost ÷ (net sales + discounts) × 100.', ar: 'التكلفة النظرية ÷ (صافي المبيعات + الخصومات) × 100.' },
+  ),
+  deActual: tip(
+    { en: 'Actual food cost %', ar: 'نسبة التكلفة الفعلية' },
+    {
+      en: 'The real food cost percentage after accounting for money lost to discounts.',
+      ar: 'نسبة التكلفة الحقيقية بعد احتساب المال الضائع في الخصومات.',
+    },
+    { en: 'Theoretical cost ÷ net revenue after discounts (cash + card, before tax) × 100.', ar: 'التكلفة النظرية ÷ صافي الإيراد بعد الخصومات (كاش + فيزا قبل الضريبة) × 100.' },
+  ),
+  deErosion: tip(
+    { en: 'Margin erosion', ar: 'تآكل الهامش' },
+    { en: 'How many points of food cost the discounts added: the kitchen cost the same, the money that came in was less.', ar: 'كم نقطة أضافتها الخصومات لنسبة التكلفة: تكلفة المطبخ نفسها، والمال المحصل أقل.' },
+    { en: 'Actual food cost % − standard food cost %.', ar: 'نسبة التكلفة الفعلية − نسبة التكلفة القياسية.' },
+  ),
+  deReasons: tip(
+    { en: 'Top discount reasons', ar: 'أهم أسباب الخصومات' },
+    { en: 'Why the discounts were given, the largest first, with how many bills.', ar: 'أسباب الخصومات، الأكبر أولًا، مع عدد الفواتير.' },
+    { en: 'Each reason\'s amounts and counts over the month\'s takings; a voided day\'s taken back out.', ar: 'مجموع مبالغ وعدد كل سبب في توريدات الشهر؛ ويُطرح اليوم الملغى.' },
   ),
 } satisfies Record<string, InfoTipContent>;
 
@@ -11628,7 +11786,7 @@ export class QuickMaterialDialog {
 
 `RecipesShell` ثم `RecipesPage`: الوصفات (الكل، على المنيو، خارجه)، **أصناف المنيو بلا وصفة**، والمحذوفة؛ و "أضف للمنيو" لوصفات خارج المنيو.
 
-> 📄 **`frontend/src/app/features/costing/recipes-shell.ts`** — 24 سطر
+> 📄 **`frontend/src/app/features/costing/recipes-shell.ts`** — 25 سطر
 
 ```ts
 import { Component } from '@angular/core';
@@ -11636,7 +11794,7 @@ import { RouterOutlet } from '@angular/router';
 import { SubNav, SubNavTab } from '../shared/sub-nav';
 
 // Recipes: the dishes' recipe cards, the prep items made in the kitchen from their own recipes,
-// and the recipe categories. The production orders that make the prep items are a section of
+// the combo offers made of those dishes, and the recipe categories. The production orders that make the prep items are a section of
 // their own (Production).
 @Component({
   selector: 'app-recipes-shell',
@@ -11652,6 +11810,7 @@ export class RecipesShell {
   protected readonly tabs: SubNavTab[] = [
     { path: '.', icon: 'restaurant_menu', en: 'Dishes', ar: 'الأطباق', fallback: true },
     { path: 'prep', icon: 'blender', en: 'Prep items', ar: 'الأصناف نصف المصنعة' },
+    { path: 'combos', icon: 'lunch_dining', en: 'Combos & offers', ar: 'العروض المجمعة' },
     { path: 'categories', icon: 'category', en: 'Categories', ar: 'أقسام الوصفات' },
   ];
 }
@@ -13212,6 +13371,527 @@ export function showBulkSwap(dialog: MatDialog, fromMaterialId?: string | null):
         autoFocus: 'dialog',
       })
       .afterClosed(),
+  );
+}
+```
+
+
+**العروض المجمعة:** تبويب في الوصفات. `CombosPage` تعرض كل عرض بأصنافه وتكلفته وسعره منفصلًا ونسبته. و`ComboDialog` يبني العرض من الوصفات الموجودة ويحسب وهو يُكتب نفس معادلات الخادم (التكلفة، السعر منفصلًا والتوفير، نسبة التكلفة مقابل المستهدف)، والكود ثابت بعد الحفظ.
+
+> 📄 **`frontend/src/app/features/costing/combos-page.ts`** — 193 سطر
+
+```ts
+import { DecimalPipe } from '@angular/common';
+import { Component, computed, inject, signal } from '@angular/core';
+import { MatButtonModule } from '@angular/material/button';
+import { MatDialog } from '@angular/material/dialog';
+import { MatIconModule } from '@angular/material/icon';
+import { MatProgressBarModule } from '@angular/material/progress-bar';
+import { MatTooltipModule } from '@angular/material/tooltip';
+import { firstValueFrom } from 'rxjs';
+import { AuthService } from '../../core/auth/auth.service';
+import { Permissions } from '../../core/auth/permissions';
+import { ComboOffer, ComboOffersReport, CostingApi, RecipeCostCard, statusLabels } from '../../core/costing/costing.api';
+import { errorMessage } from '../../core/http/error-message';
+import { MoneyPipe } from '../../core/ui/money.pipe';
+import { NotifyService } from '../../core/ui/notify.service';
+import { SearchField } from '../shared/search-field';
+import { smartMatch } from '../shared/smart-search';
+import { showComboDialog } from './combo-dialog';
+import { InfoTip } from './info-tip';
+
+// Combos & offers (العروض والوجبات المجمعة): dishes the kitchen already makes, sold together at a
+// price of their own. Each is its dishes' recipes and how many of each, so nothing is entered twice;
+// what it costs, what the dishes would sell for apart and its food cost % are worked out from them.
+// Sold under its code, on the menu in the Combos & offers category.
+@Component({
+  selector: 'app-combos-page',
+  imports: [DecimalPipe, InfoTip, MatButtonModule, MatIconModule, MatProgressBarModule, MatTooltipModule, MoneyPipe, SearchField],
+  template: `
+    <div class="toolbar smart">
+      <app-search-field [(value)]="search" placeholder="Combo, code or dish · العرض أو الكود أو الصنف" />
+      <span class="spacer"></span>
+      @if (canManage()) {
+        <button mat-flat-button (click)="edit(null)" [disabled]="!report()"><mat-icon>add</mat-icon> New combo · عرض جديد</button>
+      }
+    </div>
+    @if (loading()) {
+      <mat-progress-bar mode="indeterminate" />
+    }
+    @if (error(); as e) {
+      <p class="error">{{ e }}</p>
+    } @else if (report(); as r) {
+      <div class="table-wrap">
+        <table class="grid combos">
+          <thead>
+            <tr>
+              <th>Code<span class="ar">الكود</span></th>
+              <th>Combo<span class="ar">العرض</span></th>
+              <th>Dishes<span class="ar">الأصناف</span></th>
+              <th class="num">Price<span class="ar">السعر</span></th>
+              <th class="num">Total cost <app-info-tip tip="coTotalCost" /><span class="ar">التكلفة</span></th>
+              <th class="num">Apart <app-info-tip tip="coOriginal" /><span class="ar">منفصلًا</span></th>
+              <th class="num">Food cost % <app-info-tip tip="coFoodCost" /><span class="ar">نسبة التكلفة</span></th>
+              <th class="num"><span class="visually-hidden">Actions</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            @for (c of shown(); track c.id) {
+              <tr [class.off]="!c.isActive">
+                <td class="code">{{ c.code }}</td>
+                <td>
+                  <strong>{{ c.name }}</strong>
+                  @if (c.nameAr) {
+                    <span class="ar">{{ c.nameAr }}</span>
+                  }
+                  @if (!c.isActive) {
+                    <div class="muted small">Not on sale · غير متاح</div>
+                  }
+                </td>
+                <td class="dishes">{{ dishes(c) }}</td>
+                <td class="num">{{ c.sellingPrice | money }}</td>
+                <td class="num">{{ c.totalCost | money }}</td>
+                <td class="num">
+                  {{ c.originalPrice === null ? '—' : (c.originalPrice | money) }}
+                  @if (c.savingsPercent !== null) {
+                    <div class="muted small">saves {{ c.savingsPercent | number: '1.0-1' }}%</div>
+                  }
+                </td>
+                <td class="num">
+                  <span class="status" [class]="c.status">{{ c.foodCostPercent === null ? '—' : (c.foodCostPercent | number: '1.1-1') + '%' }}</span>
+                  <div class="muted small">{{ statusLabels[c.status].en }}</div>
+                </td>
+                <td class="num actions">
+                  @if (canManage()) {
+                    <button mat-icon-button (click)="edit(c)" matTooltip="Edit" [attr.aria-label]="'Edit ' + c.name"><mat-icon>edit</mat-icon></button>
+                    <button mat-icon-button class="danger" (click)="remove(c)" matTooltip="Delete" [attr.aria-label]="'Delete ' + c.name"><mat-icon>delete</mat-icon></button>
+                  }
+                </td>
+              </tr>
+            } @empty {
+              <tr><td colspan="8" class="muted">{{ r.combos.length ? 'Nothing matches.' : 'No combo offers yet: build one from the recipes you have.' }}</td></tr>
+            }
+          </tbody>
+        </table>
+      </div>
+      <p class="muted small">Food cost target {{ r.foodCostTargetPercent | number: '1.0-1' }}%. A combo sold takes each dish's stock by its own recipe.</p>
+    }
+  `,
+  styleUrl: './costing.scss',
+  styles: `
+    .code {
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+    td.dishes {
+      max-width: 320px;
+    }
+    tr.off td {
+      color: var(--mat-sys-on-surface-variant);
+    }
+    .actions {
+      white-space: nowrap;
+    }
+    .danger {
+      color: var(--mat-sys-error);
+    }
+    .small {
+      font-size: 0.85em;
+    }
+    .spacer {
+      flex: 1;
+    }
+    .visually-hidden {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip: rect(0 0 0 0);
+    }
+  `,
+})
+export class CombosPage {
+  private readonly api = inject(CostingApi);
+  private readonly dialog = inject(MatDialog);
+  private readonly notify = inject(NotifyService);
+  private readonly auth = inject(AuthService);
+  protected readonly statusLabels = statusLabels;
+  protected readonly report = signal<ComboOffersReport | null>(null);
+  private readonly recipes = signal<RecipeCostCard[]>([]);
+  protected readonly loading = signal(true);
+  protected readonly error = signal<string | null>(null);
+  protected readonly search = signal('');
+  protected readonly canManage = computed(() => this.auth.can(Permissions.InventoryManage));
+  protected readonly shown = computed(() =>
+    (this.report()?.combos ?? []).filter((c) => smartMatch(this.search(), c.name, c.nameAr, String(c.code), ...c.items.map((i) => i.dish))),
+  );
+
+  constructor() {
+    void this.load();
+  }
+
+  protected dishes(combo: ComboOffer): string {
+    return combo.items.map((i) => `${i.quantity}× ${i.dish}`).join(' + ');
+  }
+
+  protected async edit(combo: ComboOffer | null): Promise<void> {
+    const report = this.report();
+    if (!report) {
+      return;
+    }
+    const saved = await showComboDialog(this.dialog, {
+      combo, nextCode: report.nextCode, foodCostTargetPercent: report.foodCostTargetPercent, recipes: this.recipes(),
+    });
+    if (saved) {
+      await this.load();
+    }
+  }
+
+  protected async remove(combo: ComboOffer): Promise<void> {
+    if (!confirm(`Delete ${combo.name}? It leaves the menu; its sales keep it. · حذف العرض؟`)) {
+      return;
+    }
+    try {
+      await firstValueFrom(this.api.deleteCombo(combo.id));
+      this.notify.info(`${combo.name} deleted. · تم حذف العرض.`);
+      await this.load();
+    } catch (error) {
+      this.notify.error(error, 'The combo could not be deleted.');
+    }
+  }
+
+  private async load(): Promise<void> {
+    this.loading.set(true);
+    this.error.set(null);
+    try {
+      const [report, recipes] = await Promise.all([firstValueFrom(this.api.combos()), firstValueFrom(this.api.recipes())]);
+      this.report.set(report);
+      this.recipes.set(recipes);
+    } catch (error) {
+      this.error.set(errorMessage(error, 'The combos could not be loaded.'));
+    } finally {
+      this.loading.set(false);
+    }
+  }
+}
+```
+
+
+> 📄 **`frontend/src/app/features/costing/combo-dialog.ts`** — 314 سطر
+
+```ts
+import { DecimalPipe } from '@angular/common';
+import { Component, computed, inject, signal } from '@angular/core';
+import { FormsModule } from '@angular/forms';
+import { MatButtonModule } from '@angular/material/button';
+import { MAT_DIALOG_DATA, MatDialog, MatDialogActions, MatDialogContent, MatDialogRef, MatDialogTitle } from '@angular/material/dialog';
+import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatIconModule } from '@angular/material/icon';
+import { MatInputModule } from '@angular/material/input';
+import { MatSlideToggleModule } from '@angular/material/slide-toggle';
+import { firstValueFrom } from 'rxjs';
+import { ComboOffer, CostingApi, RecipeCostCard } from '../../core/costing/costing.api';
+import { errorMessage } from '../../core/http/error-message';
+import { Company } from '../../core/settings/company';
+import { MoneyPipe } from '../../core/ui/money.pipe';
+import { NotifyService } from '../../core/ui/notify.service';
+import { ItemPicker, PickItem } from '../shared/item-picker';
+import { InfoTip } from './info-tip';
+
+export interface ComboDialogData {
+  // The combo to change; none for a new one, numbered nextCode.
+  combo: ComboOffer | null;
+  nextCode: number;
+  foodCostTargetPercent: number;
+  // The recipes a combo may hold: every one not deleted, on the menu or off it.
+  recipes: RecipeCostCard[];
+}
+
+interface Line {
+  recipeId: string | null;
+  quantity: number | null;
+}
+
+// The combo builder (عرض مجمع): existing recipes and how many of each, a price of the combo's own,
+// and as it is built, what the dishes cost together, what they would sell for apart, and the
+// combo's food cost %, against the target. No bill of materials is entered: the dishes' recipes are
+// the combo's.
+@Component({
+  selector: 'app-combo-dialog',
+  imports: [
+    DecimalPipe,
+    FormsModule,
+    InfoTip,
+    ItemPicker,
+    MatButtonModule,
+    MatDialogActions,
+    MatDialogContent,
+    MatDialogTitle,
+    MatFormFieldModule,
+    MatIconModule,
+    MatInputModule,
+    MatSlideToggleModule,
+    MoneyPipe,
+  ],
+  template: `
+    <h2 mat-dialog-title>{{ data.combo ? 'Change the combo' : 'New combo' }} <span class="inline-ar">{{ data.combo ? 'تعديل العرض' : 'عرض مجمع جديد' }}</span></h2>
+    <mat-dialog-content>
+      <div class="head">
+        <mat-form-field subscriptSizing="dynamic" class="code">
+          <mat-label>Code · الكود</mat-label>
+          <input matInput type="number" min="1" [ngModel]="code()" (ngModelChange)="code.set($event)" [disabled]="!!data.combo" aria-label="Code" />
+        </mat-form-field>
+        <mat-form-field subscriptSizing="dynamic" class="name">
+          <mat-label>Name · الاسم</mat-label>
+          <input matInput maxlength="200" [ngModel]="name()" (ngModelChange)="name.set($event)" aria-label="Name" />
+        </mat-form-field>
+        <mat-form-field subscriptSizing="dynamic" class="name">
+          <mat-label>Arabic name · الاسم بالعربي</mat-label>
+          <input matInput maxlength="200" dir="rtl" [ngModel]="nameAr()" (ngModelChange)="nameAr.set($event)" aria-label="Arabic name" />
+        </mat-form-field>
+        <mat-form-field subscriptSizing="dynamic" class="price">
+          <mat-label>Combo price · سعر العرض</mat-label>
+          <input matInput type="number" min="0" step="any" [ngModel]="price()" (ngModelChange)="price.set($event)" aria-label="Combo price" />
+        </mat-form-field>
+        <mat-slide-toggle [checked]="active()" (change)="active.set($event.checked)">On sale · متاح للبيع</mat-slide-toggle>
+      </div>
+      <p class="muted small">Sold under its code like any menu item: the menu, the sales and the POS read it in the Combos &amp; offers category.</p>
+
+      <div class="table-wrap">
+        <table class="grid dishes">
+          <thead>
+            <tr>
+              <th>Dish<span class="ar">الصنف</span></th>
+              <th class="num">How many<span class="ar">العدد</span></th>
+              <th class="num">Cost a portion<span class="ar">تكلفة الحصة</span></th>
+              <th class="num">Line cost<span class="ar">تكلفة السطر</span></th>
+              <th class="num">Price apart<span class="ar">السعر منفصلًا</span></th>
+              <th><span class="visually-hidden">Remove</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            @for (line of lines(); track $index; let i = $index) {
+              <tr>
+                <td class="dish">
+                  <app-item-picker [items]="pickItems()" [value]="line.recipeId" (valueChange)="change(i, { recipeId: $event })"
+                    [label]="'Dish, line ' + (i + 1)" placeholder="A recipe · وصفة" />
+                </td>
+                <td class="num">
+                  <mat-form-field subscriptSizing="dynamic" class="qty">
+                    <input matInput type="number" min="1" max="99" step="1" [ngModel]="line.quantity" (ngModelChange)="change(i, { quantity: $event })"
+                      [attr.aria-label]="'How many, line ' + (i + 1)" />
+                  </mat-form-field>
+                </td>
+                @if (cardOf(line); as c) {
+                  <td class="num">{{ c.costPerPortion | money }}</td>
+                  <td class="num">{{ c.costPerPortion * (line.quantity ?? 0) | money }}</td>
+                  <td class="num">{{ c.menuPrice === null ? '—' : (c.menuPrice * (line.quantity ?? 0) | money) }}</td>
+                } @else {
+                  <td class="num muted">—</td>
+                  <td class="num muted">—</td>
+                  <td class="num muted">—</td>
+                }
+                <td class="num">
+                  <button mat-icon-button type="button" (click)="remove(i)" [disabled]="lines().length === 1" [attr.aria-label]="'Remove line ' + (i + 1)">
+                    <mat-icon>close</mat-icon>
+                  </button>
+                </td>
+              </tr>
+            }
+          </tbody>
+        </table>
+      </div>
+      <button mat-button type="button" (click)="add()"><mat-icon>add</mat-icon> Another dish · صنف آخر</button>
+
+      <div class="tiles summary">
+        <div class="tile">
+          <span class="label">Total combo cost · إجمالي التكلفة <app-info-tip tip="coTotalCost" /></span>
+          <strong>{{ totals().cost | money }}</strong>
+        </div>
+        <div class="tile">
+          <span class="label">Original separate price · السعر منفصلًا <app-info-tip tip="coOriginal" /></span>
+          <strong>{{ totals().original === null ? '—' : (totals().original! | money) }}</strong>
+          @if (totals().savings !== null) {
+            <small class="chip">saves {{ totals().savings! | money }}{{ totals().savingsPercent === null ? '' : ' · ' + (totals().savingsPercent! | number: '1.0-1') + '%' }}</small>
+          }
+        </div>
+        <div class="tile key" [class.over]="totals().foodCost !== null && totals().foodCost! > data.foodCostTargetPercent">
+          <span class="label">Combo food cost % · نسبة تكلفة العرض <app-info-tip tip="coFoodCost" /></span>
+          <strong>{{ totals().foodCost === null ? '—' : (totals().foodCost! | number: '1.1-1') + '%' }}</strong>
+          <small class="chip">target {{ data.foodCostTargetPercent | number: '1.0-1' }}%</small>
+        </div>
+      </div>
+      @if (problem(); as p) {
+        <p class="error" role="alert">{{ p }}</p>
+      }
+    </mat-dialog-content>
+    <mat-dialog-actions align="end">
+      <button mat-button type="button" (click)="ref.close()" [disabled]="saving()">Cancel</button>
+      <button mat-flat-button type="button" (click)="save()" [disabled]="saving()"><mat-icon>save</mat-icon> Save · حفظ</button>
+    </mat-dialog-actions>
+  `,
+  styleUrl: './costing.scss',
+  styles: `
+    .head {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px 12px;
+    }
+    .code {
+      width: 120px;
+    }
+    .name {
+      flex: 1 1 220px;
+    }
+    .price {
+      width: 170px;
+    }
+    td.dish {
+      min-width: 240px;
+    }
+    .qty {
+      width: 90px;
+    }
+    .summary {
+      margin-top: 12px;
+      grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    }
+    .chip {
+      justify-self: start;
+      padding: 0 8px;
+      border-radius: 999px;
+      font: var(--mat-sys-label-small);
+      background: var(--mat-sys-surface-container-high);
+    }
+    .tile.over {
+      border-color: color-mix(in srgb, var(--app-warn) 55%, transparent);
+      strong {
+        color: var(--app-warn);
+      }
+    }
+    .small {
+      font-size: 0.85em;
+    }
+    .visually-hidden {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip: rect(0 0 0 0);
+    }
+  `,
+})
+export class ComboDialog {
+  protected readonly data = inject<ComboDialogData>(MAT_DIALOG_DATA);
+  protected readonly ref = inject(MatDialogRef<ComboDialog, boolean>);
+  private readonly api = inject(CostingApi);
+  private readonly company = inject(Company);
+  private readonly notify = inject(NotifyService);
+
+  protected readonly code = signal<number | null>(this.data.combo?.code ?? this.data.nextCode);
+  protected readonly name = signal(this.data.combo?.name ?? '');
+  protected readonly nameAr = signal(this.data.combo?.nameAr ?? '');
+  protected readonly price = signal<number | null>(this.data.combo?.sellingPrice ?? null);
+  protected readonly active = signal(this.data.combo?.isActive ?? true);
+  protected readonly lines = signal<Line[]>(
+    this.data.combo?.items.map((i) => ({ recipeId: i.recipeId, quantity: i.quantity })) ?? [{ recipeId: null, quantity: 1 }, { recipeId: null, quantity: 1 }],
+  );
+  protected readonly saving = signal(false);
+  protected readonly problem = signal<string | null>(null);
+
+  private readonly byId = computed(() => new Map(this.data.recipes.filter((r) => r.recipeId).map((r) => [r.recipeId!, r])));
+  protected readonly pickItems = computed<PickItem[]>(() =>
+    this.data.recipes
+      .filter((r) => r.recipeId && !r.isDeleted)
+      .map((r) => ({
+        id: r.recipeId!, name: r.recipe, code: r.itemCode || null, kind: 'menu' as const, unit: 'portion', detail: r.category,
+        cost: `${this.company.money(r.costPerPortion)} a portion`,
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name)),
+  );
+
+  // Worked out as the screen is filled in, as the server will: Σ cost × quantity, Σ price × quantity.
+  protected readonly totals = computed(() => {
+    const chosen = this.lines()
+      .map((l) => ({ card: l.recipeId ? this.byId().get(l.recipeId) : undefined, quantity: Number(l.quantity) || 0 }))
+      .filter((l) => l.card && l.quantity > 0);
+    const cost = round(chosen.reduce((sum, l) => sum + l.card!.costPerPortion * l.quantity, 0));
+    const original = chosen.length > 0 && chosen.every((l) => l.card!.menuPrice !== null)
+      ? round(chosen.reduce((sum, l) => sum + l.card!.menuPrice! * l.quantity, 0))
+      : null;
+    const price = Number(this.price()) || 0;
+    const savings = original !== null && price > 0 ? round(original - price) : null;
+    return {
+      cost,
+      original,
+      savings,
+      savingsPercent: savings !== null && original! > 0 ? (savings / original!) * 100 : null,
+      foodCost: price > 0 && chosen.length > 0 ? Math.round((cost / price) * 1000) / 10 : null,
+    };
+  });
+
+  protected cardOf(line: Line): RecipeCostCard | null {
+    return (line.recipeId && this.byId().get(line.recipeId)) || null;
+  }
+
+  protected change(index: number, patch: Partial<Line>): void {
+    this.lines.update((lines) => lines.map((l, i) => (i === index ? { ...l, ...patch } : l)));
+  }
+
+  protected add(): void {
+    this.lines.update((lines) => [...lines, { recipeId: null, quantity: 1 }]);
+  }
+
+  protected remove(index: number): void {
+    this.lines.update((lines) => lines.filter((_, i) => i !== index));
+  }
+
+  protected async save(): Promise<void> {
+    const items = this.lines().filter((l) => l.recipeId).map((l) => ({ recipeId: l.recipeId!, quantity: Number(l.quantity) }));
+    const code = Number(this.code());
+    const price = Number(this.price());
+    if (!this.name().trim()) {
+      this.problem.set('Name the combo. · اكتب اسم العرض.');
+      return;
+    }
+    if (!Number.isInteger(code) || code < 1) {
+      this.problem.set('The code is a menu number, 1 or more. · الكود رقم 1 أو أكثر.');
+      return;
+    }
+    if (!(price > 0)) {
+      this.problem.set('Set the combo\'s price. · حدد سعر العرض.');
+      return;
+    }
+    if (items.length === 0 || items.some((i) => !Number.isInteger(i.quantity) || i.quantity < 1 || i.quantity > 99)) {
+      this.problem.set('Choose each dish and how many of it, 1 to 99. · اختر الأصناف وعددها.');
+      return;
+    }
+    this.saving.set(true);
+    this.problem.set(null);
+    try {
+      await firstValueFrom(
+        this.api.saveCombo(this.data.combo?.id ?? crypto.randomUUID(), {
+          code, name: this.name().trim(), nameAr: this.nameAr().trim() || null, sellingPrice: price, isActive: this.active(), items,
+        }),
+      );
+      this.notify.info(`${this.name().trim()} saved. · تم حفظ العرض.`);
+      this.ref.close(true);
+    } catch (error) {
+      this.problem.set(errorMessage(error, 'The combo could not be saved.'));
+    } finally {
+      this.saving.set(false);
+    }
+  }
+}
+
+function round(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+export function showComboDialog(dialog: MatDialog, data: ComboDialogData): Promise<boolean | undefined> {
+  return firstValueFrom(
+    dialog.open<ComboDialog, ComboDialogData, boolean>(ComboDialog, { data, width: '980px', maxWidth: '96vw', autoFocus: 'dialog' }).afterClosed(),
   );
 }
 ```
@@ -16387,7 +17067,7 @@ export function showProductionOrder(dialog: MatDialog, order: ProductionOrder): 
 
 `MenuPage`: الفئات والأصناف (الرقم يُعطى مرة)، الأحجام بأسعارها، الإضافات، والاستيراد. و `AddToMenuDialog`: الوصفات خارج المنيو، كلها معلّمة، بالسعر المخطط وفئة المطبخ، **ونسبة تكلفة لحظية** لكل صف، و "فئة للباقي"، والنتيجة بالأكواد.
 
-> 📄 **`frontend/src/app/features/costing/menu-page.ts`** — 608 سطر
+> 📄 **`frontend/src/app/features/costing/menu-page.ts`** — 616 سطر
 
 ```ts
 import { Component, computed, inject, signal } from '@angular/core';
@@ -16401,6 +17081,7 @@ import { MatInputModule } from '@angular/material/input';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatSelectModule } from '@angular/material/select';
 import { MatTooltipModule } from '@angular/material/tooltip';
+import { RouterLink } from '@angular/router';
 import { firstValueFrom } from 'rxjs';
 import { AuthService } from '../../core/auth/auth.service';
 import { Permissions } from '../../core/auth/permissions';
@@ -16618,6 +17299,7 @@ export class MenuItemDialog {
     MatProgressBarModule,
     MatTooltipModule,
     MoneyPipe,
+    RouterLink,
     SearchField,
     SortControl,
   ],
@@ -16700,6 +17382,9 @@ export class MenuItemDialog {
                   @if (item.isDeleted) {
                     <span class="tag bad">Deleted<span class="ar">محذوف</span></span>
                   }
+                  @if (item.comboOfferId) {
+                    <span class="tag">Combo<span class="ar">عرض مجمع</span></span>
+                  }
                 </td>
                 <td>{{ item.category }}</td>
                 <td class="num">{{ item.isPriceBasedOnAddons ? 'By add-ons' : item.sizes.length ? '—' : (item.price | money) }}</td>
@@ -16712,7 +17397,10 @@ export class MenuItemDialog {
                 </td>
                 <td class="small">{{ addOnNames(item) }}</td>
                 <td class="num actions">
-                  @if (canChange) {
+                  @if (item.comboOfferId) {
+                    <a mat-icon-button routerLink="/costing/recipes/combos" [attr.aria-label]="'Change ' + item.name + ' on Combos & offers'"
+                      matTooltip="A combo: changed on Recipes → Combos & offers · يُعدل من العروض المجمعة"><mat-icon>lunch_dining</mat-icon></a>
+                  } @else if (canChange) {
                     @if (item.isDeleted) {
                       <button mat-icon-button (click)="restore(item)" [attr.aria-label]="'Restore ' + item.name" matTooltip="Restore · استعادة"><mat-icon>restore</mat-icon></button>
                     } @else {
@@ -23565,7 +24253,7 @@ export class ExpenseItemDialog {
 - **المراجعة** (`EndOfDaySummaryDialog`): تقرير ملخص قبل التسليم؛ لا تسليم بفاتورة أو دفعة مكتوبة لم تُضف، أو بلا مبيعات.
 - **بعد التسليم:** القسم مقفول، وما تحوّل لفواتير وقيود يظهر بحالته، وإعادة الفتح للمدير.
 
-> 📄 **`frontend/src/app/features/costing/end-of-day-page.ts`** — 1503 سطر
+> 📄 **`frontend/src/app/features/costing/end-of-day-page.ts`** — 1605 سطر
 
 ```ts
 import { DatePipe } from '@angular/common';
@@ -23580,7 +24268,7 @@ import { MatInputModule } from '@angular/material/input';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { ActivatedRoute, RouterLink } from '@angular/router';
 import { firstValueFrom } from 'rxjs';
-import { CostingApi } from '../../core/costing/costing.api';
+import { CostingApi, DiscountReason } from '../../core/costing/costing.api';
 import { CostingAccess } from '../../core/costing/costing-tabs';
 import {
   EndOfDay,
@@ -24303,6 +24991,13 @@ export class EndOfDaySummaryDialog {
               [disabled]="locked()" placeholder="0" data-western-digits aria-label="Voids" />
             <span matTextSuffix>&nbsp;{{ company.currency() }}</span>
           </mat-form-field>
+          <mat-form-field subscriptSizing="dynamic" floatLabel="always" class="discounts">
+            <mat-label>Discounts &amp; promos · الخصومات والعروض</mat-label>
+            <input matInput type="number" min="0" step="any" inputmode="decimal" [ngModel]="sales().discountsAmount" (ngModelChange)="setSale('discountsAmount', $event)"
+              [disabled]="locked()" placeholder="0" data-western-digits aria-label="Discounts and promos" />
+            <span matTextSuffix>&nbsp;{{ company.currency() }}</span>
+            <mat-hint>Never collected: not in the till · لا تدخل الدرج</mat-hint>
+          </mat-form-field>
           <div class="revenue">
             <span class="label">Total revenue · إجمالي الإيراد</span>
             <strong>{{ totalRevenue() | money }}</strong>
@@ -24312,6 +25007,36 @@ export class EndOfDaySummaryDialog {
             <mat-label>Notes (void reasons) · ملاحظات</mat-label>
             <input matInput [ngModel]="sales().notes" (ngModelChange)="setSale('notes', $event)" [disabled]="locked()" maxlength="500" aria-label="Sales notes" />
           </mat-form-field>
+          @if ((sales().discountsAmount ?? 0) > 0 || (sales().discountReasons?.length ?? 0) > 0) {
+            <div class="wide discount-reasons" role="group" aria-label="Discount reasons">
+              <span class="label">Why · أسباب الخصومات</span>
+              @for (r of sales().discountReasons ?? []; track $index; let i = $index) {
+                <div class="reason">
+                  <mat-form-field subscriptSizing="dynamic">
+                    <input matInput [ngModel]="r.reason" (ngModelChange)="setReason(i, { reason: $event })" [disabled]="locked()" maxlength="60"
+                      list="discount-reasons" placeholder="Loyalty, Staff…" [attr.aria-label]="'Discount reason ' + (i + 1)" />
+                  </mat-form-field>
+                  <mat-form-field subscriptSizing="dynamic" class="amount">
+                    <input matInput type="number" min="0" step="any" inputmode="decimal" [ngModel]="r.amount || null"
+                      (ngModelChange)="setReason(i, { amount: $event === null || $event === '' ? 0 : +$event })" [disabled]="locked()" placeholder="0"
+                      data-western-digits [attr.aria-label]="'Discount reason amount ' + (i + 1)" />
+                    <span matTextSuffix>&nbsp;{{ company.currency() }}</span>
+                  </mat-form-field>
+                  @if (!locked()) {
+                    <button mat-icon-button type="button" (click)="removeReason(i)" [attr.aria-label]="'Remove reason ' + (i + 1)"><mat-icon>close</mat-icon></button>
+                  }
+                </div>
+              }
+              @if (!locked()) {
+                <button mat-button type="button" (click)="addReason()"><mat-icon>add</mat-icon> Reason · سبب</button>
+              }
+              <datalist id="discount-reasons">
+                @for (s of reasonSuggestions; track s) {
+                  <option [value]="s"></option>
+                }
+              </datalist>
+            </div>
+          }
         </div>
         <div class="z-photo">
           <input #zCamera type="file" accept="image/*" capture="environment" hidden (change)="zPhoto(zCamera)" aria-label="Z report, take a photo" />
@@ -24358,6 +25083,10 @@ export class EndOfDaySummaryDialog {
           <div class="minus"><dt>Supplier payments <span class="inline-ar">مدفوعات الموردين</span></dt><dd>− {{ payoutTotal('SupplierPayment') | money }}</dd></div>
           <div class="minus"><dt>Employee advances <span class="inline-ar">السلفيات</span></dt><dd>− {{ payoutTotal('EmployeeAdvance') | money }}</dd></div>
         </dl>
+        @if ((sales().discountsAmount ?? 0) > 0) {
+          <p class="muted small discount-note">Discounts &amp; promos of {{ sales().discountsAmount! | money }} are not in it: they were never collected (the cash is after them).
+            <span class="line-ar" lang="ar" dir="rtl">الخصومات لا تدخل الدرج: لم تُحصّل أصلًا.</span></p>
+        }
         @if (till.net < 0) {
           <p class="error small" role="status">More was paid out than the drawer took in: check the amounts. · المصروف أكبر من الكاش.</p>
         }
@@ -24622,6 +25351,35 @@ export class EndOfDaySummaryDialog {
         grid-column: 1 / -1;
       }
     }
+    .discount-reasons {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px 12px;
+
+      .label {
+        font: var(--mat-sys-label-large);
+        color: var(--mat-sys-on-surface-variant);
+      }
+      .reason {
+        display: flex;
+        flex: 1 1 320px;
+        align-items: center;
+        gap: 6px;
+        min-width: 0;
+        max-width: 100%;
+
+        mat-form-field:first-child {
+          flex: 1 1 auto;
+          width: auto;
+          min-width: 0;
+        }
+      }
+      .amount {
+        flex: 0 0 120px;
+        width: 120px;
+      }
+    }
     .revenue {
       display: grid;
       padding: 8px 12px;
@@ -24838,6 +25596,30 @@ export class EndOfDayPage {
   }
 
   // A figure typed: kept a moment later, unless another follows.
+  protected readonly reasonSuggestions = ['Loyalty', 'Staff', 'Manager promo', 'Happy hour', 'Delivery app promo', 'Complaint'];
+
+  // A day's discount reasons: each its name and what it took off, saved with the sales.
+  protected setReason(index: number, patch: Partial<DiscountReason>): void {
+    this.changeReasons((reasons) => reasons.map((r, i) => (i === index ? { ...r, ...patch } : r)));
+  }
+
+  protected addReason(): void {
+    this.changeReasons((reasons) => [...reasons, { reason: '', amount: 0, count: 1 }]);
+  }
+
+  protected removeReason(index: number): void {
+    this.changeReasons((reasons) => reasons.filter((_, i) => i !== index));
+  }
+
+  private changeReasons(change: (reasons: DiscountReason[]) => DiscountReason[]): void {
+    this.sales.update((s) => ({ ...s, discountReasons: change(s.discountReasons ?? []) }));
+    this.salesProblem.set(null);
+    if (this.salesTimer) {
+      clearTimeout(this.salesTimer);
+    }
+    this.salesTimer = setTimeout(() => void this.flushSales(), 900);
+  }
+
   protected setSale(field: keyof EndOfDaySales, value: number | string | null): void {
     const cleaned = field === 'notes' ? ((value as string | null) ?? '') : value === '' || value === null ? null : Number(value);
     this.sales.update((s) => ({ ...s, [field]: cleaned }));
@@ -24936,14 +25718,21 @@ export class EndOfDayPage {
       return true;
     }
     const sales = this.sales();
-    if ([sales.cashAmount, sales.cardAmount, sales.taxAmount, sales.voidsAmount, sales.openingFloat].some((n) => n !== null && (!Number.isFinite(n) || n < 0))) {
-      this.salesProblem.set('The float, cash, Visa, tax and voids are zero or more. · المبالغ صفر أو أكثر.');
+    if ([sales.cashAmount, sales.cardAmount, sales.taxAmount, sales.voidsAmount, sales.openingFloat, sales.discountsAmount ?? null]
+      .some((n) => n !== null && (!Number.isFinite(n) || n < 0))) {
+      this.salesProblem.set('The float, cash, Visa, tax, voids and discounts are zero or more. · المبالغ صفر أو أكثر.');
+      return false;
+    }
+    // A reason still blank is not sent; their amounts no more than the discounts.
+    const reasons = (sales.discountReasons ?? []).filter((r) => r.reason.trim()).map((r) => ({ ...r, reason: r.reason.trim(), amount: Number(r.amount) || 0 }));
+    if (reasons.some((r) => r.amount < 0) || reasons.reduce((sum, r) => sum + r.amount, 0) > (sales.discountsAmount ?? 0) + 0.001) {
+      this.salesProblem.set('The reasons add up to more than the discounts. · مجموع الأسباب أكبر من الخصومات.');
       return false;
     }
     const date = this.date();
     this.savingSales.set(true);
     try {
-      const day = await firstValueFrom(this.api.saveSales(date, { ...sales, notes: sales.notes?.trim() || null }));
+      const day = await firstValueFrom(this.api.saveSales(date, { ...sales, notes: sales.notes?.trim() || null, discountReasons: reasons }));
       this.savedSales.set(sales);
       if (this.date() === date) {
         this.day.set(day);
@@ -25041,19 +25830,20 @@ export class EndOfDayPage {
 }
 
 function blankSales(): EndOfDaySales {
-  return { cashAmount: null, cardAmount: null, taxAmount: null, voidsAmount: null, notes: '', openingFloat: null };
+  return { cashAmount: null, cardAmount: null, taxAmount: null, voidsAmount: null, notes: '', openingFloat: null, discountsAmount: null, discountReasons: [] };
 }
 
 function salesOf(day: EndOfDay): EndOfDaySales {
   return {
     cashAmount: day.cashAmount, cardAmount: day.cardAmount, taxAmount: day.taxAmount, voidsAmount: day.voidsAmount, notes: day.notes ?? '',
-    openingFloat: day.openingFloat ?? null,
+    openingFloat: day.openingFloat ?? null, discountsAmount: day.discountsAmount ?? null, discountReasons: day.discountReasons ?? [],
   };
 }
 
 function sameSales(a: EndOfDaySales, b: EndOfDaySales): boolean {
   return a.cashAmount === b.cashAmount && a.cardAmount === b.cardAmount && a.taxAmount === b.taxAmount && a.voidsAmount === b.voidsAmount
-    && a.openingFloat === b.openingFloat && (a.notes ?? '').trim() === (b.notes ?? '').trim();
+    && a.openingFloat === b.openingFloat && (a.notes ?? '').trim() === (b.notes ?? '').trim()
+    && (a.discountsAmount ?? null) === (b.discountsAmount ?? null) && JSON.stringify(a.discountReasons ?? []) === JSON.stringify(b.discountReasons ?? []);
 }
 
 function todayIso(): string {

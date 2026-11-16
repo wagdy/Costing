@@ -1351,7 +1351,7 @@ Draft ──(تسليم: Review & confirm)──► Submitted ──(إعادة 
 - **المراجعة قبل التسليم:** لا يُسلّم يوم بلا مبيعات، أو بفاتورة/دفعة مكتوبة ولم تُضف.
 - الصور في `EndOfDayPhotos` بمفتاح الفاتورة/الدفعة (وصورة Z بمفتاح اليوم)، ويُتحقق من نوعها بأول بايتات وحجمها.
 
-> 📄 **`backend/src/Costing.Application/EndOfDay/EndOfDays.cs`** — 612 سطر
+> 📄 **`backend/src/Costing.Application/EndOfDay/EndOfDays.cs`** — 618 سطر
 
 ```csharp
 using System.Globalization;
@@ -1362,6 +1362,7 @@ using Costing.Application.Treasury;
 using Costing.Domain.Approvals;
 using Costing.Domain.Common;
 using Costing.Domain.EndOfDay;
+using Costing.Domain.Sales;
 using Costing.Domain.Staff;
 using Costing.Domain.Suppliers;
 using Costing.Domain.Treasury;
@@ -1469,7 +1470,10 @@ public sealed record EndOfDayDto(
     decimal CashTax,
     decimal CashSalesCollected,
     decimal CashPaidOut,
-    decimal NetCashInTill);
+    decimal NetCashInTill,
+    // The discounts and promos the Z report gives, and why: never collected, never in the till.
+    decimal? DiscountsAmount = null,
+    IReadOnlyList<DiscountReason>? DiscountReasons = null);
 
 public sealed record EndOfDayPhotoFile(string FileName, string ContentType, byte[] Content);
 
@@ -1480,7 +1484,7 @@ public sealed record GetEndOfDaysQuery(DateOnly From, DateOnly To) : IRequest<IR
 
 public sealed record SaveEndOfDaySalesCommand(
     DateOnly Date, decimal? CashAmount, decimal? CardAmount, decimal? TaxAmount, decimal? VoidsAmount, string? Notes, string StaffName = "",
-    decimal? OpeningFloat = null)
+    decimal? OpeningFloat = null, decimal? DiscountsAmount = null, IReadOnlyList<DiscountReason>? DiscountReasons = null)
     : IRequest<EndOfDayDto>;
 
 public sealed record AddEndOfDayInvoiceCommand(
@@ -1742,7 +1746,7 @@ internal sealed class EndOfDayDays(
                 day.OpeningFloat, payouts,
                 day.CountOf(EndOfDayPayoutKind.SupplierPayment), day.TotalOf(EndOfDayPayoutKind.SupplierPayment),
                 day.CountOf(EndOfDayPayoutKind.EmployeeAdvance), day.TotalOf(EndOfDayPayoutKind.EmployeeAdvance),
-                day.CashTax, day.CashSalesCollected, day.CashPaidOut, day.NetCashInTill));
+                day.CashTax, day.CashSalesCollected, day.CashPaidOut, day.NetCashInTill, day.DiscountsAmount, day.DiscountReasons.ToList()));
         }
         return dtos;
     }
@@ -1772,7 +1776,9 @@ internal sealed class SaveEndOfDaySalesCommandHandler(EndOfDayDays shared, IUnit
     public async Task<EndOfDayDto> Handle(SaveEndOfDaySalesCommand request, CancellationToken cancellationToken)
     {
         var day = await shared.OpenAsync(request.Date, request.StaffName, cancellationToken);
-        day.RecordSales(request.CashAmount, request.CardAmount, request.TaxAmount, request.VoidsAmount, request.Notes, request.StaffName, request.OpeningFloat);
+        day.RecordSales(
+            request.CashAmount, request.CardAmount, request.TaxAmount, request.VoidsAmount, request.Notes, request.StaffName, request.OpeningFloat,
+            request.DiscountsAmount, request.DiscountReasons);
         await unitOfWork.SaveChangesAsync(cancellationToken);
         return await shared.DtoAsync(day, cancellationToken);
     }
@@ -1971,7 +1977,7 @@ internal sealed class GetEndOfDayPhotoQueryHandler(IEndOfDayRepository days, IEn
 
 `EndOfDayController`: `multipart/form-data` لإضافة البنود بصورها، و `GET {date}` يعيد 204 إن لم يوجد يوم، والقراءة لأقسام عدة (`Readers`) والتعديل لقسم تقفيل اليوم، وإعادة الفتح بصلاحية القرار.
 
-> 📄 **`backend/src/Costing.Api/Controllers/EndOfDayController.cs`** — 242 سطر
+> 📄 **`backend/src/Costing.Api/Controllers/EndOfDayController.cs`** — 245 سطر
 
 ```csharp
 using System.Globalization;
@@ -2018,7 +2024,8 @@ public sealed class EndOfDayController(ISender sender) : ControllerBase
     [CostingTab(CostingTabs.EndOfDay)]
     public Task<EndOfDayDto> SaveSales(DateOnly date, EndOfDaySalesRequest request, CancellationToken cancellationToken) =>
         sender.Send(new SaveEndOfDaySalesCommand(
-            date, request.CashAmount, request.CardAmount, request.TaxAmount, request.VoidsAmount, request.Notes, StaffName, request.OpeningFloat), cancellationToken);
+            date, request.CashAmount, request.CardAmount, request.TaxAmount, request.VoidsAmount, request.Notes, StaffName, request.OpeningFloat,
+            request.DiscountsAmount, request.DiscountReasons), cancellationToken);
 
     // An invoice handed in, with its photo: a form of invoiceId (made by the till), kind (Cash or
     // Credit), supplierId, reportedTotal, note and file.
@@ -2188,7 +2195,9 @@ public sealed class EndOfDayController(ISender sender) : ControllerBase
     private bool CanApprove => UserClaims.RoleOf(User) is { } role && RolePermissions.Has(role, Permissions.ApprovalDecide);
 }
 
-public sealed record EndOfDaySalesRequest(decimal? CashAmount, decimal? CardAmount, decimal? TaxAmount, decimal? VoidsAmount, string? Notes, decimal? OpeningFloat = null);
+public sealed record EndOfDaySalesRequest(
+    decimal? CashAmount, decimal? CardAmount, decimal? TaxAmount, decimal? VoidsAmount, string? Notes, decimal? OpeningFloat = null,
+    decimal? DiscountsAmount = null, IReadOnlyList<Costing.Domain.Sales.DiscountReason>? DiscountReasons = null);
 
 // A payment changed: the supplier paid (a supplier payment's) or the employee advanced (an advance's).
 public sealed record EndOfDayPayoutRequest(Guid? SupplierId, Guid? EmployeeId, decimal Amount, string? Note);
@@ -2391,13 +2400,14 @@ internal sealed class ImportDailySalesHandler(IMenuRepository menu, DailySalesWr
 
 `Sales.cs`: `SaleStockPoster` (الخصم بالوصفات)، `SaleWriter`، والمرتجعات (حركة `VoidReturn` تعيد المخزون)، وتقرير المبيعات.
 
-> 📄 **`backend/src/Costing.Application/Sales/Sales.cs`** — 280 سطر
+> 📄 **`backend/src/Costing.Application/Sales/Sales.cs`** — 288 سطر
 
 ```csharp
 using MediatR;
 using Microsoft.Extensions.Logging;
 using Costing.Application.Common;
 using Costing.Application.RawMaterials;
+using Costing.Application.Recipes;
 using Costing.Domain.Common;
 using Costing.Domain.Menu;
 using Costing.Domain.RawMaterials;
@@ -2477,7 +2487,9 @@ public sealed record SaleInput(
     decimal TaxAmount = 0,
     decimal PointsAmount = 0,
     decimal RefundedAmount = 0,
-    string? Notes = null);
+    string? Notes = null,
+    // Why the discount was given (a day's summary from the POS: its Z reports' reasons).
+    IReadOnlyList<DiscountReason>? DiscountReasons = null);
 
 // Turns sold lines into stock movements, each material's share as purchased, by the recipe each
 // sells by: Sale for a line charged, then VoidReturn for one refunded after payment, and Waste for
@@ -2485,6 +2497,7 @@ public sealed record SaleInput(
 // retried sale posts once. Adds the movements; the caller saves.
 internal sealed class SaleStockPoster(
     IRecipeRepository recipes,
+    IComboOfferRepository combos,
     IRawMaterialRepository materials,
     IStockMovementRepository movements,
     ILogger<SaleStockPoster> logger)
@@ -2516,8 +2529,8 @@ internal sealed class SaleStockPoster(
         if (pending.Count == 0)
             return;
 
-        var relevant = await recipes.GetByTargetsAsync(StockRequirements.TargetsFor(pending.Select(p => p.Item)), cancellationToken);
-        var needs = pending.Select(p => (p.LineId, p.Reason, Needs: StockRequirements.For(p.Item, relevant))).ToList();
+        var (relevant, parts) = await recipes.ForSaleAsync(combos, pending.Select(p => p.Item).ToList(), cancellationToken);
+        var needs = pending.Select(p => (p.LineId, p.Reason, Needs: StockRequirements.For(p.Item, relevant, parts))).ToList();
         var materialsById = (await materials.GetByIdsAsync(needs.SelectMany(n => n.Needs.Keys).Distinct().ToList(), cancellationToken))
             .ToDictionary(m => m.Id);
 
@@ -2563,11 +2576,15 @@ internal sealed class SaleWriter(IMenuRepository menu, ISalesReceiptRepository s
 
         var receipt = new SalesReceipt(
             input.Id, input.Reference, soldAt, input.Date, input.Channel, input.PaymentMethod, lines, Money(input.DiscountAmount), Money(input.DeliveryFee),
-            Money(input.TaxAmount), Money(input.PointsAmount), Money(input.RefundedAmount), input.Notes, source, by);
+            Money(input.TaxAmount), Money(input.PointsAmount), Money(input.RefundedAmount), input.Notes, source, by, input.DiscountReasons);
         sales.Add(receipt);
         await poster.PostAsync(receipt.Lines, cancellationToken);
         return receipt;
     }
+
+    // What the lines charged come to at the menu's prices (or as given): a sale's subtotal before it is made.
+    public static decimal ValueOf(IEnumerable<SaleLineInput> lines, Menu known) =>
+        lines.Where(l => l.Voided is LineVoid.None or LineVoid.AfterPayment).Sum(l => Line(l, known).LineTotal);
 
     private static SalesReceiptLine Line(SaleLineInput line, Menu known)
     {
@@ -3274,7 +3291,7 @@ internal sealed class RecordStaffConsumptionHandler(
 
 أكبر Controller: الخامات والوحدات، الوصفات والمصنعات، أوامر الإنتاج، الجرد، الهالك، الفواتير ويومية المشتريات وتعديلها وصورها، الفئات والمصروفات والموردون، و **طلبات الحذف** (`deletion-requests`). الصلاحيات على كل endpoint (لا تعتمد على السجل)، و `CanApprove` يقرر "200 تنفيذ" أم "202 طلب".
 
-> 📄 **`backend/src/Costing.Api/Controllers/InventoryController.cs`** — 905 سطر
+> 📄 **`backend/src/Costing.Api/Controllers/InventoryController.cs`** — 927 سطر
 
 ```csharp
 using MediatR;
@@ -3978,6 +3995,25 @@ public sealed class InventoryController(ISender sender) : ControllerBase
         return NoContent();
     }
 
+    // A combo offer (عرض مجمع) added or changed: its dishes, its price and code, and its menu item
+    // with it. For whoever writes recipes.
+    [HttpPut("combos/{comboId:guid}")]
+    [CostingTab(CostingTabs.Recipes)]
+    [Authorize(Policy = Permissions.InventoryManage)]
+    public Task<Costing.Application.Menu.ComboOfferSaved> SaveCombo(Guid comboId, SaveComboRequest request, CancellationToken cancellationToken) =>
+        sender.Send(new Costing.Application.Menu.SaveComboOfferCommand(
+            comboId, request.Code, request.Name, request.NameAr, request.SellingPrice, request.IsActive, request.Items ?? []), cancellationToken);
+
+    // Off the menu and the list; its sales keep it.
+    [HttpDelete("combos/{comboId:guid}")]
+    [CostingTab(CostingTabs.Recipes)]
+    [Authorize(Policy = Permissions.InventoryManage)]
+    public async Task<IActionResult> DeleteCombo(Guid comboId, CancellationToken cancellationToken)
+    {
+        await sender.Send(new Costing.Application.Menu.DeleteComboOfferCommand(comboId, StaffName), cancellationToken);
+        return NoContent();
+    }
+
     // Marks it deleted: kept for the record, gone from the screens and the sales.
     // Deleted (204) by someone who may approve deletions; asked of a manager otherwise (202).
     [HttpDelete("recipes/{recipeId:guid}")]
@@ -4049,6 +4085,9 @@ public sealed class InventoryController(ISender sender) : ControllerBase
     private RequestDeletionCommand DeletionOf(Guid requestId, ApprovalModule module, Guid recordId, string? reason) =>
         new(requestId, module, recordId, reason, StaffId, StaffName, CanApprove);
 }
+
+public sealed record SaveComboRequest(
+    int Code, string Name, string? NameAr, decimal SellingPrice, bool IsActive, IReadOnlyList<Costing.Application.Menu.ComboItemInput>? Items);
 
 // Kind: periodic or opening stock; none keeps the draft's (a new one is periodic).
 public sealed record SaveStockCountRequest(

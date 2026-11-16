@@ -57,7 +57,7 @@
 - `PayPurchaseInvoiceCommand`، `SetSupplierOpeningBalanceCommand`.
 - `ITaxRate`: نسبة الضريبة الحالية من إعدادات الضريبة والخدمة.
 
-> 📄 **`backend/src/Costing.Application/Treasury/Treasury.cs`** — 757 سطر
+> 📄 **`backend/src/Costing.Application/Treasury/Treasury.cs`** — 769 سطر
 
 ```csharp
 using System.Globalization;
@@ -69,6 +69,7 @@ using Costing.Application.Common;
 using Costing.Domain.Approvals;
 using Costing.Domain.Expenses;
 using Costing.Domain.Purchases;
+using Costing.Domain.Sales;
 using Costing.Domain.Suppliers;
 using Costing.Domain.Treasury;
 
@@ -116,7 +117,10 @@ public sealed record SafeVoucher(
     decimal? TaxAmount = null,
     decimal? VoidsAmount = null,
     // A payroll payment's: the payroll run from HR it pays.
-    Guid? PayrollRunId = null);
+    Guid? PayrollRunId = null,
+    // A day's takings': the discounts and promos taken off the menu prices, and why (Discounts).
+    decimal? DiscountsAmount = null,
+    IReadOnlyList<DiscountReason>? DiscountReasons = null);
 
 // The tax rate the bills are charged, as set on Tax & service.
 public interface ITaxRate
@@ -150,12 +154,15 @@ public sealed record SafeTransactionDto(
     DateOnly? PayrollMonth,
     decimal CardAmount = 0,
     decimal VoidsAmount = 0,
-    decimal NetAmount = 0)
+    decimal NetAmount = 0,
+    decimal DiscountsAmount = 0,
+    IReadOnlyList<DiscountReason>? DiscountReasons = null)
 {
     public static SafeTransactionDto From(SafeTransaction t) => new(
         t.Id, t.Kind, t.Fund, t.Amount, t.BusinessDate, t.RevenueDate, t.Source, t.SupplierId, t.PurchaseInvoiceId, t.ExpenseItemId, t.Notes,
         t.RecordedBy, t.RecordedAtUtc, t.ApprovedBy, t.ReversalOf, t.VoidedAtUtc, t.VoidedBy, t.IncludesTax, t.TaxPercent, t.TaxAmount,
-        t.GrossAmount, t.EmployeeId, t.PayrollMonth, t.CardAmount, t.VoidsAmount, t.Kind == SafeTransactionKind.RevenueTransfer ? t.NetAmount : 0);
+        t.GrossAmount, t.EmployeeId, t.PayrollMonth, t.CardAmount, t.VoidsAmount, t.Kind == SafeTransactionKind.RevenueTransfer ? t.NetAmount : 0,
+        t.DiscountsAmount, t.DiscountReasons.ToList());
 }
 
 // Checks, describes and enters safe entries: for a manager's own and for an approval alike. What
@@ -220,8 +227,9 @@ internal sealed class TreasuryWriter(
             throw new DomainException("A day's takings are used on that day or after it.");
         if (voucher.Notes?.Trim().Length > SafeTransaction.MaxNotesLength)
             throw new DomainException($"Keep the notes under {SafeTransaction.MaxNotesLength} characters. · الملاحظات {SafeTransaction.MaxNotesLength} حرف على الأكثر.");
-        if (voucher.Kind != SafeTransactionKind.RevenueTransfer && (voucher.CardAmount is not null || voucher.TaxAmount is not null || voucher.VoidsAmount is not null))
-            throw new DomainException("Only a day's takings have card takings, tax and voids.");
+        if (voucher.Kind != SafeTransactionKind.RevenueTransfer && (voucher.CardAmount is not null || voucher.TaxAmount is not null || voucher.VoidsAmount is not null
+            || voucher.DiscountsAmount is not null || voucher.DiscountReasons is { Count: > 0 }))
+            throw new DomainException("Only a day's takings have card takings, tax, voids and discounts.");
         switch (voucher.Kind)
         {
             case SafeTransactionKind.OpeningBalance:
@@ -244,6 +252,7 @@ internal sealed class TreasuryWriter(
                         "إيراد هذا اليوم مسجل بالفعل: ألغه من الخزنة ثم أدخله من جديد.");
                 if (voucher.VoidsAmount < 0)
                     throw new DomainException("The cash, card, tax and voids are zero or more. · المبالغ صفر أو أكثر.");
+                Discounts.Clean(voucher.DiscountsAmount ?? 0, voucher.DiscountReasons);
                 Takings(voucher);
                 // Checked: zero cash with card takings is a day's takings all the same.
                 return;
@@ -318,7 +327,7 @@ internal sealed class TreasuryWriter(
                 entry = SafeTransaction.RevenueTransfer(
                     id, voucher.Amount, voucher.Date, voucher.RevenueDate!.Value, voucher.Notes, recordedBy, approvedBy,
                     voucher.IncludesTax ? voucher.TaxPercent : null, await safe.PaidOutOfTakingsAsync(voucher.RevenueDate.Value, cancellationToken),
-                    voucher.CardAmount ?? 0, voucher.TaxAmount, voucher.VoidsAmount ?? 0);
+                    voucher.CardAmount ?? 0, voucher.TaxAmount, voucher.VoidsAmount ?? 0, voucher.DiscountsAmount ?? 0, voucher.DiscountReasons);
                 break;
             case SafeTransactionKind.ExpenseVoucher:
                 entry = SafeTransaction.ExpenseVoucher(id, voucher.Amount, voucher.Date, voucher.ExpenseItemId!.Value, voucher.Notes, recordedBy, approvedBy);
@@ -467,6 +476,9 @@ internal sealed class TreasuryWriter(
                 changes.Add(new ApprovalChange("Net sales · صافي المبيعات", null, Money(cash + card)));
                 if (voucher.VoidsAmount is > 0 and var voids)
                     changes.Add(new ApprovalChange("Voids and refunds · الفويد والمرتجعات", null, Money(voids)));
+                if (voucher.DiscountsAmount is > 0 and var discounts)
+                    changes.Add(new ApprovalChange("Discounts & promos · الخصومات والعروض", null,
+                        Money(discounts) + (voucher.DiscountReasons is { Count: > 0 } why ? $" ({string.Join(", ", why.Select(r => r.Reason))})" : "")));
                 changes.Add(new ApprovalChange("Paid out of them", null, Money(paidOut)));
                 changes.Add(new ApprovalChange("Into the safe · إجمالي الوارد للخزنة", null, Money(cash + card + tax - paidOut)));
                 break;
@@ -1876,7 +1888,7 @@ internal sealed class AddLocalStaffMemberHandler(IStaffMemberRepository staff, I
 
 `FinancialsController` (`api/financials`): الدفتر، التمويل، المطابقة، يومية الإيراد، المصروفات، ديون الموردين وكشوفهم، السلف، الضريبة، وتسجيل القيود.
 
-> 📄 **`backend/src/Costing.Api/Controllers/FinancialsController.cs`** — 169 سطر
+> 📄 **`backend/src/Costing.Api/Controllers/FinancialsController.cs`** — 173 سطر
 
 ```csharp
 using MediatR;
@@ -2012,7 +2024,8 @@ public sealed class FinancialsController(ISender sender, TreasuryService treasur
             new SafeVoucher(
                 request.TransactionId, request.Kind, request.Amount, request.Date ?? treasury.Today, request.Source, request.RevenueDate,
                 request.SupplierId, request.ExpenseItemId, null, request.Notes, request.IncludesTax, EmployeeId: request.EmployeeId,
-                PayrollMonth: request.PayrollMonth, CardAmount: request.CardAmount, TaxAmount: request.TaxAmount, VoidsAmount: request.VoidsAmount),
+                PayrollMonth: request.PayrollMonth, CardAmount: request.CardAmount, TaxAmount: request.TaxAmount, VoidsAmount: request.VoidsAmount,
+                DiscountsAmount: request.DiscountsAmount, DiscountReasons: request.DiscountReasons),
             request.Reason, UserClaims.IdOf(User) ?? string.Empty, StaffName, CanApprove), cancellationToken);
         return result.Outcome == ApprovalOutcome.Requested
             ? Accepted(new ApprovalResultDto(result.Outcome, result.Request!))
@@ -2045,7 +2058,10 @@ public sealed record SafeVoucherRequest(
     // collected in both, and the day's voids and refunds.
     decimal? CardAmount = null,
     decimal? TaxAmount = null,
-    decimal? VoidsAmount = null);
+    decimal? VoidsAmount = null,
+    // The day's discounts and promos, and why: said, never collected.
+    decimal? DiscountsAmount = null,
+    IReadOnlyList<Costing.Domain.Sales.DiscountReason>? DiscountReasons = null);
 
 public sealed record SupplierOpeningBalanceRequest(Guid EntryId, decimal Owed, DateOnly? Date = null);
 ```
@@ -2388,7 +2404,7 @@ public sealed class SuppliersController(SupplierAccountsService accounts) : Cont
 
 "الحصة قبل الصف" تضمن أن الخامة التي **تعبر** حد 75% تدخل A (فالفئة A دائمًا تغطي 75% على الأقل).
 
-> 📄 **`backend/src/Costing.Infrastructure/Reports/IntelligenceService.cs`** — 965 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Reports/IntelligenceService.cs`** — 967 سطر
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
@@ -3160,7 +3176,9 @@ public sealed class IntelligenceService(CostingDbContext db, IBusinessCalendar c
         IReadOnlyDictionary<Guid, PurchaseCategory> categories,
         IReadOnlyList<Recipe> recipes,
         IReadOnlyList<PrepRecipe> prepRecipes,
-        IReadOnlyDictionary<RecipeTarget, Target> targets)
+        IReadOnlyDictionary<RecipeTarget, Target> targets,
+        // What each combo is made of, by its menu number: a combo sold takes its dishes' stock.
+        IReadOnlyDictionary<int, IReadOnlyList<ComboPart>> combos)
     {
         private readonly Dictionary<SaleKey, IReadOnlyDictionary<Guid, decimal>> _requirements = [];
         private readonly IReadOnlyDictionary<RecipeTarget, Recipe> _active =
@@ -3184,7 +3202,7 @@ public sealed class IntelligenceService(CostingDbContext db, IBusinessCalendar c
         public IReadOnlyDictionary<Guid, decimal> Requirements(SaleKey key)
         {
             if (!_requirements.TryGetValue(key, out var per))
-                _requirements[key] = per = StockRequirements.For(key.Item(1), recipes);
+                _requirements[key] = per = StockRequirements.For(key.Item(1), recipes, combos);
             return per;
         }
     }
@@ -3212,7 +3230,7 @@ public sealed class IntelligenceService(CostingDbContext db, IBusinessCalendar c
         foreach (var addOn in addOns)
             targets[RecipeTarget.ForAddOn(addOn.Id)] = new Target(addOn.Name, addOn.NameAr, addOn.Price, false);
 
-        return new Catalog(materials, categories, recipes, prepRecipes, targets);
+        return new Catalog(materials, categories, recipes, prepRecipes, targets, await db.ComboPartsAsync(cancellationToken));
     }
 
     // The period's sales, each dish, size and add-ons together: what was sold on the bill.
@@ -3660,7 +3678,7 @@ public static class PlateCostAllocation
 ```
 
 
-> 📄 **`backend/src/Costing.Infrastructure/Reports/CostingService.PlateCost.cs`** — 132 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Reports/CostingService.PlateCost.cs`** — 136 سطر
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
@@ -3740,7 +3758,9 @@ public sealed partial class CostingService
             rows.Add(new PlateBase(
                 card.ItemCode, target.CatalogItemId, target.VariantId, recipe?.Id, target.Name, target.NameAr, target.Category, true,
                 sale.Quantity, sale.NetSales, price, card.HasRecipe ? card.CostPerPortion : null, card.HasRecipe, card.MissingPrices.Count > 0,
-                recipe?.PrepTimeMinutes, recipe?.ComplexityWeight ?? PlateActivity.DefaultComplexityWeight, Weighted(recipe),
+                recipe?.PrepTimeMinutes, recipe?.ComplexityWeight ?? PlateActivity.DefaultComplexityWeight,
+                // A combo's plate is its dishes': their weighted minutes, as many as it holds.
+                ComboOf(target, data) is { } combo ? combo.Parts.Sum(p => Weighted(data.AllRecipes.FirstOrDefault(r => r.Id == p.RecipeId)) * p.Quantity) : Weighted(recipe),
                 recipe is null || recipe.PrepTimeMinutes is null));
         }
 
@@ -3769,6 +3789,8 @@ public sealed partial class CostingService
 
         RecipeCostCard CardOf(Target target)
         {
+            if (ComboOf(target, data) is not null)
+                return Card(target, data);
             var own = data.Recipes.GetValueOrDefault(new RecipeTarget(target.Kind, target.CatalogItemId, target.VariantId));
             var recipe = own ?? (target.VariantId is not null ? data.Recipes.GetValueOrDefault(RecipeTarget.ForMenuItem(target.CatalogItemId)) : null);
             return CostingService.Card(target, recipe, own is null && recipe is not null, data);
@@ -4919,7 +4941,7 @@ public sealed class VarianceService(CostingDbContext db, SalesLedger ledger)
 
 كل مؤشر بحالته (`KpiStatus`: صحي، خارج المدى، ناقص) **وسبب النقص** ("أدخل توريد الشهر"). و **Prime Cost** (طعام + عمالة) يُقرأ من `FoodCost` + `LabourCost`؛ ليس مؤشرًا منفصلًا في الكود.
 
-> 📄 **`backend/src/Costing.Infrastructure/Reports/KpiService.cs`** — 327 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Reports/KpiService.cs`** — 370 سطر
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
@@ -5039,7 +5061,30 @@ public sealed record KpiReport(
     IReadOnlyList<ItemProfit> Items,
     // Sold with no recipe: in the sales at no ingredient cost, so the cost % reads low.
     int ItemsWithoutRecipe,
-    decimal SalesWithoutRecipe);
+    decimal SalesWithoutRecipe,
+    // What the month's discounts and promos did to the margin.
+    DiscountImpact? Discounts = null);
+
+// Promos and discounts against the margin (أثر الخصومات وتآكل الهامش), from the month's takings:
+//
+//   Standard gross revenue = net sales + discounts        (what the menu prices would have brought)
+//   Actual net revenue     = net sales                    (the cash and card collected, before tax)
+//   Standard food cost %   = theoretical cost ÷ standard gross revenue × 100
+//   Actual food cost %     = theoretical cost ÷ actual net revenue × 100
+//   Margin erosion         = actual food cost % − standard food cost %, in points
+//
+// The theoretical cost is the recipes' cost of what was sold (food and drinks). Reasons: each with
+// what it took off and on how many bills, the largest first; a voided day's taken back out.
+public sealed record DiscountImpact(
+    decimal Discounts,
+    decimal ActualNetRevenue,
+    decimal StandardGrossRevenue,
+    decimal? DiscountSharePercent,
+    decimal TheoreticalCost,
+    decimal? StandardFoodCostPercent,
+    decimal? ActualFoodCostPercent,
+    decimal? ErosionPoints,
+    IReadOnlyList<DiscountReason> Reasons);
 
 // Pillar 4: the template's financial KPIs for a business month. Sales and recipe costs come
 // from the till; losses from the stock ledger; wages, hours and overheads from what the manager
@@ -5214,7 +5259,27 @@ public sealed class KpiService(CostingDbContext db, IBusinessCalendar clock, Cos
                 Money(takings.Sum(t => t.TaxAmount)), Money(takings.Sum(t => t.VoidsAmount)),
                 takingsDays, Money(soldAtMenuPrices), staffMeals, hospitality, tasting),
             ToDto(expenses), kpis, items,
-            withoutRecipe.Count, withoutRecipe.Sum(r => r.NetSales));
+            withoutRecipe.Count, withoutRecipe.Sum(r => r.NetSales),
+            Erosion(takings, Money(revenueTotal), Money(foodRecipe + drinksRecipe)));
+    }
+
+    // The month's discounts against its revenue and its theoretical cost (DiscountImpact).
+    internal static DiscountImpact Erosion(IReadOnlyCollection<SafeTransaction> takings, decimal netRevenue, decimal theoreticalCost)
+    {
+        var discounts = Money(takings.Sum(t => t.DiscountsAmount));
+        var standard = Money(netRevenue + discounts);
+        decimal? Share(decimal part, decimal whole) => whole > 0 ? Percent(part / whole) : null;
+        var (standardPercent, actualPercent) = (Share(theoreticalCost, standard), Share(theoreticalCost, netRevenue));
+        var reasons = takings.SelectMany(t => t.DiscountReasons)
+            .GroupBy(r => r.Reason.Trim(), StringComparer.OrdinalIgnoreCase)
+            .Select(g => new DiscountReason(g.First().Reason.Trim(), Money(g.Sum(r => r.Amount)), g.Sum(r => r.Count)))
+            .Where(r => r.Amount != 0 || r.Count != 0)
+            .OrderByDescending(r => r.Amount).ThenByDescending(r => r.Count).ThenBy(r => r.Reason)
+            .ToList();
+        return new DiscountImpact(
+            discounts, netRevenue, standard, Share(discounts, standard), theoreticalCost, standardPercent, actualPercent,
+            actualPercent is { } actual && standardPercent is { } std ? Math.Round(actual - std, 1, MidpointRounding.AwayFromZero) : null,
+            reasons);
     }
 
     public async Task<MonthlyExpensesDto> SaveExpensesAsync(int year, int month, MonthlyExpensesDto request, string? by, CancellationToken cancellationToken)
@@ -5248,6 +5313,144 @@ public sealed class KpiService(CostingDbContext db, IBusinessCalendar clock, Cos
 
     private static Kpi Unranged(string key, decimal? value, string? missing) =>
         new(key, missing is null ? value : null, null, null, false, missing is null && value is not null ? KpiStatus.NoRange : KpiStatus.Missing, missing);
+}
+```
+
+
+**تآكل الهامش (`DiscountImpact` و`Erosion`):** من توريدات الشهر: الإيراد القياسي = صافي المبيعات + الخصومات؛ نسبة التكلفة القياسية = التكلفة النظرية ÷ الإيراد القياسي، والفعلية = التكلفة النظرية ÷ صافي المبيعات؛ والتآكل = الفعلية − القياسية بالنقاط. والأسباب مجمعة بالاسم (اليوم الملغى يُطرح بعكسه)، الأكبر أولًا.
+
+#### العروض المجمعة: التكلفة من الأصناف
+
+`ComboPartsAsync` يحمّل أجزاء كل العروض بالرقم لخدمات التقارير التي تفجر المبيعات (التكلفة النظرية، الاستهلاك، نقطة التعادل اليومية). و`GetComboOffersAsync` يجمع تكلفة كل عرض من كروت وصفات أصنافه: التكلفة = مجموع (تكلفة الحصة × العدد)، والسعر الأصلي = مجموع (السعر × العدد)، ونسبة التكلفة = التكلفة ÷ سعر العرض. و`Card(target)` لصنف عرض على المنيو يعطي كارتًا من أصنافه (`ComboCard`)، فقائمة المنيو والتكلفة الكلية للطبق تحسبانه.
+
+> 📄 **`backend/src/Costing.Infrastructure/Reports/ComboLoading.cs`** — 13 سطر
+
+```csharp
+using Microsoft.EntityFrameworkCore;
+using Costing.Domain.Recipes;
+using Costing.Infrastructure.Persistence;
+
+namespace Costing.Infrastructure.Reports;
+
+internal static class ComboLoading
+{
+    // What each combo is made of, by the menu number it is sold under, deleted ones too (their
+    // sales still took stock by them): for StockRequirements.For.
+    public static async Task<IReadOnlyDictionary<int, IReadOnlyList<ComboPart>>> ComboPartsAsync(this CostingDbContext db, CancellationToken cancellationToken) =>
+        (await db.ComboOffers.AsNoTracking().ToListAsync(cancellationToken)).ToDictionary(c => c.Code, c => c.Parts);
+}
+```
+
+
+> 📄 **`backend/src/Costing.Infrastructure/Reports/CostingService.Combos.cs`** — 107 سطر
+
+```csharp
+using Microsoft.EntityFrameworkCore;
+using Costing.Domain.Menu;
+using Costing.Domain.Recipes;
+
+namespace Costing.Infrastructure.Reports;
+
+// A dish in a combo, as its recipe costs it today: a portion's cost and its own price (the menu's, or
+// a planned price off the menu), and the combo's quantity of each.
+public sealed record ComboDishDto(
+    Guid RecipeId, string Dish, string? ItemCode, int Quantity, decimal CostPerPortion, decimal LineCost, decimal? Price, decimal? LinePrice,
+    bool IsDeleted, IReadOnlyList<string> MissingPrices);
+
+// A combo offer and its roll-up (عرض مجمع):
+//
+//   Total combo cost        = Σ each dish's cost a portion × its quantity
+//   Original separate price = Σ each dish's own price × its quantity (none when a dish has no price)
+//   Combo food cost %       = total combo cost ÷ the combo's selling price × 100
+//   Savings                 = original separate price − the combo's price
+public sealed record ComboOfferDto(
+    Guid Id,
+    int Code,
+    string Name,
+    string? NameAr,
+    decimal SellingPrice,
+    bool IsActive,
+    bool IsDeleted,
+    IReadOnlyList<ComboDishDto> Items,
+    decimal TotalCost,
+    decimal? OriginalPrice,
+    decimal? Savings,
+    decimal? SavingsPercent,
+    decimal? FoodCostPercent,
+    decimal FoodCostTargetPercent,
+    CostStatus Status,
+    IReadOnlyList<string> MissingPrices);
+
+// NextCode: the menu number a new combo starts with, after the highest on the menu.
+public sealed record ComboOffersReport(int NextCode, decimal FoodCostTargetPercent, IReadOnlyList<ComboOfferDto> Combos);
+
+public sealed partial class CostingService
+{
+    public const int FirstMenuNumber = 1001;
+
+    // Every combo, by its code; the deleted ones only when asked for.
+    public async Task<ComboOffersReport> GetComboOffersAsync(bool includeDeleted, CancellationToken cancellationToken)
+    {
+        var data = await LoadMenuAsync(cancellationToken);
+        var combos = await db.ComboOffers.AsNoTracking()
+            .Where(c => includeDeleted || c.DeletedAtUtc == null)
+            .OrderBy(c => c.Code)
+            .ToListAsync(cancellationToken);
+        var highest = await db.MenuItems.AsNoTracking().IgnoreQueryFilters().MaxAsync(m => (int?)m.Id, cancellationToken) ?? 0;
+        return new ComboOffersReport(Math.Max(FirstMenuNumber, highest + 1), data.FoodCostTarget, combos.Select(c => Combo(c, data)).ToList());
+    }
+
+    private static ComboOfferDto Combo(ComboOffer combo, MenuData data)
+    {
+        var (dishes, total, original, missing) = RollUp(combo, data);
+        var foodCost = combo.SellingPrice > 0 ? Percent(total / combo.SellingPrice) : (decimal?)null;
+        decimal? savings = original is { } o ? Money(o - combo.SellingPrice) : null;
+        return new ComboOfferDto(
+            combo.Id, combo.Code, combo.Name, combo.NameAr, combo.SellingPrice, combo.IsActive, combo.IsDeleted, dishes, total, original, savings,
+            original is > 0 ? Percent(savings!.Value / original.Value) : null, foodCost, data.FoodCostTarget,
+            missing.Count > 0 ? CostStatus.MissingPrices : foodCost > data.FoodCostTarget ? CostStatus.AboveTarget : CostStatus.WithinTarget,
+            missing);
+    }
+
+    // Each dish at its recipe's cost today, as its own card costs it (its shared costs a meal too).
+    private static (IReadOnlyList<ComboDishDto> Dishes, decimal Total, decimal? Original, IReadOnlyList<string> Missing) RollUp(ComboOffer combo, MenuData data)
+    {
+        var dishes = new List<ComboDishDto>();
+        foreach (var part in combo.Parts)
+        {
+            if (data.AllRecipes.FirstOrDefault(r => r.Id == part.RecipeId) is not { } recipe)
+                continue;
+            var card = Card(recipe, data);
+            dishes.Add(new ComboDishDto(
+                recipe.Id, card.Recipe, card.ItemCode == "" ? null : card.ItemCode, part.Quantity, card.CostPerPortion, Money(card.CostPerPortion * part.Quantity),
+                card.MenuPrice, card.MenuPrice is { } price ? Money(price * part.Quantity) : null, recipe.IsDeleted, card.MissingPrices));
+        }
+        var original = dishes.All(d => d.LinePrice is not null) ? dishes.Sum(d => d.LinePrice!.Value) : (decimal?)null;
+        return (dishes, Money(dishes.Sum(d => d.LineCost)), original is { } o ? Money(o) : null,
+            dishes.SelectMany(d => d.MissingPrices).Distinct().ToList());
+    }
+
+    // The combo sold under a menu row's number, if one is.
+    private static ComboOffer? ComboOf(Target target, MenuData data) =>
+        target is { Kind: RecipeTargetKind.MenuItem, VariantId: null } && data.Combos.TryGetValue(target.CatalogItemId, out var combo) ? combo : null;
+
+    // A combo's menu row as a costing card: its dishes' costs together, against its price. It has no
+    // recipe or lines of its own.
+    private static RecipeCostCard ComboCard(Target target, ComboOffer combo, MenuData data)
+    {
+        var (dishes, total, _, missing) = RollUp(combo, data);
+        var shared = Money(dishes.Sum(d => (data.AllRecipes.First(r => r.Id == d.RecipeId) is var r ? Card(r, data).SharedCostPerPortion : 0) * d.Quantity));
+        var price = target.Price;
+        var foodCost = price > 0 ? Percent(total / price.Value) : (decimal?)null;
+        var status = missing.Count > 0 ? CostStatus.MissingPrices
+            : foodCost is null ? CostStatus.NoPrice
+            : foodCost > data.FoodCostTarget ? CostStatus.AboveTarget : CostStatus.WithinTarget;
+        return new RecipeCostCard(
+            RecipeTargetKind.MenuItem, target.CatalogItemId, null, ItemCode(target.CatalogItemId, null), target.Name, target.NameAr, target.Category,
+            true, 1, price, data.FoodCostTarget, [], total, Money(total - shared), shared, total,
+            price is { } p ? Money(p - total) : null, foodCost, Money(total * 100 / data.FoodCostTarget), missing, status,
+            LinkedTo: target.Name, ComboOfferId: combo.Id);
+    }
 }
 ```
 
@@ -5415,7 +5618,7 @@ public sealed class BreakEvenService(CostingDbContext db, IBusinessCalendar cloc
 
 المصاريف الثابتة للشهر **لا تُحسب مرتين في الكود**: هي وعاءا العمالة والتشغيل من محرك التكلفة الكلية للطبق للشهر كاملًا (`BurdenedCostService.ActualAsync`، صار `internal` لهذا)، بأرقامه التقديرية للشهر الخالي. واليوم بلا مبيعات يأخذ WACM الأيام السبعة السابقة ويقول ذلك. والمبيعات تُجمع باليوم التجاري للإيصال (`SaleOrder.BusinessDate`)، لا بساعة البيع.
 
-> 📄 **`backend/src/Costing.Infrastructure/Reports/DailyBreakEvenService.cs`** — 157 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Reports/DailyBreakEvenService.cs`** — 158 سطر
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
@@ -5540,6 +5743,7 @@ public sealed class DailyBreakEvenService(CostingDbContext db, IBusinessCalendar
             return new Dictionary<DateOnly, DaySales>();
 
         var recipes = await db.Recipes.AsNoTracking().Include(r => r.Ingredients).Where(r => r.DeletedAtUtc == null).ToListAsync(cancellationToken);
+        var combos = await db.ComboPartsAsync(cancellationToken);
         var materials = await db.RawMaterials.AsNoTracking().ToDictionaryAsync(m => m.Id, cancellationToken);
         var costs = new RecipeCosts(materials, await db.PrepRecipes.AsNoTracking().Include(r => r.Ingredients).ToListAsync(cancellationToken));
 
@@ -5560,7 +5764,7 @@ public sealed class DailyBreakEvenService(CostingDbContext db, IBusinessCalendar
                         var revenue = line.LineTotal * kept;
                         net += revenue;
                         plates += line.Quantity;
-                        var needs = StockRequirements.For(new SoldItem(line.MenuItemId, line.VariantId, line.AddOnIds, line.Quantity), recipes);
+                        var needs = StockRequirements.For(new SoldItem(line.MenuItemId, line.VariantId, line.AddOnIds, line.Quantity), recipes, combos);
                         if (needs.Count == 0)
                         {
                             platesWithoutRecipe += line.Quantity;
