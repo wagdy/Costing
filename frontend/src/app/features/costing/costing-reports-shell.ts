@@ -19,6 +19,7 @@ export class CostingReportsShell {
     { path: 'treasury', icon: 'account_balance', en: 'Safe & treasury', ar: 'تحليل الخزنة والتدفقات النقدية' },
     { path: 'theoretical', icon: 'calculate', en: 'Theoretical cost', ar: 'التكلفة النظرية' },
     { path: 'variance', icon: 'compare_arrows', en: 'Variance', ar: 'الانحراف' },
+    { path: 'daily-break-even', icon: 'speed', en: 'Daily break-even', ar: 'نقطة التعادل اليومية' },
     { path: 'kpis', icon: 'insights', en: 'KPIs', ar: 'المؤشرات' },
     { path: 'break-even', icon: 'balance', en: 'Break-even', ar: 'نقطة التعادل' },
   ];

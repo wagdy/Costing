@@ -239,7 +239,9 @@ public sealed class BurdenedCostService(CostingDbContext db, Application.Common.
             new CostPool(Money(monthlyOverhead * months), [new("simulated", "Simulated monthly overheads", "مصاريف تشغيل تقديرية شهرية", Money(monthlyOverhead * months))], []));
     }
 
-    private async Task<(CostPool Labor, CostPool Overhead)> ActualAsync(DateOnly from, DateOnly to, CostingSettings settings, CancellationToken cancellationToken)
+    // The days' share of each pool, as recorded (a month with nothing recorded for one: its stand-in).
+    // The daily break-even reads a whole month of them as its fixed costs.
+    internal async Task<(CostPool Labor, CostPool Overhead)> ActualAsync(DateOnly from, DateOnly to, CostingSettings settings, CancellationToken cancellationToken)
     {
         var months = Months(from, to).ToList();
         var periods = months.Select(m => m.Month).ToList();

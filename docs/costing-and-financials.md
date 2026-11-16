@@ -24,7 +24,7 @@ works it.
 | Stock counts (الجرد) | `/costing/counts` | Full and spot counts drafted, blind for who counts, reconciled, then posted |
 | Waste (الهالك) | `/costing/waste` | Spoilage, and breakage |
 | Financials (الماليات) | `/costing/financials` | The safe, funding, each day's takings (cash, card, tax, voids), vouchers, suppliers owed and paid, advances, staff, tax and service |
-| Reports (التقارير) | `/costing/reports` | Spending, theoretical cost, variance, KPIs, break-even |
+| Reports (التقارير) | `/costing/reports` | Spending, theoretical cost, variance, the daily break-even, KPIs, break-even |
 | Cost settings (إعدادات التكاليف) | `/costing/settings` | Cost targets, plate cost (allocation method, target net margin, stand-in monthly labor and overheads), beverage categories, shared costs, monthly expenses |
 | Approvals (طلبات معلقة) | `/costing/approvals` | What waits for a manager |
 | Permissions (الصلاحيات) | `/costing/permissions` | Who works which section; a manager's |
@@ -365,6 +365,38 @@ average fully burdened cost % and true net margin %, weighted by sales (Σ burde
 × plates); and the dishes bleeding. Each dish's bar shows its price as food (blue), labor (amber),
 overheads (purple) and net profit (green); a loss is the part of the costs past the price, hatched
 red behind a price mark. The Excel sheet has the dishes and the pools with their parts.
+
+## The daily break-even (نقطة التعادل اليومية)
+
+Reports → **Daily break-even** (`/costing/reports/daily-break-even`, `GET api/costing/reports/daily-break-even?date`,
+today when no date) sets one day's sales against its share of the month's fixed costs, at the
+margin of what that day actually sold, instead of waiting for the month's P&L.
+
+```
+Daily fixed cost      = the month's fixed costs ÷ the days in the month
+Net sales             = the day's sales at the menu's prices, less each bill's discount, before VAT
+Food cost             = Σ plates sold × their recipe cost a portion today (add-ons too)
+Contribution margin   = net sales − food cost
+WACM %                = contribution margin ÷ net sales × 100
+Break-even sales      = daily fixed cost ÷ WACM
+Operating result      = contribution margin − daily fixed cost
+```
+
+- **The month's fixed costs** are the burdened plate cost's two pools for the whole month: labor
+  (the payroll HR approved, or the salaries paid for the month; the wages entered; expenses under a
+  Wages category) and overheads (rent, controllable costs, interest and depreciation entered on the
+  KPIs; expense invoices and vouchers under an Occupation, Controllable or Other fixed category). A
+  month with nothing recorded for a pool takes its **stand-in monthly figure** from Cost settings
+  (Plate cost), so a day early in a month still has a target.
+- **WACM** is weighted by the day's own menu mix: selling more dishes with a high margin lowers the
+  target. A day with no sales yet takes the WACM of the seven days before it, and says so; with no
+  sales in those either there is no target, and the day's fixed costs are its loss.
+- The food cost is at today's costs (each material's moving average, prep items by their batches),
+  for any day looked at. A plate sold with no recipe adds its sales and no food cost, and is said.
+- The screen says it in a sentence (Arabic and English: what the day must sell, what it sold, and
+  the operating profit in green or loss in red), draws the sales from 0 against the break-even line
+  (amber until it is crossed, then green), and shows the daily fixed costs, the WACM, the net sales
+  and the food cost, with the month's fixed costs by part. Earlier days can be looked back at.
 
 ## The item's stock card (كارتة الصنف / حركة الصنف)
 

@@ -16,7 +16,8 @@ namespace Costing.Api.Controllers;
 [Authorize(Policy = Permissions.InventoryView)]
 public sealed class CostingController(
     CostingService costing, VarianceService variance, KpiService kpis, BreakEvenService breakEven, PurchaseSpendingService spending,
-    TreasuryService treasury, StockCardService stockCard, IntelligenceService intelligence, BurdenedCostService burdened, MediatR.ISender sender,
+    TreasuryService treasury, StockCardService stockCard, IntelligenceService intelligence, BurdenedCostService burdened, DailyBreakEvenService dailyBreakEven,
+    MediatR.ISender sender,
     Costing.Application.Common.IBusinessCalendar calendar) : ControllerBase
 {
     // Raw materials with their costs: what each costs per purchase unit, the last price paid, and
@@ -173,6 +174,13 @@ public sealed class CostingController(
     public Task<BreakEvenWorksheet> GetBreakEven(
         [FromQuery] int fromYear, [FromQuery] int fromMonth, [FromQuery] int toYear, [FromQuery] int toMonth, CancellationToken cancellationToken) =>
         breakEven.GetAsync(fromYear, fromMonth, toYear, toMonth, cancellationToken);
+
+    // The dynamic daily break-even (نقطة التعادل اليومية): a day's share of the month's fixed costs
+    // against the contribution margin of what it sold, today unless another day is asked for.
+    [HttpGet("reports/daily-break-even")]
+    [CostingTab(CostingTabs.Reports | CostingTabs.CostSettings)]
+    public Task<DailyBreakEven> GetDailyBreakEven([FromQuery] DateOnly? date, CancellationToken cancellationToken) =>
+        dailyBreakEven.GetAsync(date, cancellationToken);
 
     // The worksheet's four options, weekly sales to try, kept for next time.
     [HttpPut("break-even/scenarios")]

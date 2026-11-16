@@ -80,7 +80,8 @@ interface Draft {
         <h2>Plate cost <span class="inline-ar">التكلفة الكلية للطبق</span></h2>
         <p class="note">
           How the fully burdened plate cost shares labor and overheads unless asked otherwise, the net margin a plate should leave after
-          them, and a month's stand-in labor and overheads: used for a month with nothing recorded yet, and to start a simulation.
+          them, and a month's stand-in labor and overheads: used for a month with nothing recorded yet (by the plate cost and the daily
+          break-even's fixed costs), and to start a simulation.
         </p>
         <div class="toolbar plate">
           <mat-form-field subscriptSizing="dynamic" class="method">

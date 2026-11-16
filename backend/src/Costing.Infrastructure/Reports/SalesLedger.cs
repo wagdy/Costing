@@ -17,6 +17,9 @@ public sealed record SaleOrder(bool Online, decimal DiscountAmount, decimal Bill
     public decimal Tax { get; init; }
     public decimal Points { get; init; }
     public decimal Refunded { get; init; }
+
+    // The business day it counts on: a day's sales summary, the day it is for.
+    public DateOnly BusinessDate { get; init; }
 }
 
 // OnBill: still charged. A line refunded after payment was sold, and took its stock; one voided
@@ -51,6 +54,7 @@ public sealed class SalesLedger(CostingDbContext db)
                 Tax = r.TaxAmount,
                 Points = r.PointsAmount,
                 Refunded = r.RefundedAmount,
+                BusinessDate = r.BusinessDate,
             })
             .ToList();
     }

@@ -578,6 +578,56 @@ export const infoTips = {
     { en: '(Counted − book) × average cost per unit; flagged when |counted − book| ÷ book × 100 > tolerance %.', ar: '(المجرود − الدفتري) × متوسط تكلفة الوحدة؛ ويُعلّم إذا تجاوز |الفرق| ÷ الدفتري × 100 نسبة السماح.' },
   ),
 
+  // ---- The daily break-even ----
+  dbeFixed: tip(
+    { en: 'Daily fixed costs', ar: 'نصيب اليوم من المصاريف الثابتة' },
+    {
+      en: "The day's share of the month's fixed costs: its payroll and wages, rent, utilities and running costs, interest and depreciation, and the expense vouchers and invoices under them. A month with nothing recorded yet takes the stand-in figures from Cost settings.",
+      ar: 'نصيب اليوم من المصاريف الثابتة للشهر: الرواتب والأجور، والإيجار، والمرافق ومصاريف التشغيل، والفوائد والإهلاك، وسندات وفواتير المصروفات عليها. الشهر الذي لم يُسجل له شيء بعد يأخذ الأرقام التقديرية من الإعدادات.',
+    },
+    { en: "The month's fixed costs ÷ the days in the month.", ar: 'المصاريف الثابتة للشهر ÷ عدد أيام الشهر.' },
+  ),
+  dbeWacm: tip(
+    { en: 'Contribution margin % (WACM)', ar: 'هامش المساهمة المرجح' },
+    {
+      en: "Of each pound sold today, what is left after the food cost of the dishes sold, towards the rent and the salaries; weighted by today's mix. With nothing sold yet, the seven days before's.",
+      ar: 'نسبة ما يتبقى من مبيعات اليوم بعد خصم تكلفة الخامات، والذي يساهم في تغطية الإيجار والرواتب.',
+    },
+    {
+      en: '(Sales − food cost of the dishes sold) ÷ sales × 100.',
+      ar: '(المبيعات - تكلفة خامات الأطباق المباعة) ÷ المبيعات.',
+    },
+  ),
+  dbeSales: tip(
+    { en: 'Net sales', ar: 'صافي المبيعات' },
+    {
+      en: "The day's sales summary at the menu's prices, less each bill's discount, before VAT; delivery fees are not counted.",
+      ar: 'ملخص مبيعات اليوم بأسعار المنيو، بعد خصم كل فاتورة وقبل الضريبة؛ ولا تدخل رسوم التوصيل.',
+    },
+    { en: 'Σ line total × (1 − the bill\'s discount ÷ its subtotal).', ar: 'مجموع قيمة السطر × (1 − خصم الفاتورة ÷ إجماليها).' },
+  ),
+  dbeFood: tip(
+    { en: 'Variable food cost', ar: 'تكلفة الخامات المتغيرة' },
+    {
+      en: "What the recipes of the dishes sold today cost at today's costs: each material's moving average, prep items by their batches.",
+      ar: 'تكلفة وصفات الأطباق المباعة اليوم بأسعار اليوم: متوسط تكلفة كل خامة، والمصنّعات بتكلفة تشغيلاتها.',
+    },
+    { en: 'Σ quantity sold × its recipe cost a portion (add-ons too); % = ÷ net sales × 100.', ar: 'مجموع الكمية × تكلفة الحصة من وصفتها (والإضافات)؛ النسبة = ÷ صافي المبيعات × 100.' },
+  ),
+  dbeTarget: tip(
+    { en: 'Daily break-even sales', ar: 'نقطة التعادل اليومية' },
+    {
+      en: "What the day must sell to cover its share of the fixed costs, at the margin its own mix leaves: sell more dishes with a high margin and the target falls.",
+      ar: 'ما يجب أن يبيعه اليوم ليغطي نصيبه من المصاريف الثابتة، بهامش مساهمة أطباقه: كلما زادت أطباق الهامش العالي انخفض الهدف.',
+    },
+    { en: 'Daily fixed costs ÷ WACM; still to sell = it − net sales.', ar: 'نصيب اليوم من المصاريف الثابتة ÷ هامش المساهمة؛ المتبقي = الهدف − صافي المبيعات.' },
+  ),
+  dbeResult: tip(
+    { en: 'Operating result', ar: 'الربح أو الخسارة التشغيلية' },
+    { en: "What the day leaves after its food and its share of the fixed costs: a profit once past the break-even.", ar: 'ما يتبقى لليوم بعد خاماته ونصيبه من المصاريف الثابتة: ربح بعد تجاوز نقطة التعادل.' },
+    { en: 'Contribution margin (sales − food cost) − daily fixed costs.', ar: 'هامش المساهمة (المبيعات − تكلفة الخامات) − نصيب اليوم من المصاريف الثابتة.' },
+  ),
+
   // ---- The fully burdened plate cost ----
   bcLaborPool: tip(
     { en: 'Labor pool allocated', ar: 'إجمالي العمالة المحملة' },

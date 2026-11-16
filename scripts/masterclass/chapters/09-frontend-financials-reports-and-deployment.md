@@ -95,6 +95,7 @@
 - `TheoreticalPage`: التكلفة النظرية للمبيعات وورقة المبيعات اليدوية.
 - `VariancePage`: الفروقات بين جردين (أحمر عجز، أزرق زيادة، ضمن السماحية).
 - `KpisPage`: المؤشرات بالمدى الصحي وسبب النقص، وقائمة الدخل، وإدخال المصروفات الشهرية.
+- `DailyBreakEvenPage`: نقطة التعادل اليومية: جملة حية بالعربية والإنجليزية (ما يجب بيعه، وما بِيع، والربح بالأخضر أو الخسارة بالأحمر)، ومقياس أفقي من الصفر بخط عند نقطة التعادل وتعبئة بالكهرماني حتى تجاوزه ثم بالأخضر (`role="meter"`)، وأربع بطاقات بشرح (ⓘ)، والرجوع ليوم سابق. `gaugeScale` دالة نقية لمدى المقياس.
 - `BreakEvenPage`: ورقة نقطة التعادل وسيناريوهاتها الأربعة.
 
 @@file frontend/src/app/features/costing/costing-reports-shell.ts
@@ -112,6 +113,8 @@
 @@file frontend/src/app/features/costing/kpis-page.ts
 
 @@file frontend/src/app/features/costing/break-even-page.ts
+
+@@file frontend/src/app/features/costing/daily-break-even-page.ts
 
 ## 4. الإعدادات والصلاحيات والموافقات والمستخدمون
 

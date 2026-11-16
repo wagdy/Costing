@@ -197,6 +197,10 @@ const costingChildren: Routes = [
       { path: 'treasury', loadComponent: () => import('./features/costing/treasury-page').then((m) => m.TreasuryPage) },
       { path: 'theoretical', loadComponent: () => import('./features/costing/theoretical-page').then((m) => m.TheoreticalPage) },
       { path: 'variance', loadComponent: () => import('./features/costing/variance-page').then((m) => m.VariancePage) },
+      {
+        path: 'daily-break-even',
+        loadComponent: () => import('./features/costing/daily-break-even-page').then((m) => m.DailyBreakEvenPage),
+      },
       { path: 'kpis', loadComponent: () => import('./features/costing/kpis-page').then((m) => m.KpisPage) },
       { path: 'break-even', loadComponent: () => import('./features/costing/break-even-page').then((m) => m.BreakEvenPage) },
     ],

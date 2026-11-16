@@ -443,7 +443,7 @@ export const appConfig: ApplicationConfig = {
 
 كل قسم بـ `canActivate: [costingTabGuard('Materials')]` و `loadComponent` كسول، والأقسام الفرعية (الوصفات، المشتريات، الماليات، التقارير، التحليلات) كأبناء لـ Shell خاص بها، والمسار الفارغ يفتح أول قسم يملكه المستخدم.
 
-> 📄 **`frontend/src/app/app.routes.ts`** — 278 سطر
+> 📄 **`frontend/src/app/app.routes.ts`** — 282 سطر
 
 ```ts
 import { Routes } from '@angular/router';
@@ -645,6 +645,10 @@ const costingChildren: Routes = [
       { path: 'treasury', loadComponent: () => import('./features/costing/treasury-page').then((m) => m.TreasuryPage) },
       { path: 'theoretical', loadComponent: () => import('./features/costing/theoretical-page').then((m) => m.TheoreticalPage) },
       { path: 'variance', loadComponent: () => import('./features/costing/variance-page').then((m) => m.VariancePage) },
+      {
+        path: 'daily-break-even',
+        loadComponent: () => import('./features/costing/daily-break-even-page').then((m) => m.DailyBreakEvenPage),
+      },
       { path: 'kpis', loadComponent: () => import('./features/costing/kpis-page').then((m) => m.KpisPage) },
       { path: 'break-even', loadComponent: () => import('./features/costing/break-even-page').then((m) => m.BreakEvenPage) },
     ],
@@ -1373,7 +1377,7 @@ function insert(field: HTMLInputElement, text: string): void {
 
 `costing.api.ts`: أكبر ملف: كل الأنواع والنداءات لـ `api/costing` و `api/inventory` و `api/financials` (الخامات، التكاليف، الوصفات، المصنعات، الإنتاج، المشتريات، الجرد، الهالك، الخزنة، التقارير، الموافقات…). الأنواع تطابق DTOs الـ API، والـ enums كـ union types، وقواميس التسميات ثنائية اللغة (`Record<Kind, { en; ar }>`) تجبر TypeScript على تسمية كل حالة.
 
-> 📄 **`frontend/src/app/core/costing/costing.api.ts`** — 2586 سطر
+> 📄 **`frontend/src/app/core/costing/costing.api.ts`** — 2636 سطر
 
 ```ts
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
@@ -1812,6 +1816,51 @@ export interface ItemProfit {
 }
 
 // The break-even worksheet's Income Statement column: the chosen months at a year's pace.
+// A part of a pool of costs, as the burdened plate cost and the daily break-even list them.
+export interface CostPoolPartView {
+  key: string;
+  label: string;
+  labelAr: string;
+  amount: number;
+}
+
+export interface CostPoolView {
+  total: number;
+  parts: CostPoolPartView[];
+  // Months with nothing recorded, that took Cost settings' stand-in figure.
+  standInMonths: string[];
+}
+
+// The dynamic daily break-even (نقطة التعادل اليومية): a day's share of the month's fixed costs
+// against the contribution margin of what it sold.
+export interface DailyBreakEven {
+  date: string;
+  isToday: boolean;
+  daysInMonth: number;
+  monthlyFixedCosts: number;
+  dailyFixedCosts: number;
+  labor: CostPoolView;
+  overhead: CostPoolView;
+  netSales: number;
+  foodCost: number;
+  foodCostPercent: number | null;
+  contributionMargin: number;
+  // Today's, or the seven days before's (wacmEstimated) when nothing sold yet.
+  wacmPercent: number | null;
+  wacmEstimated: boolean;
+  historyFrom: string | null;
+  historyTo: string | null;
+  breakEvenSales: number | null;
+  stillToSell: number | null;
+  progressPercent: number | null;
+  breakEvenReached: boolean;
+  operatingResult: number;
+  plates: number;
+  platesWithoutRecipe: number;
+  salesWithoutRecipe: number;
+  missingPrices: boolean;
+}
+
 export interface BreakEvenWorksheet {
   from: string;
   to: string;
@@ -2982,6 +3031,11 @@ export class CostingApi {
   }
 
   // A run of months, inclusive; one month is from = to. Months are 'YYYY-MM'.
+  // Today's unless another day is asked for.
+  dailyBreakEven(date: string | null = null): Observable<DailyBreakEven> {
+    return this.http.get<DailyBreakEven>('/api/costing/reports/daily-break-even', { params: date ? { date } : {} });
+  }
+
   breakEven(from: string, to: string): Observable<BreakEvenWorksheet> {
     const [fromYear, fromMonth] = from.split('-').map(Number);
     const [toYear, toMonth] = to.split('-').map(Number);
@@ -7689,7 +7743,7 @@ export class InfoTip implements OnDestroy {
 ```
 
 
-> 📄 **`frontend/src/app/features/costing/info-tips.ts`** — 767 سطر
+> 📄 **`frontend/src/app/features/costing/info-tips.ts`** — 817 سطر
 
 ```ts
 // What each figure on the costing screens is, and how it is worked out, in Arabic and English: the
@@ -8270,6 +8324,56 @@ export const infoTips = {
     { en: 'Variance value', ar: 'قيمة الفرق' },
     { en: 'What the shortage or surplus is worth. Red: short beyond the tolerance; amber: over it.', ar: 'قيمة العجز أو الزيادة. أحمر: عجز يتجاوز نسبة السماح؛ كهرماني: زيادة تتجاوزها.' },
     { en: '(Counted − book) × average cost per unit; flagged when |counted − book| ÷ book × 100 > tolerance %.', ar: '(المجرود − الدفتري) × متوسط تكلفة الوحدة؛ ويُعلّم إذا تجاوز |الفرق| ÷ الدفتري × 100 نسبة السماح.' },
+  ),
+
+  // ---- The daily break-even ----
+  dbeFixed: tip(
+    { en: 'Daily fixed costs', ar: 'نصيب اليوم من المصاريف الثابتة' },
+    {
+      en: "The day's share of the month's fixed costs: its payroll and wages, rent, utilities and running costs, interest and depreciation, and the expense vouchers and invoices under them. A month with nothing recorded yet takes the stand-in figures from Cost settings.",
+      ar: 'نصيب اليوم من المصاريف الثابتة للشهر: الرواتب والأجور، والإيجار، والمرافق ومصاريف التشغيل، والفوائد والإهلاك، وسندات وفواتير المصروفات عليها. الشهر الذي لم يُسجل له شيء بعد يأخذ الأرقام التقديرية من الإعدادات.',
+    },
+    { en: "The month's fixed costs ÷ the days in the month.", ar: 'المصاريف الثابتة للشهر ÷ عدد أيام الشهر.' },
+  ),
+  dbeWacm: tip(
+    { en: 'Contribution margin % (WACM)', ar: 'هامش المساهمة المرجح' },
+    {
+      en: "Of each pound sold today, what is left after the food cost of the dishes sold, towards the rent and the salaries; weighted by today's mix. With nothing sold yet, the seven days before's.",
+      ar: 'نسبة ما يتبقى من مبيعات اليوم بعد خصم تكلفة الخامات، والذي يساهم في تغطية الإيجار والرواتب.',
+    },
+    {
+      en: '(Sales − food cost of the dishes sold) ÷ sales × 100.',
+      ar: '(المبيعات - تكلفة خامات الأطباق المباعة) ÷ المبيعات.',
+    },
+  ),
+  dbeSales: tip(
+    { en: 'Net sales', ar: 'صافي المبيعات' },
+    {
+      en: "The day's sales summary at the menu's prices, less each bill's discount, before VAT; delivery fees are not counted.",
+      ar: 'ملخص مبيعات اليوم بأسعار المنيو، بعد خصم كل فاتورة وقبل الضريبة؛ ولا تدخل رسوم التوصيل.',
+    },
+    { en: 'Σ line total × (1 − the bill\'s discount ÷ its subtotal).', ar: 'مجموع قيمة السطر × (1 − خصم الفاتورة ÷ إجماليها).' },
+  ),
+  dbeFood: tip(
+    { en: 'Variable food cost', ar: 'تكلفة الخامات المتغيرة' },
+    {
+      en: "What the recipes of the dishes sold today cost at today's costs: each material's moving average, prep items by their batches.",
+      ar: 'تكلفة وصفات الأطباق المباعة اليوم بأسعار اليوم: متوسط تكلفة كل خامة، والمصنّعات بتكلفة تشغيلاتها.',
+    },
+    { en: 'Σ quantity sold × its recipe cost a portion (add-ons too); % = ÷ net sales × 100.', ar: 'مجموع الكمية × تكلفة الحصة من وصفتها (والإضافات)؛ النسبة = ÷ صافي المبيعات × 100.' },
+  ),
+  dbeTarget: tip(
+    { en: 'Daily break-even sales', ar: 'نقطة التعادل اليومية' },
+    {
+      en: "What the day must sell to cover its share of the fixed costs, at the margin its own mix leaves: sell more dishes with a high margin and the target falls.",
+      ar: 'ما يجب أن يبيعه اليوم ليغطي نصيبه من المصاريف الثابتة، بهامش مساهمة أطباقه: كلما زادت أطباق الهامش العالي انخفض الهدف.',
+    },
+    { en: 'Daily fixed costs ÷ WACM; still to sell = it − net sales.', ar: 'نصيب اليوم من المصاريف الثابتة ÷ هامش المساهمة؛ المتبقي = الهدف − صافي المبيعات.' },
+  ),
+  dbeResult: tip(
+    { en: 'Operating result', ar: 'الربح أو الخسارة التشغيلية' },
+    { en: "What the day leaves after its food and its share of the fixed costs: a profit once past the break-even.", ar: 'ما يتبقى لليوم بعد خاماته ونصيبه من المصاريف الثابتة: ربح بعد تجاوز نقطة التعادل.' },
+    { en: 'Contribution margin (sales − food cost) − daily fixed costs.', ar: 'هامش المساهمة (المبيعات − تكلفة الخامات) − نصيب اليوم من المصاريف الثابتة.' },
   ),
 
   // ---- The fully burdened plate cost ----

@@ -434,6 +434,51 @@ export interface ItemProfit {
 }
 
 // The break-even worksheet's Income Statement column: the chosen months at a year's pace.
+// A part of a pool of costs, as the burdened plate cost and the daily break-even list them.
+export interface CostPoolPartView {
+  key: string;
+  label: string;
+  labelAr: string;
+  amount: number;
+}
+
+export interface CostPoolView {
+  total: number;
+  parts: CostPoolPartView[];
+  // Months with nothing recorded, that took Cost settings' stand-in figure.
+  standInMonths: string[];
+}
+
+// The dynamic daily break-even (نقطة التعادل اليومية): a day's share of the month's fixed costs
+// against the contribution margin of what it sold.
+export interface DailyBreakEven {
+  date: string;
+  isToday: boolean;
+  daysInMonth: number;
+  monthlyFixedCosts: number;
+  dailyFixedCosts: number;
+  labor: CostPoolView;
+  overhead: CostPoolView;
+  netSales: number;
+  foodCost: number;
+  foodCostPercent: number | null;
+  contributionMargin: number;
+  // Today's, or the seven days before's (wacmEstimated) when nothing sold yet.
+  wacmPercent: number | null;
+  wacmEstimated: boolean;
+  historyFrom: string | null;
+  historyTo: string | null;
+  breakEvenSales: number | null;
+  stillToSell: number | null;
+  progressPercent: number | null;
+  breakEvenReached: boolean;
+  operatingResult: number;
+  plates: number;
+  platesWithoutRecipe: number;
+  salesWithoutRecipe: number;
+  missingPrices: boolean;
+}
+
 export interface BreakEvenWorksheet {
   from: string;
   to: string;
@@ -1604,6 +1649,11 @@ export class CostingApi {
   }
 
   // A run of months, inclusive; one month is from = to. Months are 'YYYY-MM'.
+  // Today's unless another day is asked for.
+  dailyBreakEven(date: string | null = null): Observable<DailyBreakEven> {
+    return this.http.get<DailyBreakEven>('/api/costing/reports/daily-break-even', { params: date ? { date } : {} });
+  }
+
   breakEven(from: string, to: string): Observable<BreakEvenWorksheet> {
     const [fromYear, fromMonth] = from.split('-').map(Number);
     const [toYear, toMonth] = to.split('-').map(Number);

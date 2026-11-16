@@ -733,7 +733,7 @@ public static class DependencyInjection
 
 البنية التحتية: كل "منفذ" يُربط بتطبيقه. `Singleton` للساعة وملف الشركة والتشفير؛ `Scoped` لكل ما يلمس `CostingDbContext`؛ `RetryOnConflictBehavior` يلف كل أمر؛ و `AddHttpClient` + `AddHostedService<HrSyncWorker>` للربط مع HR.
 
-> 📄 **`backend/src/Costing.Infrastructure/DependencyInjection.cs`** — 120 سطر
+> 📄 **`backend/src/Costing.Infrastructure/DependencyInjection.cs`** — 121 سطر
 
 ```csharp
 using MediatR;
@@ -848,6 +848,7 @@ public static class DependencyInjection
         services.AddScoped<TreasuryService>();
         services.AddScoped<IntelligenceService>();
         services.AddScoped<BurdenedCostService>();
+        services.AddScoped<DailyBreakEvenService>();
         services.AddScoped<StockCardService>();
 
         // The system's users.
@@ -1629,6 +1630,7 @@ Costing/
                     CostingService.PlateCost.cs
                     CostingService.cs
                     CostingTables.cs
+                    DailyBreakEvenService.cs
                     IntelligenceService.cs
                     KpiService.cs
                     PurchaseSpendingService.cs
@@ -1641,6 +1643,7 @@ Costing/
                 BurdenedCostApiTests.cs
                 Costing.Api.Tests.csproj
                 CostingApiTests.cs
+                DailyBreakEvenApiTests.cs
                 HrIntegrationApiTests.cs
                 PosIntegrationApiTests.cs
                 SettingsApiTests.cs
@@ -1685,6 +1688,7 @@ Costing/
                 BurdenedCostTests.cs
                 Costing.Infrastructure.Tests.csproj
                 CostingTests.cs
+                DailyBreakEvenTests.cs
                 DatabaseConnectionTests.cs
                 DatabaseTests.cs
                 IntelligenceTests.cs
@@ -1791,6 +1795,8 @@ Costing/
                         count-sheet-page.ts
                         counts-page.spec.ts
                         counts-page.ts
+                        daily-break-even-page.spec.ts
+                        daily-break-even-page.ts
                         daily-cash-page.spec.ts
                         daily-cash-page.ts
                         daily-sales-dialogs.spec.ts

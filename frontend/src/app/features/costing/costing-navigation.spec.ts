@@ -45,6 +45,7 @@ describe('the costing navigation', () => {
       ['treasury', 'page'],
       ['theoretical', 'page'],
       ['variance', 'page'],
+      ['daily-break-even', 'page'],
       ['kpis', 'page'],
       ['break-even', 'page'],
     ]);
@@ -105,6 +106,7 @@ describe('the costing navigation', () => {
       ['/treasury', 'account_balance', 'Safe & treasury', 'تحليل الخزنة والتدفقات النقدية'],
       ['/theoretical', 'calculate', 'Theoretical cost', 'التكلفة النظرية'],
       ['/variance', 'compare_arrows', 'Variance', 'الانحراف'],
+      ['/daily-break-even', 'speed', 'Daily break-even', 'نقطة التعادل اليومية'],
       ['/kpis', 'insights', 'KPIs', 'المؤشرات'],
       ['/break-even', 'balance', 'Break-even', 'نقطة التعادل'],
     ]);
