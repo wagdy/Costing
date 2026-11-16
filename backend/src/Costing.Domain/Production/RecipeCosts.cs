@@ -48,6 +48,16 @@ public sealed class RecipeCosts
         _actual = new RecipeCosts(materials, _recipes.Values);
     }
 
+    // The costs as they would be with other prep recipes (a swap's preview, استبدال خامة): bought
+    // materials at their average, a prep item never made by its recipe here, and one made at its
+    // average × (its batch here ÷ its batch in `actual`, the recipes as they are): what its cost
+    // moves to as batches are made by the new recipe.
+    public RecipeCosts(IReadOnlyDictionary<Guid, RawMaterial> materials, IEnumerable<PrepRecipe> recipes, RecipeCosts actual)
+        : this(materials, recipes)
+    {
+        _actual = actual;
+    }
+
     public RecipeCost Of(Guid materialId)
     {
         if (_known.TryGetValue(materialId, out var known))
@@ -67,7 +77,7 @@ public sealed class RecipeCosts
             if (_actual is not null && _recipes.GetValueOrDefault(material.Id) is { BatchQuantity: > 0, Ingredients.Count: > 0 } made && _working.Add(material.Id))
             {
                 var simulatedBatch = Batch(made).Cost;
-                var actualBatch = _actual.Batch(made).Cost;
+                var actualBatch = _actual.Batch(_actual._recipes.GetValueOrDefault(material.Id) ?? made).Cost;
                 _working.Remove(material.Id);
                 if (actualBatch > 0)
                     perUnit = perUnit * simulatedBatch / actualBatch;

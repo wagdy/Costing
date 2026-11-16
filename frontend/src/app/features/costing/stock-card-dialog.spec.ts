@@ -3,8 +3,10 @@ import { HttpErrorResponse } from '@angular/common/http';
 import { MAT_DIALOG_DATA, MatDialog, MatDialogRef } from '@angular/material/dialog';
 import { Router, provideRouter } from '@angular/router';
 import { of, throwError } from 'rxjs';
+import { AuthService } from '../../core/auth/auth.service';
 import { CostingTab, CostingAccess } from '../../core/costing/costing-tabs';
-import { CostingApi, ProductionOrder, StockCard, StockCardLine } from '../../core/costing/costing.api';
+import { CostingApi, ProductionOrder, StockCard, StockCardLine, WhereUsedReport } from '../../core/costing/costing.api';
+import { BulkSwapDialog } from './bulk-swap-dialog';
 import { NotifyService } from '../../core/ui/notify.service';
 import { InvoiceViewDialog } from './invoice-view-dialog';
 import { ProductionOrderDialog } from './production-order-dialog';
@@ -44,20 +46,42 @@ const card: StockCard = {
 
 const text = (el: Element) => el.textContent!.replace(/\s+/g, ' ').trim();
 
+// Tomatoes on the burger itself, and inside the pizza sauce the pizza is made with.
+const usage: WhereUsedReport = {
+  materialId: 'tomatoes', material: 'Tomatoes', code: 'ING-7', isPrepItem: false, unit: 'Gram', purchaseUnit: 'kg', purchaseUnitSize: 1000,
+  dishes: 2, prepItems: 1,
+  rows: [
+    {
+      kind: 'Dish', id: 'burger', name: 'Burger', itemCode: '1', category: 'Mains', portions: 1, batchQuantity: null, batchUnit: null, price: 120, cost: 35,
+      foodCostPercent: 29.2, quantity: 30, throughPrepItems: null, via: [], itemCost: 0.65,
+    },
+    {
+      kind: 'Dish', id: 'pizza', name: 'Margherita', itemCode: '4', category: 'Pizza', portions: 1, batchQuantity: null, batchUnit: null, price: 150, cost: 40,
+      foodCostPercent: 26.7, quantity: null, throughPrepItems: 60, via: ['Pizza sauce'], itemCost: 1.3,
+    },
+    {
+      kind: 'PrepItem', id: 'sauce', name: 'Pizza sauce', itemCode: 'PREP-1', category: 'Sauces', portions: null, batchQuantity: 2000, batchUnit: 'Gram',
+      price: null, cost: 43.33, foodCostPercent: null, quantity: 2000, throughPrepItems: null, via: [], itemCost: 43.33,
+    },
+  ],
+};
+
 describe('the item’s stock card', () => {
   const stockCard = vi.fn();
   const stockCardSheet = vi.fn();
   const productionOrder = vi.fn();
+  const whereUsed = vi.fn();
   const open = vi.fn();
   const close = vi.fn();
   const error = vi.fn();
 
-  async function render(tabs: CostingTab[] = ['Purchases', 'Production', 'Counts', 'Sales', 'Waste']) {
+  async function render(tabs: CostingTab[] = ['Purchases', 'Production', 'Counts', 'Sales', 'Waste'], canManage = true) {
     TestBed.configureTestingModule({
       providers: [
         provideRouter([]),
-        { provide: CostingApi, useValue: { stockCard, stockCardSheet, productionOrder } },
+        { provide: CostingApi, useValue: { stockCard, stockCardSheet, productionOrder, whereUsed } },
         { provide: CostingAccess, useValue: { has: (tab: CostingTab) => tabs.includes(tab) } },
+        { provide: AuthService, useValue: { can: () => canManage } },
         { provide: MatDialog, useValue: { open } },
         { provide: MatDialogRef, useValue: { close } },
         { provide: NotifyService, useValue: { error, info: vi.fn() } },
@@ -73,6 +97,7 @@ describe('the item’s stock card', () => {
 
   beforeEach(() => {
     stockCard.mockReset().mockReturnValue(of(card));
+    whereUsed.mockReset().mockReturnValue(of(usage));
     stockCardSheet.mockReset().mockReturnValue(of(new Blob(['x'])));
     productionOrder.mockReset();
     open.mockReset();
@@ -174,6 +199,47 @@ describe('the item’s stock card', () => {
     [...el.querySelectorAll<HTMLButtonElement>('button')].find((b) => text(b).includes('Excel'))!.click();
     await Promise.resolve();
     expect(stockCardSheet).toHaveBeenCalledExactlyOnceWith('tomatoes', '2026-11-01', '2026-11-30', null);
+  });
+
+  it('lists the recipes it is in, on them or inside their prep items, and swaps it out of them', async () => {
+    const { fixture, el, navigate } = await render(['Recipes']);
+    expect(whereUsed).toHaveBeenCalledExactlyOnceWith('tomatoes');
+    const tabs = [...el.querySelectorAll('[role="tab"]')].map(text);
+    expect(tabs).toEqual(['Movements · حركة الصنف', 'Linked recipes · وصفات مرتبطة (3)']);
+
+    fixture.componentInstance['tab'].set(1);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(text(el.querySelector('.linked-bar')!)).toContain('Used in 2 dishes and 1 prep item');
+    const rows = [...el.querySelectorAll('table.linked tbody tr')];
+    expect(rows.map((r) => [...r.querySelectorAll('td')].map(text))).toEqual([
+      ['Dish · طبقBurger1 · Mains', 'L.E 120.00', '30 g', 'L.E 0.65', 'L.E 35.00a portion', '29.2%'],
+      ['Dish · طبقMargherita4 · Pizza', 'L.E 150.00', '60 g in Pizza sauce', 'L.E 1.30', 'L.E 40.00a portion', '26.7%'],
+      ['Prep item · مصنّعPizza saucePREP-1 · Sauces', '—', '2,000 ga batch of 2,000 g', 'L.E 43.33', 'L.E 43.33a batch', '—'],
+    ]);
+    expect(el.querySelectorAll('table.linked app-info-tip').length).toBe(2);
+
+    // A name opens its recipe card, or the prep item's page.
+    rows[2].querySelector<HTMLButtonElement>('button.ref')!.click();
+    expect(navigate).toHaveBeenLastCalledWith(['/costing/recipes/prep', 'sauce'], { queryParams: undefined });
+
+    // The swap starts from this item, and the list is read again once it is done.
+    open.mockReturnValue({ afterClosed: () => of({ recipes: 1, prepItems: 1 }) });
+    [...el.querySelectorAll<HTMLButtonElement>('button')].find((b) => text(b).includes('Bulk swap material'))!.click();
+    await fixture.whenStable();
+    expect(open).toHaveBeenCalledWith(BulkSwapDialog, expect.objectContaining({ data: { fromMaterialId: 'tomatoes' } }));
+    expect(whereUsed).toHaveBeenCalledTimes(2);
+  });
+
+  it('offers the swap only to whoever writes recipes', async () => {
+    const { fixture, el } = await render(['Recipes'], false);
+    fixture.componentInstance['tab'].set(1);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(el.querySelectorAll('table.linked tbody tr').length).toBe(3);
+    expect([...el.querySelectorAll('button')].some((b) => text(b).includes('Bulk swap material'))).toBe(false);
   });
 
   it('says why when the card cannot be loaded', async () => {

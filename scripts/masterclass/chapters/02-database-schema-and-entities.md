@@ -151,6 +151,10 @@
 
 @@file backend/src/Costing.Domain/Recipes/Recipe.cs
 
+**استبدال خامة في وصفة (`SwapIngredient`):** سطر الخامة القديمة يصبح للجديدة بكمية = القديمة × معامل التحويل، بنسبة العائد الافتراضية للخامة الجديدة (لأن التنظيف خاص بها). وإن كانت الجديدة موجودة أصلًا تُجمع الكمية على سطرها. القاعدة المشتركة (حدود المعامل والتقريب لأقرب جزء من الألف وألا تصبح الكمية صفرًا) في `IngredientSwap`، و`PrepRecipe` يستخدمها بنفس الطريقة مع منع أن يدخل المصنّع في تركيب نفسه.
+
+@@file backend/src/Costing.Domain/Recipes/IngredientSwap.cs
+
 @@file backend/src/Costing.Domain/Recipes/RecipeCategory.cs
 
 @@file backend/src/Costing.Domain/Recipes/IRecipeRepository.cs

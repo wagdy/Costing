@@ -13,7 +13,7 @@ works it.
 | Section | Path | What it holds |
 | --- | --- | --- |
 | Raw materials (الخامات) | `/costing/materials` | Materials, their units, prices and stock; an Excel import |
-| Recipes (الوصفات) | `/costing/recipes` | Recipe cards, prep items (مصنعات) and recipe categories |
+| Recipes (الوصفات) | `/costing/recipes` | Recipe cards, prep items (مصنعات) and recipe categories; advanced filters and the bulk material swap |
 | Production (الإنتاج) | `/costing/production` | Prep items made in batches |
 | Menu (قائمة الطعام) | `/costing/menu` | Categories, items, sizes, add-ons; an Excel import |
 | Material & demand intelligence (تحليلات الخامات والطلبيات) | `/costing/intelligence` | Purchase price variance and what it does to the recipes, the order planner, theoretical against actual usage, ABC and days on hand, menu engineering, the fully burdened plate cost, the vendor price comparison and the inflation what-if simulator; each to Excel |
@@ -171,6 +171,69 @@ the same sheet with no rows.
   prep items at once for a manager and asked of one for anyone else, each a request on Approvals.
 - The kitchen's own batch recipes sheet (المصنعات, each prep item's name on a row of its own)
   still imports new prep items, from **Batch recipes sheet** on Prep items.
+
+## Advanced filters, where an item is used, and the bulk swap
+
+**Advanced filters (فلاتر الوصفات المتقدمة).** Recipes → **Advanced filters** opens a drawer over
+the list, its button counting the filters that are on:
+
+- **Kitchen section (قسم المطبخ):** the recipe categories, the kitchen's own grouping, and
+  Uncategorized. Costing has no kitchen stations of its own (those are the point of sale's printers
+  and screens), so its sections are the recipe categories. A category clicked on the categories page
+  opens the list here with the drawer open.
+- **Contains item (يحتوي على خامة/مصنّع):** an item typed and chosen keeps the recipes that use it,
+  on the recipe or inside one of its prep items at any depth, from where it is used (below).
+- **Food cost above** X%, **cost a portion** from and to, and **net margin below** Y%: the true net
+  margin of the fully burdened plate cost, this month so far as Cost settings share labor and
+  overheads, for whoever works Material & demand intelligence. With it on, each recipe's net margin
+  shows under its food cost. With nothing sold in the month yet there is nothing to share labor and
+  overheads over, so no dish has one, and the drawer says so.
+
+**Where an item is used (أين تُستخدم الخامة)** (`GET api/costing/intelligence/where-used/{materialId}`,
+for every tab that opens a stock card): every recipe and prep item not deleted that uses a material
+or prep item, dishes first, then prep items:
+
+- **Per portion** (a prep item: per batch): on the recipe, as written (the edible portion ÷ the
+  portions); inside its prep items, what they take of it as purchased, through every prep item
+  inside, naming them. `Σ (what the portion takes of a prep item × the item in a gram of it)`.
+- **Its cost** there: everything the portion takes of it, as purchased, × its cost a unit today;
+  the dish's selling price, its cost a portion and food cost %, or a prep item's batch cost.
+- On the stock card it is the **Linked recipes (وصفات مرتبطة)** tab beside the movements; a name
+  opens the recipe card or the prep item.
+
+**Bulk material swap (معالج الاستبدال الشامل للخامات).** **Bulk swap material** on Recipes, and on a
+stock card's Linked recipes (starting from that item), walks four steps:
+
+1. **The old item**, typed and chosen: how many recipes and prep items have it on them. One only
+   inside prep items has nothing to swap itself.
+2. **The new item**: any other material or prep item, with both prices.
+3. **The conversion ratio (معامل التحويل):** "Replace 100 g of the old with 100 g of the new", 1:1 to
+   start; lower the new quantity where the new item goes further. `new quantity = old quantity ×
+   ratio`, as edible portion in each item's own unit, to the thousandth, more than 0 and at most
+   1,000. Items in different units are warned about.
+4. **Preview and choose** (`POST api/costing/recipes/bulk-swap/preview`, `{ fromMaterialId,
+   toMaterialId, ratio, recipeIds?, prepItemIds? }`, in memory): every recipe and prep item with the
+   old item on it, all ticked, with the current and new quantity, the old and new cost (a dish's a
+   portion, a prep item's a batch), the **cost delta** (new − old) and the food cost % before and
+   after. The dishes whose cost moves only through a prep item swapped are listed below. Unticking
+   one previews again without it.
+
+**Swap** (`POST api/costing/recipes/bulk-swap`, the same body with the ids chosen): in one
+transaction, each chosen recipe's and prep item's line for the old item becomes the new item's, or
+none is changed at all. Answers how many recipes and prep items were swapped.
+
+- The new line takes the **new item's default yield** (the trimming is the new item's). A recipe that
+  already has the new item takes the quantity **added to its own line**, at its yield there.
+- **Nested BOMs:** costs are always worked out from the recipes as they are, so a dish made with a
+  swapped prep item is costed through it. A prep item never made is costed by its recipe, so at
+  once; one made already is costed by its batches, so it moves **from its next batch** (marked in
+  the preview): the preview puts it at its average × (its batch with the new item ÷ its batch now).
+- **Refused, and nothing changed:** the same item; the new item deleted; a recipe or prep item that no
+  longer has the old item (preview again); one waiting for a manager's decision (shown locked in the
+  preview); a prep item that would be made from itself (the new item is a prep item made with it);
+  and prep items for anyone who may not approve. A dish's recipe is anyone's who writes recipes (the
+  Recipes tab and `inventory.manage`); a prep item's recipe is a manager's, so for anyone else they
+  are shown in the preview and left out.
 
 ## The menu
 
@@ -460,6 +523,8 @@ oldest first, read from the stock ledger:
   priced delivery or batch averaged in with the stock on the shelf (none below zero), a voided one
   taken back out, any other movement carrying the average it was priced at.
 - A **type filter** shows one kind of movement; the balances stay the whole ledger's.
+- **Linked recipes (وصفات مرتبطة):** a tab beside the movements, where the item is used (see the bulk
+  swap), with the swap button for whoever writes recipes.
 - Each reference opens its record: an invoice over the card, the material's line marked, with the
   way to correct it (the correction voids it and posts the corrected one); a production batch; a
   stock count on its page; a day's sales on the Sales page at that day with its receipt marked

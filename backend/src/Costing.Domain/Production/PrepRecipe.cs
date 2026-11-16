@@ -67,6 +67,28 @@ public sealed class PrepRecipe : AggregateRoot
         _ingredients.AddRange(lines);
     }
 
+    // Puts `to` where `from` was in the batch, as a dish's recipe does (Recipe.SwapIngredient):
+    // from's quantity × the ratio, at to's default yield, added to to's own when it is already
+    // there. A prep item is never made from itself; one made from this one through others is the
+    // caller's to refuse (it knows the other recipes). The new line's quantity; none when `from`
+    // is not in the batch.
+    public decimal? SwapIngredient(RawMaterial from, RawMaterial to, decimal ratio)
+    {
+        if (from.Id == to.Id)
+            throw new DomainException("Choose another item to swap in. · اختر خامة مختلفة.");
+        if (to.Id == Id)
+            throw new DomainException("A prep item cannot be made from itself.");
+        if (_ingredients.SingleOrDefault(i => i.RawMaterialId == from.Id) is not { } line)
+            return null;
+        var quantity = IngredientSwap.Quantity(line.Quantity, ratio);
+        _ingredients.Remove(line);
+        if (_ingredients.SingleOrDefault(i => i.RawMaterialId == to.Id) is { } already)
+            already.Change(already.Quantity + quantity);
+        else
+            _ingredients.Add(new PrepIngredient(Id, to.Id, quantity, to.DefaultYieldPercent));
+        return quantity;
+    }
+
     // What `quantity` of the prep item takes from stock, as purchased, to the gram: the batch's
     // ingredients scaled to it.
     public IReadOnlyList<(Guid RawMaterialId, decimal Quantity)> RequirementsFor(decimal quantity)
@@ -103,6 +125,9 @@ public sealed class PrepIngredient : Entity
 
     // What comes off stock for one batch: 85 g of peeled onion at 85% takes 100 g.
     public decimal AsPurchasedQuantity => Quantity * 100 / YieldPercent;
+
+    internal void Change(decimal quantity) =>
+        Quantity = quantity > 0 ? quantity : throw new DomainException("Each ingredient needs a quantity greater than zero.");
 }
 
 public interface IPrepRecipeRepository : IRepository<PrepRecipe>

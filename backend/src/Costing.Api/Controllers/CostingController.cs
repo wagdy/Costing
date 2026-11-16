@@ -52,6 +52,8 @@ public sealed class CostingController(
     }
 
     // Wherever a material is shown with its stock or its price.
+    private bool CanApprove => UserClaims.RoleOf(User) is { } role && RolePermissions.Has(role, Permissions.ApprovalDecide);
+
     private const CostingTabs StockCardTabs = CostingTabs.Materials | CostingTabs.Recipes | CostingTabs.Purchases | CostingTabs.Counts | CostingTabs.Waste
         | CostingTabs.Production | CostingTabs.Reports | CostingTabs.Intelligence;
 
@@ -85,6 +87,28 @@ public sealed class CostingController(
     [CostingTab(CostingTabs.Recipes | CostingTabs.Menu | CostingTabs.Reports)]
     public Task<RecipeCostCard> GetRecipeCardById(Guid recipeId, CancellationToken cancellationToken) =>
         costing.GetRecipeCardAsync(recipeId, cancellationToken);
+
+    // Where an item is used (أين تُستخدم الخامة): every recipe and prep item not deleted that has it,
+    // on it or inside its prep items, how much a portion (a batch) takes and what it costs there.
+    // For every tab that opens a stock card, where it is a tab of its own.
+    [HttpGet("intelligence/where-used/{materialId:guid}")]
+    [CostingTab(StockCardTabs)]
+    public Task<WhereUsedReport> GetWhereUsed(Guid materialId, CancellationToken cancellationToken) =>
+        costing.GetWhereUsedAsync(materialId, cancellationToken);
+
+    // The bulk material swap (استبدال خامة شامل): what it would do, in memory, then done in one go.
+    // Prep items are a manager's: anyone else's are shown, and left out.
+    [HttpPost("recipes/bulk-swap/preview")]
+    [CostingTab(CostingTabs.Recipes)]
+    [Authorize(Policy = Permissions.InventoryManage)]
+    public Task<SwapPreview> PreviewBulkSwap(SwapPreviewRequest request, CancellationToken cancellationToken) =>
+        costing.PreviewSwapAsync(request, CanApprove, cancellationToken);
+
+    [HttpPost("recipes/bulk-swap")]
+    [CostingTab(CostingTabs.Recipes)]
+    [Authorize(Policy = Permissions.InventoryManage)]
+    public Task<Costing.Application.Recipes.BulkSwapResult> BulkSwap(Costing.Application.Recipes.BulkSwapMaterialCommand command, CancellationToken cancellationToken) =>
+        sender.Send(command with { CanApprove = CanApprove }, cancellationToken);
 
     // The vendor price matrix (مقارنة أسعار الموردين): each material bought in the period and every
     // supplier who sold it, net of every discount, the cheapest marked. Here, not on the intelligence

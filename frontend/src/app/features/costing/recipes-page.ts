@@ -13,14 +13,18 @@ import { Router, RouterLink } from '@angular/router';
 import { firstValueFrom } from 'rxjs';
 import { AuthService } from '../../core/auth/auth.service';
 import { Permissions } from '../../core/auth/permissions';
-import { CostStatus, CostingApi, ApprovalRequest, RecipeCategory, RecipeCostCard, statusLabels } from '../../core/costing/costing.api';
+import { CostStatus, CostingApi, ApprovalRequest, MaterialCost, RecipeCategory, RecipeCostCard, statusLabels } from '../../core/costing/costing.api';
 import { CostingAccess } from '../../core/costing/costing-tabs';
+import { IntelligenceApi } from '../../core/costing/intelligence.api';
 import { errorMessage } from '../../core/http/error-message';
 import { MoneyPipe } from '../../core/ui/money.pipe';
 import { NotifyService } from '../../core/ui/notify.service';
 import { saveBlob } from '../../core/ui/save-blob';
 import { AddToMenuData, AddToMenuDialog } from './add-to-menu-dialog';
 import { Approvals, pendingLabel } from './approvals';
+import { showBulkSwap } from './bulk-swap-dialog';
+import { MaterialPicker } from './material-picker';
+import { periodDays } from './period-bar';
 import { todayIso } from './financials';
 import { recipeSheetRules } from './recipe-sheet-rules';
 import { SheetImportData, SheetImportDialog } from './sheet-import-dialog';
@@ -68,6 +72,7 @@ const recipeSorts: SortOption<RecipeSort>[] = [
     MatProgressBarModule,
     MatSelectModule,
     MatTooltipModule,
+    MaterialPicker,
     MoneyPipe,
     RouterLink,
     SearchField,
@@ -78,15 +83,66 @@ const recipeSorts: SortOption<RecipeSort>[] = [
       <app-search-field [(value)]="search" placeholder="Name, Arabic name, category or menu item · الاسم أو القسم" />
       <div class="pills">
         <app-filter-select label="Show · عرض" icon="link" [options]="viewFilters()" [value]="view()" (valueChange)="view.set($any($event))" />
-        @if (view() !== 'unrecipied') {
-          <app-filter-select label="Category · القسم" icon="category" [options]="categoryFilters()" [(value)]="category" />
-        }
         @if (view() !== 'unrecipied' && view() !== 'deleted') {
           <app-filter-select label="Cost · التكلفة" icon="monitoring" [options]="statusFilters" [value]="status()" (valueChange)="status.set($any($event))" />
           <app-sort-control [options]="sorts" [(sort)]="sort" />
         }
+        @if (view() !== 'unrecipied') {
+          <button mat-stroked-button type="button" class="advanced-toggle" (click)="toggleAdvanced()" [attr.aria-expanded]="advanced()"
+            aria-controls="advanced-filters">
+            <mat-icon>tune</mat-icon> Advanced filters · فلاتر متقدمة
+            @if (activeAdvanced()) {
+              <span class="count" [attr.aria-label]="activeAdvanced() + ' on'">{{ activeAdvanced() }}</span>
+            }
+          </button>
+        }
       </div>
     </div>
+    @if (advanced() && view() !== 'unrecipied') {
+      <section id="advanced-filters" class="advanced" aria-label="Advanced filters">
+        <mat-form-field subscriptSizing="dynamic" class="section">
+          <mat-label>Kitchen section · قسم المطبخ</mat-label>
+          <mat-select [value]="category()" (valueChange)="category.set($event)" aria-label="Kitchen section">
+            @for (o of categoryFilters(); track o.value) {
+              <mat-option [value]="o.value">{{ o.label }} ({{ o.count }})</mat-option>
+            }
+          </mat-select>
+        </mat-form-field>
+        <div class="contains">
+          <app-material-picker [materials]="materials()" [value]="containsId()" (valueChange)="setContains($event)"
+            label="Contains item · يحتوي على خامة/مصنّع" />
+          <app-info-tip tip="rfContains" />
+        </div>
+        <mat-form-field subscriptSizing="dynamic" class="figure">
+          <mat-label>Food cost above · التكلفة أعلى من</mat-label>
+          <input matInput type="number" min="0" step="any" [ngModel]="minFoodCost()" (ngModelChange)="minFoodCost.set(number($event))"
+            aria-label="Food cost above" />
+          <span matTextSuffix>%</span>
+        </mat-form-field>
+        <mat-form-field subscriptSizing="dynamic" class="figure">
+          <mat-label>Cost a portion from · من</mat-label>
+          <input matInput type="number" min="0" step="any" [ngModel]="minCost()" (ngModelChange)="minCost.set(number($event))" aria-label="Cost a portion from" />
+        </mat-form-field>
+        <mat-form-field subscriptSizing="dynamic" class="figure to">
+          <mat-label>to · إلى</mat-label>
+          <input matInput type="number" min="0" step="any" [ngModel]="maxCost()" (ngModelChange)="maxCost.set(number($event))" aria-label="Cost a portion to" />
+        </mat-form-field>
+        @if (canSeeBurdened()) {
+          <div class="net">
+            <mat-form-field subscriptSizing="dynamic" class="figure">
+              <mat-label>Net margin below · الهامش الصافي أقل من</mat-label>
+              <input matInput type="number" step="any" [ngModel]="maxNetMargin()" (ngModelChange)="setNetMargin(number($event))" aria-label="Net margin below" />
+              <span matTextSuffix>%</span>
+            </mat-form-field>
+            <app-info-tip tip="rfNetMargin" />
+          </div>
+        }
+        <button mat-button type="button" (click)="clearAdvanced()" [disabled]="!activeAdvanced()"><mat-icon>filter_alt_off</mat-icon> Clear · مسح</button>
+        @if (advancedNote(); as note) {
+          <p class="muted small note">{{ note }}</p>
+        }
+      </section>
+    }
     <div class="toolbar">
       @if (canSeeBurdened()) {
         <a mat-button class="burdened-link" routerLink="/costing/intelligence/burdened"
@@ -95,6 +151,12 @@ const recipeSorts: SortOption<RecipeSort>[] = [
         </a>
       }
       <span class="spacer"></span>
+      @if (canSwap()) {
+        <button mat-stroked-button class="swap" (click)="bulkSwap()" [disabled]="busy()"
+          matTooltip="Replace one item with another in every recipe that uses it, at once">
+          <mat-icon>swap_horiz</mat-icon> Bulk swap material <span class="inline-ar">استبدال خامة شامل</span>
+        </button>
+      }
       @if (canAddToMenu() && toMenu().length) {
         <button mat-stroked-button class="to-menu" (click)="addToMenu(toMenu())" [disabled]="busy()"
           matTooltip="Each standalone recipe shown becomes a menu item, sold on Sales by its recipe">
@@ -207,7 +269,12 @@ const recipeSorts: SortOption<RecipeSort>[] = [
                   }
                 </td>
                 <td class="num">{{ c.costPerPortion | money }}</td>
-                <td class="num">{{ c.foodCostPercentActual === null ? '—' : (c.foodCostPercentActual | number: '1.1-1') + '%' }}</td>
+                <td class="num">
+                  {{ c.foodCostPercentActual === null ? '—' : (c.foodCostPercentActual | number: '1.1-1') + '%' }}
+                  @if (netMargins() && maxNetMargin() !== null) {
+                    <div class="muted small">net {{ netMarginOf(c) === null ? '—' : (netMarginOf(c)! | number: '1.1-1') + '%' }}</div>
+                  }
+                </td>
                 <td>
                   @if (c.isDeleted) {
                     <span class="muted">Deleted {{ c.deletedAtUtc | date: 'd MMM y' }}{{ c.deletedBy ? ' by ' + c.deletedBy : '' }}</span>
@@ -315,6 +382,74 @@ const recipeSorts: SortOption<RecipeSort>[] = [
     .spacer {
       flex: 1;
     }
+    .advanced-toggle .count {
+      display: inline-grid;
+      place-items: center;
+      min-width: 20px;
+      height: 20px;
+      margin-inline-start: 6px;
+      padding: 0 6px;
+      border-radius: 999px;
+      background: var(--mat-sys-primary);
+      color: var(--mat-sys-on-primary);
+      font: var(--mat-sys-label-small);
+    }
+    .advanced {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 12px;
+      margin: 0 0 12px;
+      padding: 12px;
+      border: 1px solid var(--app-line, var(--mat-sys-outline-variant));
+      border-radius: 12px;
+      background: var(--mat-sys-surface-container-lowest);
+    }
+    .section {
+      width: 240px;
+    }
+    .contains,
+    .net {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .contains app-material-picker {
+      width: 300px;
+      max-width: 100%;
+    }
+    .figure {
+      width: 250px;
+    }
+    .figure.to {
+      width: 150px;
+    }
+    .net .figure {
+      width: 290px;
+    }
+    .note {
+      flex-basis: 100%;
+      margin: 0;
+    }
+    @media (max-width: 600px) {
+      .section,
+      .contains,
+      .net,
+      .figure,
+      .figure.to {
+        flex: 1 1 100%;
+        width: 100%;
+      }
+      .contains app-material-picker,
+      .net .figure {
+        flex: 1;
+        width: auto;
+      }
+    }
+    .swap {
+      color: var(--mat-sys-primary);
+      white-space: nowrap;
+    }
     .visually-hidden {
       position: absolute;
       width: 1px;
@@ -333,6 +468,7 @@ export class RecipesPage {
   protected readonly approvals = inject(Approvals);
   private readonly access = inject(CostingAccess);
   private readonly auth = inject(AuthService);
+  private readonly intelligence = inject(IntelligenceApi);
 
   protected readonly statusLabels = statusLabels;
   protected readonly statuses = Object.keys(statusLabels).filter((s) => s !== 'NoRecipe') as CostStatus[];
@@ -353,6 +489,45 @@ export class RecipesPage {
   protected readonly category = signal('');
   protected readonly uncategorized = 'none';
   protected readonly sorts = recipeSorts;
+  // The advanced filters (فلاتر الوصفات المتقدمة): open or not; the item a recipe must contain (on it
+  // or inside its prep items, by where it is used); food cost above, cost a portion between, and
+  // the true net margin below (this month's fully burdened plate cost), each none when blank.
+  protected readonly advanced = signal(false);
+  protected readonly materials = signal<MaterialCost[]>([]);
+  protected readonly containsId = signal<string | null>(null);
+  protected readonly containsIds = signal<ReadonlySet<string> | null>(null);
+  protected readonly minFoodCost = signal<number | null>(null);
+  protected readonly minCost = signal<number | null>(null);
+  protected readonly maxCost = signal<number | null>(null);
+  protected readonly maxNetMargin = signal<number | null>(null);
+  protected readonly netMargins = signal<ReadonlyMap<string, number | null> | null>(null);
+  private readonly advancedError = signal<string | null>(null);
+  protected readonly activeAdvanced = computed(
+    () =>
+      [this.category() !== '', this.containsId() !== null, this.minFoodCost() !== null, this.minCost() !== null || this.maxCost() !== null, this.maxNetMargin() !== null]
+        .filter(Boolean).length,
+  );
+  protected readonly advancedNote = computed(() => {
+    if (this.advancedError()) {
+      return this.advancedError();
+    }
+    const parts: string[] = [];
+    if (this.containsId() !== null) {
+      const ids = this.containsIds();
+      parts.push(ids === null ? 'Finding the recipes with it…' : `${ids.size} ${ids.size === 1 ? 'recipe has' : 'recipes have'} it, on the recipe or inside a prep item.`);
+    }
+    if (this.maxNetMargin() !== null) {
+      const margins = this.netMargins();
+      parts.push(
+        margins === null
+          ? 'Working out this month\'s net margins…'
+          : [...margins.values()].every((m) => m === null)
+            ? 'No dish has a net margin this month yet: nothing sold to share labor and overheads over. · لا يوجد هامش صافٍ بعد هذا الشهر.'
+            : 'Net margin: this month so far, as Cost settings share labor and overheads.',
+      );
+    }
+    return parts.join(' ') || null;
+  });
   protected readonly sort = signal<SortState<RecipeSort>>({ key: 'recipe', direction: 1 });
 
   protected readonly viewFilters = computed<FilterOption[]>(() => {
@@ -400,6 +575,7 @@ export class RecipesPage {
           (view !== 'standalone' || c.isStandalone) &&
           (view === 'deleted' || !status || c.status === status) &&
           (!category || (category === this.uncategorized ? c.recipeCategoryId === null : c.recipeCategoryId === category)) &&
+          this.matchesAdvanced(c) &&
           smartMatch(this.search(), c.recipe, c.recipeAr, c.recipeCategory, c.recipeCategoryAr, c.linkedTo, c.itemCode),
       )
       .sort((a, b) => direction * RecipesPage.compare(a, b, key) || a.recipe.localeCompare(b.recipe));
@@ -410,6 +586,8 @@ export class RecipesPage {
     this.menu().filter((c) => !c.hasRecipe && smartMatch(this.search(), c.itemCode, c.linkedTo, c.recipe, c.recipeAr, c.category)),
   );
 
+  // Whoever writes recipes swaps an item out of them all at once.
+  protected readonly canSwap = computed(() => this.auth.can(Permissions.InventoryManage));
   // Whoever works the menu puts a recipe on it.
   protected readonly canAddToMenu = computed(() => this.access.has('Menu') && this.auth.can(Permissions.InventoryManage));
   // The fully burdened plate cost is on the intelligence tab: linked for whoever works it.
@@ -431,9 +609,116 @@ export class RecipesPage {
   constructor() {
     effect(() => {
       const category = this.categoryParam();
-      untracked(() => this.category.set(category ?? ''));
+      untracked(() => {
+        this.category.set(category ?? '');
+        if (category) {
+          this.toggleAdvanced(true);
+        }
+      });
     });
     void this.load();
+  }
+
+  protected toggleAdvanced(open = !this.advanced()): void {
+    this.advanced.set(open);
+    if (open && this.materials().length === 0) {
+      void this.loadMaterials();
+    }
+  }
+
+  protected clearAdvanced(): void {
+    this.category.set('');
+    this.setContains(null);
+    this.minFoodCost.set(null);
+    this.minCost.set(null);
+    this.maxCost.set(null);
+    this.maxNetMargin.set(null);
+  }
+
+  // A number typed, or none for a blank.
+  protected number(value: unknown): number | null {
+    return value === null || value === undefined || value === '' || Number.isNaN(Number(value)) ? null : Number(value);
+  }
+
+  // The recipes with the item, from where it is used: on them, or inside a prep item they use.
+  protected async setContains(id: string | null): Promise<void> {
+    this.containsId.set(id);
+    this.containsIds.set(null);
+    this.advancedError.set(null);
+    if (id === null) {
+      return;
+    }
+    try {
+      const used = await firstValueFrom(this.api.whereUsed(id));
+      if (this.containsId() === id) {
+        this.containsIds.set(new Set(used.rows.filter((r) => r.kind !== 'PrepItem').map((r) => r.id)));
+      }
+    } catch (error) {
+      this.advancedError.set(errorMessage(error, 'Where the item is used could not be loaded.'));
+    }
+  }
+
+  // The true net margins of this month so far, once, when first asked for.
+  protected async setNetMargin(value: number | null): Promise<void> {
+    this.maxNetMargin.set(value);
+    if (value === null || this.netMargins() !== null) {
+      return;
+    }
+    try {
+      const month = periodDays('month');
+      const report = await firstValueFrom(this.intelligence.burdenedCosts({ from: month.from, to: month.to, method: null, source: 'Actual' }));
+      this.netMargins.set(new Map(report.rows.filter((r) => r.recipeId).map((r) => [r.recipeId!, r.trueNetMarginPercent])));
+    } catch (error) {
+      this.advancedError.set(errorMessage(error, 'The net margins could not be worked out.'));
+    }
+  }
+
+  protected netMarginOf(card: RecipeCostCard): number | null {
+    return card.recipeId === null ? null : (this.netMargins()?.get(card.recipeId) ?? null);
+  }
+
+  // Every advanced filter set: a recipe the item is in, food cost above, cost between, net margin below.
+  private matchesAdvanced(card: RecipeCostCard): boolean {
+    const contains = this.containsIds();
+    if (this.containsId() !== null && !(contains !== null && card.recipeId !== null && contains.has(card.recipeId))) {
+      return false;
+    }
+    const minFoodCost = this.minFoodCost();
+    if (minFoodCost !== null && !(card.foodCostPercentActual !== null && card.foodCostPercentActual > minFoodCost)) {
+      return false;
+    }
+    const [minCost, maxCost] = [this.minCost(), this.maxCost()];
+    if ((minCost !== null && card.costPerPortion < minCost) || (maxCost !== null && card.costPerPortion > maxCost)) {
+      return false;
+    }
+    const maxNetMargin = this.maxNetMargin();
+    if (maxNetMargin !== null && this.netMargins() !== null) {
+      const margin = this.netMarginOf(card);
+      return margin !== null && margin < maxNetMargin;
+    }
+    return true;
+  }
+
+  protected async bulkSwap(): Promise<void> {
+    if (!(await showBulkSwap(this.dialog))) {
+      return;
+    }
+    try {
+      this.recipes.set(await firstValueFrom(this.api.recipes(true)));
+      if (this.containsId() !== null) {
+        await this.setContains(this.containsId());
+      }
+    } catch (error) {
+      this.notify.error(error, 'The recipes could not be loaded again.');
+    }
+  }
+
+  private async loadMaterials(): Promise<void> {
+    try {
+      this.materials.set(await firstValueFrom(this.api.materials()));
+    } catch (error) {
+      this.advancedError.set(errorMessage(error, 'The items could not be loaded.'));
+    }
   }
 
   // By the column clicked; again, the other way.

@@ -4,10 +4,13 @@ import { Router, provideRouter } from '@angular/router';
 import { of } from 'rxjs';
 import { AuthService } from '../../core/auth/auth.service';
 import { Permissions } from '../../core/auth/permissions';
-import { CostingApi, ApprovalRequest, RecipeCategory, RecipeCostCard } from '../../core/costing/costing.api';
+import { CostingApi, ApprovalRequest, RecipeCategory, RecipeCostCard, WhereUsedReport } from '../../core/costing/costing.api';
+import { IntelligenceApi } from '../../core/costing/intelligence.api';
 import { NotifyService } from '../../core/ui/notify.service';
 import { AddToMenuDialog } from './add-to-menu-dialog';
 import { DeleteRequestDialog } from './approvals';
+import { BulkSwapDialog } from './bulk-swap-dialog';
+import { periodDays } from './period-bar';
 import { RecipesPage } from './recipes-page';
 import { SheetImportData, SheetImportDialog } from './sheet-import-dialog';
 
@@ -90,13 +93,16 @@ describe('the recipes', () => {
   const exportRecipes = vi.fn();
   const importRecipes = vi.fn();
   const recipesTemplate = vi.fn();
+  const materials = vi.fn(() => of([]));
+  const whereUsed = vi.fn();
+  const burdenedCosts = vi.fn();
   // The delete dialog, answered with a reason.
   const open = vi.fn();
   const notify = { info: vi.fn(), error: vi.fn() };
 
   // A manager approves deletions; anyone else (an accountant) asks for them. Whoever works the
   // menu (its tab, and changing stock records) puts a recipe on it.
-  async function render({ manager = true, menuTab = false, canManage = true } = {}) {
+  async function render({ manager = true, menuTab = false, canManage = true, tabs = null as string[] | null } = {}) {
     TestBed.configureTestingModule({
       providers: [
         provideRouter([]),
@@ -104,15 +110,16 @@ describe('the recipes', () => {
           provide: CostingApi,
           useValue: {
             recipes, menu: () => of(menu), deleteRecipe, restoreRecipe, requestDeletion, approvalRequests, exportRecipes, importRecipes, recipesTemplate,
-            recipeCategories: () => of([mains, sauces]),
+            recipeCategories: () => of([mains, sauces]), materials, whereUsed,
           },
         },
+        { provide: IntelligenceApi, useValue: { burdenedCosts } },
         { provide: NotifyService, useValue: notify },
         { provide: MatDialog, useValue: { open } },
         {
           provide: AuthService,
           useValue: {
-            me: () => (menuTab ? { tabs: ['Recipes', 'Menu'] } : null),
+            me: () => (tabs ? { tabs } : menuTab ? { tabs: ['Recipes', 'Menu'] } : null),
             can: (p: string) => (p !== Permissions.ApprovalDecide || manager) && (p !== Permissions.InventoryManage || canManage),
           },
         },
@@ -350,7 +357,8 @@ describe('the recipes', () => {
       TestBed.configureTestingModule({
         providers: [
           provideRouter([]),
-          { provide: CostingApi, useValue: { recipes, menu: () => of(menu), deleteRecipe, restoreRecipe, recipeCategories: () => of([mains, sauces]) } },
+          { provide: CostingApi, useValue: { recipes, menu: () => of(menu), deleteRecipe, restoreRecipe, recipeCategories: () => of([mains, sauces]), materials } },
+          { provide: IntelligenceApi, useValue: { burdenedCosts } },
           { provide: NotifyService, useValue: notify },
         ],
       });
@@ -359,6 +367,9 @@ describe('the recipes', () => {
       await fixture.whenStable();
 
       expect((fixture.componentInstance as unknown as Record<string, any>)['shown']()).toEqual([garlicDip]);
+      // In the advanced filters, opened on it.
+      fixture.detectChanges();
+      expect((fixture.nativeElement as HTMLElement).querySelector('#advanced-filters')).not.toBeNull();
     });
 
     it('sorts by category, the uncategorized last, and back the other way', async () => {
@@ -389,5 +400,126 @@ describe('the recipes', () => {
       page['search'].set('صوصات');
       expect(page['shown']()).toEqual([garlicDip]);
     });
+  });
+
+  // Burger r1 (30, 25%), Smash trial r2 (30, 55%), Garlic dip r4 (4, no price), Tray bake r5 (50, 40%).
+  describe('advanced filters (فلاتر الوصفات المتقدمة)', () => {
+    beforeEach(() => {
+      recipes.mockReturnValue(of([burger, trial, garlicDip, unsorted]));
+      whereUsed.mockReset();
+      burdenedCosts.mockReset();
+    });
+    const names = (page: Record<string, any>) => page['shown']().map((c: RecipeCostCard) => c.recipe);
+
+    it('open in a drawer with the kitchen section, counted when on', async () => {
+      const { el, page, rows } = await render();
+      const toggle = [...el.querySelectorAll<HTMLButtonElement>('button')].find((b) => text(b).includes('Advanced filters'))!;
+      expect(el.querySelector('#advanced-filters')).toBeNull();
+      expect(toggle.getAttribute('aria-expanded')).toBe('false');
+
+      toggle.click();
+      page['category'].set('sauces');
+      rows();
+      const drawer = el.querySelector('#advanced-filters')!;
+      expect([...drawer.querySelectorAll('mat-label')].map(text)).toEqual([
+        'Kitchen section · قسم المطبخ', 'Food cost above · التكلفة أعلى من', 'Cost a portion from · من', 'to · إلى',
+      ]);
+      expect(drawer.querySelector('app-material-picker')).not.toBeNull();
+      expect(text(toggle.querySelector('.count')!)).toBe('1');
+      expect(page['activeAdvanced']()).toBe(1);
+      expect(materials).toHaveBeenCalled();
+      expect(names(page)).toEqual(['Garlic dip']);
+      page['clearAdvanced']();
+      expect(page['activeAdvanced']()).toBe(0);
+      expect(names(page)).toHaveLength(4);
+    });
+
+    it('keep the recipes with an item on them or inside their prep items', async () => {
+      const used: WhereUsedReport = {
+        materialId: 'tomatoes', material: 'Tomatoes', code: null, isPrepItem: false, unit: 'Gram', purchaseUnit: 'kg', purchaseUnitSize: 1000, dishes: 2, prepItems: 1,
+        rows: [
+          { kind: 'Dish', id: 'r1', name: 'Classic Cheeseburger', itemCode: '6', category: 'Mains', portions: 1, batchQuantity: null, batchUnit: null, price: 120,
+            cost: 30, foodCostPercent: 25, quantity: 30, throughPrepItems: null, via: [], itemCost: 0.6 },
+          { kind: 'OffMenuRecipe', id: 'r4', name: 'Garlic dip', itemCode: null, category: 'Sauces', portions: 1, batchQuantity: null, batchUnit: null, price: null,
+            cost: 4, foodCostPercent: null, quantity: null, throughPrepItems: 10, via: ['Tomato base'], itemCost: 0.2 },
+          { kind: 'PrepItem', id: 'r5', name: 'Tomato base', itemCode: null, category: null, portions: null, batchQuantity: 1000, batchUnit: 'Gram', price: null,
+            cost: 20, foodCostPercent: null, quantity: 1000, throughPrepItems: null, via: [], itemCost: 20 },
+        ],
+      };
+      whereUsed.mockReturnValue(of(used));
+      const { page } = await render();
+
+      await page['setContains']('tomatoes');
+      expect(whereUsed).toHaveBeenCalledExactlyOnceWith('tomatoes');
+      // A prep item's id is not a recipe's, even when one shares it.
+      expect(names(page)).toEqual(['Classic Cheeseburger', 'Garlic dip']);
+      expect(page['advancedNote']()).toBe('2 recipes have it, on the recipe or inside a prep item.');
+      await page['setContains'](null);
+      expect(names(page)).toHaveLength(4);
+    });
+
+    it('keep the food cost above a share, and the cost a portion between two figures', async () => {
+      const { page } = await render();
+
+      page['minFoodCost'].set(page['number']('30'));
+      expect(names(page)).toEqual(['Smash trial', 'Tray bake']);
+      page['minCost'].set(20);
+      page['maxCost'].set(40);
+      expect(names(page)).toEqual(['Smash trial']);
+      page['minFoodCost'].set(page['number'](''));
+      expect(names(page)).toEqual(['Classic Cheeseburger', 'Smash trial']);
+      expect(page['activeAdvanced']()).toBe(1);
+    });
+
+    it('keep the true net margin below a share, from this month’s plate cost, for whoever sees it', async () => {
+      burdenedCosts.mockReturnValue(of({ rows: [
+        { recipeId: 'r1', trueNetMarginPercent: 12 }, { recipeId: 'r2', trueNetMarginPercent: -5 }, { recipeId: 'r5', trueNetMarginPercent: 8 }, { recipeId: null, trueNetMarginPercent: 1 },
+      ] }));
+      const withoutTab = await render();
+      withoutTab.page['toggleAdvanced'](true);
+      withoutTab.rows();
+      expect(withoutTab.el.querySelector('#advanced-filters input[aria-label="Net margin below"]')).toBeNull();
+      TestBed.resetTestingModule();
+
+      const { el, page, rows } = await render({ tabs: ['Recipes', 'Intelligence'] });
+      page['toggleAdvanced'](true);
+      rows();
+      expect(el.querySelector('#advanced-filters input[aria-label="Net margin below"]')).not.toBeNull();
+      await page['setNetMargin'](10);
+      const month = periodDays('month');
+      expect(burdenedCosts).toHaveBeenCalledExactlyOnceWith({ from: month.from, to: month.to, method: null, source: 'Actual' });
+      expect(names(page)).toEqual(['Smash trial', 'Tray bake']);
+      await page['setNetMargin'](20);
+      expect(burdenedCosts).toHaveBeenCalledTimes(1);
+      expect(names(page)).toEqual(['Classic Cheeseburger', 'Smash trial', 'Tray bake']);
+      // Each one's net margin under its food cost while the filter is on.
+      expect(rows().map((r) => text(r.querySelectorAll('td')[6]))).toEqual(['25.0% net 12.0%', '55.0% net -5.0%', '40.0% net 8.0%']);
+      expect(page['advancedNote']()).toBe('Net margin: this month so far, as Cost settings share labor and overheads.');
+    });
+
+    it('say so when nothing sold this month gives any dish a net margin', async () => {
+      burdenedCosts.mockReturnValue(of({ rows: [{ recipeId: 'r1', trueNetMarginPercent: null }, { recipeId: 'r2', trueNetMarginPercent: null }] }));
+      const { page } = await render({ tabs: ['Recipes', 'Intelligence'] });
+      await page['setNetMargin'](30);
+      expect(names(page)).toEqual([]);
+      expect(page['advancedNote']()).toBe(
+        'No dish has a net margin this month yet: nothing sold to share labor and overheads over. · لا يوجد هامش صافٍ بعد هذا الشهر.',
+      );
+    });
+  });
+
+  it('offers the bulk swap to whoever writes recipes, and reads them again once it is done', async () => {
+    open.mockReturnValue({ afterClosed: () => of({ recipes: 2, prepItems: 0 }) });
+    const { el } = await render();
+    recipes.mockClear();
+    [...el.querySelectorAll<HTMLButtonElement>('button')].find((b) => text(b).includes('Bulk swap material'))!.click();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(open).toHaveBeenCalledWith(BulkSwapDialog, expect.objectContaining({ data: { fromMaterialId: undefined } }));
+    expect(recipes).toHaveBeenCalledWith(true);
+
+    TestBed.resetTestingModule();
+    const storekeeper = await render({ canManage: false });
+    expect([...storekeeper.el.querySelectorAll('button')].some((b) => text(b).includes('Bulk swap material'))).toBe(false);
   });
 });

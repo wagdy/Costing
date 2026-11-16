@@ -1799,6 +1799,18 @@ export class CostingApi {
   }
 
   // Staff meals, hospitality and recipe tastings (وجبات العاملين والضيافة).
+  whereUsed(materialId: string): Observable<WhereUsedReport> {
+    return this.http.get<WhereUsedReport>(`/api/costing/intelligence/where-used/${materialId}`);
+  }
+
+  previewBulkSwap(request: SwapRequest): Observable<SwapPreview> {
+    return this.http.post<SwapPreview>('/api/costing/recipes/bulk-swap/preview', request);
+  }
+
+  bulkSwap(request: SwapRequest): Observable<BulkSwapResult> {
+    return this.http.post<BulkSwapResult>('/api/costing/recipes/bulk-swap', request);
+  }
+
   staffMeals(from: string, to: string): Observable<StaffMealReport> {
     return this.http.get<StaffMealReport>('/api/costing/staff-meals', { params: { from, to } });
   }
@@ -2736,6 +2748,120 @@ export interface SupplierAccount {
   owedBefore: number;
   lines: SupplierAccountLine[];
   openInvoices: { invoiceId: string; supplierInvoiceNumber: string | null; date: string; total: number; paid: number; remaining: number; status: 'Unpaid' | 'PartlyPaid' }[];
+}
+
+// ---- Where an item is used, and the bulk material swap ----
+
+export type WhereUsedKind = 'Dish' | 'OffMenuRecipe' | 'PrepItem';
+
+// One recipe or prep item using the item (أين تُستخدم الخامة): a dish per portion, a prep item per
+// batch (batchQuantity of batchUnit). quantity: on it as written (edible portion); throughPrepItems:
+// what its prep items take of it, as purchased, via naming them. itemCost: what the item costs in it.
+// cost: the portion's (a prep item's: the batch's); price: the menu's, or a planned price.
+export interface WhereUsedRow {
+  kind: WhereUsedKind;
+  id: string;
+  name: string;
+  itemCode: string | null;
+  category: string | null;
+  portions: number | null;
+  batchQuantity: number | null;
+  batchUnit: UnitOfMeasure | null;
+  price: number | null;
+  cost: number | null;
+  foodCostPercent: number | null;
+  quantity: number | null;
+  throughPrepItems: number | null;
+  via: string[];
+  itemCost: number | null;
+}
+
+export interface WhereUsedReport {
+  materialId: string;
+  material: string;
+  code: string | null;
+  isPrepItem: boolean;
+  unit: UnitOfMeasure;
+  purchaseUnit: string;
+  purchaseUnitSize: number;
+  dishes: number;
+  prepItems: number;
+  rows: WhereUsedRow[];
+}
+
+// What the swap would do (null ids: every recipe and prep item it can).
+export interface SwapRequest {
+  fromMaterialId: string;
+  toMaterialId: string;
+  ratio: number;
+  recipeIds?: string[] | null;
+  prepItemIds?: string[] | null;
+}
+
+export interface SwapItem {
+  id: string;
+  name: string;
+  code: string | null;
+  isPrepItem: boolean;
+  unit: UnitOfMeasure;
+  purchaseUnit: string;
+  purchaseUnitSize: number;
+  costPerUnit: number | null;
+}
+
+// A recipe or prep item with the old item on it, as the swap would leave it: quantities as written
+// (a dish's for all its portions, a prep item's a batch), cost a portion (a batch). blocked: why it
+// cannot be swapped now. fromNextBatch: a prep item made already moves with its next batches.
+export interface SwapPreviewRow {
+  kind: WhereUsedKind;
+  id: string;
+  name: string;
+  itemCode: string | null;
+  category: string | null;
+  portions: number | null;
+  batchQuantity: number | null;
+  oldQuantity: number;
+  newQuantity: number;
+  merged: boolean;
+  oldCost: number | null;
+  newCost: number | null;
+  costDelta: number | null;
+  price: number | null;
+  oldFoodCostPercent: number | null;
+  newFoodCostPercent: number | null;
+  selected: boolean;
+  blocked: string | null;
+  fromNextBatch: boolean;
+}
+
+// A dish without the old item on it, whose cost moves through a prep item swapped.
+export interface SwapKnockOn {
+  kind: WhereUsedKind;
+  id: string;
+  name: string;
+  itemCode: string | null;
+  via: string[];
+  oldCost: number | null;
+  newCost: number | null;
+  costDelta: number | null;
+  price: number | null;
+  oldFoodCostPercent: number | null;
+  newFoodCostPercent: number | null;
+  fromNextBatch: boolean;
+}
+
+export interface SwapPreview {
+  from: SwapItem;
+  to: SwapItem;
+  ratio: number;
+  unitsDiffer: boolean;
+  rows: SwapPreviewRow[];
+  knockOn: SwapKnockOn[];
+}
+
+export interface BulkSwapResult {
+  recipes: number;
+  prepItems: number;
 }
 
 // ---- Staff meals, hospitality and recipe tastings ----

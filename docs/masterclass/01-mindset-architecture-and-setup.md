@@ -1490,6 +1490,7 @@ Costing/
                     RawMaterials.cs
                     StockIntake.cs
                 Recipes/
+                    BulkSwap.cs
                     IngredientSheet.cs
                     RecipeCategories.cs
                     RecipeSheet.cs
@@ -1551,6 +1552,7 @@ Costing/
                     UnitOfMeasure.cs
                 Recipes/
                     IRecipeRepository.cs
+                    IngredientSwap.cs
                     PlateActivity.cs
                     PlateCostAllocation.cs
                     Recipe.cs
@@ -1634,6 +1636,7 @@ Costing/
                     CostingService.Inflation.cs
                     CostingService.MenuEngineering.cs
                     CostingService.PlateCost.cs
+                    CostingService.WhereUsed.cs
                     CostingService.cs
                     CostingTables.cs
                     DailyBreakEvenService.cs
@@ -1648,6 +1651,7 @@ Costing/
                     VarianceService.cs
         tests/
             Costing.Api.Tests/
+                BulkSwapApiTests.cs
                 BurdenedCostApiTests.cs
                 ControllershipApiTests.cs
                 Costing.Api.Tests.csproj
@@ -1682,6 +1686,7 @@ Costing/
                 Costing.Domain.Tests.csproj
                 CostingTests.cs
                 EndOfDayTests.cs
+                IngredientSwapTests.cs
                 MaterialExplosionTests.cs
                 MenuSalesTests.cs
                 PlateCostTests.cs
@@ -1695,6 +1700,7 @@ Costing/
                 TreasuryTests.cs
                 WhatIfAndConsumptionTests.cs
             Costing.Infrastructure.Tests/
+                BulkSwapTests.cs
                 BurdenedCostTests.cs
                 Costing.Infrastructure.Tests.csproj
                 CostingTests.cs
@@ -1794,6 +1800,8 @@ Costing/
                         approvals.ts
                         break-even-page.spec.ts
                         break-even-page.ts
+                        bulk-swap-dialog.spec.ts
+                        bulk-swap-dialog.ts
                         burdened-cost-page.spec.ts
                         burdened-cost-page.ts
                         category-delete-dialog.spec.ts

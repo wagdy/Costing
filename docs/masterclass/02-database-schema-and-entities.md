@@ -1379,7 +1379,7 @@ public sealed class RecipeIngredient : Entity
 ```
 
 
-> 📄 **`backend/src/Costing.Domain/Recipes/Recipe.cs`** — 148 سطر
+> 📄 **`backend/src/Costing.Domain/Recipes/Recipe.cs`** — 167 سطر
 
 ```csharp
 using Costing.Domain.Common;
@@ -1520,6 +1520,25 @@ public sealed class Recipe : AggregateRoot
     public void RemoveIngredient(Guid rawMaterialId) =>
         _ingredients.RemoveAll(i => i.RawMaterialId == rawMaterialId);
 
+    // Puts `to` where `from` was (استبدال خامة): from's quantity × the ratio (IngredientSwap), at
+    // to's own default yield, the trimming being the new item's. Already on the recipe, `to` takes
+    // that quantity added to its own, at its yield there. The new line's quantity; none, and
+    // nothing changed, when `from` is not on the recipe.
+    public decimal? SwapIngredient(RawMaterial from, RawMaterial to, decimal ratio)
+    {
+        if (from.Id == to.Id)
+            throw new DomainException("Choose another item to swap in. · اختر خامة مختلفة.");
+        if (_ingredients.SingleOrDefault(i => i.RawMaterialId == from.Id) is not { } line)
+            return null;
+        var quantity = IngredientSwap.Quantity(line.Quantity, ratio);
+        _ingredients.Remove(line);
+        if (_ingredients.SingleOrDefault(i => i.RawMaterialId == to.Id) is { } already)
+            already.Change(already.Quantity + quantity, already.YieldPercent);
+        else
+            _ingredients.Add(new RecipeIngredient(Id, to.Id, quantity, to.DefaultYieldPercent));
+        return quantity;
+    }
+
     private static string? Clean(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
     public IReadOnlyList<(Guid RawMaterialId, decimal Quantity)> RequirementsFor(int units)
@@ -1528,6 +1547,41 @@ public sealed class Recipe : AggregateRoot
             throw new DomainException("Units must be at least 1.");
 
         return _ingredients.Select(i => (i.RawMaterialId, Quantity: i.AsPurchasedQuantity * units / Portions)).ToList();
+    }
+}
+```
+
+
+**استبدال خامة في وصفة (`SwapIngredient`):** سطر الخامة القديمة يصبح للجديدة بكمية = القديمة × معامل التحويل، بنسبة العائد الافتراضية للخامة الجديدة (لأن التنظيف خاص بها). وإن كانت الجديدة موجودة أصلًا تُجمع الكمية على سطرها. القاعدة المشتركة (حدود المعامل والتقريب لأقرب جزء من الألف وألا تصبح الكمية صفرًا) في `IngredientSwap`، و`PrepRecipe` يستخدمها بنفس الطريقة مع منع أن يدخل المصنّع في تركيب نفسه.
+
+> 📄 **`backend/src/Costing.Domain/Recipes/IngredientSwap.cs`** — 27 سطر
+
+```csharp
+using Costing.Domain.Common;
+
+namespace Costing.Domain.Recipes;
+
+// Swapping one item for another on a recipe (استبدال خامة): the new item's quantity is the old
+// one's × the conversion ratio (معامل التحويل), as edible portion in each item's own unit: 100 g of
+// Mozzarella A at 0.8 is 80 g of Mozzarella B. 1 unless the chef says otherwise.
+public static class IngredientSwap
+{
+    public const decimal MaxRatio = 1000;
+
+    public static void CheckRatio(decimal ratio)
+    {
+        if (ratio <= 0 || ratio > MaxRatio)
+            throw new DomainException("The conversion ratio is more than 0 and at most 1,000. · معامل التحويل أكبر من صفر وحتى 1000.");
+    }
+
+    // To the thousandth of a gram, millilitre or piece, as recipes keep quantities; never nothing.
+    public static decimal Quantity(decimal oldQuantity, decimal ratio)
+    {
+        CheckRatio(ratio);
+        var quantity = Math.Round(oldQuantity * ratio, 3, MidpointRounding.AwayFromZero);
+        return quantity > 0
+            ? quantity
+            : throw new DomainException("At that ratio the new quantity rounds to nothing. · الكمية الجديدة تقرب إلى صفر.");
     }
 }
 ```
@@ -1681,7 +1735,7 @@ public static class StockRequirements
 ```
 
 
-> 📄 **`backend/src/Costing.Domain/Production/PrepRecipe.cs`** — 114 سطر
+> 📄 **`backend/src/Costing.Domain/Production/PrepRecipe.cs`** — 139 سطر
 
 ```csharp
 using Costing.Domain.Common;
@@ -1753,6 +1807,28 @@ public sealed class PrepRecipe : AggregateRoot
         _ingredients.AddRange(lines);
     }
 
+    // Puts `to` where `from` was in the batch, as a dish's recipe does (Recipe.SwapIngredient):
+    // from's quantity × the ratio, at to's default yield, added to to's own when it is already
+    // there. A prep item is never made from itself; one made from this one through others is the
+    // caller's to refuse (it knows the other recipes). The new line's quantity; none when `from`
+    // is not in the batch.
+    public decimal? SwapIngredient(RawMaterial from, RawMaterial to, decimal ratio)
+    {
+        if (from.Id == to.Id)
+            throw new DomainException("Choose another item to swap in. · اختر خامة مختلفة.");
+        if (to.Id == Id)
+            throw new DomainException("A prep item cannot be made from itself.");
+        if (_ingredients.SingleOrDefault(i => i.RawMaterialId == from.Id) is not { } line)
+            return null;
+        var quantity = IngredientSwap.Quantity(line.Quantity, ratio);
+        _ingredients.Remove(line);
+        if (_ingredients.SingleOrDefault(i => i.RawMaterialId == to.Id) is { } already)
+            already.Change(already.Quantity + quantity);
+        else
+            _ingredients.Add(new PrepIngredient(Id, to.Id, quantity, to.DefaultYieldPercent));
+        return quantity;
+    }
+
     // What `quantity` of the prep item takes from stock, as purchased, to the gram: the batch's
     // ingredients scaled to it.
     public IReadOnlyList<(Guid RawMaterialId, decimal Quantity)> RequirementsFor(decimal quantity)
@@ -1789,6 +1865,9 @@ public sealed class PrepIngredient : Entity
 
     // What comes off stock for one batch: 85 g of peeled onion at 85% takes 100 g.
     public decimal AsPurchasedQuantity => Quantity * 100 / YieldPercent;
+
+    internal void Change(decimal quantity) =>
+        Quantity = quantity > 0 ? quantity : throw new DomainException("Each ingredient needs a quantity greater than zero.");
 }
 
 public interface IPrepRecipeRepository : IRepository<PrepRecipe>

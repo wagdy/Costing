@@ -7,16 +7,20 @@ import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatIconModule } from '@angular/material/icon';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatSelectModule } from '@angular/material/select';
+import { MatTabsModule } from '@angular/material/tabs';
 import { MatTooltipModule } from '@angular/material/tooltip';
 import { Router } from '@angular/router';
 import { firstValueFrom } from 'rxjs';
+import { AuthService } from '../../core/auth/auth.service';
+import { Permissions } from '../../core/auth/permissions';
 import { CostingAccess } from '../../core/costing/costing-tabs';
-import { CostingApi, StockCard, StockCardLine, StockCardMovementType, stockCardTypes } from '../../core/costing/costing.api';
+import { CostingApi, StockCard, StockCardLine, StockCardMovementType, WhereUsedReport, WhereUsedRow, stockCardTypes } from '../../core/costing/costing.api';
 import { errorMessage } from '../../core/http/error-message';
 import { Company } from '../../core/settings/company';
 import { MoneyPipe } from '../../core/ui/money.pipe';
 import { NotifyService } from '../../core/ui/notify.service';
 import { saveBlob } from '../../core/ui/save-blob';
+import { showBulkSwap, unitShort, usedKindLabels } from './bulk-swap-dialog';
 import { InfoTip } from './info-tip';
 import { showInvoice } from './invoice-view-dialog';
 import { PeriodBar, periodDays } from './period-bar';
@@ -54,6 +58,7 @@ export interface StockCardData {
     MatIconModule,
     MatProgressBarModule,
     MatSelectModule,
+    MatTabsModule,
     MatTooltipModule,
     MoneyPipe,
     PeriodBar,
@@ -66,6 +71,8 @@ export interface StockCardData {
       }
     </h2>
     <mat-dialog-content>
+      <mat-tab-group mat-stretch-tabs="false" animationDuration="0ms" [(selectedIndex)]="tab" class="card-tabs">
+      <mat-tab label="Movements · حركة الصنف">
       <div class="toolbar filters">
         <app-period-bar [(from)]="from" [(to)]="to" />
         <mat-form-field subscriptSizing="dynamic" class="type">
@@ -185,6 +192,72 @@ export interface StockCardData {
           </table>
         </div>
       }
+      </mat-tab>
+      <mat-tab [label]="linkedLabel()">
+        <div class="toolbar linked-bar">
+          @if (usage(); as u) {
+            <span class="muted">
+              Used in {{ u.dishes }} {{ u.dishes === 1 ? 'dish' : 'dishes' }} and {{ u.prepItems }} {{ u.prepItems === 1 ? 'prep item' : 'prep items' }}
+              · يُستخدم في {{ u.dishes }} طبق و{{ u.prepItems }} مصنّع
+            </span>
+          }
+          <span class="spacer"></span>
+          @if (canSwap()) {
+            <button mat-stroked-button class="swap" (click)="bulkSwap()"><mat-icon>swap_horiz</mat-icon> Bulk swap material · استبدال خامة شامل</button>
+          }
+        </div>
+        @if (usageError(); as e) {
+          <p class="error" role="alert">{{ e }}</p>
+        } @else if (usage(); as u) {
+          <div class="table-wrap">
+            <table class="grid linked">
+              <thead>
+                <tr>
+                  <th>Recipe<span class="ar">الوصفة</span></th>
+                  <th class="num">Selling price<span class="ar">سعر البيع</span></th>
+                  <th class="num">Per portion <app-info-tip tip="wuQuantity" /><span class="ar">الكمية في الحصة</span></th>
+                  <th class="num">Its cost <app-info-tip tip="wuItemCost" /><span class="ar">تكلفته</span></th>
+                  <th class="num">Cost<span class="ar">التكلفة</span></th>
+                  <th class="num">Food cost %<span class="ar">نسبة التكلفة</span></th>
+                </tr>
+              </thead>
+              <tbody>
+                @for (r of u.rows; track r.id) {
+                  <tr>
+                    <td>
+                      <span class="kind">{{ kinds[r.kind].en }} · {{ kinds[r.kind].ar }}</span>
+                      @if (canOpenRecipes()) {
+                        <button type="button" class="ref inline" (click)="openUse(r)">{{ r.name }}</button>
+                      } @else {
+                        <strong>{{ r.name }}</strong>
+                      }
+                      <div class="muted small">{{ r.itemCode ? r.itemCode + ' · ' : '' }}{{ r.category ?? '' }}</div>
+                    </td>
+                    <td class="num">{{ r.price === null ? '—' : (r.price | money) }}</td>
+                    <td class="num">
+                      @if (r.quantity !== null) {
+                        <strong>{{ r.quantity | number: '1.0-3' }} {{ units[u.unit] }}</strong>
+                      }
+                      @if (r.throughPrepItems !== null) {
+                        <div class="muted small">{{ r.quantity !== null ? '+ ' : '' }}{{ r.throughPrepItems | number: '1.0-3' }} {{ units[u.unit] }} in {{ r.via.join(', ') }}</div>
+                      }
+                      <div class="muted small">{{ r.kind === 'PrepItem' ? 'a batch of ' + (r.batchQuantity | number: '1.0-3') + ' ' + units[r.batchUnit ?? 'Gram'] : '' }}</div>
+                    </td>
+                    <td class="num">{{ r.itemCost === null ? '—' : (r.itemCost | money) }}</td>
+                    <td class="num">{{ r.cost === null ? '—' : (r.cost | money) }}<div class="muted small">{{ r.kind === 'PrepItem' ? 'a batch' : 'a portion' }}</div></td>
+                    <td class="num">{{ r.foodCostPercent === null ? '—' : (r.foodCostPercent | number: '1.1-1') + '%' }}</td>
+                  </tr>
+                } @empty {
+                  <tr><td colspan="6" class="muted">No recipe or prep item uses {{ u.material }}.</td></tr>
+                }
+              </tbody>
+            </table>
+          </div>
+        } @else {
+          <mat-progress-bar mode="indeterminate" />
+        }
+      </mat-tab>
+      </mat-tab-group>
     </mat-dialog-content>
     <mat-dialog-actions align="end">
       <button mat-flat-button mat-dialog-close>Close</button>
@@ -273,6 +346,30 @@ export interface StockCardData {
     tr.reversal td {
       color: var(--mat-sys-on-surface-variant);
     }
+    .card-tabs {
+      margin-top: -8px;
+    }
+    .linked-bar {
+      align-items: center;
+      gap: 8px;
+      margin: 12px 0 8px;
+    }
+    .kind {
+      display: inline-block;
+      margin-inline-end: 6px;
+      padding: 0 8px;
+      border-radius: 999px;
+      font: var(--mat-sys-label-small);
+      line-height: 20px;
+      background: var(--mat-sys-surface-container-high);
+    }
+    button.ref.inline {
+      display: inline;
+      font-weight: 500;
+    }
+    .swap {
+      color: var(--mat-sys-primary);
+    }
     tr.edge td,
     tfoot td {
       font-weight: 500;
@@ -289,8 +386,22 @@ export class StockCardDialog {
   private readonly router = inject(Router);
   private readonly notify = inject(NotifyService);
   private readonly access = inject(CostingAccess);
+  private readonly auth = inject(AuthService);
 
   protected readonly types = stockCardTypes;
+  protected readonly units = unitShort;
+  protected readonly kinds = usedKindLabels;
+  protected readonly tab = signal(0);
+  // The recipes and prep items it is in (وصفات مرتبطة).
+  protected readonly usage = signal<WhereUsedReport | null>(null);
+  protected readonly usageError = signal<string | null>(null);
+  protected readonly linkedLabel = computed(() => {
+    const u = this.usage();
+    return `Linked recipes · وصفات مرتبطة${u ? ` (${u.rows.length})` : ''}`;
+  });
+  protected readonly canOpenRecipes = computed(() => this.access.has('Recipes'));
+  // Whoever writes recipes swaps it out of them.
+  protected readonly canSwap = computed(() => this.access.has('Recipes') && this.auth.can(Permissions.InventoryManage));
   protected readonly from = signal(this.data.from ?? periodDays('month').from);
   protected readonly to = signal(this.data.to ?? periodDays('month').to);
   protected readonly type = signal<StockCardMovementType | null>(null);
@@ -313,6 +424,27 @@ export class StockCardDialog {
       const [from, to, type] = [this.from(), this.to(), this.type()];
       untracked(() => void this.load(from, to, type));
     });
+    void this.loadUsage();
+  }
+
+  // A dish's recipe card, or a prep item's page: the card closes for it.
+  protected openUse(row: WhereUsedRow): void {
+    this.leaveFor(row.kind === 'PrepItem' ? ['/costing/recipes/prep', row.id] : ['/costing/recipes/recipe', row.id]);
+  }
+
+  protected async bulkSwap(): Promise<void> {
+    if (await showBulkSwap(this.dialog, this.data.id)) {
+      await this.loadUsage();
+    }
+  }
+
+  private async loadUsage(): Promise<void> {
+    this.usageError.set(null);
+    try {
+      this.usage.set(await firstValueFrom(this.api.whereUsed(this.data.id)));
+    } catch (error) {
+      this.usageError.set(errorMessage(error, 'Where it is used could not be loaded.'));
+    }
   }
 
   protected typeLabel(type: StockCardMovementType): string {

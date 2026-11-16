@@ -1390,7 +1390,7 @@ function insert(field: HTMLInputElement, text: string): void {
 
 `costing.api.ts`: أكبر ملف: كل الأنواع والنداءات لـ `api/costing` و `api/inventory` و `api/financials` (الخامات، التكاليف، الوصفات، المصنعات، الإنتاج، المشتريات، الجرد، الهالك، الخزنة، التقارير، الموافقات…). الأنواع تطابق DTOs الـ API، والـ enums كـ union types، وقواميس التسميات ثنائية اللغة (`Record<Kind, { en; ar }>`) تجبر TypeScript على تسمية كل حالة.
 
-> 📄 **`frontend/src/app/core/costing/costing.api.ts`** — 2780 سطر
+> 📄 **`frontend/src/app/core/costing/costing.api.ts`** — 2906 سطر
 
 ```ts
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
@@ -3194,6 +3194,18 @@ export class CostingApi {
   }
 
   // Staff meals, hospitality and recipe tastings (وجبات العاملين والضيافة).
+  whereUsed(materialId: string): Observable<WhereUsedReport> {
+    return this.http.get<WhereUsedReport>(`/api/costing/intelligence/where-used/${materialId}`);
+  }
+
+  previewBulkSwap(request: SwapRequest): Observable<SwapPreview> {
+    return this.http.post<SwapPreview>('/api/costing/recipes/bulk-swap/preview', request);
+  }
+
+  bulkSwap(request: SwapRequest): Observable<BulkSwapResult> {
+    return this.http.post<BulkSwapResult>('/api/costing/recipes/bulk-swap', request);
+  }
+
   staffMeals(from: string, to: string): Observable<StaffMealReport> {
     return this.http.get<StaffMealReport>('/api/costing/staff-meals', { params: { from, to } });
   }
@@ -4131,6 +4143,120 @@ export interface SupplierAccount {
   owedBefore: number;
   lines: SupplierAccountLine[];
   openInvoices: { invoiceId: string; supplierInvoiceNumber: string | null; date: string; total: number; paid: number; remaining: number; status: 'Unpaid' | 'PartlyPaid' }[];
+}
+
+// ---- Where an item is used, and the bulk material swap ----
+
+export type WhereUsedKind = 'Dish' | 'OffMenuRecipe' | 'PrepItem';
+
+// One recipe or prep item using the item (أين تُستخدم الخامة): a dish per portion, a prep item per
+// batch (batchQuantity of batchUnit). quantity: on it as written (edible portion); throughPrepItems:
+// what its prep items take of it, as purchased, via naming them. itemCost: what the item costs in it.
+// cost: the portion's (a prep item's: the batch's); price: the menu's, or a planned price.
+export interface WhereUsedRow {
+  kind: WhereUsedKind;
+  id: string;
+  name: string;
+  itemCode: string | null;
+  category: string | null;
+  portions: number | null;
+  batchQuantity: number | null;
+  batchUnit: UnitOfMeasure | null;
+  price: number | null;
+  cost: number | null;
+  foodCostPercent: number | null;
+  quantity: number | null;
+  throughPrepItems: number | null;
+  via: string[];
+  itemCost: number | null;
+}
+
+export interface WhereUsedReport {
+  materialId: string;
+  material: string;
+  code: string | null;
+  isPrepItem: boolean;
+  unit: UnitOfMeasure;
+  purchaseUnit: string;
+  purchaseUnitSize: number;
+  dishes: number;
+  prepItems: number;
+  rows: WhereUsedRow[];
+}
+
+// What the swap would do (null ids: every recipe and prep item it can).
+export interface SwapRequest {
+  fromMaterialId: string;
+  toMaterialId: string;
+  ratio: number;
+  recipeIds?: string[] | null;
+  prepItemIds?: string[] | null;
+}
+
+export interface SwapItem {
+  id: string;
+  name: string;
+  code: string | null;
+  isPrepItem: boolean;
+  unit: UnitOfMeasure;
+  purchaseUnit: string;
+  purchaseUnitSize: number;
+  costPerUnit: number | null;
+}
+
+// A recipe or prep item with the old item on it, as the swap would leave it: quantities as written
+// (a dish's for all its portions, a prep item's a batch), cost a portion (a batch). blocked: why it
+// cannot be swapped now. fromNextBatch: a prep item made already moves with its next batches.
+export interface SwapPreviewRow {
+  kind: WhereUsedKind;
+  id: string;
+  name: string;
+  itemCode: string | null;
+  category: string | null;
+  portions: number | null;
+  batchQuantity: number | null;
+  oldQuantity: number;
+  newQuantity: number;
+  merged: boolean;
+  oldCost: number | null;
+  newCost: number | null;
+  costDelta: number | null;
+  price: number | null;
+  oldFoodCostPercent: number | null;
+  newFoodCostPercent: number | null;
+  selected: boolean;
+  blocked: string | null;
+  fromNextBatch: boolean;
+}
+
+// A dish without the old item on it, whose cost moves through a prep item swapped.
+export interface SwapKnockOn {
+  kind: WhereUsedKind;
+  id: string;
+  name: string;
+  itemCode: string | null;
+  via: string[];
+  oldCost: number | null;
+  newCost: number | null;
+  costDelta: number | null;
+  price: number | null;
+  oldFoodCostPercent: number | null;
+  newFoodCostPercent: number | null;
+  fromNextBatch: boolean;
+}
+
+export interface SwapPreview {
+  from: SwapItem;
+  to: SwapItem;
+  ratio: number;
+  unitsDiffer: boolean;
+  rows: SwapPreviewRow[];
+  knockOn: SwapKnockOn[];
+}
+
+export interface BulkSwapResult {
+  recipes: number;
+  prepItems: number;
 }
 
 // ---- Staff meals, hospitality and recipe tastings ----
@@ -7900,7 +8026,7 @@ export class InfoTip implements OnDestroy {
 ```
 
 
-> 📄 **`frontend/src/app/features/costing/info-tips.ts`** — 900 سطر
+> 📄 **`frontend/src/app/features/costing/info-tips.ts`** — 958 سطر
 
 ```ts
 // What each figure on the costing screens is, and how it is worked out, in Arabic and English: the
@@ -8799,6 +8925,64 @@ export const infoTips = {
       en: 'Changed only by a priced purchase or batch (weighted with the stock on the shelf) or its void; other movements carry it on.',
       ar: 'لا يتغير إلا بشراء أو تصنيع مُسعّر (مرجحًا بالرصيد) أو إلغائه؛ باقي الحركات تحمله كما هو.',
     },
+  ),
+
+  // ---- Where an item is used, and the bulk swap ----
+  wuQuantity: tip(
+    { en: 'Used per portion', ar: 'الكمية في الحصة' },
+    {
+      en: 'How much of the item one portion of the dish takes (a prep item: one batch). On the recipe: as written. Inside its prep items: what they take of it.',
+      ar: 'كم تأخذ الحصة الواحدة من الطبق من هذا الصنف (المصنّع: الدفعة الواحدة). في الوصفة مباشرة: كما هو مكتوب. داخل المصنّعات: ما تأخذه منه.',
+    },
+    {
+      en: 'On the recipe: quantity ÷ portions. Inside a prep item: what the portion takes of it × the item in a gram of it (its batch, as purchased, through every prep item inside).',
+      ar: 'في الوصفة: الكمية ÷ عدد الحصص. داخل المصنّع: ما تأخذه الحصة منه × نصيب الجرام منه من الصنف (حسب دفعته، بالوزن قبل التنظيف، عبر كل المصنّعات الداخلة).',
+    },
+  ),
+  wuItemCost: tip(
+    { en: 'Its cost in a portion', ar: 'تكلفته في الحصة' },
+    { en: 'What this item alone costs in one portion (a prep item: one batch), at today\'s average cost.', ar: 'تكلفة هذا الصنف وحده في الحصة الواحدة (المصنّع: الدفعة)، بمتوسط التكلفة اليوم.' },
+    { en: 'Everything a portion takes of it, as purchased (on it and inside its prep items) × its cost a unit.', ar: 'كل ما تأخذه الحصة منه بالوزن قبل التنظيف (مباشرة وداخل المصنّعات) × تكلفة الوحدة.' },
+  ),
+  bsRatio: tip(
+    { en: 'Conversion ratio', ar: 'معامل التحويل' },
+    {
+      en: 'How much of the new item replaces each unit of the old one. 1 is gram for gram; lower it when the new item goes further (a stronger cheese, a better yield).',
+      ar: 'كم من الخامة الجديدة يحل محل كل وحدة من القديمة. 1 يعني جرام بجرام؛ قلّله إن كانت الجديدة أقوى أو أعلى عائدًا.',
+    },
+    {
+      en: 'New quantity = old quantity × ratio, as edible portion in each item\'s own unit (100 g at 0.8 is 80 g). The new line takes the new item\'s own default yield.',
+      ar: 'الكمية الجديدة = الكمية القديمة × المعامل، كوزن صافٍ بوحدة كل صنف (100 جم × 0.8 = 80 جم). ويأخذ السطر الجديد نسبة العائد الافتراضية للخامة الجديدة.',
+    },
+  ),
+  bsDelta: tip(
+    { en: 'Cost delta', ar: 'فرق التكلفة' },
+    {
+      en: 'What the swap does to a portion\'s cost (a prep item: a batch\'s). Positive: dearer. A prep item made already moves with its next batches.',
+      ar: 'أثر الاستبدال على تكلفة الحصة (المصنّع: الدفعة). الموجب يعني أغلى. والمصنّع المُنتج من قبل تتغير تكلفته مع الدفعات القادمة.',
+    },
+    {
+      en: 'New cost − old cost. New: the recipe with the new item, its prep items as the swap leaves them; a prep item made already at its average × (its batch with the new item ÷ its batch now).',
+      ar: 'التكلفة الجديدة − القديمة. الجديدة: الوصفة بالخامة الجديدة ومصنّعاتها بعد الاستبدال؛ والمصنّع المُنتج بمتوسطه × (دفعته بالجديدة ÷ دفعته الآن).',
+    },
+  ),
+  bsKnockOn: tip(
+    { en: 'Dishes moved through prep items', ar: 'أطباق تتأثر عبر المصنّعات' },
+    { en: 'Dishes without the old item on them whose cost still moves, because a prep item they use is swapped.', ar: 'أطباق لا تحتوي الخامة القديمة مباشرة، لكن تكلفتها تتغير لأن مصنّعًا تستخدمه سيتم استبداله.' },
+    { en: 'The dish\'s cost with the swapped prep items − its cost now.', ar: 'تكلفة الطبق بالمصنّعات بعد الاستبدال − تكلفته الآن.' },
+  ),
+  rfContains: tip(
+    { en: 'Contains', ar: 'يحتوي على' },
+    { en: 'Only the recipes with this item: on the recipe, or inside one of its prep items.', ar: 'الوصفات التي بها هذا الصنف فقط: في الوصفة نفسها أو داخل أحد مصنّعاتها.' },
+    { en: 'From the item\'s where-used list, through every prep item.', ar: 'من قائمة أين يُستخدم الصنف، عبر كل المصنّعات.' },
+  ),
+  rfNetMargin: tip(
+    { en: 'True net margin', ar: 'هامش الربح الصافي' },
+    {
+      en: 'What is left of the price after food, labor and overheads: the fully burdened plate cost of this month so far.',
+      ar: 'ما يتبقى من السعر بعد الخامات والعمالة والمصاريف: التكلفة الكلية للطبق لهذا الشهر حتى الآن.',
+    },
+    { en: '(Price − fully burdened cost) ÷ price × 100, as Cost settings share the labor and overheads.', ar: '(السعر − التكلفة الكلية) ÷ السعر × 100، بطريقة التحميل في إعدادات التكاليف.' },
   ),
 } satisfies Record<string, InfoTipContent>;
 
@@ -10597,7 +10781,7 @@ export class MaterialHistoryDialog {
 ```
 
 
-> 📄 **`frontend/src/app/features/costing/stock-card-dialog.ts`** — 477 سطر
+> 📄 **`frontend/src/app/features/costing/stock-card-dialog.ts`** — 609 سطر
 
 ```ts
 import { DatePipe, DecimalPipe } from '@angular/common';
@@ -10609,16 +10793,20 @@ import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatIconModule } from '@angular/material/icon';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatSelectModule } from '@angular/material/select';
+import { MatTabsModule } from '@angular/material/tabs';
 import { MatTooltipModule } from '@angular/material/tooltip';
 import { Router } from '@angular/router';
 import { firstValueFrom } from 'rxjs';
+import { AuthService } from '../../core/auth/auth.service';
+import { Permissions } from '../../core/auth/permissions';
 import { CostingAccess } from '../../core/costing/costing-tabs';
-import { CostingApi, StockCard, StockCardLine, StockCardMovementType, stockCardTypes } from '../../core/costing/costing.api';
+import { CostingApi, StockCard, StockCardLine, StockCardMovementType, WhereUsedReport, WhereUsedRow, stockCardTypes } from '../../core/costing/costing.api';
 import { errorMessage } from '../../core/http/error-message';
 import { Company } from '../../core/settings/company';
 import { MoneyPipe } from '../../core/ui/money.pipe';
 import { NotifyService } from '../../core/ui/notify.service';
 import { saveBlob } from '../../core/ui/save-blob';
+import { showBulkSwap, unitShort, usedKindLabels } from './bulk-swap-dialog';
 import { InfoTip } from './info-tip';
 import { showInvoice } from './invoice-view-dialog';
 import { PeriodBar, periodDays } from './period-bar';
@@ -10656,6 +10844,7 @@ export interface StockCardData {
     MatIconModule,
     MatProgressBarModule,
     MatSelectModule,
+    MatTabsModule,
     MatTooltipModule,
     MoneyPipe,
     PeriodBar,
@@ -10668,6 +10857,8 @@ export interface StockCardData {
       }
     </h2>
     <mat-dialog-content>
+      <mat-tab-group mat-stretch-tabs="false" animationDuration="0ms" [(selectedIndex)]="tab" class="card-tabs">
+      <mat-tab label="Movements · حركة الصنف">
       <div class="toolbar filters">
         <app-period-bar [(from)]="from" [(to)]="to" />
         <mat-form-field subscriptSizing="dynamic" class="type">
@@ -10787,6 +10978,72 @@ export interface StockCardData {
           </table>
         </div>
       }
+      </mat-tab>
+      <mat-tab [label]="linkedLabel()">
+        <div class="toolbar linked-bar">
+          @if (usage(); as u) {
+            <span class="muted">
+              Used in {{ u.dishes }} {{ u.dishes === 1 ? 'dish' : 'dishes' }} and {{ u.prepItems }} {{ u.prepItems === 1 ? 'prep item' : 'prep items' }}
+              · يُستخدم في {{ u.dishes }} طبق و{{ u.prepItems }} مصنّع
+            </span>
+          }
+          <span class="spacer"></span>
+          @if (canSwap()) {
+            <button mat-stroked-button class="swap" (click)="bulkSwap()"><mat-icon>swap_horiz</mat-icon> Bulk swap material · استبدال خامة شامل</button>
+          }
+        </div>
+        @if (usageError(); as e) {
+          <p class="error" role="alert">{{ e }}</p>
+        } @else if (usage(); as u) {
+          <div class="table-wrap">
+            <table class="grid linked">
+              <thead>
+                <tr>
+                  <th>Recipe<span class="ar">الوصفة</span></th>
+                  <th class="num">Selling price<span class="ar">سعر البيع</span></th>
+                  <th class="num">Per portion <app-info-tip tip="wuQuantity" /><span class="ar">الكمية في الحصة</span></th>
+                  <th class="num">Its cost <app-info-tip tip="wuItemCost" /><span class="ar">تكلفته</span></th>
+                  <th class="num">Cost<span class="ar">التكلفة</span></th>
+                  <th class="num">Food cost %<span class="ar">نسبة التكلفة</span></th>
+                </tr>
+              </thead>
+              <tbody>
+                @for (r of u.rows; track r.id) {
+                  <tr>
+                    <td>
+                      <span class="kind">{{ kinds[r.kind].en }} · {{ kinds[r.kind].ar }}</span>
+                      @if (canOpenRecipes()) {
+                        <button type="button" class="ref inline" (click)="openUse(r)">{{ r.name }}</button>
+                      } @else {
+                        <strong>{{ r.name }}</strong>
+                      }
+                      <div class="muted small">{{ r.itemCode ? r.itemCode + ' · ' : '' }}{{ r.category ?? '' }}</div>
+                    </td>
+                    <td class="num">{{ r.price === null ? '—' : (r.price | money) }}</td>
+                    <td class="num">
+                      @if (r.quantity !== null) {
+                        <strong>{{ r.quantity | number: '1.0-3' }} {{ units[u.unit] }}</strong>
+                      }
+                      @if (r.throughPrepItems !== null) {
+                        <div class="muted small">{{ r.quantity !== null ? '+ ' : '' }}{{ r.throughPrepItems | number: '1.0-3' }} {{ units[u.unit] }} in {{ r.via.join(', ') }}</div>
+                      }
+                      <div class="muted small">{{ r.kind === 'PrepItem' ? 'a batch of ' + (r.batchQuantity | number: '1.0-3') + ' ' + units[r.batchUnit ?? 'Gram'] : '' }}</div>
+                    </td>
+                    <td class="num">{{ r.itemCost === null ? '—' : (r.itemCost | money) }}</td>
+                    <td class="num">{{ r.cost === null ? '—' : (r.cost | money) }}<div class="muted small">{{ r.kind === 'PrepItem' ? 'a batch' : 'a portion' }}</div></td>
+                    <td class="num">{{ r.foodCostPercent === null ? '—' : (r.foodCostPercent | number: '1.1-1') + '%' }}</td>
+                  </tr>
+                } @empty {
+                  <tr><td colspan="6" class="muted">No recipe or prep item uses {{ u.material }}.</td></tr>
+                }
+              </tbody>
+            </table>
+          </div>
+        } @else {
+          <mat-progress-bar mode="indeterminate" />
+        }
+      </mat-tab>
+      </mat-tab-group>
     </mat-dialog-content>
     <mat-dialog-actions align="end">
       <button mat-flat-button mat-dialog-close>Close</button>
@@ -10875,6 +11132,30 @@ export interface StockCardData {
     tr.reversal td {
       color: var(--mat-sys-on-surface-variant);
     }
+    .card-tabs {
+      margin-top: -8px;
+    }
+    .linked-bar {
+      align-items: center;
+      gap: 8px;
+      margin: 12px 0 8px;
+    }
+    .kind {
+      display: inline-block;
+      margin-inline-end: 6px;
+      padding: 0 8px;
+      border-radius: 999px;
+      font: var(--mat-sys-label-small);
+      line-height: 20px;
+      background: var(--mat-sys-surface-container-high);
+    }
+    button.ref.inline {
+      display: inline;
+      font-weight: 500;
+    }
+    .swap {
+      color: var(--mat-sys-primary);
+    }
     tr.edge td,
     tfoot td {
       font-weight: 500;
@@ -10891,8 +11172,22 @@ export class StockCardDialog {
   private readonly router = inject(Router);
   private readonly notify = inject(NotifyService);
   private readonly access = inject(CostingAccess);
+  private readonly auth = inject(AuthService);
 
   protected readonly types = stockCardTypes;
+  protected readonly units = unitShort;
+  protected readonly kinds = usedKindLabels;
+  protected readonly tab = signal(0);
+  // The recipes and prep items it is in (وصفات مرتبطة).
+  protected readonly usage = signal<WhereUsedReport | null>(null);
+  protected readonly usageError = signal<string | null>(null);
+  protected readonly linkedLabel = computed(() => {
+    const u = this.usage();
+    return `Linked recipes · وصفات مرتبطة${u ? ` (${u.rows.length})` : ''}`;
+  });
+  protected readonly canOpenRecipes = computed(() => this.access.has('Recipes'));
+  // Whoever writes recipes swaps it out of them.
+  protected readonly canSwap = computed(() => this.access.has('Recipes') && this.auth.can(Permissions.InventoryManage));
   protected readonly from = signal(this.data.from ?? periodDays('month').from);
   protected readonly to = signal(this.data.to ?? periodDays('month').to);
   protected readonly type = signal<StockCardMovementType | null>(null);
@@ -10915,6 +11210,27 @@ export class StockCardDialog {
       const [from, to, type] = [this.from(), this.to(), this.type()];
       untracked(() => void this.load(from, to, type));
     });
+    void this.loadUsage();
+  }
+
+  // A dish's recipe card, or a prep item's page: the card closes for it.
+  protected openUse(row: WhereUsedRow): void {
+    this.leaveFor(row.kind === 'PrepItem' ? ['/costing/recipes/prep', row.id] : ['/costing/recipes/recipe', row.id]);
+  }
+
+  protected async bulkSwap(): Promise<void> {
+    if (await showBulkSwap(this.dialog, this.data.id)) {
+      await this.loadUsage();
+    }
+  }
+
+  private async loadUsage(): Promise<void> {
+    this.usageError.set(null);
+    try {
+      this.usage.set(await firstValueFrom(this.api.whereUsed(this.data.id)));
+    } catch (error) {
+      this.usageError.set(errorMessage(error, 'Where it is used could not be loaded.'));
+    }
   }
 
   protected typeLabel(type: StockCardMovementType): string {
@@ -11342,7 +11658,7 @@ export class RecipesShell {
 ```
 
 
-> 📄 **`frontend/src/app/features/costing/recipes-page.ts`** — 589 سطر
+> 📄 **`frontend/src/app/features/costing/recipes-page.ts`** — 874 سطر
 
 ```ts
 import { DatePipe, DecimalPipe } from '@angular/common';
@@ -11360,14 +11676,18 @@ import { Router, RouterLink } from '@angular/router';
 import { firstValueFrom } from 'rxjs';
 import { AuthService } from '../../core/auth/auth.service';
 import { Permissions } from '../../core/auth/permissions';
-import { CostStatus, CostingApi, ApprovalRequest, RecipeCategory, RecipeCostCard, statusLabels } from '../../core/costing/costing.api';
+import { CostStatus, CostingApi, ApprovalRequest, MaterialCost, RecipeCategory, RecipeCostCard, statusLabels } from '../../core/costing/costing.api';
 import { CostingAccess } from '../../core/costing/costing-tabs';
+import { IntelligenceApi } from '../../core/costing/intelligence.api';
 import { errorMessage } from '../../core/http/error-message';
 import { MoneyPipe } from '../../core/ui/money.pipe';
 import { NotifyService } from '../../core/ui/notify.service';
 import { saveBlob } from '../../core/ui/save-blob';
 import { AddToMenuData, AddToMenuDialog } from './add-to-menu-dialog';
 import { Approvals, pendingLabel } from './approvals';
+import { showBulkSwap } from './bulk-swap-dialog';
+import { MaterialPicker } from './material-picker';
+import { periodDays } from './period-bar';
 import { todayIso } from './financials';
 import { recipeSheetRules } from './recipe-sheet-rules';
 import { SheetImportData, SheetImportDialog } from './sheet-import-dialog';
@@ -11415,6 +11735,7 @@ const recipeSorts: SortOption<RecipeSort>[] = [
     MatProgressBarModule,
     MatSelectModule,
     MatTooltipModule,
+    MaterialPicker,
     MoneyPipe,
     RouterLink,
     SearchField,
@@ -11425,15 +11746,66 @@ const recipeSorts: SortOption<RecipeSort>[] = [
       <app-search-field [(value)]="search" placeholder="Name, Arabic name, category or menu item · الاسم أو القسم" />
       <div class="pills">
         <app-filter-select label="Show · عرض" icon="link" [options]="viewFilters()" [value]="view()" (valueChange)="view.set($any($event))" />
-        @if (view() !== 'unrecipied') {
-          <app-filter-select label="Category · القسم" icon="category" [options]="categoryFilters()" [(value)]="category" />
-        }
         @if (view() !== 'unrecipied' && view() !== 'deleted') {
           <app-filter-select label="Cost · التكلفة" icon="monitoring" [options]="statusFilters" [value]="status()" (valueChange)="status.set($any($event))" />
           <app-sort-control [options]="sorts" [(sort)]="sort" />
         }
+        @if (view() !== 'unrecipied') {
+          <button mat-stroked-button type="button" class="advanced-toggle" (click)="toggleAdvanced()" [attr.aria-expanded]="advanced()"
+            aria-controls="advanced-filters">
+            <mat-icon>tune</mat-icon> Advanced filters · فلاتر متقدمة
+            @if (activeAdvanced()) {
+              <span class="count" [attr.aria-label]="activeAdvanced() + ' on'">{{ activeAdvanced() }}</span>
+            }
+          </button>
+        }
       </div>
     </div>
+    @if (advanced() && view() !== 'unrecipied') {
+      <section id="advanced-filters" class="advanced" aria-label="Advanced filters">
+        <mat-form-field subscriptSizing="dynamic" class="section">
+          <mat-label>Kitchen section · قسم المطبخ</mat-label>
+          <mat-select [value]="category()" (valueChange)="category.set($event)" aria-label="Kitchen section">
+            @for (o of categoryFilters(); track o.value) {
+              <mat-option [value]="o.value">{{ o.label }} ({{ o.count }})</mat-option>
+            }
+          </mat-select>
+        </mat-form-field>
+        <div class="contains">
+          <app-material-picker [materials]="materials()" [value]="containsId()" (valueChange)="setContains($event)"
+            label="Contains item · يحتوي على خامة/مصنّع" />
+          <app-info-tip tip="rfContains" />
+        </div>
+        <mat-form-field subscriptSizing="dynamic" class="figure">
+          <mat-label>Food cost above · التكلفة أعلى من</mat-label>
+          <input matInput type="number" min="0" step="any" [ngModel]="minFoodCost()" (ngModelChange)="minFoodCost.set(number($event))"
+            aria-label="Food cost above" />
+          <span matTextSuffix>%</span>
+        </mat-form-field>
+        <mat-form-field subscriptSizing="dynamic" class="figure">
+          <mat-label>Cost a portion from · من</mat-label>
+          <input matInput type="number" min="0" step="any" [ngModel]="minCost()" (ngModelChange)="minCost.set(number($event))" aria-label="Cost a portion from" />
+        </mat-form-field>
+        <mat-form-field subscriptSizing="dynamic" class="figure to">
+          <mat-label>to · إلى</mat-label>
+          <input matInput type="number" min="0" step="any" [ngModel]="maxCost()" (ngModelChange)="maxCost.set(number($event))" aria-label="Cost a portion to" />
+        </mat-form-field>
+        @if (canSeeBurdened()) {
+          <div class="net">
+            <mat-form-field subscriptSizing="dynamic" class="figure">
+              <mat-label>Net margin below · الهامش الصافي أقل من</mat-label>
+              <input matInput type="number" step="any" [ngModel]="maxNetMargin()" (ngModelChange)="setNetMargin(number($event))" aria-label="Net margin below" />
+              <span matTextSuffix>%</span>
+            </mat-form-field>
+            <app-info-tip tip="rfNetMargin" />
+          </div>
+        }
+        <button mat-button type="button" (click)="clearAdvanced()" [disabled]="!activeAdvanced()"><mat-icon>filter_alt_off</mat-icon> Clear · مسح</button>
+        @if (advancedNote(); as note) {
+          <p class="muted small note">{{ note }}</p>
+        }
+      </section>
+    }
     <div class="toolbar">
       @if (canSeeBurdened()) {
         <a mat-button class="burdened-link" routerLink="/costing/intelligence/burdened"
@@ -11442,6 +11814,12 @@ const recipeSorts: SortOption<RecipeSort>[] = [
         </a>
       }
       <span class="spacer"></span>
+      @if (canSwap()) {
+        <button mat-stroked-button class="swap" (click)="bulkSwap()" [disabled]="busy()"
+          matTooltip="Replace one item with another in every recipe that uses it, at once">
+          <mat-icon>swap_horiz</mat-icon> Bulk swap material <span class="inline-ar">استبدال خامة شامل</span>
+        </button>
+      }
       @if (canAddToMenu() && toMenu().length) {
         <button mat-stroked-button class="to-menu" (click)="addToMenu(toMenu())" [disabled]="busy()"
           matTooltip="Each standalone recipe shown becomes a menu item, sold on Sales by its recipe">
@@ -11554,7 +11932,12 @@ const recipeSorts: SortOption<RecipeSort>[] = [
                   }
                 </td>
                 <td class="num">{{ c.costPerPortion | money }}</td>
-                <td class="num">{{ c.foodCostPercentActual === null ? '—' : (c.foodCostPercentActual | number: '1.1-1') + '%' }}</td>
+                <td class="num">
+                  {{ c.foodCostPercentActual === null ? '—' : (c.foodCostPercentActual | number: '1.1-1') + '%' }}
+                  @if (netMargins() && maxNetMargin() !== null) {
+                    <div class="muted small">net {{ netMarginOf(c) === null ? '—' : (netMarginOf(c)! | number: '1.1-1') + '%' }}</div>
+                  }
+                </td>
                 <td>
                   @if (c.isDeleted) {
                     <span class="muted">Deleted {{ c.deletedAtUtc | date: 'd MMM y' }}{{ c.deletedBy ? ' by ' + c.deletedBy : '' }}</span>
@@ -11662,6 +12045,74 @@ const recipeSorts: SortOption<RecipeSort>[] = [
     .spacer {
       flex: 1;
     }
+    .advanced-toggle .count {
+      display: inline-grid;
+      place-items: center;
+      min-width: 20px;
+      height: 20px;
+      margin-inline-start: 6px;
+      padding: 0 6px;
+      border-radius: 999px;
+      background: var(--mat-sys-primary);
+      color: var(--mat-sys-on-primary);
+      font: var(--mat-sys-label-small);
+    }
+    .advanced {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 12px;
+      margin: 0 0 12px;
+      padding: 12px;
+      border: 1px solid var(--app-line, var(--mat-sys-outline-variant));
+      border-radius: 12px;
+      background: var(--mat-sys-surface-container-lowest);
+    }
+    .section {
+      width: 240px;
+    }
+    .contains,
+    .net {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .contains app-material-picker {
+      width: 300px;
+      max-width: 100%;
+    }
+    .figure {
+      width: 250px;
+    }
+    .figure.to {
+      width: 150px;
+    }
+    .net .figure {
+      width: 290px;
+    }
+    .note {
+      flex-basis: 100%;
+      margin: 0;
+    }
+    @media (max-width: 600px) {
+      .section,
+      .contains,
+      .net,
+      .figure,
+      .figure.to {
+        flex: 1 1 100%;
+        width: 100%;
+      }
+      .contains app-material-picker,
+      .net .figure {
+        flex: 1;
+        width: auto;
+      }
+    }
+    .swap {
+      color: var(--mat-sys-primary);
+      white-space: nowrap;
+    }
     .visually-hidden {
       position: absolute;
       width: 1px;
@@ -11680,6 +12131,7 @@ export class RecipesPage {
   protected readonly approvals = inject(Approvals);
   private readonly access = inject(CostingAccess);
   private readonly auth = inject(AuthService);
+  private readonly intelligence = inject(IntelligenceApi);
 
   protected readonly statusLabels = statusLabels;
   protected readonly statuses = Object.keys(statusLabels).filter((s) => s !== 'NoRecipe') as CostStatus[];
@@ -11700,6 +12152,45 @@ export class RecipesPage {
   protected readonly category = signal('');
   protected readonly uncategorized = 'none';
   protected readonly sorts = recipeSorts;
+  // The advanced filters (فلاتر الوصفات المتقدمة): open or not; the item a recipe must contain (on it
+  // or inside its prep items, by where it is used); food cost above, cost a portion between, and
+  // the true net margin below (this month's fully burdened plate cost), each none when blank.
+  protected readonly advanced = signal(false);
+  protected readonly materials = signal<MaterialCost[]>([]);
+  protected readonly containsId = signal<string | null>(null);
+  protected readonly containsIds = signal<ReadonlySet<string> | null>(null);
+  protected readonly minFoodCost = signal<number | null>(null);
+  protected readonly minCost = signal<number | null>(null);
+  protected readonly maxCost = signal<number | null>(null);
+  protected readonly maxNetMargin = signal<number | null>(null);
+  protected readonly netMargins = signal<ReadonlyMap<string, number | null> | null>(null);
+  private readonly advancedError = signal<string | null>(null);
+  protected readonly activeAdvanced = computed(
+    () =>
+      [this.category() !== '', this.containsId() !== null, this.minFoodCost() !== null, this.minCost() !== null || this.maxCost() !== null, this.maxNetMargin() !== null]
+        .filter(Boolean).length,
+  );
+  protected readonly advancedNote = computed(() => {
+    if (this.advancedError()) {
+      return this.advancedError();
+    }
+    const parts: string[] = [];
+    if (this.containsId() !== null) {
+      const ids = this.containsIds();
+      parts.push(ids === null ? 'Finding the recipes with it…' : `${ids.size} ${ids.size === 1 ? 'recipe has' : 'recipes have'} it, on the recipe or inside a prep item.`);
+    }
+    if (this.maxNetMargin() !== null) {
+      const margins = this.netMargins();
+      parts.push(
+        margins === null
+          ? 'Working out this month\'s net margins…'
+          : [...margins.values()].every((m) => m === null)
+            ? 'No dish has a net margin this month yet: nothing sold to share labor and overheads over. · لا يوجد هامش صافٍ بعد هذا الشهر.'
+            : 'Net margin: this month so far, as Cost settings share labor and overheads.',
+      );
+    }
+    return parts.join(' ') || null;
+  });
   protected readonly sort = signal<SortState<RecipeSort>>({ key: 'recipe', direction: 1 });
 
   protected readonly viewFilters = computed<FilterOption[]>(() => {
@@ -11747,6 +12238,7 @@ export class RecipesPage {
           (view !== 'standalone' || c.isStandalone) &&
           (view === 'deleted' || !status || c.status === status) &&
           (!category || (category === this.uncategorized ? c.recipeCategoryId === null : c.recipeCategoryId === category)) &&
+          this.matchesAdvanced(c) &&
           smartMatch(this.search(), c.recipe, c.recipeAr, c.recipeCategory, c.recipeCategoryAr, c.linkedTo, c.itemCode),
       )
       .sort((a, b) => direction * RecipesPage.compare(a, b, key) || a.recipe.localeCompare(b.recipe));
@@ -11757,6 +12249,8 @@ export class RecipesPage {
     this.menu().filter((c) => !c.hasRecipe && smartMatch(this.search(), c.itemCode, c.linkedTo, c.recipe, c.recipeAr, c.category)),
   );
 
+  // Whoever writes recipes swaps an item out of them all at once.
+  protected readonly canSwap = computed(() => this.auth.can(Permissions.InventoryManage));
   // Whoever works the menu puts a recipe on it.
   protected readonly canAddToMenu = computed(() => this.access.has('Menu') && this.auth.can(Permissions.InventoryManage));
   // The fully burdened plate cost is on the intelligence tab: linked for whoever works it.
@@ -11778,9 +12272,116 @@ export class RecipesPage {
   constructor() {
     effect(() => {
       const category = this.categoryParam();
-      untracked(() => this.category.set(category ?? ''));
+      untracked(() => {
+        this.category.set(category ?? '');
+        if (category) {
+          this.toggleAdvanced(true);
+        }
+      });
     });
     void this.load();
+  }
+
+  protected toggleAdvanced(open = !this.advanced()): void {
+    this.advanced.set(open);
+    if (open && this.materials().length === 0) {
+      void this.loadMaterials();
+    }
+  }
+
+  protected clearAdvanced(): void {
+    this.category.set('');
+    this.setContains(null);
+    this.minFoodCost.set(null);
+    this.minCost.set(null);
+    this.maxCost.set(null);
+    this.maxNetMargin.set(null);
+  }
+
+  // A number typed, or none for a blank.
+  protected number(value: unknown): number | null {
+    return value === null || value === undefined || value === '' || Number.isNaN(Number(value)) ? null : Number(value);
+  }
+
+  // The recipes with the item, from where it is used: on them, or inside a prep item they use.
+  protected async setContains(id: string | null): Promise<void> {
+    this.containsId.set(id);
+    this.containsIds.set(null);
+    this.advancedError.set(null);
+    if (id === null) {
+      return;
+    }
+    try {
+      const used = await firstValueFrom(this.api.whereUsed(id));
+      if (this.containsId() === id) {
+        this.containsIds.set(new Set(used.rows.filter((r) => r.kind !== 'PrepItem').map((r) => r.id)));
+      }
+    } catch (error) {
+      this.advancedError.set(errorMessage(error, 'Where the item is used could not be loaded.'));
+    }
+  }
+
+  // The true net margins of this month so far, once, when first asked for.
+  protected async setNetMargin(value: number | null): Promise<void> {
+    this.maxNetMargin.set(value);
+    if (value === null || this.netMargins() !== null) {
+      return;
+    }
+    try {
+      const month = periodDays('month');
+      const report = await firstValueFrom(this.intelligence.burdenedCosts({ from: month.from, to: month.to, method: null, source: 'Actual' }));
+      this.netMargins.set(new Map(report.rows.filter((r) => r.recipeId).map((r) => [r.recipeId!, r.trueNetMarginPercent])));
+    } catch (error) {
+      this.advancedError.set(errorMessage(error, 'The net margins could not be worked out.'));
+    }
+  }
+
+  protected netMarginOf(card: RecipeCostCard): number | null {
+    return card.recipeId === null ? null : (this.netMargins()?.get(card.recipeId) ?? null);
+  }
+
+  // Every advanced filter set: a recipe the item is in, food cost above, cost between, net margin below.
+  private matchesAdvanced(card: RecipeCostCard): boolean {
+    const contains = this.containsIds();
+    if (this.containsId() !== null && !(contains !== null && card.recipeId !== null && contains.has(card.recipeId))) {
+      return false;
+    }
+    const minFoodCost = this.minFoodCost();
+    if (minFoodCost !== null && !(card.foodCostPercentActual !== null && card.foodCostPercentActual > minFoodCost)) {
+      return false;
+    }
+    const [minCost, maxCost] = [this.minCost(), this.maxCost()];
+    if ((minCost !== null && card.costPerPortion < minCost) || (maxCost !== null && card.costPerPortion > maxCost)) {
+      return false;
+    }
+    const maxNetMargin = this.maxNetMargin();
+    if (maxNetMargin !== null && this.netMargins() !== null) {
+      const margin = this.netMarginOf(card);
+      return margin !== null && margin < maxNetMargin;
+    }
+    return true;
+  }
+
+  protected async bulkSwap(): Promise<void> {
+    if (!(await showBulkSwap(this.dialog))) {
+      return;
+    }
+    try {
+      this.recipes.set(await firstValueFrom(this.api.recipes(true)));
+      if (this.containsId() !== null) {
+        await this.setContains(this.containsId());
+      }
+    } catch (error) {
+      this.notify.error(error, 'The recipes could not be loaded again.');
+    }
+  }
+
+  private async loadMaterials(): Promise<void> {
+    try {
+      this.materials.set(await firstValueFrom(this.api.materials()));
+    } catch (error) {
+      this.advancedError.set(errorMessage(error, 'The items could not be loaded.'));
+    }
   }
 
   // By the column clicked; again, the other way.
@@ -11933,6 +12534,685 @@ export class RecipesPage {
       this.loading.set(false);
     }
   }
+}
+```
+
+
+**الفلاتر المتقدمة** في درج قابل للطي يحمل عدد الفلاتر المفعّلة: قسم المطبخ (تصنيفات الوصفات؛ لا توجد محطات مطبخ في Costing فهي من نقطة البيع)، ويحتوي على خامة (من `where-used` فيشمل المصنّعات)، ونسبة التكلفة أعلى من، والتكلفة بين، والهامش الصافي أقل من (من التكلفة الكلية للطبق لهذا الشهر، يُحمّل مرة عند أول استخدام ولمن يرى تبويب التحليلات فقط).
+
+**معالج الاستبدال الشامل** حوار بأربع خطوات بدون `mat-stepper`: الخطوة إشارة (`signal`)، وكل تغيير في الاختيار يعيد المعاينة بعد 300ms مع رقم تسلسل يتجاهل الرد الأقدم. يبدأ من الخطوة 2 إن فُتح من كارتة الصنف.
+
+> 📄 **`frontend/src/app/features/costing/bulk-swap-dialog.ts`** — 669 سطر
+
+```ts
+import { DecimalPipe } from '@angular/common';
+import { Component, OnDestroy, computed, inject, signal } from '@angular/core';
+import { FormsModule } from '@angular/forms';
+import { MatButtonModule } from '@angular/material/button';
+import { MatCheckboxModule } from '@angular/material/checkbox';
+import { MAT_DIALOG_DATA, MatDialog, MatDialogActions, MatDialogContent, MatDialogRef, MatDialogTitle } from '@angular/material/dialog';
+import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatIconModule } from '@angular/material/icon';
+import { MatInputModule } from '@angular/material/input';
+import { MatProgressBarModule } from '@angular/material/progress-bar';
+import { Observable, firstValueFrom } from 'rxjs';
+import {
+  BulkSwapResult,
+  CostingApi,
+  MaterialCost,
+  SwapPreview,
+  SwapPreviewRow,
+  UnitOfMeasure,
+  WhereUsedKind,
+  WhereUsedReport,
+  recipeCostOf,
+} from '../../core/costing/costing.api';
+import { errorMessage } from '../../core/http/error-message';
+import { Company } from '../../core/settings/company';
+import { MoneyPipe } from '../../core/ui/money.pipe';
+import { NotifyService } from '../../core/ui/notify.service';
+import { InfoTip } from './info-tip';
+import { MaterialPicker } from './material-picker';
+
+// The item to start from: the stock card's, when opened from it.
+export interface BulkSwapData {
+  fromMaterialId?: string | null;
+}
+
+export const unitShort: Record<UnitOfMeasure, string> = { Gram: 'g', Millilitre: 'ml', Piece: 'pc' };
+
+export const usedKindLabels: Record<WhereUsedKind, { en: string; ar: string; icon: string }> = {
+  Dish: { en: 'Dish', ar: 'طبق', icon: 'restaurant' },
+  OffMenuRecipe: { en: 'Off the menu', ar: 'خارج المنيو', icon: 'science' },
+  PrepItem: { en: 'Prep item', ar: 'مصنّع', icon: 'soup_kitchen' },
+};
+
+const steps = [
+  { en: 'Old item', ar: 'الخامة القديمة' },
+  { en: 'New item', ar: 'الخامة الجديدة' },
+  { en: 'Conversion', ar: 'معامل التحويل' },
+  { en: 'Preview & choose', ar: 'معاينة واختيار الوصفات' },
+];
+
+// The bulk material swap (معالج الاستبدال الشامل للخامات): the old item, the new one, how much of the
+// new replaces each unit of the old (1:1 unless the chef says), then every recipe and prep item
+// with the old item on it, as the swap would leave it, each ticked unless it cannot be swapped now.
+// Swapped together or not at all; closes with what was done.
+@Component({
+  selector: 'app-bulk-swap-dialog',
+  imports: [
+    DecimalPipe,
+    FormsModule,
+    InfoTip,
+    MatButtonModule,
+    MatCheckboxModule,
+    MatDialogActions,
+    MatDialogContent,
+    MatDialogTitle,
+    MatFormFieldModule,
+    MatIconModule,
+    MatInputModule,
+    MatProgressBarModule,
+    MaterialPicker,
+    MoneyPipe,
+  ],
+  template: `
+    <h2 mat-dialog-title>Bulk swap material <span class="inline-ar">استبدال خامة شامل</span></h2>
+    <mat-dialog-content>
+      <ol class="steps" aria-label="Steps">
+        @for (s of steps; track s.en; let i = $index) {
+          <li [class.current]="step() === i + 1" [class.done]="step() > i + 1" [attr.aria-current]="step() === i + 1 ? 'step' : null">
+            <span class="dot">{{ step() > i + 1 ? '✓' : i + 1 }}</span>
+            <span>{{ s.en }}<span class="ar">{{ s.ar }}</span></span>
+          </li>
+        }
+      </ol>
+      @if (busy()) {
+        <mat-progress-bar mode="indeterminate" />
+      }
+      @if (error(); as e) {
+        <p class="error" role="alert">{{ e }}</p>
+      }
+
+      @switch (step()) {
+        @case (1) {
+          <p class="lead">The item to take off the recipes · الخامة المُراد استبدالها</p>
+          <app-material-picker [materials]="materials()" [value]="from()" (valueChange)="pickFrom($event)" label="Old item · الخامة القديمة" />
+          @if (usage(); as u) {
+            <p class="usage">
+              @if (onRecipes() === 0 && onPrep() === 0) {
+                <mat-icon aria-hidden="true">info</mat-icon> {{ u.material }} is on no recipe itself{{ u.rows.length ? ', only inside prep items' : '' }}: nothing to swap.
+              } @else {
+                <mat-icon aria-hidden="true">receipt_long</mat-icon>
+                On {{ onRecipes() }} {{ onRecipes() === 1 ? 'recipe' : 'recipes' }} and {{ onPrep() }} {{ onPrep() === 1 ? 'prep item' : 'prep items' }}
+                · في {{ onRecipes() }} وصفة و{{ onPrep() }} مصنّع
+              }
+            </p>
+          }
+        }
+        @case (2) {
+          <p class="lead">What goes on instead of {{ fromItem()?.name }} · الخامة الجديدة</p>
+          <app-material-picker [materials]="candidates()" [value]="to()" (valueChange)="to.set($event)" label="New item · الخامة الجديدة" />
+          @if (fromItem(); as f) {
+            <div class="pair">
+              <div><span class="muted small">Old · القديمة</span><strong>{{ f.name }}</strong><span class="muted small">{{ priceOf(f) }}</span></div>
+              <mat-icon aria-hidden="true">arrow_forward</mat-icon>
+              @if (toItem(); as t) {
+                <div><span class="muted small">New · الجديدة</span><strong>{{ t.name }}</strong><span class="muted small">{{ priceOf(t) }}</span></div>
+              } @else {
+                <div class="muted">Choose the new item</div>
+              }
+            </div>
+          }
+        }
+        @case (3) {
+          @if (fromItem(); as f) {
+            @if (toItem(); as t) {
+              <p class="lead">How much of the new item replaces the old · معامل التحويل <app-info-tip tip="bsRatio" /></p>
+              <div class="ratio">
+                <span>Replace</span>
+                <mat-form-field subscriptSizing="dynamic" class="qty">
+                  <input matInput type="number" min="0" step="any" [ngModel]="base()" (ngModelChange)="base.set($event)" aria-label="Old quantity" />
+                  <span matTextSuffix>&nbsp;{{ units[f.unit] }}</span>
+                </mat-form-field>
+                <span>of <strong>{{ f.name }}</strong> with</span>
+                <mat-form-field subscriptSizing="dynamic" class="qty">
+                  <input matInput type="number" min="0" step="any" [ngModel]="replacement()" (ngModelChange)="replacement.set($event)" aria-label="New quantity" />
+                  <span matTextSuffix>&nbsp;{{ units[t.unit] }}</span>
+                </mat-form-field>
+                <span>of <strong>{{ t.name }}</strong></span>
+              </div>
+              <p class="muted">
+                @if (ratio(); as r) {
+                  Ratio {{ r | number: '1.0-4' }} · each {{ units[f.unit] }} of the old becomes {{ r | number: '1.0-4' }} {{ units[t.unit] }} of the new.
+                } @else {
+                  Both quantities are more than nothing, the ratio at most 1,000.
+                }
+              </p>
+              @if (f.unit !== t.unit) {
+                <p class="warn"><mat-icon aria-hidden="true">warning</mat-icon> {{ f.name }} is in {{ units[f.unit] }}, {{ t.name }} in {{ units[t.unit] }}: check the ratio · الوحدات مختلفة، راجع المعامل.</p>
+              }
+              <button mat-button type="button" (click)="resetRatio()" [disabled]="ratio() === 1"><mat-icon>restart_alt</mat-icon> 1 : 1</button>
+            }
+          }
+        }
+        @case (4) {
+          @if (preview(); as p) {
+            <p class="lead">
+              {{ p.from.name }} → {{ p.to.name }} at {{ p.ratio | number: '1.0-4' }}
+              <span class="muted">· untick what should keep {{ p.from.name }}</span>
+            </p>
+            <div class="table-wrap">
+              <table class="grid swap">
+                <thead>
+                  <tr>
+                    <th class="check">
+                      <mat-checkbox [checked]="allChosen()" [indeterminate]="someChosen()" [disabled]="!choosable().length" (change)="chooseAll($event.checked)"
+                        aria-label="Choose every recipe" />
+                    </th>
+                    <th>Recipe<span class="ar">الوصفة</span></th>
+                    <th class="num">Current {{ units[p.from.unit] }}<span class="ar">الكمية الحالية</span></th>
+                    <th class="num">New {{ units[p.to.unit] }}<span class="ar">الكمية الجديدة</span></th>
+                    <th class="num">Old cost<span class="ar">التكلفة القديمة</span></th>
+                    <th class="num">New cost<span class="ar">التكلفة الجديدة</span></th>
+                    <th class="num">Cost delta <app-info-tip tip="bsDelta" /><span class="ar">فرق التكلفة</span></th>
+                    <th class="num">Food cost %<span class="ar">نسبة التكلفة</span></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  @for (row of p.rows; track row.id) {
+                    <tr [class.off]="!isChosen(row)" [class.blocked]="row.blocked">
+                      <td class="check">
+                        <mat-checkbox [checked]="isChosen(row)" [disabled]="!!row.blocked" (change)="choose(row, $event.checked)" [attr.aria-label]="'Swap in ' + row.name" />
+                      </td>
+                      <td>
+                        <span class="kind" [class]="row.kind"><mat-icon aria-hidden="true">{{ kinds[row.kind].icon }}</mat-icon> {{ kinds[row.kind].en }}</span>
+                        <strong>{{ row.name }}</strong>
+                        <div class="muted small">
+                          {{ row.itemCode ? row.itemCode + ' · ' : '' }}{{ makes(row) }}
+                        </div>
+                        @if (row.blocked) {
+                          <div class="blocked-note"><mat-icon aria-hidden="true">lock</mat-icon> {{ row.blocked }}</div>
+                        } @else if (row.fromNextBatch) {
+                          <div class="muted small"><mat-icon class="tiny" aria-hidden="true">schedule</mat-icon> from the next batch · من الدفعة القادمة</div>
+                        }
+                      </td>
+                      <td class="num">{{ row.oldQuantity | number: '1.0-3' }}</td>
+                      <td class="num strong">
+                        {{ row.newQuantity | number: '1.0-3' }}
+                        @if (row.merged) {
+                          <div class="muted small">added to what is there</div>
+                        }
+                      </td>
+                      <td class="num">{{ row.oldCost === null ? '—' : (row.oldCost | money) }}</td>
+                      <td class="num">{{ row.newCost === null ? '—' : (row.newCost | money) }}</td>
+                      <td class="num delta" [class.up]="(row.costDelta ?? 0) > 0" [class.down]="(row.costDelta ?? 0) < 0">{{ signed(row.costDelta) }}</td>
+                      <td class="num nowrap">{{ fc(row.oldFoodCostPercent) }} → {{ fc(row.newFoodCostPercent) }}</td>
+                    </tr>
+                  } @empty {
+                    <tr><td colspan="8" class="muted">No recipe or prep item has {{ p.from.name }} on it.</td></tr>
+                  }
+                </tbody>
+              </table>
+            </div>
+            <p class="muted small">A dish's cost is a portion's; a prep item's, a batch's.</p>
+
+            @if (p.knockOn.length) {
+              <h3>Also moving through prep items · أطباق تتأثر عبر المصنّعات <app-info-tip tip="bsKnockOn" /></h3>
+              <div class="table-wrap">
+                <table class="grid knock-on">
+                  <thead>
+                    <tr>
+                      <th>Dish<span class="ar">الطبق</span></th>
+                      <th>Through<span class="ar">عبر</span></th>
+                      <th class="num">Old cost<span class="ar">القديمة</span></th>
+                      <th class="num">New cost<span class="ar">الجديدة</span></th>
+                      <th class="num">Cost delta<span class="ar">الفرق</span></th>
+                      <th class="num">Food cost %<span class="ar">نسبة التكلفة</span></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    @for (k of p.knockOn; track k.id) {
+                      <tr>
+                        <td>
+                          <strong>{{ k.name }}</strong>
+                          @if (k.fromNextBatch) {
+                            <div class="muted small">from the next batch · من الدفعة القادمة</div>
+                          }
+                        </td>
+                        <td>{{ k.via.join(', ') }}</td>
+                        <td class="num">{{ k.oldCost === null ? '—' : (k.oldCost | money) }}</td>
+                        <td class="num">{{ k.newCost === null ? '—' : (k.newCost | money) }}</td>
+                        <td class="num delta" [class.up]="(k.costDelta ?? 0) > 0" [class.down]="(k.costDelta ?? 0) < 0">{{ signed(k.costDelta) }}</td>
+                        <td class="num nowrap">{{ fc(k.oldFoodCostPercent) }} → {{ fc(k.newFoodCostPercent) }}</td>
+                      </tr>
+                    }
+                  </tbody>
+                </table>
+              </div>
+            }
+          }
+        }
+      }
+    </mat-dialog-content>
+    <mat-dialog-actions>
+      <span class="summary muted">
+        @if (step() === 4 && preview()) {
+          {{ chosenRecipes().length }} {{ chosenRecipes().length === 1 ? 'recipe' : 'recipes' }} and {{ chosenPrep().length }}
+          {{ chosenPrep().length === 1 ? 'prep item' : 'prep items' }} chosen
+        }
+      </span>
+      <button mat-button type="button" (click)="close()" [disabled]="saving()">Cancel</button>
+      @if (step() > 1) {
+        <button mat-stroked-button type="button" (click)="back()" [disabled]="saving()"><mat-icon>arrow_back</mat-icon> Back</button>
+      }
+      @if (step() < 4) {
+        <button mat-flat-button type="button" class="next" (click)="next()" [disabled]="!canNext() || busy()">Next <mat-icon iconPositionEnd>arrow_forward</mat-icon></button>
+      } @else {
+        <button mat-flat-button type="button" class="swap" (click)="swap()" [disabled]="!canSwap()">
+          <mat-icon>swap_horiz</mat-icon> Swap · استبدال
+        </button>
+      }
+    </mat-dialog-actions>
+  `,
+  styleUrl: './costing.scss',
+  styles: `
+    .steps {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px 18px;
+      margin: 0 0 16px;
+      padding: 0;
+      list-style: none;
+
+      li {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        color: var(--mat-sys-on-surface-variant);
+        font: var(--mat-sys-label-large);
+      }
+      .dot {
+        display: inline-grid;
+        place-items: center;
+        width: 24px;
+        height: 24px;
+        border-radius: 50%;
+        background: var(--mat-sys-surface-container-high);
+        font: var(--mat-sys-label-medium);
+      }
+      li.current {
+        color: var(--mat-sys-on-surface);
+        .dot {
+          background: var(--mat-sys-primary);
+          color: var(--mat-sys-on-primary);
+        }
+      }
+      li.done .dot {
+        background: color-mix(in srgb, var(--app-ok) 18%, transparent);
+        color: var(--app-ok);
+      }
+      .ar {
+        display: inline;
+        margin-inline-start: 6px;
+      }
+    }
+    .lead {
+      margin: 0 0 12px;
+      font: var(--mat-sys-title-small);
+    }
+    .usage,
+    .warn {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin: 12px 0 0;
+    }
+    .warn {
+      color: var(--app-warn);
+    }
+    .pair {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 16px;
+      margin-top: 16px;
+
+      div {
+        display: grid;
+        gap: 2px;
+        min-width: 160px;
+      }
+    }
+    .ratio {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px 10px;
+    }
+    .qty {
+      width: 130px;
+    }
+    .check {
+      width: 40px;
+    }
+    tr.off td:not(.check) {
+      color: var(--mat-sys-on-surface-variant);
+    }
+    tr.off td.delta {
+      opacity: 0.6;
+    }
+    .kind {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      margin-inline-end: 6px;
+      padding: 0 8px;
+      border-radius: 999px;
+      font: var(--mat-sys-label-small);
+      line-height: 20px;
+      background: var(--mat-sys-surface-container-high);
+
+      mat-icon {
+        width: 14px;
+        height: 14px;
+        font-size: 14px;
+      }
+    }
+    .blocked-note {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      color: var(--app-warn);
+      font: var(--mat-sys-body-small);
+
+      mat-icon {
+        width: 14px;
+        height: 14px;
+        font-size: 14px;
+      }
+    }
+    .tiny {
+      width: 12px;
+      height: 12px;
+      font-size: 12px;
+      vertical-align: middle;
+    }
+    .delta.up {
+      color: var(--mat-sys-error);
+      font-weight: 600;
+    }
+    .delta.down {
+      color: var(--app-ok);
+      font-weight: 600;
+    }
+    h3 {
+      margin: 20px 0 8px;
+      font: var(--mat-sys-title-small);
+    }
+    .summary {
+      flex: 1;
+      padding-inline-start: 8px;
+    }
+    .small {
+      font-size: 0.85em;
+    }
+  `,
+})
+export class BulkSwapDialog implements OnDestroy {
+  private readonly data = inject<BulkSwapData | null>(MAT_DIALOG_DATA, { optional: true });
+  private readonly api = inject(CostingApi);
+  private readonly company = inject(Company);
+  private readonly notify = inject(NotifyService);
+  private readonly ref = inject(MatDialogRef<BulkSwapDialog, BulkSwapResult | undefined>);
+
+  protected readonly steps = steps;
+  protected readonly units = unitShort;
+  protected readonly kinds = usedKindLabels;
+  protected readonly step = signal(1);
+  protected readonly materials = signal<MaterialCost[]>([]);
+  protected readonly from = signal<string | null>(null);
+  protected readonly to = signal<string | null>(null);
+  protected readonly usage = signal<WhereUsedReport | null>(null);
+  // "Replace base of the old with replacement of the new".
+  protected readonly base = signal<number | null>(100);
+  protected readonly replacement = signal<number | null>(100);
+  protected readonly preview = signal<SwapPreview | null>(null);
+  // The rows chosen, by id; null until the first preview ticks them.
+  protected readonly chosen = signal<ReadonlySet<string>>(new Set());
+  protected readonly busy = signal(false);
+  protected readonly saving = signal(false);
+  protected readonly error = signal<string | null>(null);
+  private refreshTimer: ReturnType<typeof setTimeout> | null = null;
+  private sequence = 0;
+
+  protected readonly fromItem = computed(() => this.materials().find((m) => m.id === this.from()) ?? null);
+  protected readonly toItem = computed(() => this.materials().find((m) => m.id === this.to()) ?? null);
+  // Any item but the old one.
+  protected readonly candidates = computed(() => this.materials().filter((m) => m.id !== this.from()));
+  protected readonly onRecipes = computed(() => (this.usage()?.rows ?? []).filter((r) => r.kind !== 'PrepItem' && r.quantity !== null).length);
+  protected readonly onPrep = computed(() => (this.usage()?.rows ?? []).filter((r) => r.kind === 'PrepItem' && r.quantity !== null).length);
+  protected readonly ratio = computed(() => {
+    const [base, replacement] = [Number(this.base()), Number(this.replacement())];
+    if (!(base > 0) || !(replacement > 0)) {
+      return null;
+    }
+    const ratio = Math.round((replacement / base) * 1e6) / 1e6;
+    return ratio > 0 && ratio <= 1000 ? ratio : null;
+  });
+  protected readonly choosable = computed(() => (this.preview()?.rows ?? []).filter((r) => !r.blocked));
+  protected readonly chosenRecipes = computed(() => this.choosable().filter((r) => r.kind !== 'PrepItem' && this.chosen().has(r.id)).map((r) => r.id));
+  protected readonly chosenPrep = computed(() => this.choosable().filter((r) => r.kind === 'PrepItem' && this.chosen().has(r.id)).map((r) => r.id));
+  protected readonly allChosen = computed(() => this.choosable().length > 0 && this.choosable().every((r) => this.chosen().has(r.id)));
+  protected readonly someChosen = computed(() => !this.allChosen() && this.choosable().some((r) => this.chosen().has(r.id)));
+  protected readonly canNext = computed(() => {
+    switch (this.step()) {
+      case 1:
+        return !!this.from() && this.onRecipes() + this.onPrep() > 0;
+      case 2:
+        return !!this.to() && this.to() !== this.from();
+      default:
+        return this.ratio() !== null;
+    }
+  });
+  protected readonly canSwap = computed(() => !this.saving() && !this.busy() && this.chosenRecipes().length + this.chosenPrep().length > 0);
+
+  constructor() {
+    void this.start();
+  }
+
+  ngOnDestroy(): void {
+    if (this.refreshTimer) {
+      clearTimeout(this.refreshTimer);
+    }
+  }
+
+  protected pickFrom(id: string | null): void {
+    this.from.set(id);
+    this.usage.set(null);
+    if (this.to() === id) {
+      this.to.set(null);
+    }
+    const item = this.materials().find((m) => m.id === id);
+    if (item) {
+      const each = item.unit === 'Piece' ? 1 : 100;
+      this.base.set(each);
+      this.replacement.set(each);
+      void this.loadUsage(item.id);
+    }
+  }
+
+  protected resetRatio(): void {
+    this.replacement.set(this.base());
+  }
+
+  protected priceOf(item: MaterialCost): string {
+    const perUnit = recipeCostOf(item);
+    return perUnit === null ? 'no price yet' : `${this.company.money(perUnit * item.purchaseUnitSize)} / ${item.purchaseUnit}`;
+  }
+
+  protected isChosen(row: SwapPreviewRow): boolean {
+    return !row.blocked && this.chosen().has(row.id);
+  }
+
+  protected choose(row: SwapPreviewRow, checked: boolean): void {
+    const next = new Set(this.chosen());
+    if (checked) {
+      next.add(row.id);
+    } else {
+      next.delete(row.id);
+    }
+    this.chosen.set(next);
+    this.refreshSoon();
+  }
+
+  protected chooseAll(checked: boolean): void {
+    this.chosen.set(new Set(checked ? this.choosable().map((r) => r.id) : []));
+    this.refreshSoon();
+  }
+
+  // What the quantities are for: a dish's portions, a prep item's batch.
+  protected makes(row: SwapPreviewRow): string {
+    if (row.kind !== 'PrepItem') {
+      return row.portions === 1 ? 'for 1 portion' : `for ${row.portions} portions`;
+    }
+    const unit = this.materials().find((m) => m.id === row.id)?.unit;
+    return `for a batch of ${(row.batchQuantity ?? 0).toLocaleString('en', { maximumFractionDigits: 3 })}${unit ? ' ' + unitShort[unit] : ''}`;
+  }
+
+  protected signed(value: number | null): string {
+    if (value === null) {
+      return '—';
+    }
+    const money = this.company.money(Math.abs(value));
+    return value > 0 ? `+${money}` : value < 0 ? `−${money}` : money;
+  }
+
+  protected fc(value: number | null): string {
+    return value === null ? '—' : `${value.toFixed(1)}%`;
+  }
+
+  protected back(): void {
+    this.error.set(null);
+    this.step.update((s) => Math.max(1, s - 1));
+  }
+
+  protected async next(): Promise<void> {
+    if (!this.canNext()) {
+      return;
+    }
+    this.error.set(null);
+    if (this.step() < 3) {
+      this.step.update((s) => s + 1);
+      return;
+    }
+    // Every row it can be ticked to start with.
+    const preview = await this.run(this.api.previewBulkSwap({ fromMaterialId: this.from()!, toMaterialId: this.to()!, ratio: this.ratio()! }));
+    if (preview) {
+      this.preview.set(preview);
+      this.chosen.set(new Set(preview.rows.filter((r) => r.selected).map((r) => r.id)));
+      this.step.set(4);
+    }
+  }
+
+  protected async swap(): Promise<void> {
+    if (!this.canSwap()) {
+      return;
+    }
+    this.saving.set(true);
+    this.error.set(null);
+    try {
+      const done = await firstValueFrom(this.api.bulkSwap(this.request()));
+      this.notify.info(
+        `${this.fromItem()?.name} swapped for ${this.toItem()?.name} in ${done.recipes} ${done.recipes === 1 ? 'recipe' : 'recipes'} and ${done.prepItems} ${done.prepItems === 1 ? 'prep item' : 'prep items'}. · تم الاستبدال.`,
+      );
+      this.ref.close(done);
+    } catch (error) {
+      this.error.set(errorMessage(error, 'The swap could not be made. Nothing was changed.'));
+    } finally {
+      this.saving.set(false);
+    }
+  }
+
+  protected close(): void {
+    this.ref.close();
+  }
+
+  private request() {
+    return {
+      fromMaterialId: this.from()!,
+      toMaterialId: this.to()!,
+      ratio: this.ratio()!,
+      recipeIds: this.chosenRecipes(),
+      prepItemIds: this.chosenPrep(),
+    };
+  }
+
+  // The costs again with the rows chosen: a prep item left out moves no dish.
+  private refreshSoon(): void {
+    if (this.refreshTimer) {
+      clearTimeout(this.refreshTimer);
+    }
+    this.refreshTimer = setTimeout(() => void this.refresh(), 300);
+  }
+
+  private async refresh(): Promise<void> {
+    const sequence = ++this.sequence;
+    const preview = await this.run(this.api.previewBulkSwap(this.request()));
+    if (preview && sequence === this.sequence) {
+      this.preview.set(preview);
+    }
+  }
+
+  private async run<T>(call: Observable<T>): Promise<T | null> {
+    this.busy.set(true);
+    try {
+      return await firstValueFrom(call);
+    } catch (error) {
+      this.error.set(errorMessage(error, 'The swap could not be previewed.'));
+      return null;
+    } finally {
+      this.busy.set(false);
+    }
+  }
+
+  private async start(): Promise<void> {
+    try {
+      this.materials.set(await firstValueFrom(this.api.materials()));
+    } catch (error) {
+      this.error.set(errorMessage(error, 'The items could not be loaded.'));
+      return;
+    }
+    if (this.data?.fromMaterialId) {
+      this.pickFrom(this.data.fromMaterialId);
+      this.step.set(2);
+    }
+  }
+
+  private async loadUsage(id: string): Promise<void> {
+    try {
+      const usage = await firstValueFrom(this.api.whereUsed(id));
+      if (this.from() === id) {
+        this.usage.set(usage);
+      }
+    } catch (error) {
+      this.error.set(errorMessage(error, 'Where it is used could not be loaded.'));
+    }
+  }
+}
+
+// The wizard over the page; resolves with what was swapped, or nothing when it was left.
+export function showBulkSwap(dialog: MatDialog, fromMaterialId?: string | null): Promise<BulkSwapResult | undefined> {
+  return firstValueFrom(
+    dialog
+      .open<BulkSwapDialog, BulkSwapData, BulkSwapResult | undefined>(BulkSwapDialog, {
+        data: { fromMaterialId },
+        width: '1100px',
+        maxWidth: '96vw',
+        autoFocus: 'dialog',
+      })
+      .afterClosed(),
+  );
 }
 ```
 

@@ -150,6 +150,10 @@ EP$/وحدة = AP$/وحدة ÷ Yield%
 
 @@file backend/src/Costing.Application/Recipes/Recipes.cs
 
+**الاستبدال الشامل (`BulkSwapMaterialCommand`):** يغيّر كل الوصفات والمصنّعات المختارة في `SaveChanges` واحد، فإما تنجح كلها أو لا يتغير شيء. يُرفض إن كانت وصفة لم تعد بها الخامة القديمة (معاينة قديمة)، أو عليها طلب ينتظر مدير، أو مصنّع سيدخل في تركيب نفسه (`MadeFrom`: كل المصنّعات التي تدخل في الخامة الجديدة؛ يكفي فحص الرسم الحالي لأن الاستبدال لا يضيف إلا حوافًّا نحو الجديدة)، أو مصنّعات لمن لا يعتمد. ملاحظة مهمة: `IPrepRecipeRepository.GetAllAsync` يقرأ بلا تتبع (`AsNoTracking`) فهو للفحص فقط، وكل مصنّع يُعدّل يُقرأ بـ `GetByIdAsync` ليُحفظ؛ اختبار التكامل هو ما كشف ذلك.
+
+@@file backend/src/Costing.Application/Recipes/BulkSwap.cs
+
 @@file backend/src/Costing.Application/Recipes/RecipeCategories.cs
 
 ### 3.1 "أضف للمنيو" (`RecipesToMenu`)

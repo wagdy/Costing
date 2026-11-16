@@ -895,6 +895,64 @@ export const infoTips = {
       ar: 'لا يتغير إلا بشراء أو تصنيع مُسعّر (مرجحًا بالرصيد) أو إلغائه؛ باقي الحركات تحمله كما هو.',
     },
   ),
+
+  // ---- Where an item is used, and the bulk swap ----
+  wuQuantity: tip(
+    { en: 'Used per portion', ar: 'الكمية في الحصة' },
+    {
+      en: 'How much of the item one portion of the dish takes (a prep item: one batch). On the recipe: as written. Inside its prep items: what they take of it.',
+      ar: 'كم تأخذ الحصة الواحدة من الطبق من هذا الصنف (المصنّع: الدفعة الواحدة). في الوصفة مباشرة: كما هو مكتوب. داخل المصنّعات: ما تأخذه منه.',
+    },
+    {
+      en: 'On the recipe: quantity ÷ portions. Inside a prep item: what the portion takes of it × the item in a gram of it (its batch, as purchased, through every prep item inside).',
+      ar: 'في الوصفة: الكمية ÷ عدد الحصص. داخل المصنّع: ما تأخذه الحصة منه × نصيب الجرام منه من الصنف (حسب دفعته، بالوزن قبل التنظيف، عبر كل المصنّعات الداخلة).',
+    },
+  ),
+  wuItemCost: tip(
+    { en: 'Its cost in a portion', ar: 'تكلفته في الحصة' },
+    { en: 'What this item alone costs in one portion (a prep item: one batch), at today\'s average cost.', ar: 'تكلفة هذا الصنف وحده في الحصة الواحدة (المصنّع: الدفعة)، بمتوسط التكلفة اليوم.' },
+    { en: 'Everything a portion takes of it, as purchased (on it and inside its prep items) × its cost a unit.', ar: 'كل ما تأخذه الحصة منه بالوزن قبل التنظيف (مباشرة وداخل المصنّعات) × تكلفة الوحدة.' },
+  ),
+  bsRatio: tip(
+    { en: 'Conversion ratio', ar: 'معامل التحويل' },
+    {
+      en: 'How much of the new item replaces each unit of the old one. 1 is gram for gram; lower it when the new item goes further (a stronger cheese, a better yield).',
+      ar: 'كم من الخامة الجديدة يحل محل كل وحدة من القديمة. 1 يعني جرام بجرام؛ قلّله إن كانت الجديدة أقوى أو أعلى عائدًا.',
+    },
+    {
+      en: 'New quantity = old quantity × ratio, as edible portion in each item\'s own unit (100 g at 0.8 is 80 g). The new line takes the new item\'s own default yield.',
+      ar: 'الكمية الجديدة = الكمية القديمة × المعامل، كوزن صافٍ بوحدة كل صنف (100 جم × 0.8 = 80 جم). ويأخذ السطر الجديد نسبة العائد الافتراضية للخامة الجديدة.',
+    },
+  ),
+  bsDelta: tip(
+    { en: 'Cost delta', ar: 'فرق التكلفة' },
+    {
+      en: 'What the swap does to a portion\'s cost (a prep item: a batch\'s). Positive: dearer. A prep item made already moves with its next batches.',
+      ar: 'أثر الاستبدال على تكلفة الحصة (المصنّع: الدفعة). الموجب يعني أغلى. والمصنّع المُنتج من قبل تتغير تكلفته مع الدفعات القادمة.',
+    },
+    {
+      en: 'New cost − old cost. New: the recipe with the new item, its prep items as the swap leaves them; a prep item made already at its average × (its batch with the new item ÷ its batch now).',
+      ar: 'التكلفة الجديدة − القديمة. الجديدة: الوصفة بالخامة الجديدة ومصنّعاتها بعد الاستبدال؛ والمصنّع المُنتج بمتوسطه × (دفعته بالجديدة ÷ دفعته الآن).',
+    },
+  ),
+  bsKnockOn: tip(
+    { en: 'Dishes moved through prep items', ar: 'أطباق تتأثر عبر المصنّعات' },
+    { en: 'Dishes without the old item on them whose cost still moves, because a prep item they use is swapped.', ar: 'أطباق لا تحتوي الخامة القديمة مباشرة، لكن تكلفتها تتغير لأن مصنّعًا تستخدمه سيتم استبداله.' },
+    { en: 'The dish\'s cost with the swapped prep items − its cost now.', ar: 'تكلفة الطبق بالمصنّعات بعد الاستبدال − تكلفته الآن.' },
+  ),
+  rfContains: tip(
+    { en: 'Contains', ar: 'يحتوي على' },
+    { en: 'Only the recipes with this item: on the recipe, or inside one of its prep items.', ar: 'الوصفات التي بها هذا الصنف فقط: في الوصفة نفسها أو داخل أحد مصنّعاتها.' },
+    { en: 'From the item\'s where-used list, through every prep item.', ar: 'من قائمة أين يُستخدم الصنف، عبر كل المصنّعات.' },
+  ),
+  rfNetMargin: tip(
+    { en: 'True net margin', ar: 'هامش الربح الصافي' },
+    {
+      en: 'What is left of the price after food, labor and overheads: the fully burdened plate cost of this month so far.',
+      ar: 'ما يتبقى من السعر بعد الخامات والعمالة والمصاريف: التكلفة الكلية للطبق لهذا الشهر حتى الآن.',
+    },
+    { en: '(Price − fully burdened cost) ÷ price × 100, as Cost settings share the labor and overheads.', ar: '(السعر − التكلفة الكلية) ÷ السعر × 100، بطريقة التحميل في إعدادات التكاليف.' },
+  ),
 } satisfies Record<string, InfoTipContent>;
 
 export type InfoTipKey = keyof typeof infoTips;

@@ -136,6 +136,25 @@ public sealed class Recipe : AggregateRoot
     public void RemoveIngredient(Guid rawMaterialId) =>
         _ingredients.RemoveAll(i => i.RawMaterialId == rawMaterialId);
 
+    // Puts `to` where `from` was (استبدال خامة): from's quantity × the ratio (IngredientSwap), at
+    // to's own default yield, the trimming being the new item's. Already on the recipe, `to` takes
+    // that quantity added to its own, at its yield there. The new line's quantity; none, and
+    // nothing changed, when `from` is not on the recipe.
+    public decimal? SwapIngredient(RawMaterial from, RawMaterial to, decimal ratio)
+    {
+        if (from.Id == to.Id)
+            throw new DomainException("Choose another item to swap in. · اختر خامة مختلفة.");
+        if (_ingredients.SingleOrDefault(i => i.RawMaterialId == from.Id) is not { } line)
+            return null;
+        var quantity = IngredientSwap.Quantity(line.Quantity, ratio);
+        _ingredients.Remove(line);
+        if (_ingredients.SingleOrDefault(i => i.RawMaterialId == to.Id) is { } already)
+            already.Change(already.Quantity + quantity, already.YieldPercent);
+        else
+            _ingredients.Add(new RecipeIngredient(Id, to.Id, quantity, to.DefaultYieldPercent));
+        return quantity;
+    }
+
     private static string? Clean(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
     public IReadOnlyList<(Guid RawMaterialId, decimal Quantity)> RequirementsFor(int units)
