@@ -37,6 +37,12 @@
 
 @@file frontend/src/app/features/costing/expense-vouchers-page.ts
 
+الأصول الثابتة: النوافذ تحسب القسط الشهري والقيمة الدفترية والربح أو الخسارة أثناء الكتابة بنفس قواعد الخادم (`bookValueOn`)، و `FixedAssetActions` يرسل الشراء والبيع (طلب لغير المدير) ويلغي البيع أو الشراء عبر `approvals.delete('Treasury', …)` على قيده. والصفحة: أربعة كروت بعلامات (ⓘ)، وجدول يُرتب من عناوين أعمدته أو من زر الترتيب، وتصدير Excel.
+
+@@file frontend/src/app/features/costing/fixed-asset-dialogs.ts
+
+@@file frontend/src/app/features/costing/fixed-assets-page.ts
+
 @@file frontend/src/app/features/costing/supplier-debts-page.ts
 
 كشف حساب المورد نافذة واحدة (`showSupplierStatement`) تُفتح من الموردين، وديون الموردين (كشف كامل)، وتقرير الأعمار: ملخص (افتتاحي، آجل، كاش، مدفوعات، ختامي)، ودفتر بالرصيد الجاري، والفاتورة تفتح بنودها والدفعة تتمدد لتفاصيل سندها، وExcel.

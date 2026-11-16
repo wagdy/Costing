@@ -1003,6 +1003,63 @@ export const infoTips = {
     { en: 'Why the discounts were given, the largest first, with how many bills.', ar: 'أسباب الخصومات، الأكبر أولًا، مع عدد الفواتير.' },
     { en: 'Each reason\'s amounts and counts over the month\'s takings; a voided day\'s taken back out.', ar: 'مجموع مبالغ وعدد كل سبب في توريدات الشهر؛ ويُطرح اليوم الملغى.' },
   ),
+
+  // ---- Fixed assets and the profit and loss ----
+  faTotalCost: tip(
+    { en: 'Total assets cost', ar: 'إجمالي تكلفة الأصول' },
+    {
+      en: 'What the assets still held at the end of the month cost to buy and put in place. Capital spending: it left the safe or the bank, never the P&L.',
+      ar: 'ما تكلفه شراء وتركيب الأصول القائمة في نهاية الشهر. إنفاق رأسمالي: خرج من الخزنة أو البنك، ولا يظهر في قائمة الدخل.',
+    },
+    { en: 'Σ purchase cost of every asset bought by the month’s end and not disposed of or sold by then.', ar: 'مجموع تكلفة شراء كل أصل اشتري حتى نهاية الشهر ولم يُستبعد أو يُبع.' },
+  ),
+  faAccumulated: tip(
+    { en: 'Accumulated depreciation', ar: 'مجمع الإهلاك' },
+    {
+      en: 'How much of the assets’ cost the P&L has taken so far, a month at a time.',
+      ar: 'ما حمّلته قائمة الدخل من تكلفة الأصول حتى الآن، شهرًا بشهر.',
+    },
+    {
+      en: 'Σ monthly depreciation × months charged (from the month bought, never the month disposed of), at most the cost less the salvage value.',
+      ar: 'مجموع (قسط الإهلاك الشهري × عدد الأشهر المحملة من شهر الشراء)، بحد أقصى التكلفة ناقص القيمة التخريدية.',
+    },
+  ),
+  faNetBookValue: tip(
+    { en: 'Net book value', ar: 'القيمة الدفترية الحالية' },
+    { en: 'What is left of the assets’ cost on the books: what is still to be depreciated, and the salvage value.', ar: 'ما تبقى من تكلفة الأصول في الدفاتر: الجزء الذي لم يُهلك بعد والقيمة التخريدية.' },
+    { en: 'Total assets cost − accumulated depreciation.', ar: 'إجمالي تكلفة الأصول − مجمع الإهلاك.' },
+  ),
+  faRunRate: tip(
+    { en: 'Monthly depreciation run rate', ar: 'قسط الإهلاك الشهري الحالي' },
+    {
+      en: 'What this month’s P&L is charged for the assets: the Depreciation expense line, below EBITDA.',
+      ar: 'ما تُحمّله قائمة دخل هذا الشهر للأصول: بند إهلاك الأصول الثابتة بعد الربح التشغيلي (EBITDA).',
+    },
+    {
+      en: 'Σ (purchase cost − salvage value) ÷ useful life in months, over each asset still within its life; its last month takes what the rounding left.',
+      ar: 'مجموع (تكلفة الشراء − القيمة التخريدية) ÷ العمر الإنتاجي بالأشهر لكل أصل داخل عمره؛ والشهر الأخير يأخذ فرق التقريب.',
+    },
+  ),
+  faGainLoss: tip(
+    { en: 'Capital gain / (loss)', ar: 'ربح / (خسارة) رأسمالية' },
+    { en: 'What disposing of or selling the asset made or lost against what was left of its cost: on the P&L of the month it went.', ar: 'ما حققه أو خسره بيع الأصل أو استبعاده مقارنة بالمتبقي من تكلفته: في قائمة دخل شهر الاستبعاد.' },
+    { en: 'Sale proceeds − net book value when it went (nothing, for a write-off).', ar: 'قيمة البيع − القيمة الدفترية وقت الاستبعاد (صفر في حالة الاستبعاد بلا مقابل).' },
+  ),
+  plEbitda: tip(
+    { en: 'EBITDA', ar: 'الربح التشغيلي قبل الفوائد والضرائب والإهلاك' },
+    { en: 'What running the restaurant made before interest, taxes, depreciation and amortization: the operating result, not hidden by what the equipment cost.', ar: 'ما حققه تشغيل المطعم قبل الفوائد والضرائب والإهلاك: نتيجة التشغيل دون أن تخفيها تكلفة المعدات.' },
+    { en: 'Gross profit − operating expenses (wages, running costs, occupation, other fixed costs, hospitality).', ar: 'مجمل الربح − المصروفات التشغيلية (الأجور، المصاريف الجارية، الإيجار، المصاريف الثابتة الأخرى، الضيافة).' },
+  ),
+  plDepreciation: tip(
+    { en: 'Depreciation expense', ar: 'إهلاك الأصول الثابتة' },
+    { en: 'The month’s share of what the fixed assets cost. Buying them (CAPEX) never comes here: only this, a month at a time.', ar: 'نصيب الشهر من تكلفة الأصول الثابتة. شراؤها (CAPEX) لا يظهر هنا: فقط هذا القسط شهرًا بشهر.' },
+    { en: 'The fixed assets register’s straight-line depreciation for the month + any depreciation entered for the month.', ar: 'إهلاك القسط الثابت للشهر من سجل الأصول + أي إهلاك مُدخل يدويًا للشهر.' },
+  ),
+  plNetProfit: tip(
+    { en: 'Net profit', ar: 'صافي الربح النهائي' },
+    { en: 'What is left after everything: the running costs, the interest, the assets’ depreciation and what disposing of them made or lost.', ar: 'ما يتبقى بعد كل شيء: مصاريف التشغيل والفوائد وإهلاك الأصول وأرباح أو خسائر استبعادها.' },
+    { en: 'EBITDA − interest − depreciation expense ± gain / (loss) on asset disposals.', ar: 'EBITDA − الفوائد − إهلاك الأصول ± أرباح / (خسائر) استبعاد الأصول.' },
+  ),
 } satisfies Record<string, InfoTipContent>;
 
 export type InfoTipKey = keyof typeof infoTips;

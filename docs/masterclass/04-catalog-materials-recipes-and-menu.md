@@ -4601,7 +4601,7 @@ public sealed partial class CostingService(CostingDbContext db, IBusinessCalenda
 
 `CostingController` (`api/costing`): التكاليف والتقارير الغذائية (المواد، البطاقات، النظري، الإعدادات، التكاليف المشتركة).
 
-> 📄 **`backend/src/Costing.Api/Controllers/CostingController.cs`** — 281 سطر
+> 📄 **`backend/src/Costing.Api/Controllers/CostingController.cs`** — 288 سطر
 
 ```csharp
 using Microsoft.AspNetCore.Authorization;
@@ -4803,6 +4803,13 @@ public sealed class CostingController(
     [CostingTab(CostingTabs.Reports | CostingTabs.CostSettings)]
     public Task<KpiReport> GetKpis([FromQuery] int year, [FromQuery] int month, CancellationToken cancellationToken) =>
         kpis.GetAsync(year, month, cancellationToken);
+
+    // The month's profit and loss (قائمة الدخل): gross profit, operating expenses, EBITDA, interest,
+    // the fixed assets' depreciation and disposals, net profit. Read from the KPIs' statement.
+    [HttpGet("reports/pnl")]
+    [CostingTab(CostingTabs.Reports | CostingTabs.CostSettings)]
+    public async Task<ProfitAndLoss> GetProfitAndLoss([FromQuery] int year, [FromQuery] int month, CancellationToken cancellationToken) =>
+        ProfitAndLoss.Of(await kpis.GetAsync(year, month, cancellationToken));
 
     // A month's wages, labour hours and overheads, as the manager enters them. The whole month
     // each time: a figure left out is not known yet.

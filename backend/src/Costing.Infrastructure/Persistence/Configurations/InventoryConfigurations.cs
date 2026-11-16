@@ -240,6 +240,9 @@ internal sealed class SafeTransactionConfiguration : IEntityTypeConfiguration<Sa
         builder.HasIndex(t => new { t.Fund, t.BusinessDate });
         builder.HasIndex(t => t.RevenueDate);
         builder.HasIndex(t => t.PurchaseInvoiceId);
+        // The fixed asset an entry bought or sold. No key to it: the asset names its entries, and
+        // both are made in one save.
+        builder.HasIndex(t => t.FixedAssetId).HasFilter("\"FixedAssetId\" IS NOT NULL");
         // An employee's advances and salaries, month by month.
         builder.HasIndex(t => new { t.EmployeeId, t.PayrollMonth }).HasFilter("\"EmployeeId\" IS NOT NULL");
     }

@@ -57,7 +57,7 @@
 - `PayPurchaseInvoiceCommand`، `SetSupplierOpeningBalanceCommand`.
 - `ITaxRate`: نسبة الضريبة الحالية من إعدادات الضريبة والخدمة.
 
-> 📄 **`backend/src/Costing.Application/Treasury/Treasury.cs`** — 769 سطر
+> 📄 **`backend/src/Costing.Application/Treasury/Treasury.cs`** — 910 سطر
 
 ```csharp
 using System.Globalization;
@@ -68,6 +68,7 @@ using Costing.Application.Approvals;
 using Costing.Application.Common;
 using Costing.Domain.Approvals;
 using Costing.Domain.Expenses;
+using Costing.Domain.FixedAssets;
 using Costing.Domain.Purchases;
 using Costing.Domain.Sales;
 using Costing.Domain.Suppliers;
@@ -120,7 +121,23 @@ public sealed record SafeVoucher(
     Guid? PayrollRunId = null,
     // A day's takings': the discounts and promos taken off the menu prices, and why (Discounts).
     decimal? DiscountsAmount = null,
-    IReadOnlyList<DiscountReason>? DiscountReasons = null);
+    IReadOnlyList<DiscountReason>? DiscountReasons = null,
+    // A fixed asset bought or sold: out of or into the safe (the default) or the bank (Fund); the
+    // asset (FixedAssetId, made by the till for one bought); and, bought, what it is (Asset). Amount
+    // is what it cost or brought in, Date the day it was bought or sold.
+    CashFund? Fund = null,
+    Guid? FixedAssetId = null,
+    FixedAssetInput? Asset = null);
+
+// A fixed asset as it is entered: what it is, where it is, and what its depreciation is worked out
+// from. Its cost and the day it was bought are its payment's, or entered with it when it is owned already.
+public sealed record FixedAssetInput(
+    string Name,
+    FixedAssetCategory Category,
+    int UsefulLifeMonths,
+    decimal SalvageValue = 0,
+    string? Location = null,
+    string? Notes = null);
 
 // The tax rate the bills are charged, as set on Tax & service.
 public interface ITaxRate
@@ -156,13 +173,14 @@ public sealed record SafeTransactionDto(
     decimal VoidsAmount = 0,
     decimal NetAmount = 0,
     decimal DiscountsAmount = 0,
-    IReadOnlyList<DiscountReason>? DiscountReasons = null)
+    IReadOnlyList<DiscountReason>? DiscountReasons = null,
+    Guid? FixedAssetId = null)
 {
     public static SafeTransactionDto From(SafeTransaction t) => new(
         t.Id, t.Kind, t.Fund, t.Amount, t.BusinessDate, t.RevenueDate, t.Source, t.SupplierId, t.PurchaseInvoiceId, t.ExpenseItemId, t.Notes,
         t.RecordedBy, t.RecordedAtUtc, t.ApprovedBy, t.ReversalOf, t.VoidedAtUtc, t.VoidedBy, t.IncludesTax, t.TaxPercent, t.TaxAmount,
         t.GrossAmount, t.EmployeeId, t.PayrollMonth, t.CardAmount, t.VoidsAmount, t.Kind == SafeTransactionKind.RevenueTransfer ? t.NetAmount : 0,
-        t.DiscountsAmount, t.DiscountReasons.ToList());
+        t.DiscountsAmount, t.DiscountReasons.ToList(), t.FixedAssetId);
 }
 
 // Checks, describes and enters safe entries: for a manager's own and for an approval alike. What
@@ -177,7 +195,8 @@ internal sealed class TreasuryWriter(
     ITaxRate taxRate,
     IStaffMemberRepository employees,
     IPayrollRunRepository payrollRuns,
-    Costing.Application.Integrations.HrOutbox hr)
+    Costing.Application.Integrations.HrOutbox hr,
+    IFixedAssetRepository assets)
 {
     private static readonly CultureInfo Invariant = CultureInfo.InvariantCulture;
 
@@ -189,7 +208,7 @@ internal sealed class TreasuryWriter(
     // entry dated that calendar day is taken as well (Latest), never one later.
     public DateOnly Today => descriptions.BusinessDateOf(DateTime.UtcNow);
 
-    private DateOnly Latest
+    public DateOnly Latest
     {
         get
         {
@@ -230,6 +249,13 @@ internal sealed class TreasuryWriter(
         if (voucher.Kind != SafeTransactionKind.RevenueTransfer && (voucher.CardAmount is not null || voucher.TaxAmount is not null || voucher.VoidsAmount is not null
             || voucher.DiscountsAmount is not null || voucher.DiscountReasons is { Count: > 0 }))
             throw new DomainException("Only a day's takings have card takings, tax, voids and discounts.");
+        var forAsset = voucher.Kind is SafeTransactionKind.AssetPurchase or SafeTransactionKind.AssetSale;
+        if (!forAsset && (voucher.Fund is not (null or CashFund.Safe) || voucher.FixedAssetId is not null || voucher.Asset is not null))
+            throw new DomainException("Only a fixed asset is bought or sold through the bank. · البنك للأصول الثابتة فقط.");
+        if (forAsset && voucher.Fund is not (null or CashFund.Safe or CashFund.Bank))
+            throw new DomainException("Pay it from the safe or the bank. · من الخزنة أو البنك.");
+        if (forAsset && voucher.RevenueDate is not null)
+            throw new DomainException("A fixed asset is paid from the safe or the bank, not a day's takings.");
         switch (voucher.Kind)
         {
             case SafeTransactionKind.OpeningBalance:
@@ -296,6 +322,25 @@ internal sealed class TreasuryWriter(
                 var run = await PayrollRunAsync(voucher.PayrollRunId, cancellationToken);
                 if (voucher.Amount != run.NetCashPayable || voucher.PayrollMonth != run.Period)
                     throw new DomainException($"The payroll of {run.PeriodName} is paid as HR sent it: {Money(run.NetCashPayable)}.");
+                break;
+            }
+            case SafeTransactionKind.AssetPurchase:
+            {
+                if (voucher.FixedAssetId is not { } assetId || voucher.Asset is not { } asset)
+                    throw new DomainException("Say what the asset is. · أدخل بيانات الأصل.");
+                if (await assets.GetByIdAsync(assetId, cancellationToken) is not null)
+                    throw new DomainException("This asset is on the register already.");
+                // Checked as it would be made: its name, category, life and salvage value against its cost.
+                _ = NewAsset(voucher, asset, assetId, 1, voucher.Fund ?? CashFund.Safe, Guid.NewGuid(), "check");
+                break;
+            }
+            case SafeTransactionKind.AssetSale:
+            {
+                var sold = await AssetOnRegisterAsync(voucher.FixedAssetId, cancellationToken);
+                if (sold.IsGone)
+                    throw new DomainException($"{sold.AssetCode} {sold.Name} is disposed of already. · الأصل مستبعد بالفعل.");
+                if (voucher.Date < sold.PurchaseDate)
+                    throw new DomainException("An asset is sold on the day it was bought or after. · تاريخ البيع بعد تاريخ الشراء.");
                 break;
             }
             default:
@@ -374,6 +419,23 @@ internal sealed class TreasuryWriter(
                 await hr.PayrollAsync(run, entry, voided: false, cancellationToken);
                 break;
             }
+            case SafeTransactionKind.AssetPurchase:
+            {
+                // Out of the safe or the bank on the day it is bought, and on the register from then.
+                var fund = voucher.Fund ?? CashFund.Safe;
+                entry = SafeTransaction.AssetPurchase(id, voucher.Amount, voucher.Date, voucher.FixedAssetId!.Value, fund, voucher.Notes, recordedBy, approvedBy);
+                assets.Add(NewAsset(voucher, voucher.Asset!, voucher.FixedAssetId.Value, await assets.NextNumberAsync(cancellationToken), fund, entry.Id,
+                    approvedBy ?? recordedBy));
+                break;
+            }
+            case SafeTransactionKind.AssetSale:
+            {
+                var fund = voucher.Fund ?? CashFund.Safe;
+                var sold = await AssetOnRegisterAsync(voucher.FixedAssetId, cancellationToken);
+                entry = SafeTransaction.AssetSale(id, voucher.Amount, voucher.Date, sold.Id, fund, voucher.Notes, recordedBy, approvedBy);
+                sold.Sell(voucher.Date, voucher.Amount, fund, entry.Id, voucher.Notes, approvedBy ?? recordedBy);
+                break;
+            }
             default:
                 throw new DomainException("Say what the safe entry is.");
         }
@@ -382,12 +444,41 @@ internal sealed class TreasuryWriter(
         return entry;
     }
 
+    private static FixedAsset NewAsset(SafeVoucher voucher, FixedAssetInput asset, Guid assetId, int number, CashFund fund, Guid paidBy, string by) =>
+        new(assetId, number, asset.Name, asset.Category, asset.Location, asset.Notes, voucher.Date, voucher.Amount, asset.SalvageValue,
+            asset.UsefulLifeMonths, fund, paidBy, by);
+
+    // What would stop it being voided: a sold asset's purchase, before its sale is.
+    public async Task CheckVoidAsync(SafeTransaction entry, CancellationToken cancellationToken)
+    {
+        if (entry.Kind == SafeTransactionKind.AssetPurchase && entry.FixedAssetId is { } assetId
+            && await assets.GetByIdAsync(assetId, cancellationToken) is { Status: FixedAssetStatus.Sold } sold)
+            throw new DomainException($"{sold.AssetCode} {sold.Name} is sold: void its sale first. · ألغِ بيع الأصل أولًا.");
+    }
+
+    private async Task<FixedAsset> AssetOnRegisterAsync(Guid? id, CancellationToken cancellationToken)
+    {
+        var asset = id is { } assetId
+            ? await assets.GetByIdAsync(assetId, cancellationToken) ?? throw new NotFoundException("Fixed asset", assetId)
+            : throw new DomainException("Choose the asset. · اختر الأصل.");
+        return asset.IsVoided ? throw new DomainException("This asset is off the register. · الأصل محذوف من السجل.") : asset;
+    }
+
     // Voids it, today: the opposite amount in the safe's ledger, and on the supplier's account too
     // for a supplier payment. A payment out of a day's takings goes back into the safe when they
     // are in it.
     public async Task VoidAsync(SafeTransaction entry, string by, CancellationToken cancellationToken)
     {
+        await CheckVoidAsync(entry, cancellationToken);
         safe.Add(entry.Void(Guid.NewGuid(), Today, by, await TakingsInSafeAsync(entry.RevenueDate, cancellationToken)));
+        // A fixed asset's purchase voided: off the register. Its sale voided: back in use.
+        if (entry.FixedAssetId is { } assetId && await assets.GetByIdAsync(assetId, cancellationToken) is { IsVoided: false } asset)
+        {
+            if (entry.Kind == SafeTransactionKind.AssetPurchase)
+                asset.Void(by);
+            else if (entry.Kind == SafeTransactionKind.AssetSale && asset.SaleTransactionId == entry.Id)
+                asset.Reinstate(by);
+        }
         // An advance to an employee from HR: taken off their pay there too.
         if (entry.Kind == SafeTransactionKind.EmployeeAdvance)
             await hr.AdvanceAsync(entry, voided: true, cancellationToken);
@@ -548,6 +639,31 @@ internal sealed class TreasuryWriter(
                 changes.Add(new ApprovalChange("Advances already paid", null, Money(run.TotalAdvancesDeducted)));
                 break;
             }
+            case SafeTransactionKind.AssetPurchase:
+            {
+                var asset = voucher.Asset!;
+                var monthly = Math.Round((voucher.Amount - asset.SalvageValue) / Math.Max(asset.UsefulLifeMonths, 1), 2, MidpointRounding.AwayFromZero);
+                summary = $"Fixed asset bought (CAPEX) · {asset.Name} · {amount} from {FundName(voucher.Fund)}";
+                changes.Add(new ApprovalChange("Asset · الأصل", null, asset.Name));
+                changes.Add(new ApprovalChange("Category · الفئة", null, CategoryName(asset.Category)));
+                changes.Add(new ApprovalChange("Useful life · العمر الإنتاجي", null, $"{asset.UsefulLifeMonths} months"));
+                changes.Add(new ApprovalChange("Salvage value · القيمة التخريدية", null, Money(asset.SalvageValue)));
+                changes.Add(new ApprovalChange("Monthly depreciation · قسط الإهلاك الشهري", null, Money(monthly)));
+                changes.Add(new ApprovalChange("Paid from", null, FundName(voucher.Fund)));
+                break;
+            }
+            case SafeTransactionKind.AssetSale:
+            {
+                var sold = await AssetOnRegisterAsync(voucher.FixedAssetId, cancellationToken);
+                var left = sold.NetBookValueThrough(voucher.Date.AddMonths(-1));
+                summary = $"Fixed asset sold · {sold.AssetCode} {sold.Name} · {amount} into {FundName(voucher.Fund)}";
+                changes.Add(new ApprovalChange("Asset · الأصل", null, $"{sold.AssetCode} {sold.Name}"));
+                changes.Add(new ApprovalChange("Net book value · القيمة الدفترية", null, Money(left)));
+                changes.Add(new ApprovalChange(voucher.Amount >= left ? "Gain on sale · ربح البيع" : "Loss on sale · خسارة البيع", null,
+                    Money(Math.Abs(voucher.Amount - left))));
+                changes.Add(new ApprovalChange("Paid into", null, FundName(voucher.Fund)));
+                break;
+            }
             default:
                 throw new DomainException("Say what the safe entry is.");
         }
@@ -561,7 +677,9 @@ internal sealed class TreasuryWriter(
         decimal? moves = voucher.Kind switch
         {
             _ when fromDrawer => null,
-            SafeTransactionKind.OpeningBalance or SafeTransactionKind.Funding => voucher.Amount,
+            // Through the bank: the safe does not move.
+            _ when voucher.Fund == CashFund.Bank => null,
+            SafeTransactionKind.OpeningBalance or SafeTransactionKind.Funding or SafeTransactionKind.AssetSale => voucher.Amount,
             SafeTransactionKind.RevenueTransfer => Takings(voucher) is var (cash, card, tax)
                 ? cash + card + tax - await safe.PaidOutOfTakingsAsync(voucher.RevenueDate!.Value, cancellationToken)
                 : 0,
@@ -596,6 +714,8 @@ internal sealed class TreasuryWriter(
             SafeTransactionKind.SalaryPayment => $"Salary · {await EmployeeNameAsync(entry.EmployeeId, cancellationToken)}" +
                 (entry.PayrollMonth is { } month ? $" · {MonthName(month)}" : "") + From(entry.RevenueDate),
             SafeTransactionKind.PayrollPayment => $"Payroll from HR · {(entry.PayrollMonth is { } paid ? MonthName(paid) : "a month")}",
+            SafeTransactionKind.AssetPurchase => $"Fixed asset bought · {await AssetNameAsync(entry.FixedAssetId, cancellationToken)} from {FundName(entry.Fund)}",
+            SafeTransactionKind.AssetSale => $"Fixed asset sold · {await AssetNameAsync(entry.FixedAssetId, cancellationToken)} into {FundName(entry.Fund)}",
             _ => $"Invoice payment from {(entry.RevenueDate is { } day ? $"the takings of {Day(day)}" : "the safe")}",
         };
         return $"{what} · {Money(Math.Abs(entry.Amount))} · {Day(entry.BusinessDate)}";
@@ -632,6 +752,13 @@ internal sealed class TreasuryWriter(
 
     private async Task<string> EmployeeNameAsync(Guid? id, CancellationToken cancellationToken) =>
         (id is { } employeeId ? (await employees.GetByIdAsync(employeeId, cancellationToken))?.Name : null) ?? "an employee";
+
+    private async Task<string> AssetNameAsync(Guid? id, CancellationToken cancellationToken) =>
+        (id is { } assetId && await assets.GetByIdAsync(assetId, cancellationToken) is { } asset ? $"{asset.AssetCode} {asset.Name}" : null) ?? "an asset";
+
+    private static string FundName(CashFund? fund) => fund == CashFund.Bank ? "the bank" : "the safe";
+
+    private static string CategoryName(FixedAssetCategory category) => TreasuryNames.Category(category);
 
     private static string From(DateOnly? revenueDate) => revenueDate is { } day ? $" from the takings of {Day(day)}" : "";
 
@@ -686,6 +813,20 @@ internal sealed class TreasuryWriter(
         SafeTransaction.Takings(voucher.Amount, voucher.CardAmount ?? 0, voucher.TaxAmount, voucher.IncludesTax ? voucher.TaxPercent : null);
 
     private static string Day(DateOnly day) => day.ToString("d MMM yyyy", Invariant);
+}
+
+// How the treasury names a fixed asset's category, in both languages.
+public static class TreasuryNames
+{
+    public static string Category(FixedAssetCategory category) => category switch
+    {
+        FixedAssetCategory.KitchenEquipment => "Kitchen equipment · معدات المطبخ",
+        FixedAssetCategory.Furniture => "Furniture · الأثاث",
+        FixedAssetCategory.Vehicles => "Vehicles · السيارات",
+        FixedAssetCategory.ItAndPos => "IT & POS · أجهزة الحاسب ونقاط البيع",
+        FixedAssetCategory.FitOut => "Fit-out & decoration · تجهيزات وديكورات",
+        _ => "Other · أخرى",
+    };
 }
 
 // A safe entry: entered at once for a manager (Transaction), asked of a manager for anyone else
@@ -836,7 +977,7 @@ internal sealed class PayPurchaseInvoiceHandler(
 
 الدفتر بشهر (`SafeMonth`: الكاش، الفيزا، الضريبة، الصافي، التمويل، إجمالي الداخل والخارج، **الضريبة المستحقة الآن**)، مصادر التمويل، **المطابقة** (`DayRevenue`: صافي مبيعات اليوم A مقابل قيمة مبيعاته بأسعار المنيو B؛ الفرق خصومات أو وجبات موظفين أو كاش ناقص، أو أصناف لم تُدخل)، **يومية الإيراد** (إجمالي اليوم ناقص ما دُفع من درجه مباشرة = ما وصل الخزنة)، وتحليلات الخزنة لأي فترة (من أين جاء المال وأين ذهب، ونسب المدفوع من الدرج لكل نوع).
 
-> 📄 **`backend/src/Costing.Infrastructure/Reports/TreasuryService.cs`** — 939 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Reports/TreasuryService.cs`** — 962 سطر
 
 ```csharp
 using System.Globalization;
@@ -927,7 +1068,10 @@ public sealed record SafeMonth(
     decimal TotalIn = 0,
     decimal TotalOut = 0,
     // The tax held in the safe for the tax authority now: collected, less what was paid over.
-    decimal TaxOwedNow = 0);
+    decimal TaxOwedNow = 0,
+    // Fixed assets sold for cash into the safe in the month (in TotalIn), and bought out of it (in TotalOut).
+    decimal AssetSales = 0,
+    decimal AssetPurchases = 0);
 
 // The tax the takings collected and what was paid over of it (سداد ضرائب): what is still owed,
 // held in the safe for it. Below zero, more was paid than these takings collected.
@@ -1127,6 +1271,7 @@ public sealed class TreasuryService(CostingDbContext db, IBusinessCalendar clock
         var takings = standing.Where(t => t.Kind == SafeTransactionKind.RevenueTransfer).ToList();
         var (cash, card, tax) = (takings.Sum(t => t.GrossAmount ?? t.Amount), takings.Sum(t => t.CardAmount), takings.Sum(t => t.TaxAmount));
         var funding = standing.Where(t => t.Kind is SafeTransactionKind.OpeningBalance or SafeTransactionKind.Funding).Sum(t => t.Amount);
+        var assetSales = standing.Where(t => t.Kind == SafeTransactionKind.AssetSale).Sum(t => t.Amount);
         return new SafeMonth(
             year, month, from, to, Money(before),
             anyBefore ? SafeOpening.CarriedOver : opening is not null ? SafeOpening.OpeningEntry : SafeOpening.None,
@@ -1140,9 +1285,10 @@ public sealed class TreasuryService(CostingDbContext db, IBusinessCalendar clock
             await db.SafeTransactions.AnyAsync(t => t.Kind == SafeTransactionKind.OpeningBalance && t.ReversalOf == null && t.VoidedAtUtc == null, cancellationToken),
             entries,
             Money(cash), Money(card), Money(tax), Money(cash + card), Money(funding),
-            Money(before + cash + card + tax + funding),
+            Money(before + cash + card + tax + funding + assetSales),
             Money(Out(standing)),
-            (await GetTaxPositionAsync(null, cancellationToken)).Owed);
+            (await GetTaxPositionAsync(null, cancellationToken)).Owed,
+            Money(assetSales), Money(-standing.Where(t => t.Kind == SafeTransactionKind.AssetPurchase).Sum(t => t.Amount)));
     }
 
     // All that went out of the safe in these entries: what was paid from it (a voided payment's void
@@ -1151,7 +1297,7 @@ public sealed class TreasuryService(CostingDbContext db, IBusinessCalendar clock
         entries.Sum(t => t.Kind switch
         {
             SafeTransactionKind.RevenueTransfer => t.TakingsTotal - t.Amount,
-            SafeTransactionKind.OpeningBalance or SafeTransactionKind.Funding => 0,
+            SafeTransactionKind.OpeningBalance or SafeTransactionKind.Funding or SafeTransactionKind.AssetSale => 0,
             _ => -t.Amount,
         });
 
@@ -1220,7 +1366,9 @@ public sealed class TreasuryService(CostingDbContext db, IBusinessCalendar clock
             }
         }
 
-        var outgoing = standing.Where(t => t.Kind is not (SafeTransactionKind.RevenueTransfer or SafeTransactionKind.OpeningBalance or SafeTransactionKind.Funding))
+        var outgoing = standing
+            .Where(t => t.Kind is not (SafeTransactionKind.RevenueTransfer or SafeTransactionKind.OpeningBalance or SafeTransactionKind.Funding
+                or SafeTransactionKind.AssetSale))
             .Select(t => (Payment: t, Amount: -t.Amount))
             .Concat(paidOut)
             .ToList();
@@ -1228,7 +1376,8 @@ public sealed class TreasuryService(CostingDbContext db, IBusinessCalendar clock
         var (cash, card, tax) = (takings.Sum(t => t.GrossAmount ?? t.Amount), takings.Sum(t => t.CardAmount), takings.Sum(t => t.TaxAmount));
         var opening = before + standing.Where(t => t.Kind == SafeTransactionKind.OpeningBalance).Sum(t => t.Amount);
         var funding = standing.Where(t => t.Kind == SafeTransactionKind.Funding).ToList();
-        var totalIn = cash + card + tax + opening + funding.Sum(t => t.Amount);
+        var assetSales = standing.Where(t => t.Kind == SafeTransactionKind.AssetSale).Sum(t => t.Amount);
+        var totalIn = cash + card + tax + opening + funding.Sum(t => t.Amount) + assetSales;
         var totalOut = outgoing.Sum(o => o.Amount);
 
         decimal? Share(decimal part, decimal whole) => whole != 0 ? Math.Round(part * 100 / whole, 1, MidpointRounding.AwayFromZero) : null;
@@ -1249,6 +1398,9 @@ public sealed class TreasuryService(CostingDbContext db, IBusinessCalendar clock
                     .Where(l => l.Amount != 0)
                     .ToList()),
         };
+        // Fixed assets sold for cash: investing, never revenue.
+        if (assetSales != 0)
+            inflows.Add(Line("assetSales", "Fixed assets sold", "بيع أصول ثابتة", assetSales, totalIn));
 
         // The expense vouchers by their expense's category, as the profit and loss files them.
         var expenseIds = outgoing.Where(o => o.Payment.ExpenseItemId != null).Select(o => o.Payment.ExpenseItemId!.Value).Distinct().ToList();
@@ -1282,6 +1434,9 @@ public sealed class TreasuryService(CostingDbContext db, IBusinessCalendar clock
                 ]),
             Line("tax", "Tax paid over", "سداد الضرائب", Paid(SafeTransactionKind.TaxPayment), totalOut),
         };
+        // Fixed assets bought out of the safe (CAPEX): investing, never an operating expense.
+        if (Paid(SafeTransactionKind.AssetPurchase) is not 0 and var capex)
+            outflows.Add(Line("capex", "Fixed assets bought (CAPEX)", "شراء أصول ثابتة", capex, totalOut));
         // Takings whose payments out of them are not on record any more: said apart, not lost.
         if (Paid(SafeTransactionKind.RevenueTransfer) is not 0 and var unnamed)
             outflows.Add(Line("takings", "Paid out of the takings", "مصروف من الإيراد", unnamed, totalOut));
@@ -1294,7 +1449,7 @@ public sealed class TreasuryService(CostingDbContext db, IBusinessCalendar clock
                 var dayIn = g.Sum(t => t.Kind switch
                 {
                     SafeTransactionKind.RevenueTransfer => t.TakingsTotal,
-                    SafeTransactionKind.OpeningBalance or SafeTransactionKind.Funding => t.Amount,
+                    SafeTransactionKind.OpeningBalance or SafeTransactionKind.Funding or SafeTransactionKind.AssetSale => t.Amount,
                     _ => 0,
                 });
                 var dayOut = Out(g);
@@ -1718,7 +1873,7 @@ public sealed class TreasuryService(CostingDbContext db, IBusinessCalendar clock
 
     private sealed record Names(
         IReadOnlyDictionary<Guid, string> Suppliers, IReadOnlyDictionary<Guid, string> Expenses, IReadOnlyDictionary<Guid, string?> Invoices,
-        IReadOnlyDictionary<Guid, string> Employees);
+        IReadOnlyDictionary<Guid, string> Employees, IReadOnlyDictionary<Guid, string> Assets);
 
     private async Task<Names> NamesAsync(IReadOnlyList<SafeTransaction> rows, CancellationToken cancellationToken)
     {
@@ -1728,11 +1883,18 @@ public sealed class TreasuryService(CostingDbContext db, IBusinessCalendar clock
             await db.ExpenseItems.AsNoTracking().ToDictionaryAsync(e => e.Id, e => e.Name, cancellationToken),
             await db.PurchaseInvoices.AsNoTracking().Where(i => invoiceIds.Contains(i.Id))
                 .ToDictionaryAsync(i => i.Id, i => i.SupplierInvoiceNumber, cancellationToken),
-            await db.Staff.AsNoTracking().ToDictionaryAsync(e => e.Id, e => e.Name, cancellationToken));
+            await db.Staff.AsNoTracking().ToDictionaryAsync(e => e.Id, e => e.Name, cancellationToken),
+            await AssetNamesAsync(rows.Where(t => t.FixedAssetId != null).Select(t => t.FixedAssetId!.Value).Distinct().ToList(), cancellationToken));
     }
+
+    private async Task<IReadOnlyDictionary<Guid, string>> AssetNamesAsync(List<Guid> ids, CancellationToken cancellationToken) =>
+        ids.Count == 0
+            ? new Dictionary<Guid, string>()
+            : await db.FixedAssets.AsNoTracking().Where(a => ids.Contains(a.Id)).ToDictionaryAsync(a => a.Id, a => a.AssetCode + " " + a.Name, cancellationToken);
 
     private static SafeEntryRow Row(SafeTransaction t, Names names, decimal? balance)
     {
+        string Asset() => t.FixedAssetId is { } id ? names.Assets.GetValueOrDefault(id) ?? "a removed asset" : "an asset";
         string Supplier() => t.SupplierId is { } id ? names.Suppliers.GetValueOrDefault(id) ?? "a removed supplier" : "no supplier";
         string Takings() => t.RevenueDate is { } day ? $" · from the takings of {day.ToString("d MMM", Invariant)}" : "";
         string Employee() => t.EmployeeId is { } id ? names.Employees.GetValueOrDefault(id) ?? "a removed employee" : "an employee";
@@ -1750,6 +1912,8 @@ public sealed class TreasuryService(CostingDbContext db, IBusinessCalendar clock
             SafeTransactionKind.EmployeeAdvance => $"Advance to {Employee()}" + Takings(),
             SafeTransactionKind.SalaryPayment => $"Salary of {Employee()}" + (t.PayrollMonth is { } month ? $" · {month.ToString("MMMM yyyy", Invariant)}" : "") + Takings(),
             SafeTransactionKind.PayrollPayment => "Payroll from HR" + (t.PayrollMonth is { } run ? $" · {run.ToString("MMMM yyyy", Invariant)}" : ""),
+            SafeTransactionKind.AssetPurchase => $"Fixed asset bought (CAPEX) · {Asset()}" + (t.Fund == CashFund.Bank ? " · by the bank" : ""),
+            SafeTransactionKind.AssetSale => $"Fixed asset sold · {Asset()}" + (t.Fund == CashFund.Bank ? " · into the bank" : ""),
             _ => (t.PurchaseInvoiceId is { } i && names.Invoices.GetValueOrDefault(i) is { } number ? $"Invoice {number}" : "Invoice") +
                  (t.SupplierId is null ? "" : $" · {Supplier()}") +
                  (t.RevenueDate is { } day ? $" · from the takings of {day.ToString("d MMM", Invariant)}" : ""),
@@ -1778,6 +1942,996 @@ public sealed class TreasuryService(CostingDbContext db, IBusinessCalendar clock
             throw new DomainException("Choose two years at most.");
     }
 }
+```
+
+
+### 1.6 الأصول الثابتة والإهلاك: CAPEX ليس OPEX
+
+المصروف التشغيلي (إيجار، غاز، صيانة) يُستهلك في شهره ويدخل قائمة دخله كاملًا. أما الأصل الثابت (ماكينة إسبريسو، فرن، أثاث، نقاط بيع، ديكورات) فيخدم سنوات: **ثمنه يخرج من الخزنة أو البنك يوم الشراء، لكن قائمة الدخل لا ترى الشراء أبدًا**، بل ترى إهلاكه شهرًا بشهر. لذلك نوعان جديدان في دفتر الخزنة: `AssetPurchase` (سالب، من `CashFund.Safe` أو `CashFund.Bank`) و `AssetSale` (موجب)، ويمران بنفس `TreasuryWriter`: المدير فورًا وغيره طلب موافقة، والإلغاء بقيد عكسي. والبنك صندوق لا يحسبه رصيد الخزنة ولا تقاريرها (كلها تفلتر `Fund == Safe`)، فيبقى `SafeBalanceAsync` كما هو.
+
+```text
+القسط الشهري       = (تكلفة الشراء − القيمة التخريدية) ÷ العمر الإنتاجي بالأشهر، مقربًا لقرشين
+الأشهر المحملة حتى M = من شهر الشراء (يُحسب كاملًا) حتى M، بدون شهر الاستبعاد وما بعده، بحد أقصى العمر
+مجمع الإهلاك        = القسط × الأشهر المحملة (وكامل التكلفة − التخريدية عند انتهاء العمر: الشهر الأخير يأخذ فرق التقريب)
+القيمة الدفترية      = التكلفة − مجمع الإهلاك
+إهلاك الشهر M        = المجمع حتى نهاية M − المجمع حتى نهاية الشهر السابق
+ربح/خسارة الاستبعاد = قيمة البيع (صفر للاستبعاد) − القيمة الدفترية قبل شهر الاستبعاد
+```
+
+لماذا يُحسب كل شيء من الشهر لا من حالة الأصل الحالية؟ لأن بيع أصل في يناير يجب ألا يغيّر إهلاك ديسمبر المقفل: `DepreciationFor(month)` يقرأ تاريخ الأصل كله. والأصل `FixedAsset` لا يُحذف، يُعلَّم (`VoidedAtUtc`) مع إلغاء قيد شرائه. ولا مفتاح أجنبي من `SafeTransactions.FixedAssetId` للأصل: الأصل يشير لقيديه، والاثنان يُحفظان معًا، والمفتاح في الاتجاهين دائرة لا يحفظها EF.
+
+> 📄 **`backend/src/Costing.Domain/FixedAssets/FixedAsset.cs`** — 337 سطر
+
+```csharp
+using Costing.Domain.Common;
+using Costing.Domain.Treasury;
+
+namespace Costing.Domain.FixedAssets;
+
+// What kind of asset it is, as the register groups it.
+public enum FixedAssetCategory
+{
+    // Ovens, fryers, espresso machines, fridges (معدات المطبخ).
+    KitchenEquipment = 1,
+
+    // Tables, chairs, counters (الأثاث).
+    Furniture = 2,
+
+    Vehicles = 3,
+
+    // Computers, the POS terminals, printers, screens (أجهزة الحاسب ونقاط البيع).
+    ItAndPos = 4,
+
+    // The place's fit-out: decoration, flooring, ducts (تجهيزات وديكورات المكان).
+    FitOut = 5,
+
+    Other = 6,
+}
+
+// Where an asset stands. Active and FullyDepreciated are worked out from its age as of a month
+// (StatusAsOf); Disposed and Sold are what was done with it. Kept: Active, Disposed or Sold.
+public enum FixedAssetStatus
+{
+    Active = 1,
+
+    // Still in use, its whole cost less its salvage value depreciated: nothing more to charge.
+    FullyDepreciated = 2,
+
+    // Thrown away, scrapped or given away (استبعاد): what was left of its cost written off as a loss.
+    Disposed = 3,
+
+    // Sold (بيع): what it brought in, into the safe or the bank, set against what was left of its cost.
+    Sold = 4,
+}
+
+// A fixed asset (أصل ثابت): equipment, furniture, a vehicle, the POS, the place's fit-out. Capital
+// spending (CAPEX), not an expense: what it cost leaves the safe or the bank the day it is bought,
+// but the profit and loss takes it a month at a time over its useful life, straight-line:
+//
+//   Monthly depreciation     = (purchase cost − salvage value) ÷ useful life in months
+//   Accumulated depreciation = monthly depreciation × the months charged, at most the useful life
+//   Net book value           = purchase cost − accumulated depreciation
+//
+// A month is charged in full: the month it was bought is the first, the month it is disposed of or
+// sold is not charged. The last month of its life takes what the rounding left, so the depreciation
+// adds up to the cost less the salvage value exactly. Disposed of or sold, the net book value then
+// left is set against what it brought in: the gain or loss is the disposal month's.
+//
+// Paid (PaidFrom), it is bought by a safe entry (AssetPurchase, PurchaseTransactionId) out of the
+// safe or the bank; owned already when the register started, by none. Removed from the register,
+// it is only marked so (VoidedAtUtc), its payment voided with it.
+public sealed class FixedAsset : AggregateRoot
+{
+    public const int MaxNameLength = 120;
+    public const int MaxLocationLength = 80;
+    public const int MaxNotesLength = 500;
+    public const int MaxUsefulLifeMonths = 600;
+
+    private FixedAsset() { }
+
+    public FixedAsset(
+        Guid id, int number, string name, FixedAssetCategory category, string? location, string? notes, DateOnly purchaseDate, decimal purchaseCost,
+        decimal salvageValue, int usefulLifeMonths, CashFund? paidFrom, Guid? purchaseTransactionId, string by)
+    {
+        if (number <= 0)
+            throw new DomainException("An asset's number is 1 or more.");
+        if (paidFrom is not (null or CashFund.Safe or CashFund.Bank))
+            throw new DomainException("An asset is paid from the safe or the bank. · يدفع الأصل من الخزنة أو البنك.");
+        if ((paidFrom is null) != (purchaseTransactionId is null))
+            throw new DomainException("A paid asset names the entry that paid it.");
+        Id = id;
+        Number = number;
+        AssetCode = CodeOf(number);
+        PaidFrom = paidFrom;
+        PurchaseTransactionId = purchaseTransactionId;
+        CreatedAtUtc = DateTime.UtcNow;
+        CreatedBy = by;
+        SetCost(purchaseDate, purchaseCost);
+        Change(name, category, location, notes, salvageValue, usefulLifeMonths, by);
+        UpdatedAtUtc = null;
+        UpdatedBy = null;
+    }
+
+    // FA-0001, FA-0002: by the order they were entered.
+    public int Number { get; private set; }
+    public string AssetCode { get; private set; } = string.Empty;
+
+    public string Name { get; private set; } = string.Empty;
+    public FixedAssetCategory Category { get; private set; }
+
+    // Where it is: the kitchen, the bar, the dining room, a branch.
+    public string? Location { get; private set; }
+    public string? Notes { get; private set; }
+
+    public DateOnly PurchaseDate { get; private set; }
+
+    // What it cost to buy and put in place, all of it (تكلفة الشراء).
+    public decimal PurchaseCost { get; private set; }
+
+    // What it should still be worth at the end of its life (القيمة التخريدية): never depreciated.
+    public decimal SalvageValue { get; private set; }
+
+    // How many months it is expected to serve (العمر الإنتاجي): 60 for five years.
+    public int UsefulLifeMonths { get; private set; }
+
+    // Active, Disposed or Sold: what was done with it. As of a month, see StatusAsOf.
+    public FixedAssetStatus Status { get; private set; } = FixedAssetStatus.Active;
+
+    // Paid out of the safe or the bank, by that entry; neither for an asset owned already.
+    public CashFund? PaidFrom { get; private set; }
+    public Guid? PurchaseTransactionId { get; private set; }
+
+    // Disposed of or sold: when, what it brought in and where that went (the safe or the bank, by
+    // that entry), why, and who did it.
+    public DateOnly? DisposalDate { get; private set; }
+    public decimal? SaleProceeds { get; private set; }
+    public CashFund? SaleFund { get; private set; }
+    public Guid? SaleTransactionId { get; private set; }
+    public string? DisposalNotes { get; private set; }
+    public string? DisposedBy { get; private set; }
+
+    public DateTime CreatedAtUtc { get; private set; }
+    public string CreatedBy { get; private set; } = string.Empty;
+    public DateTime? UpdatedAtUtc { get; private set; }
+    public string? UpdatedBy { get; private set; }
+
+    // Off the register: entered by mistake, or its purchase voided.
+    public DateTime? VoidedAtUtc { get; private set; }
+    public string? VoidedBy { get; private set; }
+    public bool IsVoided => VoidedAtUtc is not null;
+
+    public bool IsOwnedAlready => PaidFrom is null;
+    public bool IsGone => Status is FixedAssetStatus.Disposed or FixedAssetStatus.Sold;
+
+    public static string CodeOf(int number) => $"FA-{number:0000}";
+
+    // ---- Depreciation ----
+
+    public decimal DepreciableAmount => PurchaseCost - SalvageValue;
+
+    // (purchase cost − salvage value) ÷ useful life, to the piastre.
+    public decimal MonthlyDepreciation => Round(DepreciableAmount / UsefulLifeMonths);
+
+    public DateOnly FirstMonth => MonthOf(PurchaseDate);
+
+    // The months charged up to and including `month` (any day of it): from the month it was bought,
+    // never the month it was disposed of or after, never more than its useful life.
+    public int MonthsChargedThrough(DateOnly month)
+    {
+        if (IsVoided)
+            return 0;
+        var through = MonthsBetween(FirstMonth, MonthOf(month)) + 1;
+        if (IsGone && DisposalDate is { } gone)
+            through = Math.Min(through, MonthsBetween(FirstMonth, MonthOf(gone)));
+        return Math.Clamp(through, 0, UsefulLifeMonths);
+    }
+
+    // Depreciated by the end of `month`: the months charged at the monthly rate, the whole
+    // depreciable amount once its life is through.
+    public decimal AccumulatedThrough(DateOnly month) => Accumulated(MonthsChargedThrough(month));
+
+    // What `month`'s profit and loss is charged for it.
+    public decimal DepreciationFor(DateOnly month) => AccumulatedThrough(month) - AccumulatedThrough(MonthOf(month).AddMonths(-1));
+
+    // Its cost less what is depreciated by the end of `month`.
+    public decimal NetBookValueThrough(DateOnly month) => PurchaseCost - AccumulatedThrough(month);
+
+    // Disposed of or sold: its cost less what was depreciated by then, and what it brought in less that.
+    public decimal? NetBookValueAtDisposal => IsGone ? PurchaseCost - Accumulated(MonthsChargedThrough(DisposalDate!.Value)) : null;
+    public decimal? GainOrLoss => NetBookValueAtDisposal is { } left ? (SaleProceeds ?? 0) - left : null;
+
+    // As it stood at the end of `month`: gone once it was disposed of or sold in or before it;
+    // fully depreciated once its life is charged; otherwise active.
+    public FixedAssetStatus StatusAsOf(DateOnly month)
+    {
+        if (IsGone && DisposalDate is { } gone && MonthOf(gone) <= MonthOf(month))
+            return Status;
+        return MonthsChargedThrough(month) >= UsefulLifeMonths ? FixedAssetStatus.FullyDepreciated : FixedAssetStatus.Active;
+    }
+
+    private decimal Accumulated(int months) =>
+        months >= UsefulLifeMonths ? DepreciableAmount : Math.Min(DepreciableAmount, MonthlyDepreciation * months);
+
+    // ---- Changes ----
+
+    // Its details and what its depreciation is worked out from. A change to the life or the salvage
+    // value restates every month's depreciation, past ones too: a correction.
+    public void Change(string name, FixedAssetCategory category, string? location, string? notes, decimal salvageValue, int usefulLifeMonths, string by)
+    {
+        EnsureOnRegister();
+        if (IsGone)
+            throw new DomainException("This asset is disposed of: undo that first to change it. · الأصل مستبعد.");
+        var trimmed = name?.Trim() ?? string.Empty;
+        if (trimmed.Length == 0)
+            throw new DomainException("Name the asset. · اكتب اسم الأصل.");
+        if (trimmed.Length > MaxNameLength)
+            throw new DomainException($"Keep the name under {MaxNameLength} characters.");
+        if (!Enum.IsDefined(category))
+            throw new DomainException("Choose the asset's category. · اختر فئة الأصل.");
+        if (location?.Trim().Length > MaxLocationLength)
+            throw new DomainException($"Keep the location under {MaxLocationLength} characters.");
+        if (notes?.Trim().Length > MaxNotesLength)
+            throw new DomainException($"Keep the notes under {MaxNotesLength} characters.");
+        if (usefulLifeMonths is < 1 or > MaxUsefulLifeMonths)
+            throw new DomainException($"The useful life is 1 to {MaxUsefulLifeMonths} months. · العمر الإنتاجي من 1 إلى {MaxUsefulLifeMonths} شهرًا.");
+        var salvage = Round(salvageValue);
+        if (salvage < 0)
+            throw new DomainException("The salvage value is zero or more. · القيمة التخريدية صفر أو أكثر.");
+        if (salvage >= PurchaseCost)
+            throw new DomainException("The salvage value is less than what the asset cost. · القيمة التخريدية أقل من التكلفة.");
+
+        Name = trimmed;
+        Category = category;
+        Location = string.IsNullOrWhiteSpace(location) ? null : location.Trim();
+        Notes = string.IsNullOrWhiteSpace(notes) ? null : notes.Trim();
+        SalvageValue = salvage;
+        UsefulLifeMonths = usefulLifeMonths;
+        UpdatedAtUtc = DateTime.UtcNow;
+        UpdatedBy = by;
+    }
+
+    // An asset owned already: when it was bought and what it cost, corrected, with the salvage value
+    // it is to keep. A paid one's are its payment's: void the purchase and enter it again.
+    public void Recost(DateOnly purchaseDate, decimal purchaseCost, decimal salvageValue, string by)
+    {
+        EnsureOnRegister();
+        if (!IsOwnedAlready)
+            throw new DomainException("What a paid asset cost is its payment's: void the purchase and enter it again. · ألغِ الشراء وأدخله من جديد.");
+        if (IsGone)
+            throw new DomainException("This asset is disposed of: undo that first to change it. · الأصل مستبعد.");
+        if (Round(salvageValue) >= Round(purchaseCost))
+            throw new DomainException("The salvage value is less than what the asset cost. · القيمة التخريدية أقل من التكلفة.");
+        SetCost(purchaseDate, purchaseCost);
+        SalvageValue = Math.Max(Round(salvageValue), 0);
+        UpdatedAtUtc = DateTime.UtcNow;
+        UpdatedBy = by;
+    }
+
+    // Disposed of with nothing for it (استبعاد): what was left of its cost is the month's loss.
+    public void WriteOff(DateOnly date, string? notes, string by) => Dispose(date, null, null, null, notes, by);
+
+    // Sold (بيع): what it brought in went into the safe or the bank by that entry.
+    public void Sell(DateOnly date, decimal proceeds, CashFund fund, Guid saleTransactionId, string? notes, string by)
+    {
+        if (proceeds <= 0)
+            throw new DomainException("Enter what the asset was sold for, more than nothing. · أدخل قيمة البيع.");
+        if (fund is not (CashFund.Safe or CashFund.Bank))
+            throw new DomainException("A sale is paid into the safe or the bank. · تورد قيمة البيع للخزنة أو البنك.");
+        Dispose(date, Round(proceeds), fund, saleTransactionId, notes, by);
+    }
+
+    // Back in use: a write-off undone, or a sale whose entry was voided. Depreciated again from where it stopped.
+    public void Reinstate(string by)
+    {
+        EnsureOnRegister();
+        if (!IsGone)
+            throw new DomainException("This asset is in use already.");
+        Status = FixedAssetStatus.Active;
+        DisposalDate = null;
+        SaleProceeds = null;
+        SaleFund = null;
+        SaleTransactionId = null;
+        DisposalNotes = null;
+        DisposedBy = null;
+        UpdatedAtUtc = DateTime.UtcNow;
+        UpdatedBy = by;
+    }
+
+    // Off the register. A sold or disposed one is brought back first: its sale undone.
+    public void Void(string by)
+    {
+        EnsureOnRegister();
+        if (Status == FixedAssetStatus.Sold)
+            throw new DomainException("This asset is sold: void its sale first. · ألغِ بيع الأصل أولًا.");
+        VoidedAtUtc = DateTime.UtcNow;
+        VoidedBy = by;
+    }
+
+    private void Dispose(DateOnly date, decimal? proceeds, CashFund? fund, Guid? saleTransactionId, string? notes, string by)
+    {
+        EnsureOnRegister();
+        if (IsGone)
+            throw new DomainException("This asset is disposed of already. · الأصل مستبعد بالفعل.");
+        if (date < PurchaseDate)
+            throw new DomainException("An asset is disposed of on the day it was bought or after. · تاريخ الاستبعاد بعد تاريخ الشراء.");
+        if (notes?.Trim().Length > MaxNotesLength)
+            throw new DomainException($"Keep the notes under {MaxNotesLength} characters.");
+        Status = proceeds is null ? FixedAssetStatus.Disposed : FixedAssetStatus.Sold;
+        DisposalDate = date;
+        SaleProceeds = proceeds;
+        SaleFund = fund;
+        SaleTransactionId = saleTransactionId;
+        DisposalNotes = string.IsNullOrWhiteSpace(notes) ? null : notes.Trim();
+        DisposedBy = by;
+        UpdatedAtUtc = DateTime.UtcNow;
+        UpdatedBy = by;
+    }
+
+    private void SetCost(DateOnly purchaseDate, decimal purchaseCost)
+    {
+        var cost = Round(purchaseCost);
+        if (cost <= 0)
+            throw new DomainException("Enter what the asset cost, more than nothing. · أدخل تكلفة الأصل.");
+        PurchaseDate = purchaseDate;
+        PurchaseCost = cost;
+    }
+
+    private void EnsureOnRegister()
+    {
+        if (IsVoided)
+            throw new DomainException("This asset is off the register. · الأصل محذوف من السجل.");
+    }
+
+    public static DateOnly MonthOf(DateOnly day) => new(day.Year, day.Month, 1);
+
+    private static int MonthsBetween(DateOnly from, DateOnly to) => (to.Year - from.Year) * 12 + to.Month - from.Month;
+
+    private static decimal Round(decimal amount) => Math.Round(amount, 2, MidpointRounding.AwayFromZero);
+}
+
+public interface IFixedAssetRepository : IRepository<FixedAsset>
+{
+    // Every asset on the register, voided ones left out.
+    Task<IReadOnlyList<FixedAsset>> GetAllAsync(CancellationToken cancellationToken = default);
+
+    // The asset a safe entry bought or sold, if any.
+    Task<FixedAsset?> GetByTransactionAsync(Guid transactionId, CancellationToken cancellationToken = default);
+
+    // The next asset's number: one more than the highest so far, voided ones counted.
+    Task<int> NextNumberAsync(CancellationToken cancellationToken = default);
+}
+```
+
+
+ما لا يحرك نقدًا للمدير وحده: أصل قائم قبل السجل، تعديل البيانات (تكلفة وتاريخ الأصل المدفوع لقيد شرائه)، الاستبعاد بلا مقابل والتراجع عنه، وحذف الأصل القائم.
+
+> 📄 **`backend/src/Costing.Application/FixedAssets/FixedAssets.cs`** — 140 سطر
+
+```csharp
+using MediatR;
+using Costing.Application.Common;
+using Costing.Application.Treasury;
+using Costing.Domain.Common;
+using Costing.Domain.FixedAssets;
+
+namespace Costing.Application.FixedAssets;
+
+// The fixed assets register (سجل الأصول الثابتة): what moves no cash, a manager's. An asset bought,
+// or sold for money, is a safe entry (SafeVoucher, AssetPurchase and AssetSale) and goes through
+// the treasury: entered at once for a manager, asked of one for anyone else, voided as any entry is.
+// Here: an asset owned already when the register started, its details changed, one disposed of with
+// nothing for it, that undone, and one owned already taken off the register.
+
+public sealed record FixedAssetSaved(Guid Id, string AssetCode);
+
+// Owned already: on the register at what it cost and when, paid before it and through no entry here.
+// AssetId is made by the till: a retry finds the asset made.
+public sealed record RegisterOwnedAssetCommand(Guid AssetId, FixedAssetInput Asset, DateOnly PurchaseDate, decimal PurchaseCost, string By)
+    : IRequest<FixedAssetSaved>, IRetryOnConflict;
+
+// What it is and what its depreciation is worked out from; for one owned already, its cost and the
+// day it was bought too (a paid one's are its payment's).
+public sealed record ChangeFixedAssetCommand(Guid AssetId, FixedAssetInput Asset, DateOnly? PurchaseDate, decimal? PurchaseCost, string By)
+    : IRequest<FixedAssetSaved>, IRetryOnConflict;
+
+// Disposed of with nothing for it (استبعاد): its depreciation stops, what was left of its cost is the
+// month's loss. Sold for money is a safe entry instead.
+public sealed record WriteOffFixedAssetCommand(Guid AssetId, DateOnly Date, string? Notes, string By) : IRequest<FixedAssetSaved>, IRetryOnConflict;
+
+// A write-off undone: in use again, depreciated from where it stopped.
+public sealed record ReinstateFixedAssetCommand(Guid AssetId, string By) : IRequest<FixedAssetSaved>, IRetryOnConflict;
+
+// One owned already, off the register (entered by mistake). A paid one goes with its purchase voided.
+public sealed record RemoveFixedAssetCommand(Guid AssetId, string By) : IRequest, IRetryOnConflict;
+
+internal sealed class RegisterOwnedAssetHandler(IFixedAssetRepository assets, TreasuryWriter treasury, IUnitOfWork unitOfWork)
+    : IRequestHandler<RegisterOwnedAssetCommand, FixedAssetSaved>
+{
+    public async Task<FixedAssetSaved> Handle(RegisterOwnedAssetCommand request, CancellationToken cancellationToken)
+    {
+        if (await assets.GetByIdAsync(request.AssetId, cancellationToken) is { } made)
+            return new FixedAssetSaved(made.Id, made.AssetCode);
+        if (request.PurchaseDate > treasury.Latest)
+            throw new DomainException("An asset owned already was bought today or before. · تاريخ الشراء اليوم أو قبله.");
+        var a = request.Asset ?? throw new DomainException("Say what the asset is. · أدخل بيانات الأصل.");
+        var asset = new FixedAsset(
+            request.AssetId, await assets.NextNumberAsync(cancellationToken), a.Name, a.Category, a.Location, a.Notes, request.PurchaseDate,
+            request.PurchaseCost, a.SalvageValue, a.UsefulLifeMonths, null, null, request.By);
+        assets.Add(asset);
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+        return new FixedAssetSaved(asset.Id, asset.AssetCode);
+    }
+}
+
+internal sealed class ChangeFixedAssetHandler(IFixedAssetRepository assets, TreasuryWriter treasury, IUnitOfWork unitOfWork)
+    : IRequestHandler<ChangeFixedAssetCommand, FixedAssetSaved>
+{
+    public async Task<FixedAssetSaved> Handle(ChangeFixedAssetCommand request, CancellationToken cancellationToken)
+    {
+        var asset = await FixedAssetRules.GetAsync(assets, request.AssetId, cancellationToken);
+        var a = request.Asset ?? throw new DomainException("Say what the asset is. · أدخل بيانات الأصل.");
+        var (date, cost) = (request.PurchaseDate ?? asset.PurchaseDate, request.PurchaseCost ?? asset.PurchaseCost);
+        if (date != asset.PurchaseDate || cost != asset.PurchaseCost)
+        {
+            if (date > treasury.Latest)
+                throw new DomainException("An asset owned already was bought today or before. · تاريخ الشراء اليوم أو قبله.");
+            asset.Recost(date, cost, a.SalvageValue, request.By);
+        }
+        asset.Change(a.Name, a.Category, a.Location, a.Notes, a.SalvageValue, a.UsefulLifeMonths, request.By);
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+        return new FixedAssetSaved(asset.Id, asset.AssetCode);
+    }
+}
+
+internal sealed class WriteOffFixedAssetHandler(IFixedAssetRepository assets, TreasuryWriter treasury, IUnitOfWork unitOfWork)
+    : IRequestHandler<WriteOffFixedAssetCommand, FixedAssetSaved>
+{
+    public async Task<FixedAssetSaved> Handle(WriteOffFixedAssetCommand request, CancellationToken cancellationToken)
+    {
+        var asset = await FixedAssetRules.GetAsync(assets, request.AssetId, cancellationToken);
+        // Retried after it was saved: done already.
+        if (asset.Status == FixedAssetStatus.Disposed && asset.DisposalDate == request.Date)
+            return new FixedAssetSaved(asset.Id, asset.AssetCode);
+        if (request.Date > treasury.Latest)
+            throw new DomainException("An asset is disposed of today or before. · تاريخ الاستبعاد اليوم أو قبله.");
+        asset.WriteOff(request.Date, request.Notes, request.By);
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+        return new FixedAssetSaved(asset.Id, asset.AssetCode);
+    }
+}
+
+internal sealed class ReinstateFixedAssetHandler(IFixedAssetRepository assets, IUnitOfWork unitOfWork)
+    : IRequestHandler<ReinstateFixedAssetCommand, FixedAssetSaved>
+{
+    public async Task<FixedAssetSaved> Handle(ReinstateFixedAssetCommand request, CancellationToken cancellationToken)
+    {
+        var asset = await FixedAssetRules.GetAsync(assets, request.AssetId, cancellationToken);
+        if (asset.Status == FixedAssetStatus.Sold)
+            throw new DomainException("A sale is undone by voiding its entry: what it brought in goes back out. · ألغِ قيد البيع.");
+        if (asset.IsGone)
+        {
+            asset.Reinstate(request.By);
+            await unitOfWork.SaveChangesAsync(cancellationToken);
+        }
+        return new FixedAssetSaved(asset.Id, asset.AssetCode);
+    }
+}
+
+internal sealed class RemoveFixedAssetHandler(IFixedAssetRepository assets, IUnitOfWork unitOfWork) : IRequestHandler<RemoveFixedAssetCommand>
+{
+    public async Task Handle(RemoveFixedAssetCommand request, CancellationToken cancellationToken)
+    {
+        var asset = await assets.GetByIdAsync(request.AssetId, cancellationToken) ?? throw new NotFoundException("Fixed asset", request.AssetId);
+        if (asset.IsVoided)
+            return;
+        if (!asset.IsOwnedAlready)
+            throw new DomainException("A paid asset leaves the register with its purchase voided: what it cost goes back. · ألغِ قيد الشراء.");
+        asset.Void(request.By);
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+    }
+}
+
+internal static class FixedAssetRules
+{
+    public static async Task<FixedAsset> GetAsync(IFixedAssetRepository assets, Guid id, CancellationToken cancellationToken)
+    {
+        var asset = await assets.GetByIdAsync(id, cancellationToken) ?? throw new NotFoundException("Fixed asset", id);
+        return asset.IsVoided ? throw new DomainException("This asset is off the register. · الأصل محذوف من السجل.") : asset;
+    }
+}
+
+// Where a fixed asset bought was paid from: the safe or the bank (a safe entry), or not through the
+// treasury at all, owned already when the register started.
+public enum AssetPaymentSource
+{
+    Safe = 1,
+    Bank = 2,
+    OwnedAlready = 3,
+}
+```
+
+
+> 📄 **`backend/src/Costing.Infrastructure/Persistence/FixedAssetPersistence.cs`** — 68 سطر
+
+```csharp
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata.Builders;
+using Costing.Domain.FixedAssets;
+using Costing.Domain.Treasury;
+using Costing.Infrastructure.Persistence.Configurations;
+
+namespace Costing.Infrastructure.Persistence;
+
+// The fixed assets register: one row per asset, the safe entries that bought and sold it beside it.
+internal sealed class FixedAssetConfiguration : IEntityTypeConfiguration<FixedAsset>
+{
+    public void Configure(EntityTypeBuilder<FixedAsset> builder)
+    {
+        builder.ToTable("FixedAssets", CostingDbContext.CostingSchema);
+        builder.Property(a => a.AssetCode).HasMaxLength(16);
+        builder.Property(a => a.Name).HasMaxLength(FixedAsset.MaxNameLength);
+        builder.Property(a => a.Category).IsEnumName();
+        builder.Property(a => a.Status).IsEnumName();
+        builder.Property(a => a.PaidFrom).IsEnumName();
+        builder.Property(a => a.SaleFund).IsEnumName();
+        builder.Property(a => a.Location).HasMaxLength(FixedAsset.MaxLocationLength);
+        builder.Property(a => a.Notes).HasMaxLength(FixedAsset.MaxNotesLength);
+        builder.Property(a => a.DisposalNotes).HasMaxLength(FixedAsset.MaxNotesLength);
+        builder.Property(a => a.PurchaseCost).HasPrecision(18, 2);
+        builder.Property(a => a.SalvageValue).HasPrecision(18, 2);
+        builder.Property(a => a.SaleProceeds).HasPrecision(18, 2);
+        builder.Property(a => a.CreatedBy).HasMaxLength(200);
+        builder.Property(a => a.UpdatedBy).HasMaxLength(200);
+        builder.Property(a => a.DisposedBy).HasMaxLength(200);
+        builder.Property(a => a.VoidedBy).HasMaxLength(200);
+        builder.Ignore(a => a.IsVoided);
+        builder.Ignore(a => a.IsOwnedAlready);
+        builder.Ignore(a => a.IsGone);
+        builder.Ignore(a => a.DepreciableAmount);
+        builder.Ignore(a => a.MonthlyDepreciation);
+        builder.Ignore(a => a.FirstMonth);
+        builder.Ignore(a => a.NetBookValueAtDisposal);
+        builder.Ignore(a => a.GainOrLoss);
+        builder.HasIndex(a => a.Number).IsUnique();
+        builder.HasIndex(a => a.AssetCode).IsUnique();
+        builder.HasOne<SafeTransaction>().WithMany().HasForeignKey(a => a.PurchaseTransactionId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne<SafeTransaction>().WithMany().HasForeignKey(a => a.SaleTransactionId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasIndex(a => a.PurchaseTransactionId);
+        builder.HasIndex(a => a.SaleTransactionId);
+    }
+}
+
+internal sealed class FixedAssetRepository(CostingDbContext db) : IFixedAssetRepository
+{
+    public Task<FixedAsset?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default) =>
+        db.FixedAssets.SingleOrDefaultAsync(a => a.Id == id, cancellationToken);
+
+    public void Add(FixedAsset aggregate) => db.FixedAssets.Add(aggregate);
+
+    public async Task<IReadOnlyList<FixedAsset>> GetAllAsync(CancellationToken cancellationToken = default) =>
+        await db.FixedAssets.Where(a => a.VoidedAtUtc == null).OrderBy(a => a.Number).ToListAsync(cancellationToken);
+
+    public Task<FixedAsset?> GetByTransactionAsync(Guid transactionId, CancellationToken cancellationToken = default) =>
+        db.FixedAssets.SingleOrDefaultAsync(a => a.PurchaseTransactionId == transactionId || a.SaleTransactionId == transactionId, cancellationToken);
+
+    // Added in this unit of work and not saved yet counted too.
+    public async Task<int> NextNumberAsync(CancellationToken cancellationToken = default)
+    {
+        var saved = await db.FixedAssets.MaxAsync(a => (int?)a.Number, cancellationToken) ?? 0;
+        var pending = db.ChangeTracker.Entries<FixedAsset>().Where(e => e.State == EntityState.Added).Select(e => e.Entity.Number).DefaultIfEmpty(0).Max();
+        return Math.Max(saved, pending) + 1;
+    }
+}
+```
+
+
+`FixedAssetService`: السجل في نهاية أي شهر (الكروت لما كان قائمًا وقتها، والإنفاق الرأسمالي للشهر بمصدره) و `MonthAsync` الذي تقرأه قائمة الدخل ونقطة التعادل والتكلفة الكلية للطبق.
+
+> 📄 **`backend/src/Costing.Infrastructure/Reports/FixedAssetService.cs`** — 158 سطر
+
+```csharp
+using Microsoft.EntityFrameworkCore;
+using Costing.Application.Common;
+using Costing.Domain.Common;
+using Costing.Domain.FixedAssets;
+using Costing.Domain.Treasury;
+using Costing.Infrastructure.Persistence;
+using static Costing.Infrastructure.Reports.CostingService;
+
+namespace Costing.Infrastructure.Reports;
+
+// One asset on the register as it stood at the end of a month (FixedAssetRegister.AsOf): what it
+// cost, its straight-line depreciation (FixedAsset), what is charged of it so far and in the month,
+// and what is left of its cost; how it was paid; and, disposed of or sold, when, for what, and the
+// gain or loss on it.
+public sealed record FixedAssetRow(
+    Guid Id,
+    string AssetCode,
+    string Name,
+    FixedAssetCategory Category,
+    string? Location,
+    string? Notes,
+    DateOnly PurchaseDate,
+    decimal PurchaseCost,
+    decimal SalvageValue,
+    int UsefulLifeMonths,
+    decimal MonthlyDepreciation,
+    int MonthsCharged,
+    int MonthsLeft,
+    decimal AccumulatedDepreciation,
+    decimal NetBookValue,
+    decimal DepreciationThisMonth,
+    // The last month its life is charged in.
+    DateOnly LastMonth,
+    FixedAssetStatus Status,
+    // Null: owned already when the register started, paid through no entry here.
+    CashFund? PaidFrom,
+    Guid? PurchaseTransactionId,
+    DateOnly? DisposalDate,
+    decimal? SaleProceeds,
+    CashFund? SaleFund,
+    Guid? SaleTransactionId,
+    decimal? NetBookValueAtDisposal,
+    decimal? GainOrLoss,
+    string? DisposalNotes,
+    string CreatedBy,
+    DateTime CreatedAtUtc);
+
+// What the register holds of one category at the end of the month.
+public sealed record FixedAssetCategoryTotal(
+    FixedAssetCategory Category, int Count, decimal Cost, decimal AccumulatedDepreciation, decimal NetBookValue, decimal DepreciationThisMonth);
+
+// The fixed assets register (سجل الأصول الثابتة) at the end of a month. The cards count what was
+// still held then (bought by then, not disposed of or sold by then):
+//
+//   Total assets cost        = Σ purchase cost
+//   Accumulated depreciation = Σ depreciation charged up to and including the month
+//   Net book value           = total assets cost − accumulated depreciation
+//
+// Depreciation this month is what the month's profit and loss is charged, every asset's share
+// (FixedAsset.DepreciationFor): its monthly run rate. Below the operating profit with the disposals'
+// gains and losses (DisposalGainOrLoss: what the assets disposed of or sold in the month brought
+// in, less what was left of their cost then).
+//
+// The month's investing cash (CAPEX): what was paid for the assets bought in it, out of the safe and
+// the bank, and what the assets sold in it brought in. Never in the profit and loss.
+public sealed record FixedAssetRegister(
+    int Year,
+    int Month,
+    DateOnly AsOf,
+    decimal TotalCost,
+    decimal AccumulatedDepreciation,
+    decimal NetBookValue,
+    decimal DepreciationThisMonth,
+    int ActiveCount,
+    int FullyDepreciatedCount,
+    int DisposedCount,
+    decimal BoughtFromSafe,
+    decimal BoughtFromBank,
+    decimal OwnedAlreadyAdded,
+    decimal SaleProceeds,
+    decimal DisposalGainOrLoss,
+    IReadOnlyList<FixedAssetCategoryTotal> Categories,
+    IReadOnlyList<FixedAssetRow> Assets,
+    IReadOnlyList<string> Locations);
+
+// One month's fixed assets on the profit and loss: their depreciation, and the gains and losses on
+// what was disposed of or sold in it.
+public sealed record AssetMonth(decimal Depreciation, decimal DisposalGainOrLoss, int Assets);
+
+// The fixed assets register and what it puts on the profit and loss.
+public sealed class FixedAssetService(CostingDbContext db, IBusinessCalendar clock)
+{
+    public async Task<FixedAssetRegister> GetRegisterAsync(int? year, int? month, CancellationToken cancellationToken)
+    {
+        var today = clock.BusinessDateOf(DateTime.UtcNow);
+        var first = year is { } y && month is { } m
+            ? (m is >= 1 and <= 12 && y is >= 2000 and <= 2100 ? new DateOnly(y, m, 1) : throw new DomainException("Choose a month."))
+            : FixedAsset.MonthOf(today);
+        var last = first.AddMonths(1).AddDays(-1);
+
+        var assets = await db.FixedAssets.AsNoTracking().Where(a => a.VoidedAtUtc == null && a.PurchaseDate <= last)
+            .OrderBy(a => a.Number).ToListAsync(cancellationToken);
+        var rows = assets.Select(a => Row(a, first)).ToList();
+        var held = rows.Where(r => r.Status is FixedAssetStatus.Active or FixedAssetStatus.FullyDepreciated).ToList();
+        var boughtIn = assets.Where(a => a.PurchaseDate >= first).ToList();
+        var goneIn = assets.Where(a => a is { IsGone: true, DisposalDate: { } d } && d >= first && d <= last).ToList();
+
+        var categories = held.GroupBy(r => r.Category).OrderBy(g => g.Key)
+            .Select(g => new FixedAssetCategoryTotal(
+                g.Key, g.Count(), Money(g.Sum(r => r.PurchaseCost)), Money(g.Sum(r => r.AccumulatedDepreciation)), Money(g.Sum(r => r.NetBookValue)),
+                Money(g.Sum(r => r.DepreciationThisMonth))))
+            .ToList();
+        var locations = await db.FixedAssets.AsNoTracking().Where(a => a.Location != null && a.VoidedAtUtc == null)
+            .Select(a => a.Location!).Distinct().OrderBy(l => l).ToListAsync(cancellationToken);
+
+        return new FixedAssetRegister(
+            first.Year, first.Month, last,
+            Money(held.Sum(r => r.PurchaseCost)), Money(held.Sum(r => r.AccumulatedDepreciation)), Money(held.Sum(r => r.NetBookValue)),
+            Money(rows.Sum(r => r.DepreciationThisMonth)),
+            held.Count(r => r.Status == FixedAssetStatus.Active), held.Count(r => r.Status == FixedAssetStatus.FullyDepreciated),
+            rows.Count(r => r.Status is FixedAssetStatus.Disposed or FixedAssetStatus.Sold),
+            Money(boughtIn.Where(a => a.PaidFrom == CashFund.Safe).Sum(a => a.PurchaseCost)),
+            Money(boughtIn.Where(a => a.PaidFrom == CashFund.Bank).Sum(a => a.PurchaseCost)),
+            Money(boughtIn.Where(a => a.PaidFrom == null).Sum(a => a.PurchaseCost)),
+            Money(goneIn.Sum(a => a.SaleProceeds ?? 0)),
+            Money(goneIn.Sum(a => a.GainOrLoss ?? 0)),
+            categories, rows, locations);
+    }
+
+    // A month's depreciation and disposal gains and losses, for its profit and loss.
+    public async Task<AssetMonth> MonthAsync(DateOnly anyDay, CancellationToken cancellationToken)
+    {
+        var first = FixedAsset.MonthOf(anyDay);
+        var last = first.AddMonths(1).AddDays(-1);
+        var assets = await db.FixedAssets.AsNoTracking().Where(a => a.VoidedAtUtc == null && a.PurchaseDate <= last).ToListAsync(cancellationToken);
+        return new AssetMonth(
+            Money(assets.Sum(a => a.DepreciationFor(first))),
+            Money(assets.Where(a => a is { IsGone: true, DisposalDate: { } d } && d >= first && d <= last).Sum(a => a.GainOrLoss ?? 0)),
+            assets.Count);
+    }
+
+    // An asset's code, once it is on the register.
+    public async Task<string?> CodeOfAsync(Guid id, CancellationToken cancellationToken) =>
+        await db.FixedAssets.AsNoTracking().Where(a => a.Id == id).Select(a => a.AssetCode).SingleOrDefaultAsync(cancellationToken);
+
+    private static FixedAssetRow Row(FixedAsset a, DateOnly month)
+    {
+        var charged = a.MonthsChargedThrough(month);
+        var status = a.StatusAsOf(month);
+        var gone = status is FixedAssetStatus.Disposed or FixedAssetStatus.Sold;
+        return new FixedAssetRow(
+            a.Id, a.AssetCode, a.Name, a.Category, a.Location, a.Notes, a.PurchaseDate, a.PurchaseCost, a.SalvageValue, a.UsefulLifeMonths,
+            a.MonthlyDepreciation, charged, gone ? 0 : a.UsefulLifeMonths - charged, Money(a.AccumulatedThrough(month)), Money(a.NetBookValueThrough(month)),
+            Money(a.DepreciationFor(month)), a.FirstMonth.AddMonths(a.UsefulLifeMonths - 1), status, a.PaidFrom, a.PurchaseTransactionId,
+            gone ? a.DisposalDate : null, gone ? a.SaleProceeds : null, gone ? a.SaleFund : null, gone ? a.SaleTransactionId : null,
+            gone ? Money(a.NetBookValueAtDisposal) : null, gone ? Money(a.GainOrLoss) : null, gone ? a.DisposalNotes : null, a.CreatedBy, a.CreatedAtUtc);
+    }
+}
+```
+
+
+> 📄 **`backend/src/Costing.Infrastructure/Excel/FixedAssetWorkbook.cs`** — 74 سطر
+
+```csharp
+using Costing.Domain.FixedAssets;
+using Costing.Domain.Treasury;
+using Costing.Infrastructure.Reports;
+
+namespace Costing.Infrastructure.Excel;
+
+// The fixed assets register as a workbook (سجل الأصول الثابتة): every asset as the screen shows it at
+// the end of the month, held ones totalled, then what each category holds.
+public static class FixedAssetWorkbook
+{
+    public static string FileName(FixedAssetRegister register) => $"fixed-assets-{register.Year:0000}-{register.Month:00}.xlsx";
+
+    public static Stream Build(FixedAssetRegister register)
+    {
+        var asOf = $"At {register.AsOf:d MMM yyyy} · straight-line: (cost − salvage value) ÷ useful life, a month at a time from the month bought";
+        var held = register.Assets.Where(a => a.Status is FixedAssetStatus.Active or FixedAssetStatus.FullyDepreciated).ToList();
+        var assets = new ReportSheet(
+            "Register", "Fixed assets register · سجل الأصول الثابتة", asOf,
+            [
+                new("Asset code · كود الأصل"), new("Name · الاسم"), new("Category · الفئة"), new("Location · الموقع"),
+                new("Purchase date · تاريخ الشراء", ReportWorkbook.Date), new("Cost · التكلفة", ReportWorkbook.Money),
+                new("Salvage value · القيمة التخريدية", ReportWorkbook.Money), new("Useful life (months) · العمر الإنتاجي"),
+                new("Monthly depr. · القسط الشهري", ReportWorkbook.Money), new("Months charged · الأشهر المحملة"),
+                new("Depr. this month · إهلاك الشهر", ReportWorkbook.Money), new("Accumulated depr. · مجمع الإهلاك", ReportWorkbook.Money),
+                new("Net book value · القيمة الدفترية", ReportWorkbook.Money), new("Status · الحالة"), new("Paid from · مصدر الدفع"),
+                new("Disposed on · تاريخ الاستبعاد", ReportWorkbook.Date), new("Sold for · قيمة البيع", ReportWorkbook.Money),
+                new("Gain / (loss) · ربح / (خسارة)", ReportWorkbook.Money),
+            ],
+            [
+                .. register.Assets.Select(a => new ReportRow(
+                    [a.AssetCode, a.Name, CategoryName(a.Category), a.Location, a.PurchaseDate, a.PurchaseCost, a.SalvageValue, a.UsefulLifeMonths,
+                     a.MonthlyDepreciation, a.MonthsCharged, a.DepreciationThisMonth, a.AccumulatedDepreciation, a.NetBookValue, StatusName(a.Status),
+                     PaidFromName(a.PaidFrom), a.DisposalDate, a.SaleProceeds, a.GainOrLoss],
+                    Flagged: a.GainOrLoss < 0)),
+                new ReportRow(
+                    ["", "Held · الأصول القائمة", null, null, null, held.Sum(a => a.PurchaseCost), null, null, null, null,
+                     register.DepreciationThisMonth, register.AccumulatedDepreciation, register.NetBookValue],
+                    ReportRowKind.Total),
+            ]);
+        var categories = new ReportSheet(
+            "By category", "What each category holds · الأصول حسب الفئة", asOf,
+            [
+                new("Category · الفئة"), new("Assets · العدد"), new("Cost · التكلفة", ReportWorkbook.Money),
+                new("Accumulated depr. · مجمع الإهلاك", ReportWorkbook.Money), new("Net book value · القيمة الدفترية", ReportWorkbook.Money),
+                new("Depr. this month · إهلاك الشهر", ReportWorkbook.Money),
+            ],
+            [
+                .. register.Categories.Select(c => new ReportRow(
+                    [CategoryName(c.Category), c.Count, c.Cost, c.AccumulatedDepreciation, c.NetBookValue, c.DepreciationThisMonth])),
+                new ReportRow(
+                    ["Total · الإجمالي", register.Categories.Sum(c => c.Count), register.TotalCost, register.AccumulatedDepreciation, register.NetBookValue,
+                     register.Categories.Sum(c => c.DepreciationThisMonth)],
+                    ReportRowKind.Total),
+            ]);
+        return ReportWorkbook.Build([assets, categories]);
+    }
+
+    private static string CategoryName(FixedAssetCategory category) => Costing.Application.Treasury.TreasuryNames.Category(category);
+
+    private static string StatusName(FixedAssetStatus status) => status switch
+    {
+        FixedAssetStatus.Active => "Active · نشط",
+        FixedAssetStatus.FullyDepreciated => "Fully depreciated · مهلك بالكامل",
+        FixedAssetStatus.Disposed => "Disposed · مستبعد",
+        _ => "Sold · مباع",
+    };
+
+    private static string PaidFromName(CashFund? fund) => fund switch
+    {
+        CashFund.Safe => "Safe · الخزنة",
+        CashFund.Bank => "Bank · البنك",
+        _ => "Owned already · أصل قائم",
+    };
+}
+```
+
+
+`FixedAssetsController` (`api/financials/fixed-assets`): الشراء والبيع يتحولان إلى `SafeVoucher` ويرسلان `RecordSafeVoucherCommand` (200 أو 202)، والباقي أوامر مباشرة.
+
+> 📄 **`backend/src/Costing.Api/Controllers/FixedAssetsController.cs`** — 156 سطر
+
+```csharp
+using MediatR;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using Costing.Api.Auth;
+using Costing.Application.Approvals;
+using Costing.Application.FixedAssets;
+using Costing.Application.Treasury;
+using Costing.Domain.Access;
+using Costing.Domain.FixedAssets;
+using Costing.Domain.Treasury;
+using Costing.Infrastructure.Excel;
+using Costing.Infrastructure.Reports;
+
+namespace Costing.Api.Controllers;
+
+// The fixed assets register (سجل الأصول الثابتة) on Financials. Buying an asset (CAPEX) out of the
+// safe or the bank, or selling one for money, is a safe entry: entered at once for a manager (200),
+// asked of one for anyone else (202), voided as any entry is (a deletion request, module Treasury,
+// on its entry). What moves no cash is a manager's: an asset owned already, its details changed, a
+// write-off, that undone, one owned already taken off.
+[ApiController]
+[Route("api/financials/fixed-assets")]
+[Authorize(Policy = Permissions.InventoryManage)]
+[CostingTab(CostingTabs.Financials)]
+public sealed class FixedAssetsController(ISender sender, FixedAssetService assets) : ControllerBase
+{
+    private const string ManagersOnly =
+        "This moves no cash but changes the profit and loss: it is a manager's. · هذا الإجراء للمدير.";
+
+    // The register at the end of a month (this one when none is chosen).
+    [HttpGet]
+    public Task<FixedAssetRegister> GetRegister([FromQuery] int? year, [FromQuery] int? month, CancellationToken cancellationToken) =>
+        assets.GetRegisterAsync(year, month, cancellationToken);
+
+    [HttpGet("export")]
+    public async Task<IActionResult> Export([FromQuery] int? year, [FromQuery] int? month, CancellationToken cancellationToken)
+    {
+        var register = await assets.GetRegisterAsync(year, month, cancellationToken);
+        return File(FixedAssetWorkbook.Build(register), ReportWorkbook.ContentType, FixedAssetWorkbook.FileName(register));
+    }
+
+    // An asset bought (شراء أصل ثابت): out of the safe or the bank on the day, or owned already.
+    [HttpPost]
+    public async Task<IActionResult> Acquire(AcquireFixedAssetRequest request, CancellationToken cancellationToken)
+    {
+        var input = new FixedAssetInput(request.Name, request.Category, request.UsefulLifeMonths, request.SalvageValue, request.Location, request.Notes);
+        if (request.PaidFrom == AssetPaymentSource.OwnedAlready)
+        {
+            if (!CanApprove)
+                return Problem(statusCode: StatusCodes.Status403Forbidden, title: "A manager's.", detail: ManagersOnly);
+            var saved = await sender.Send(
+                new RegisterOwnedAssetCommand(request.AssetId, input, request.PurchaseDate, request.PurchaseCost, StaffName), cancellationToken);
+            return Ok(new FixedAssetResult(ApprovalOutcome.Applied, saved.Id, saved.AssetCode, null, null));
+        }
+
+        var voucher = new SafeVoucher(
+            request.TransactionId, SafeTransactionKind.AssetPurchase, request.PurchaseCost, request.PurchaseDate, Notes: request.Notes,
+            Fund: request.PaidFrom == AssetPaymentSource.Bank ? CashFund.Bank : CashFund.Safe, FixedAssetId: request.AssetId, Asset: input);
+        return await RecordAsync(request.RequestId, voucher, request.AssetId, request.Reason, cancellationToken);
+    }
+
+    [HttpPut("{assetId:guid}")]
+    [Authorize(Policy = Permissions.ApprovalDecide)]
+    public async Task<FixedAssetSaved> Change(Guid assetId, ChangeFixedAssetRequest request, CancellationToken cancellationToken) =>
+        await sender.Send(new ChangeFixedAssetCommand(
+            assetId, new FixedAssetInput(request.Name, request.Category, request.UsefulLifeMonths, request.SalvageValue, request.Location, request.Notes),
+            request.PurchaseDate, request.PurchaseCost, StaffName), cancellationToken);
+
+    // Disposed of or sold (استبعاد أو بيع الأصل): its depreciation stops. Sold for money, what it
+    // brought in goes into the safe or the bank by a safe entry; for nothing, it is written off.
+    [HttpPost("{assetId:guid}/dispose")]
+    public async Task<IActionResult> Dispose(Guid assetId, DisposeFixedAssetRequest request, CancellationToken cancellationToken)
+    {
+        if (request.SaleProceeds is > 0 and var proceeds)
+        {
+            var voucher = new SafeVoucher(
+                request.TransactionId, SafeTransactionKind.AssetSale, proceeds, request.Date, Notes: request.Notes,
+                Fund: request.Fund ?? CashFund.Safe, FixedAssetId: assetId);
+            return await RecordAsync(request.RequestId, voucher, assetId, request.Reason, cancellationToken);
+        }
+        if (!CanApprove)
+            return Problem(statusCode: StatusCodes.Status403Forbidden, title: "A manager's.", detail: ManagersOnly);
+        var saved = await sender.Send(new WriteOffFixedAssetCommand(assetId, request.Date, request.Notes, StaffName), cancellationToken);
+        return Ok(new FixedAssetResult(ApprovalOutcome.Applied, saved.Id, saved.AssetCode, null, null));
+    }
+
+    // A write-off undone. A sale is undone by voiding its entry.
+    [HttpPost("{assetId:guid}/reinstate")]
+    [Authorize(Policy = Permissions.ApprovalDecide)]
+    public Task<FixedAssetSaved> Reinstate(Guid assetId, CancellationToken cancellationToken) =>
+        sender.Send(new ReinstateFixedAssetCommand(assetId, StaffName), cancellationToken);
+
+    // One owned already, off the register. A paid one goes with its purchase voided.
+    [HttpDelete("{assetId:guid}")]
+    [Authorize(Policy = Permissions.ApprovalDecide)]
+    public async Task<IActionResult> Remove(Guid assetId, CancellationToken cancellationToken)
+    {
+        await sender.Send(new RemoveFixedAssetCommand(assetId, StaffName), cancellationToken);
+        return NoContent();
+    }
+
+    private async Task<IActionResult> RecordAsync(Guid requestId, SafeVoucher voucher, Guid assetId, string? reason, CancellationToken cancellationToken)
+    {
+        var result = await sender.Send(
+            new RecordSafeVoucherCommand(requestId, voucher, reason, UserClaims.IdOf(User) ?? string.Empty, StaffName, CanApprove), cancellationToken);
+        return result.Outcome == ApprovalOutcome.Requested
+            ? Accepted(new FixedAssetResult(result.Outcome, assetId, null, null, result.Request))
+            : Ok(new FixedAssetResult(result.Outcome, assetId, await assets.CodeOfAsync(assetId, cancellationToken), result.Transaction, null));
+    }
+
+    private string StaffName => User.FindFirst(UserClaims.Name)?.Value ?? string.Empty;
+
+    private bool CanApprove => UserClaims.RoleOf(User) is { } role && RolePermissions.Has(role, Permissions.ApprovalDecide);
+}
+
+// Applied: the asset is on the register (AssetCode), its payment made (Transaction, when paid).
+// Requested: it waits for a manager (Request).
+public sealed record FixedAssetResult(
+    ApprovalOutcome Outcome, Guid AssetId, string? AssetCode, SafeTransactionDto? Transaction, ApprovalRequestDto? Request);
+
+// AssetId and TransactionId are made by the till, with RequestId.
+public sealed record AcquireFixedAssetRequest(
+    Guid RequestId,
+    Guid AssetId,
+    Guid TransactionId,
+    string Name,
+    FixedAssetCategory Category,
+    DateOnly PurchaseDate,
+    decimal PurchaseCost,
+    int UsefulLifeMonths,
+    decimal SalvageValue = 0,
+    string? Location = null,
+    string? Notes = null,
+    AssetPaymentSource PaidFrom = AssetPaymentSource.Safe,
+    string? Reason = null);
+
+// Cost and purchase date: an asset owned already's only.
+public sealed record ChangeFixedAssetRequest(
+    string Name,
+    FixedAssetCategory Category,
+    int UsefulLifeMonths,
+    decimal SalvageValue = 0,
+    string? Location = null,
+    string? Notes = null,
+    DateOnly? PurchaseDate = null,
+    decimal? PurchaseCost = null);
+
+// SaleProceeds more than nothing: sold, into the safe or the bank (Fund). Otherwise written off.
+public sealed record DisposeFixedAssetRequest(
+    Guid RequestId,
+    Guid TransactionId,
+    DateOnly Date,
+    decimal? SaleProceeds = null,
+    CashFund? Fund = null,
+    string? Notes = null,
+    string? Reason = null);
 ```
 
 
@@ -3820,7 +4974,7 @@ public sealed partial class CostingService
 ```
 
 
-> 📄 **`backend/src/Costing.Infrastructure/Reports/BurdenedCostService.cs`** — 344 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Reports/BurdenedCostService.cs`** — 346 سطر
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
@@ -3953,7 +5107,7 @@ public sealed record BurdenedCostReport(
 public sealed record BurdenedRecipeCost(
     DateOnly From, DateOnly To, OverheadAllocationMethod Method, decimal TargetNetMarginPercent, decimal PlatesSold, BurdenedPlateRow? Plate);
 
-public sealed class BurdenedCostService(CostingDbContext db, Application.Common.IBusinessCalendar clock, CostingService costing, PurchaseSpendingService spending)
+public sealed class BurdenedCostService(CostingDbContext db, Application.Common.IBusinessCalendar clock, CostingService costing, PurchaseSpendingService spending, FixedAssetService fixedAssets)
 {
     private static readonly ExpenseLine[] OverheadLines = [ExpenseLine.Occupation, ExpenseLine.Controllable, ExpenseLine.OtherFixed];
 
@@ -4124,8 +5278,10 @@ public sealed class BurdenedCostService(CostingDbContext db, Application.Common.
                 wagesLogged += Logged(ExpenseLine.Wages) * share;
             }
 
+            // The fixed assets register's depreciation for the month, with any entered.
+            var assetDepreciation = (await fixedAssets.MonthAsync(month, cancellationToken)).Depreciation;
             var overheadRecorded = e is { OccupationCost: not null } or { OtherControllableCosts: not null } or { Interest: not null } or { Depreciation: not null }
-                || OverheadLines.Any(l => Logged(l) != 0);
+                || OverheadLines.Any(l => Logged(l) != 0) || assetDepreciation != 0;
             if (!overheadRecorded && settings.FallbackMonthlyOverheadCost is { } overheadFallback)
             {
                 overheadStandIn += overheadFallback * share;
@@ -4137,7 +5293,7 @@ public sealed class BurdenedCostService(CostingDbContext db, Application.Common.
                 controllable += ((e?.OtherControllableCosts ?? 0) + Logged(ExpenseLine.Controllable)) * share;
                 otherFixed += Logged(ExpenseLine.OtherFixed) * share;
                 interest += (e?.Interest ?? 0) * share;
-                depreciation += (e?.Depreciation ?? 0) * share;
+                depreciation += ((e?.Depreciation ?? 0) + assetDepreciation) * share;
             }
         }
 
@@ -4923,9 +6079,105 @@ public sealed class VarianceService(CostingDbContext db, SalesLedger ledger)
 تكلفة المبيعات      = تكلفة الوصفات النظرية + هالك المطبخ + التالف + فروقات الجرد الدوري
 مجمل الربح          = الإيراد − تكلفة المبيعات
 الأجور              = تكلفة عمالة المسير المعتمد للشهر، وإلا الرواتب المصروفة له
-المصروفات القابلة للتحكم، الإشغال، الفوائد، الإهلاك = المدخلة شهريًا + فواتير المصروفات المسجلة بفئاتها
-صافي الربح          = مجمل الربح − كل المصروفات
+المصروفات التشغيلية = الأجور + القابلة للتحكم + الإشغال + الثابتة الأخرى + الضيافة (المدخلة شهريًا + فواتير المصروفات بفئاتها)
+EBITDA              = مجمل الربح − المصروفات التشغيلية
+الإهلاك             = إهلاك سجل الأصول للشهر + أي إهلاك مدخل يدويًا
+صافي الربح          = EBITDA − الفوائد − الإهلاك ± أرباح/خسائر استبعاد الأصول في الشهر
 ```
+
+`ProfitAndLoss.Of(report)` يعيد نفس القائمة سطرًا سطرًا لـ `GET /api/costing/reports/pnl`.
+
+> 📄 **`backend/src/Costing.Infrastructure/Reports/ProfitAndLoss.cs`** — 86 سطر
+
+```csharp
+using static Costing.Infrastructure.Reports.CostingService;
+
+namespace Costing.Infrastructure.Reports;
+
+// A line of the profit and loss: its amount and its share of the revenue. A total (IsTotal) sums
+// what is above it; Level 1 is a line within a section.
+public sealed record PnlLine(string Key, string En, string Ar, decimal? Amount, decimal? PercentOfRevenue, int Level = 0, bool IsTotal = false);
+
+// The month's profit and loss (قائمة الدخل), from its KPI statement (MonthStatement):
+//
+//   Revenue (net sales, before tax)
+// − Cost of sales (the recipes' cost of what was sold, and the losses)
+// = Gross profit (مجمل الربح)
+// − Operating expenses: wages and benefits, running costs, occupation, other fixed costs, hospitality
+// = EBITDA (الربح التشغيلي قبل الفوائد والضرائب والإهلاك)
+// − Interest
+// − Depreciation (إهلاك الأصول الثابتة): the fixed assets register's, and any entered for the month
+// ± Gains and losses on assets disposed of or sold
+// = Net profit (صافي الربح النهائي)
+//
+// A fixed asset bought (CAPEX) is never on it: its cost left the safe or the bank, and comes here a
+// month at a time as depreciation. EBITDA and the net profit are null until the month's wages are in
+// (Missing says so): without them they would flatter.
+public sealed record ProfitAndLoss(
+    int Year,
+    int Month,
+    DateOnly From,
+    DateOnly To,
+    decimal Revenue,
+    decimal CostOfSales,
+    decimal GrossProfit,
+    decimal OperatingExpenses,
+    decimal? Ebitda,
+    decimal Interest,
+    decimal AssetDepreciation,
+    decimal EnteredDepreciation,
+    decimal Depreciation,
+    decimal DisposalGainOrLoss,
+    decimal? NetProfit,
+    decimal? GrossMarginPercent,
+    decimal? EbitdaMarginPercent,
+    decimal? NetMarginPercent,
+    IReadOnlyList<PnlLine> Lines,
+    string? Missing)
+{
+    public static ProfitAndLoss Of(KpiReport report)
+    {
+        var s = report.Statement;
+        decimal? Share(decimal? part) => part is { } p && s.Revenue > 0 ? Percent(p / s.Revenue) : null;
+        PnlLine Line(string key, string en, string ar, decimal? amount, int level = 0, bool total = false) =>
+            new(key, en, ar, Money(amount), Share(amount), level, total);
+
+        var wages = s.WagesAndBenefits is null && s.LoggedWages == 0 ? (decimal?)null : (s.WagesAndBenefits ?? 0) + s.LoggedWages + s.StaffMeals;
+        var interest = s.Interest ?? 0;
+        var entered = s.Depreciation ?? 0;
+        var lines = new List<PnlLine>
+        {
+            Line("revenue", "Revenue (net sales)", "الإيرادات (صافي المبيعات)", s.Revenue, total: true),
+            Line("foodSales", "Food", "مأكولات", s.FoodSales, 1),
+            Line("beverageSales", "Beverages", "مشروبات", s.BeverageSales, 1),
+            Line("costOfSales", "Cost of sales", "تكلفة المبيعات", s.CostOfSales, total: true),
+            Line("recipeCost", "Recipes' cost of what was sold", "تكلفة الوصفات المباعة", s.FoodRecipeCost + s.BeverageRecipeCost, 1),
+            Line("losses", "Waste, spoilage and count differences", "الهالك والتالف وفروق الجرد", s.KitchenWaste + s.Spoilage + s.CountDifferences, 1),
+            Line("grossProfit", "Gross profit", "مجمل الربح", s.GrossProfit, total: true),
+            Line("operatingExpenses", "Operating expenses", "المصروفات التشغيلية", s.OperatingExpenses, total: true),
+            Line("wages", "Wages & benefits", "الأجور والمزايا", wages, 1),
+            Line("controllable", "Utilities & running costs", "المرافق ومصاريف التشغيل", (s.OtherControllableCosts ?? 0) + s.LoggedControllableCosts, 1),
+            Line("occupation", "Rent & occupation", "الإيجار والمكان", (s.OccupationCost ?? 0) + s.LoggedOccupationCost, 1),
+            Line("otherFixed", "Other fixed costs", "مصاريف ثابتة أخرى", s.LoggedOtherFixedCosts, 1),
+            Line("hospitality", "Hospitality & recipe tastings", "الضيافة وتجارب الوصفات", s.Hospitality + s.RecipeTasting, 1),
+            Line("ebitda", "EBITDA", "الربح التشغيلي قبل الفوائد والضرائب والإهلاك", s.Ebitda, total: true),
+            Line("interest", "Interest", "الفوائد", interest),
+            Line("depreciation", "Depreciation expense", "إهلاك الأصول الثابتة", s.DepreciationExpense),
+            Line("assetDepreciation", "Fixed assets register", "سجل الأصول الثابتة", s.AssetDepreciation, 1),
+            Line("enteredDepreciation", "Entered for the month", "مدخل للشهر", entered, 1),
+            Line("disposals", "Gain / (loss) on asset disposals", "أرباح / (خسائر) استبعاد الأصول", s.DisposalGainOrLoss),
+            Line("netProfit", "Net profit", "صافي الربح النهائي", s.NetProfit, total: true),
+        };
+
+        return new ProfitAndLoss(
+            report.Year, report.Month, report.From, report.To, s.Revenue, s.CostOfSales, s.GrossProfit, s.OperatingExpenses, s.Ebitda, Money(interest),
+            s.AssetDepreciation, Money(entered), s.DepreciationExpense, s.DisposalGainOrLoss, s.NetProfit,
+            Share(s.GrossProfit), Share(s.Ebitda), Share(s.NetProfit), lines,
+            s.Ebitda is null ? "Enter the month's wages and benefits: without them EBITDA and the net profit would flatter. · أدخل أجور الشهر." : null);
+    }
+}
+```
+
 
 ### 4.2 المؤشرات (`Kpi`)
 
@@ -4941,7 +6193,7 @@ public sealed class VarianceService(CostingDbContext db, SalesLedger ledger)
 
 كل مؤشر بحالته (`KpiStatus`: صحي، خارج المدى، ناقص) **وسبب النقص** ("أدخل توريد الشهر"). و **Prime Cost** (طعام + عمالة) يُقرأ من `FoodCost` + `LabourCost`؛ ليس مؤشرًا منفصلًا في الكود.
 
-> 📄 **`backend/src/Costing.Infrastructure/Reports/KpiService.cs`** — 370 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Reports/KpiService.cs`** — 388 سطر
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
@@ -5032,7 +6284,17 @@ public sealed record MonthStatement(
     // tastings, costs of their own in the total expenses. None of them is food cost or a loss.
     decimal StaffMeals = 0,
     decimal Hospitality = 0,
-    decimal RecipeTasting = 0);
+    decimal RecipeTasting = 0,
+    // The P&L below the gross profit (ProfitAndLoss): what it costs to run the place, every overhead
+    // but the interest and the depreciation; and what is left, EBITDA, null until the wages are in.
+    decimal OperatingExpenses = 0,
+    decimal? Ebitda = null,
+    // The fixed assets register's straight-line depreciation for the month (FixedAssetService), on top
+    // of any entered above; all of it; and the gains less the losses on the assets disposed of or sold
+    // in the month, what they brought in less what was left of their cost.
+    decimal AssetDepreciation = 0,
+    decimal DepreciationExpense = 0,
+    decimal DisposalGainOrLoss = 0);
 
 public sealed record MonthlyExpensesDto(
     decimal? WagesAndBenefits,
@@ -5089,7 +6351,8 @@ public sealed record DiscountImpact(
 // Pillar 4: the template's financial KPIs for a business month. Sales and recipe costs come
 // from the till; losses from the stock ledger; wages, hours and overheads from what the manager
 // enters for the month.
-public sealed class KpiService(CostingDbContext db, IBusinessCalendar clock, CostingService costing, SalesLedger ledger, PurchaseSpendingService spending)
+public sealed class KpiService(
+    CostingDbContext db, IBusinessCalendar clock, CostingService costing, SalesLedger ledger, PurchaseSpendingService spending, FixedAssetService fixedAssets)
 {
     // The template's healthy ranges.
     private static readonly (decimal From, decimal To) FoodCostRange = (28, 35);
@@ -5205,10 +6468,16 @@ public sealed class KpiService(CostingDbContext db, IBusinessCalendar clock, Cos
 
         // Known once entered or paid: wages as entered plus wages paid as expenses, with the staff's meals.
         decimal? wages = expenses?.WagesAndBenefits is null && loggedWages == 0 ? null : (expenses?.WagesAndBenefits ?? 0) + loggedWages + staffMeals;
-        var totalExpenses = (wages ?? 0) + (expenses?.OtherControllableCosts ?? 0) + (expenses?.OccupationCost ?? 0)
-            + (expenses?.Interest ?? 0) + (expenses?.Depreciation ?? 0) + loggedControllable + loggedOccupation + loggedOtherFixed
-            + hospitality + tasting;
-        decimal? netProfit = wages is not null ? grossProfit - totalExpenses : null;
+        // Gross profit − operating expenses = EBITDA; − interest − depreciation ± disposals = net profit.
+        // A fixed asset bought is never an operating expense: its cost left the safe or the bank, and
+        // comes here a month at a time as depreciation (FixedAsset).
+        var operating = (wages ?? 0) + (expenses?.OtherControllableCosts ?? 0) + (expenses?.OccupationCost ?? 0)
+            + loggedControllable + loggedOccupation + loggedOtherFixed + hospitality + tasting;
+        var assetMonth = await fixedAssets.MonthAsync(theoretical.From, cancellationToken);
+        var depreciation = (expenses?.Depreciation ?? 0) + assetMonth.Depreciation;
+        var totalExpenses = operating + (expenses?.Interest ?? 0) + depreciation;
+        decimal? ebitda = wages is not null ? grossProfit - operating : null;
+        decimal? netProfit = ebitda is { } e ? e - (expenses?.Interest ?? 0) - depreciation + assetMonth.DisposalGainOrLoss : null;
         var breakage = Money(await db.BreakageEntries.AsNoTracking()
             .Where(b => b.BusinessDate >= theoretical.From && b.BusinessDate <= theoretical.To && b.VoidedAtUtc == null)
             .SumAsync(b => b.Cost, cancellationToken));
@@ -5257,7 +6526,8 @@ public sealed class KpiService(CostingDbContext db, IBusinessCalendar clock, Cos
                 Money(netProfit), loggedControllable, loggedOccupation, loggedOtherFixed, logged, loggedWages, Money(totalExpenses), breakage,
                 Money(takings.Sum(t => t.GrossAmount ?? t.Amount)), Money(takings.Sum(t => t.CardAmount)), Money(takings.Sum(t => t.TakingsTotal)),
                 Money(takings.Sum(t => t.TaxAmount)), Money(takings.Sum(t => t.VoidsAmount)),
-                takingsDays, Money(soldAtMenuPrices), staffMeals, hospitality, tasting),
+                takingsDays, Money(soldAtMenuPrices), staffMeals, hospitality, tasting,
+                Money(operating), Money(ebitda), assetMonth.Depreciation, Money(depreciation), assetMonth.DisposalGainOrLoss),
             ToDto(expenses), kpis, items,
             withoutRecipe.Count, withoutRecipe.Sum(r => r.NetSales),
             Erosion(takings, Money(revenueTotal), Money(foodRecipe + drinksRecipe)));
@@ -5467,7 +6737,7 @@ public sealed partial class CostingService
 
 وأربعة سيناريوهات للمبيعات الأسبوعية تُحفظ للمرة القادمة.
 
-> 📄 **`backend/src/Costing.Infrastructure/Reports/BreakEvenService.cs`** — 130 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Reports/BreakEvenService.cs`** — 131 سطر
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
@@ -5548,7 +6818,7 @@ public sealed class BreakEvenService(CostingDbContext db, IBusinessCalendar cloc
             var s = report.Statement;
             var logged = s.LoggedControllableCosts + s.LoggedOccupationCost + s.LoggedOtherFixedCosts + s.LoggedWages;
             if (e.WagesAndBenefits is null && e.OtherControllableCosts is null && e.OccupationCost is null && e.Interest is null && e.Depreciation is null
-                && logged == 0)
+                && logged == 0 && s.AssetDepreciation == 0)
             {
                 withoutCosts.Add(month.ToString("MMMM yyyy", System.Globalization.CultureInfo.InvariantCulture));
                 continue;
@@ -5558,7 +6828,8 @@ public sealed class BreakEvenService(CostingDbContext db, IBusinessCalendar cloc
             occupation += (e.OccupationCost ?? 0) + s.LoggedOccupationCost;
             otherFixed += s.LoggedOtherFixedCosts;
             interest += e.Interest ?? 0;
-            depreciation += e.Depreciation ?? 0;
+            // Entered for the month, and the fixed assets register's.
+            depreciation += s.DepreciationExpense;
             controllableLogged += s.LoggedControllableCosts + s.LoggedWages;
             occupationLogged += s.LoggedOccupationCost;
         }

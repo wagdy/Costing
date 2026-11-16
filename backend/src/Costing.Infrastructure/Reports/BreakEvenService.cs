@@ -76,7 +76,7 @@ public sealed class BreakEvenService(CostingDbContext db, IBusinessCalendar cloc
             var s = report.Statement;
             var logged = s.LoggedControllableCosts + s.LoggedOccupationCost + s.LoggedOtherFixedCosts + s.LoggedWages;
             if (e.WagesAndBenefits is null && e.OtherControllableCosts is null && e.OccupationCost is null && e.Interest is null && e.Depreciation is null
-                && logged == 0)
+                && logged == 0 && s.AssetDepreciation == 0)
             {
                 withoutCosts.Add(month.ToString("MMMM yyyy", System.Globalization.CultureInfo.InvariantCulture));
                 continue;
@@ -86,7 +86,8 @@ public sealed class BreakEvenService(CostingDbContext db, IBusinessCalendar cloc
             occupation += (e.OccupationCost ?? 0) + s.LoggedOccupationCost;
             otherFixed += s.LoggedOtherFixedCosts;
             interest += e.Interest ?? 0;
-            depreciation += e.Depreciation ?? 0;
+            // Entered for the month, and the fixed assets register's.
+            depreciation += s.DepreciationExpense;
             controllableLogged += s.LoggedControllableCosts + s.LoggedWages;
             occupationLogged += s.LoggedOccupationCost;
         }

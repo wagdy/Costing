@@ -268,11 +268,41 @@ const expenseFields: { key: keyof MonthlyExpenses; en: string; ar: string; hours
                     <td class="num muted">{{ pct(r.statement.loggedOtherFixedCosts, r) }}</td>
                   </tr>
                 }
+                <tr class="total">
+                  <td>Operating expenses · المصروفات التشغيلية</td>
+                  <td class="num">{{ operating(r) | money }}</td>
+                  <td class="num">{{ pct(operating(r), r) }}</td>
+                </tr>
+                <tr class="total ebitda" [class.loss]="(ebitda(r) ?? 0) < 0">
+                  <td>EBITDA · الربح التشغيلي قبل الفوائد والضرائب والإهلاك <app-info-tip tip="plEbitda" /></td>
+                  <td class="num">{{ ebitda(r) === null ? 'Enter the wages' : (ebitda(r)! | money) }}</td>
+                  <td class="num">{{ pct(ebitda(r), r) }}</td>
+                </tr>
                 <tr><td>Interest · الفوائد</td><td class="num">{{ entered(r.statement.interest) }}</td><td class="num muted">{{ pct(r.statement.interest, r) }}</td></tr>
-                <tr><td>Depreciation · الإهلاك</td><td class="num">{{ entered(r.statement.depreciation) }}</td><td class="num muted">{{ pct(r.statement.depreciation, r) }}</td></tr>
-                <tr class="total"><td>Total expenses · إجمالي المصروفات</td><td class="num">{{ r.statement.totalExpenses | money }}</td><td class="num">{{ pct(r.statement.totalExpenses, r) }}</td></tr>
+                <tr class="depreciation">
+                  <td>
+                    Depreciation expense · إهلاك الأصول الثابتة <app-info-tip tip="plDepreciation" />
+                    @if (r.statement.assetDepreciation) {
+                      <small class="muted part">
+                        <a routerLink="/costing/financials/fixed-assets">fixed assets</a> {{ r.statement.assetDepreciation | money }}
+                        @if (r.statement.depreciation) {
+                          + {{ r.statement.depreciation | money }} entered
+                        }
+                      </small>
+                    }
+                  </td>
+                  <td class="num">{{ entered(depreciation(r)) }}</td>
+                  <td class="num muted">{{ pct(depreciation(r), r) }}</td>
+                </tr>
+                @if (r.statement.disposalGainOrLoss) {
+                  <tr [class.loss]="r.statement.disposalGainOrLoss < 0">
+                    <td>Gain / (loss) on asset disposals · أرباح / (خسائر) استبعاد الأصول</td>
+                    <td class="num">{{ r.statement.disposalGainOrLoss | money }}</td>
+                    <td class="num muted">{{ pct(r.statement.disposalGainOrLoss, r) }}</td>
+                  </tr>
+                }
                 <tr class="total" [class.loss]="(r.statement.netProfit ?? 0) < 0">
-                  <td>Net profit · صافي الربح</td>
+                  <td>Net profit · صافي الربح النهائي <app-info-tip tip="plNetProfit" /></td>
                   <td class="num">{{ r.statement.netProfit === null ? 'Enter the wages' : (r.statement.netProfit | money) }}</td>
                   <td class="num">{{ pct(r.statement.netProfit, r) }}</td>
                 </tr>
@@ -643,6 +673,26 @@ export class KpisPage {
   protected lossTotal(r: KpiReport): number {
     return r.statement.kitchenWaste + r.statement.spoilage + r.statement.countDifferences;
   }
+
+  // Below the gross profit: what it costs to run the place, every overhead but interest and
+  // depreciation; and EBITDA, the gross profit less it, once the wages are in.
+  protected operating(r: KpiReport): number {
+    return r.statement.operatingExpenses ?? r.statement.totalExpenses - (r.statement.interest ?? 0) - (r.statement.depreciation ?? 0);
+  }
+
+  protected ebitda(r: KpiReport): number | null {
+    return r.statement.ebitda !== undefined ? r.statement.ebitda : r.statement.netProfit === null ? null : r.statement.grossProfit - this.operating(r);
+  }
+
+  // The fixed assets register's and any entered: null when neither is.
+  protected depreciation(r: KpiReport): number | null {
+    const total = r.statement.depreciationExpense;
+    if (total === undefined) {
+      return r.statement.depreciation;
+    }
+    return total === 0 && r.statement.depreciation === null ? null : total;
+  }
+
 
   protected share(part: number, whole: number): number | null {
     return whole > 0 ? (part / whole) * 100 : null;

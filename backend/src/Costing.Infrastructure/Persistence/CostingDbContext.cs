@@ -62,6 +62,7 @@ public sealed class CostingDbContext(DbContextOptions<CostingDbContext> options)
     public DbSet<ExpenseItem> ExpenseItems => Set<ExpenseItem>();
     public DbSet<ApprovalRequest> ApprovalRequests => Set<ApprovalRequest>();
     public DbSet<SafeTransaction> SafeTransactions => Set<SafeTransaction>();
+    public DbSet<Domain.FixedAssets.FixedAsset> FixedAssets => Set<Domain.FixedAssets.FixedAsset>();
     public DbSet<SupplierLedgerEntry> SupplierLedgerEntries => Set<SupplierLedgerEntry>();
     public DbSet<PrepRecipe> PrepRecipes => Set<PrepRecipe>();
     public DbSet<ProductionOrder> ProductionOrders => Set<ProductionOrder>();

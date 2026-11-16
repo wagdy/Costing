@@ -71,10 +71,16 @@ import { TakingsBadges } from './takings-badges';
             {{ s.openingBalance + (s.fundingIn ?? 0) | money }} opening balance &amp; external funding
             <span class="ar">الرصيد الافتتاحي والتمويل الخارجي</span>
           </small>
+          @if (s.assetSales) {
+            <small class="muted">{{ s.assetSales | money }} from fixed assets sold <span class="ar">بيع أصول</span></small>
+          }
         </div>
         <div class="tile" role="listitem">
           <span class="label">Total out / payments <span class="ar">إجمالي المدفوعات / المنصرف</span></span>
           <strong class="out">{{ s.totalOut ?? 0 | money }}</strong>
+          @if (s.assetPurchases) {
+            <small class="muted">{{ s.assetPurchases | money }} of it fixed assets (CAPEX), not expenses <span class="ar">شراء أصول</span></small>
+          }
         </div>
         <div class="tile key" role="listitem">
           <span class="label">In the safe now <span class="ar">رصيد الخزنة الحالي</span></span>

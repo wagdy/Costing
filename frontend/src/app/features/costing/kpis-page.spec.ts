@@ -141,6 +141,8 @@ describe('the KPIs', () => {
             { categoryId: 'insurance', category: 'Insurance', categoryAr: null, expenseLine: 'OtherFixed', amount: 600 },
           ],
           totalExpenses: 10_420,
+          operatingExpenses: 10_420,
+          ebitda: -10_122,
           netProfit: -10_122,
         },
       }),
@@ -155,12 +157,49 @@ describe('the KPIs', () => {
     expect(cells('Controllable costs')[0]).toContain('1,700.00 invoices + 20.00 entered');
     expect(cells('Controllable costs')[1]).toBe('L.E 1,720.00');
     expect(cells('Other fixed costs')[1]).toBe('L.E 600.00');
-    expect(cells('Total expenses')[1]).toBe('L.E 10,420.00');
+    expect(cells('Operating expenses')[1]).toBe('L.E 10,420.00');
+    expect(cells('EBITDA')[1]).toBe('L.E -10,122.00');
     expect([...el.querySelectorAll('.logged-row')].map((r) => [...r.children].map((c) => c.textContent!.replace(/\s+/g, ' ').trim()))).toEqual([
       ['Rent · Occupation (rent)', 'L.E 8,000.00'],
       ['Utilities · Controllable costs', 'L.E 1,700.00'],
       ['Insurance · Other fixed costs', 'L.E 600.00'],
     ]);
+  });
+
+  it("sets EBITDA above the interest and the fixed assets' depreciation, then the disposals, then the net profit", async () => {
+    kpis.mockReturnValue(
+      of({
+        ...report,
+        statement: {
+          ...report.statement,
+          wagesAndBenefits: 100,
+          interest: 10,
+          operatingExpenses: 100,
+          ebitda: 198,
+          assetDepreciation: 50,
+          depreciationExpense: 50,
+          disposalGainOrLoss: -20,
+          totalExpenses: 160,
+          netProfit: 118,
+        },
+      }),
+    );
+    const { fixture } = await render();
+    const el = fixture.nativeElement as HTMLElement;
+    const labels = [...el.querySelectorAll('.statement tr')].map((r) => r.querySelector('td')!.textContent!.replace(/\s+/g, ' ').trim());
+    const from = labels.findIndex((l) => l.startsWith('Operating expenses'));
+    expect(labels.slice(from).map((l) => l.split(' · ')[0])).toEqual([
+      'Operating expenses', 'EBITDA', 'Interest', 'Depreciation expense', 'Gain / (loss) on asset disposals', 'Net profit',
+    ]);
+    const cells = (label: string) =>
+      [...[...el.querySelectorAll('.statement tr')].find((r) => r.querySelector('td')!.textContent!.includes(label))!.querySelectorAll('td')].map(
+        (td) => td.textContent!.replace(/\s+/g, ' ').trim(),
+      );
+    expect(cells('Depreciation expense')).toEqual(['Depreciation expense · إهلاك الأصول الثابتة fixed assets L.E 50.00', 'L.E 50.00', '11.9%']);
+    expect(cells('EBITDA')[1]).toBe('L.E 198.00');
+    expect(cells('Gain / (loss)')[1]).toBe('L.E -20.00');
+    expect(cells('Net profit')[1]).toBe('L.E 118.00');
+    expect(el.querySelector('.statement a[href="/costing/financials/fixed-assets"]')).not.toBeNull();
   });
 
   it('takes revenue from the takings as net sales, the tax collected shown apart and never in it', async () => {

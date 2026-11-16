@@ -520,6 +520,128 @@ namespace Costing.Infrastructure.Persistence.Migrations
                     b.ToTable("ExpenseItems", "costing");
                 });
 
+            modelBuilder.Entity("Costing.Domain.FixedAssets.FixedAsset", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("AssetCode")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
+                    b.Property<string>("Category")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("CreatedBy")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<DateOnly?>("DisposalDate")
+                        .HasColumnType("date");
+
+                    b.Property<string>("DisposalNotes")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<string>("DisposedBy")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<string>("Location")
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)");
+
+                    b.Property<string>("Notes")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<int>("Number")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("PaidFrom")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<decimal>("PurchaseCost")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)");
+
+                    b.Property<DateOnly>("PurchaseDate")
+                        .HasColumnType("date");
+
+                    b.Property<Guid?>("PurchaseTransactionId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("SaleFund")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<decimal?>("SaleProceeds")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)");
+
+                    b.Property<Guid?>("SaleTransactionId")
+                        .HasColumnType("uuid");
+
+                    b.Property<decimal>("SalvageValue")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<DateTime?>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("UpdatedBy")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<int>("UsefulLifeMonths")
+                        .HasColumnType("integer");
+
+                    b.Property<uint>("Version")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("xid")
+                        .HasColumnName("xmin");
+
+                    b.Property<DateTime?>("VoidedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("VoidedBy")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AssetCode")
+                        .IsUnique();
+
+                    b.HasIndex("Number")
+                        .IsUnique();
+
+                    b.HasIndex("PurchaseTransactionId");
+
+                    b.HasIndex("SaleTransactionId");
+
+                    b.ToTable("FixedAssets", "costing");
+                });
+
             modelBuilder.Entity("Costing.Domain.Integrations.HrLink", b =>
                 {
                     b.Property<Guid>("Id")
@@ -2245,6 +2367,9 @@ namespace Costing.Infrastructure.Persistence.Migrations
                     b.Property<Guid?>("ExpenseItemId")
                         .HasColumnType("uuid");
 
+                    b.Property<Guid?>("FixedAssetId")
+                        .HasColumnType("uuid");
+
                     b.Property<string>("Fund")
                         .IsRequired()
                         .HasMaxLength(32)
@@ -2331,6 +2456,9 @@ namespace Costing.Infrastructure.Persistence.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("ExpenseItemId");
+
+                    b.HasIndex("FixedAssetId")
+                        .HasFilter("\"FixedAssetId\" IS NOT NULL");
 
                     b.HasIndex("PayrollRunId");
 
@@ -2817,6 +2945,19 @@ namespace Costing.Infrastructure.Persistence.Migrations
                         .HasForeignKey("CategoryId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
+                });
+
+            modelBuilder.Entity("Costing.Domain.FixedAssets.FixedAsset", b =>
+                {
+                    b.HasOne("Costing.Domain.Treasury.SafeTransaction", null)
+                        .WithMany()
+                        .HasForeignKey("PurchaseTransactionId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Costing.Domain.Treasury.SafeTransaction", null)
+                        .WithMany()
+                        .HasForeignKey("SaleTransactionId")
+                        .OnDelete(DeleteBehavior.Restrict);
                 });
 
             modelBuilder.Entity("Costing.Domain.Integrations.SyncedEmployee", b =>

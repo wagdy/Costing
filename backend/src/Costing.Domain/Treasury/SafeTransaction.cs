@@ -13,6 +13,10 @@ public enum CashFund
 
     // One business day's cash sales (RevenueDate), before they go into the safe.
     DayRevenue = 2,
+
+    // The restaurant's bank account (البنك): what a fixed asset is paid from or sold into when it
+    // is not cash. The safe's balance and its reports never count it.
+    Bank = 3,
 }
 
 public enum SafeTransactionKind
@@ -54,6 +58,15 @@ public enum SafeTransactionKind
     // payable (PayrollRunId), the advances paid during the month taken off already. Its labor cost
     // is the run's, counted for the month it pays.
     PayrollPayment = 10,
+
+    // A fixed asset bought (شراء أصل ثابت, CAPEX), out of the safe or the bank (FixedAssetId): cash
+    // out on the day it is bought, never an expense. The profit and loss takes its depreciation, a
+    // month at a time over its useful life.
+    AssetPurchase = 11,
+
+    // A fixed asset sold (بيع أصل ثابت): what it brought in, into the safe or the bank. Not revenue:
+    // set against what was left of its cost, the gain or loss is the profit and loss's.
+    AssetSale = 12,
 }
 
 // Where money put into the safe came from (مصدر التمويل).
@@ -134,6 +147,9 @@ public sealed class SafeTransaction : AggregateRoot
 
     // A payroll payment's: the payroll run from HR it pays.
     public Guid? PayrollRunId { get; private set; }
+
+    // An asset purchase's or sale's: the fixed asset it bought or sold.
+    public Guid? FixedAssetId { get; private set; }
 
     public string? Notes { get; private set; }
 
@@ -389,6 +405,16 @@ public sealed class SafeTransaction : AggregateRoot
         };
     }
 
+    // A fixed asset bought out of the safe or the bank (fund): its whole cost, out on the day.
+    public static SafeTransaction AssetPurchase(
+        Guid id, decimal amount, DateOnly date, Guid fixedAssetId, CashFund fund, string? notes, string recordedBy, string? approvedBy = null) =>
+        new(id, SafeTransactionKind.AssetPurchase, CashOrBank(fund), -Positive(amount), date, notes, recordedBy, approvedBy) { FixedAssetId = fixedAssetId };
+
+    // A fixed asset sold: what it brought in, into the safe or the bank (fund) on the day.
+    public static SafeTransaction AssetSale(
+        Guid id, decimal amount, DateOnly date, Guid fixedAssetId, CashFund fund, string? notes, string recordedBy, string? approvedBy = null) =>
+        new(id, SafeTransactionKind.AssetSale, CashOrBank(fund), Positive(amount), date, notes, recordedBy, approvedBy) { FixedAssetId = fixedAssetId };
+
     // Voids it: the opposite amount, entered on `today`, naming it. Voiding again is refused. A
     // payment out of a day's takings made before they were entered goes back into the safe when
     // they are in it now (takingsInSafe): it was taken off what went in.
@@ -418,6 +444,7 @@ public sealed class SafeTransaction : AggregateRoot
             EmployeeId = EmployeeId,
             PayrollMonth = PayrollMonth,
             PayrollRunId = PayrollRunId,
+            FixedAssetId = FixedAssetId,
             ReversalOf = Id,
         };
         reversal._discountReasons.AddRange(Discounts.Negated(_discountReasons));
@@ -426,6 +453,9 @@ public sealed class SafeTransaction : AggregateRoot
 
     private static decimal Positive(decimal amount) =>
         amount > 0 ? Math.Round(amount, 2, MidpointRounding.AwayFromZero) : throw new DomainException("Enter an amount more than nothing.");
+
+    private static CashFund CashOrBank(CashFund fund) =>
+        fund is CashFund.Safe or CashFund.Bank ? fund : throw new DomainException("Pay it from the safe or the bank. · من الخزنة أو البنك.");
 
     private static DateOnly Month(DateOnly month) =>
         month.Day == 1 ? month : throw new DomainException("A payroll month is named by its first day.");

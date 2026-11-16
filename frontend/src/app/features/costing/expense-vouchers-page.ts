@@ -8,13 +8,17 @@ import { firstValueFrom } from 'rxjs';
 import { CostingApi, ExpenseVoucherReport, ExpenseVoucherRow } from '../../core/costing/costing.api';
 import { errorMessage } from '../../core/http/error-message';
 import { MoneyPipe } from '../../core/ui/money.pipe';
+import { Router } from '@angular/router';
 import { Approvals, pendingLabel } from './approvals';
+import { FixedAssetActions } from './fixed-asset-dialogs';
 import { Treasury, monthBounds } from './financials';
 
 // Expense vouchers (إذن صرف مصروفات): cash paid out of the safe for an expense (a bill, wages,
 // petty cash), each under its expense item, so it counts on the profit and loss under its
 // category, as an invoice's expense line does. The tax paid over (سداد ضرائب) is listed with them,
 // marked, and never counted as an expense. A month at a time; voided ones are kept, struck out.
+// Beside them, an asset acquisition (CAPEX, شراء أصل ثابت): out of the safe or the bank, but never an
+// expense: it goes on Fixed assets, and the profit and loss takes its depreciation instead.
 @Component({
   selector: 'app-expense-vouchers-page',
   imports: [DatePipe, MatButtonModule, MatIconModule, MatProgressBarModule, MatTooltipModule, MoneyPipe],
@@ -32,6 +36,9 @@ import { Treasury, monthBounds } from './financials';
           }
         </span>
       }
+      <button mat-stroked-button (click)="acquire()" matTooltip="Equipment, furniture, the fit-out: capital spending, depreciated on Fixed assets, never an expense">
+        <mat-icon>precision_manufacturing</mat-icon> Asset acquisition (CAPEX) · شراء أصل ثابت
+      </button>
       <button mat-flat-button (click)="add()"><mat-icon>add</mat-icon> New expense voucher</button>
     </div>
     @if (loading()) {
@@ -150,6 +157,8 @@ import { Treasury, monthBounds } from './financials';
 export class ExpenseVouchersPage {
   private readonly api = inject(CostingApi);
   private readonly treasury = inject(Treasury);
+  private readonly assets = inject(FixedAssetActions);
+  private readonly router = inject(Router);
   protected readonly approvals = inject(Approvals);
   protected readonly pendingLabel = pendingLabel;
 
@@ -179,6 +188,13 @@ export class ExpenseVouchersPage {
   protected async add(): Promise<void> {
     if (await this.treasury.enter('ExpenseVoucher')) {
       await this.load();
+    }
+  }
+
+  // On the register, not here: to Fixed assets once it is made.
+  protected async acquire(): Promise<void> {
+    if (await this.assets.acquire()) {
+      await this.router.navigate(['/costing/financials/fixed-assets']);
     }
   }
 

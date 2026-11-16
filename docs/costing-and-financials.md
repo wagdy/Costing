@@ -23,8 +23,8 @@ works it.
 | Expense items (المصروفات العمومية) | `/costing/expense-items` | General expenses, never stock |
 | Stock counts (الجرد) | `/costing/counts` | Full and spot counts drafted, blind for who counts, reconciled, then posted |
 | Waste (الهالك) | `/costing/waste` | Spoilage and breakage; staff meals, hospitality and recipe tastings |
-| Financials (الماليات) | `/costing/financials` | The safe, funding, each day's takings (cash, card, tax, voids), vouchers, suppliers owed and paid, the AP aging, advances, staff, tax and service |
-| Reports (التقارير) | `/costing/reports` | Spending, theoretical cost, variance, the daily break-even, KPIs (with the discounts' margin erosion), break-even |
+| Financials (الماليات) | `/costing/financials` | The safe, funding, each day's takings (cash, card, tax, voids), vouchers, fixed assets (CAPEX and their depreciation, also at `/costing/fixed-assets`), suppliers owed and paid, the AP aging, advances, staff, tax and service |
+| Reports (التقارير) | `/costing/reports` | Spending, theoretical cost, variance, the daily break-even, KPIs (the month's P&L to EBITDA and net profit, with the discounts' margin erosion), break-even |
 | Cost settings (إعدادات التكاليف) | `/costing/settings` | Cost targets, plate cost (allocation method, target net margin, stand-in monthly labor and overheads), beverage categories, shared costs, monthly expenses, the daily staff meal budget |
 | Approvals (طلبات معلقة) | `/costing/approvals` | What waits for a manager |
 | Permissions (الصلاحيات) | `/costing/permissions` | Who works which section; a manager's |
@@ -435,15 +435,16 @@ month carries its share by days (16 of 30 days: 16/30).
 | Pool | A month's amount |
 | --- | --- |
 | Labor (إجمالي وعاء العمالة) | The payroll HR approved for it (its labor cost), or the salaries paid from the safe for it when HR sent none; the wages and benefits entered on the KPIs; expense invoices and vouchers under a Wages category; the staff meals logged in it, at their cost |
-| Overheads (وعاء الإيجار والمرافق والتشغيل) | The occupation (rent), controllable costs, interest and depreciation entered on the KPIs; expense invoices and vouchers under an Occupation, Controllable or Other fixed category; the hospitality and recipe tastings logged in it, at their cost |
+| Overheads (وعاء الإيجار والمرافق والتشغيل) | The occupation (rent), controllable costs, interest and depreciation entered on the KPIs; the fixed assets register's depreciation for the month; expense invoices and vouchers under an Occupation, Controllable or Other fixed category; the hospitality and recipe tastings logged in it, at their cost |
 
 A month with nothing recorded for a pool takes the **stand-in monthly figure** from Cost settings
 (Plate cost), when one is set, and the screen names the months that did. **Simulate monthly labor
 & overhead** replaces the pools with monthly figures typed on the screen (blank: the stand-in
 figures), spread the same way, to test the plates before a month's payroll and bills are in.
 
-Costing has no fixed-asset register, prepaid-expense schedule or card-commission record of its
-own (staff meals and hospitality are logged under Waste, below): depreciation is what is entered for the month on the KPIs; a prepaid rent is
+Costing has no prepaid-expense schedule or card-commission record of its own (staff meals and
+hospitality are logged under Waste, below): depreciation is the fixed assets register's for the
+month (Financials → Fixed assets, below), with any entered for the month on the KPIs; a prepaid rent is
 amortised by entering the month's share as its occupation cost (a voucher counts in the month it is
 dated); bank and card charges are expense vouchers or invoices under a Controllable category.
 
@@ -503,7 +504,7 @@ Operating result      = contribution margin − daily fixed cost
 - **The month's fixed costs** are the burdened plate cost's two pools for the whole month: labor
   (the payroll HR approved, or the salaries paid for the month; the wages entered; expenses under a
   Wages category) and overheads (rent, controllable costs, interest and depreciation entered on the
-  KPIs; expense invoices and vouchers under an Occupation, Controllable or Other fixed category). A
+  KPIs; the fixed assets register's depreciation; expense invoices and vouchers under an Occupation, Controllable or Other fixed category). A
   month with nothing recorded for a pool takes its **stand-in monthly figure** from Cost settings
   (Plate cost), so a day early in a month still has a target.
 - **WACM** is weighted by the day's own menu mix: selling more dishes with a high margin lowers the
@@ -888,7 +889,9 @@ own:
 
 **The safe is the one treasury.** Everything collected goes into it: the cash, the Visa and the tax
 collected on them, as well as the opening balance and any funding. Everything paid goes out of it:
-invoices paid in cash, supplier payments, expense vouchers, tax paid over, advances and salaries.
+invoices paid in cash, supplier payments, expense vouchers, tax paid over, advances and salaries,
+and fixed assets bought out of it (CAPEX, below). The bank (`CashFund.Bank`) holds only what a fixed
+asset is bought or sold through when it is not cash: the safe's balance and reports never count it.
 
 **A day's takings (توريد إيراد اليومية)** are entered once a day from its Z report, on Financials →
 Safe → Takings in (or a day on Funding with sales and no takings yet), in this order:
@@ -947,6 +950,142 @@ to what reached the safe: from then on the safe's balances, earlier months' too,
 
 The tax rate on Financials → Tax & service (`FinancialSettings.TaxPercent`, a manager's) is kept for
 the bills entered as printed; a day's takings carry the tax as the Z report gives it.
+
+## Fixed assets and depreciation (سجل الأصول الثابتة والإهلاكات)
+
+**CAPEX is not OPEX.** An operating expense (OPEX: rent, gas, a repair, wages) is used up in the
+month it is paid and goes on that month's P&L whole, as an expense voucher or an invoice's expense
+line. A fixed asset (CAPEX: an espresso machine, an oven, the dining room's furniture, the POS, a
+vehicle, the fit-out) serves for years: what it cost leaves the safe or the bank the day it is
+bought, but **the P&L never takes the purchase**, only its depreciation, a month at a time over its
+useful life. Buying a 120,000 machine in March does not make March a 120,000 loss.
+
+**Financials → Fixed assets (الأصول الثابتة)** (`/costing/financials/fixed-assets`, also at
+`/costing/fixed-assets`) is the register (`FixedAssets`). **Asset acquisition (CAPEX) · شراء أصل
+ثابت** is on it, and beside **New expense voucher** on Financials → Expense vouchers:
+
+| Field | Stored as | What it is |
+| --- | --- | --- |
+| Asset code (كود الأصل) | `Number`, `AssetCode` | FA-0001, FA-0002, … in the order they are entered, never reused |
+| Name (اسم الأصل) | `Name`, up to 120 characters | "La Marzocco espresso machine" |
+| Category (الفئة) | `Category` | Kitchen equipment, Furniture, Vehicles, IT & POS, Fit-out & decoration, Other |
+| Location (الموقع) | `Location`, up to 80 characters | Free text with the ones used before suggested: Costing keeps no storage locations of its own |
+| Purchase date (تاريخ الشراء) | `PurchaseDate` | Today or before; for a paid asset, the day the cash left |
+| Purchase cost (تكلفة الشراء) | `PurchaseCost` | All it cost to buy and put in place, more than nothing |
+| Salvage value (القيمة التخريدية) | `SalvageValue` | What it is still worth at the end of its life: 0 or more, less than the cost; never depreciated |
+| Useful life (العمر الإنتاجي) | `UsefulLifeMonths` | 1 to 600 months: 60 for five years |
+| Paid from (مصدر الدفع) | `PaidFrom`, `PurchaseTransactionId` | The safe, the bank, or owned already (below) |
+| Notes | `Notes`, up to 500 characters | The supplier, the invoice number, the serial number |
+
+**Paid from the safe or the bank**, the purchase is a safe entry, `AssetPurchase` (شراء أصل ثابت),
+of the whole cost, dated the purchase date: out of the safe (its balance, the Safe tab's **Total out**,
+noted "of it fixed assets (CAPEX), not expenses", and Reports → Safe & treasury's outflow **Fixed
+assets bought (CAPEX)**), or out of the bank, which the safe never counts. As every safe entry, it is
+a manager's at once and a request for anyone else, and the asset is not on the register, nor the
+cash moved, until a manager approves it (the request says the asset, its category, life, salvage
+value, monthly depreciation and where it is paid from). **It is never an expense voucher**: the
+expense vouchers' total, the spending report and the P&L's operating expenses leave it out. **Owned
+already (أصل قائم)**: an asset the restaurant had before the register, entered at what it cost and
+when, for its depreciation from then; no cash moves, and it is a manager's.
+
+**Depreciation is straight-line** (القسط الثابت), worked out from the register whenever it is read:
+
+```
+Monthly depreciation     = (purchase cost − salvage value) ÷ useful life in months, to the piastre
+Months charged by month M = months from the purchase month to M, the purchase month counted,
+                           never the month it is disposed of or after, at most the useful life
+Accumulated depreciation = monthly depreciation × months charged
+                           (the whole of cost − salvage once the life is through)
+Net book value (القيمة الدفترية) = purchase cost − accumulated depreciation
+Month M's depreciation   = accumulated by the end of M − accumulated by the end of the month before
+```
+
+A month is charged in full: the month an asset is bought is its first, whatever day, and the month
+it is disposed of or sold is not charged. The last month of its life takes what the rounding left,
+so the depreciation adds up to the cost less the salvage value exactly (1,000 over three months:
+333.33, 333.33, 333.34). Example: bought on 15 March 2026 for 120,000 with 12,000 left after 60
+months, it is charged 1,800 a month from March 2026 to February 2031; by December 2026, ten months,
+18,000, leaving 102,000. A change to the useful life or the salvage value restates every month's
+depreciation, past ones too: a correction. A paid asset's cost and date are its payment's: void the
+purchase and enter it again; an owned-already asset's may be changed.
+
+**Its status (الحالة)**, as of the month shown: **Active** (نشط, green) while it is depreciated;
+**Fully depreciated** (مهلك بالكامل, grey) once its life is charged, still in use; **Disposed**
+(مستبعد) or **Sold** (مباع), from the month it went.
+
+**Dispose / sell asset · استبعاد أو بيع الأصل** stops its depreciation:
+
+- **Sold** (بيع): what it brought in goes into the safe or the bank, an `AssetSale` safe entry on the
+  sale date (a manager's at once, a request for anyone else). Into the safe, it is in the Safe tab's
+  **Total in** ("from fixed assets sold") and the analysis's inflow **Fixed assets sold**: never revenue.
+- **Written off** (استبعاد بلا مقابل): scrapped or given away, nothing for it; a manager's.
+
+```
+Net book value at disposal = purchase cost − depreciation charged before the disposal month
+Capital gain / (loss)      = sale proceeds (0 for a write-off) − net book value at disposal
+```
+
+The gain or loss is the disposal month's, on its P&L. The dialog shows the book value, what it
+brought in and the gain or loss as they are typed. **Void the sale** voids its safe entry (what it
+brought in goes back out) and the asset is in use again, depreciated from where it stopped; **Undo
+the write-off** does the same for a write-off. **Void the purchase** voids a paid asset's purchase
+entry (what it cost goes back) and takes it off the register; a sold asset's purchase is voided only
+once its sale is. An owned-already asset is **removed** from the register (a manager's). Kept, never
+deleted: off the register, it is only marked so (`VoidedAtUtc`).
+
+**The register screen**, at the end of a month (the arrows move it; today's month by default):
+
+1. **Total assets cost** (إجمالي تكلفة الأصول): Σ cost of what was held then, bought by its end and
+   not disposed of or sold by then.
+2. **Accumulated depreciation** (مجمع الإهلاك): Σ their depreciation up to and including the month.
+3. **Net book value** (القيمة الدفترية الحالية): total assets cost − accumulated depreciation.
+4. **Monthly depreciation run rate** (قسط الإهلاك الشهري الحالي): Σ the month's depreciation of every
+   asset: exactly the P&L's depreciation line from the register.
+
+Each with its (ⓘ). Below them, the month's **CAPEX**: bought out of the safe, by the bank, owned
+already added, what the sales brought in and their gain or loss. The grid: asset code, name (with
+its location and how it was paid), category, purchase date, cost, useful life (and the months
+charged), monthly depreciation, accumulated depreciation, net book value and status (a badge), with
+the disposal and its gain or loss under the name; every column sorts (its heading, or the sort pill),
+with a search and category and status filters, and the shown assets still held totalled. Below,
+what each category holds. **Export register to Excel** gives the register at the month's end, every
+asset with its figures and a total, and a sheet by category.
+
+**On the P&L** (Reports → KPIs' statement, and `GET /api/costing/reports/pnl?year=&month=`):
+
+```
+Revenue (net sales)
+− Cost of sales (recipes' cost of what was sold, waste, spoilage, count differences)
+= Gross profit (مجمل الربح)
+− Operating expenses (المصروفات التشغيلية): wages and benefits, running costs, rent and
+  occupation, other fixed costs, hospitality and recipe tastings
+= EBITDA (الربح التشغيلي قبل الفوائد والضرائب والإهلاك)
+− Interest (الفوائد), as entered for the month
+− Depreciation expense (إهلاك الأصول الثابتة) = the register's for the month + any entered for the month
+± Gain / (loss) on asset disposals (أرباح / (خسائر) استبعاد الأصول) in the month
+= Net profit (صافي الربح النهائي)
+```
+
+**The month's depreciation from the register** is Σ, over every asset on it, of its depreciation
+for the month: each bought on or before the month's end, its life not yet through, and not disposed
+of or sold before the month (an asset sold later was active then: a closed month's P&L stays as it
+was). EBITDA and the net profit wait for the month's wages, as the net profit always has. The KPIs'
+net profit margin is after depreciation and disposals; the break-even's depreciation and the plate
+cost's overhead pool include the register's. The depreciation still entered by hand on the KPIs is
+for assets not on the register: an asset on it and entered too would be counted twice.
+
+`GET /api/costing/reports/pnl` returns the same, as figures (`Revenue`, `GrossProfit`,
+`OperatingExpenses`, `Ebitda`, `Interest`, `AssetDepreciation`, `EnteredDepreciation`, `Depreciation`,
+`DisposalGainOrLoss`, `NetProfit`, and the gross, EBITDA and net margins) and as its lines in order.
+
+**Who does what.** Whoever works Financials sees the register and exports it, and records a purchase
+or a sale (a request unless a manager); a manager alone enters an asset owned already, changes an
+asset's details, writes one off or undoes it, and removes one owned already. The API, on
+`/api/financials/fixed-assets`: `GET` (`?year=&month=`), `GET export`, `POST` (a purchase: `PaidFrom`
+Safe, Bank or OwnedAlready; 200 made, 202 asked), `PUT {id}`, `POST {id}/dispose` (`SaleProceeds` and
+`Fund` for a sale, none for a write-off), `POST {id}/reinstate`, `DELETE {id}`. A purchase or a sale
+is voided as any safe entry, a deletion request (module Treasury) on its entry. Migration
+`AddFixedAssets` added the table and `SafeTransactions.FixedAssetId`.
 
 ## Promos and discounts against the margin (أثر الخصومات وتآكل الهامش)
 

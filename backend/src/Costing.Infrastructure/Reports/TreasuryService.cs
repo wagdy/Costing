@@ -86,7 +86,10 @@ public sealed record SafeMonth(
     decimal TotalIn = 0,
     decimal TotalOut = 0,
     // The tax held in the safe for the tax authority now: collected, less what was paid over.
-    decimal TaxOwedNow = 0);
+    decimal TaxOwedNow = 0,
+    // Fixed assets sold for cash into the safe in the month (in TotalIn), and bought out of it (in TotalOut).
+    decimal AssetSales = 0,
+    decimal AssetPurchases = 0);
 
 // The tax the takings collected and what was paid over of it (سداد ضرائب): what is still owed,
 // held in the safe for it. Below zero, more was paid than these takings collected.
@@ -286,6 +289,7 @@ public sealed class TreasuryService(CostingDbContext db, IBusinessCalendar clock
         var takings = standing.Where(t => t.Kind == SafeTransactionKind.RevenueTransfer).ToList();
         var (cash, card, tax) = (takings.Sum(t => t.GrossAmount ?? t.Amount), takings.Sum(t => t.CardAmount), takings.Sum(t => t.TaxAmount));
         var funding = standing.Where(t => t.Kind is SafeTransactionKind.OpeningBalance or SafeTransactionKind.Funding).Sum(t => t.Amount);
+        var assetSales = standing.Where(t => t.Kind == SafeTransactionKind.AssetSale).Sum(t => t.Amount);
         return new SafeMonth(
             year, month, from, to, Money(before),
             anyBefore ? SafeOpening.CarriedOver : opening is not null ? SafeOpening.OpeningEntry : SafeOpening.None,
@@ -299,9 +303,10 @@ public sealed class TreasuryService(CostingDbContext db, IBusinessCalendar clock
             await db.SafeTransactions.AnyAsync(t => t.Kind == SafeTransactionKind.OpeningBalance && t.ReversalOf == null && t.VoidedAtUtc == null, cancellationToken),
             entries,
             Money(cash), Money(card), Money(tax), Money(cash + card), Money(funding),
-            Money(before + cash + card + tax + funding),
+            Money(before + cash + card + tax + funding + assetSales),
             Money(Out(standing)),
-            (await GetTaxPositionAsync(null, cancellationToken)).Owed);
+            (await GetTaxPositionAsync(null, cancellationToken)).Owed,
+            Money(assetSales), Money(-standing.Where(t => t.Kind == SafeTransactionKind.AssetPurchase).Sum(t => t.Amount)));
     }
 
     // All that went out of the safe in these entries: what was paid from it (a voided payment's void
@@ -310,7 +315,7 @@ public sealed class TreasuryService(CostingDbContext db, IBusinessCalendar clock
         entries.Sum(t => t.Kind switch
         {
             SafeTransactionKind.RevenueTransfer => t.TakingsTotal - t.Amount,
-            SafeTransactionKind.OpeningBalance or SafeTransactionKind.Funding => 0,
+            SafeTransactionKind.OpeningBalance or SafeTransactionKind.Funding or SafeTransactionKind.AssetSale => 0,
             _ => -t.Amount,
         });
 
@@ -379,7 +384,9 @@ public sealed class TreasuryService(CostingDbContext db, IBusinessCalendar clock
             }
         }
 
-        var outgoing = standing.Where(t => t.Kind is not (SafeTransactionKind.RevenueTransfer or SafeTransactionKind.OpeningBalance or SafeTransactionKind.Funding))
+        var outgoing = standing
+            .Where(t => t.Kind is not (SafeTransactionKind.RevenueTransfer or SafeTransactionKind.OpeningBalance or SafeTransactionKind.Funding
+                or SafeTransactionKind.AssetSale))
             .Select(t => (Payment: t, Amount: -t.Amount))
             .Concat(paidOut)
             .ToList();
@@ -387,7 +394,8 @@ public sealed class TreasuryService(CostingDbContext db, IBusinessCalendar clock
         var (cash, card, tax) = (takings.Sum(t => t.GrossAmount ?? t.Amount), takings.Sum(t => t.CardAmount), takings.Sum(t => t.TaxAmount));
         var opening = before + standing.Where(t => t.Kind == SafeTransactionKind.OpeningBalance).Sum(t => t.Amount);
         var funding = standing.Where(t => t.Kind == SafeTransactionKind.Funding).ToList();
-        var totalIn = cash + card + tax + opening + funding.Sum(t => t.Amount);
+        var assetSales = standing.Where(t => t.Kind == SafeTransactionKind.AssetSale).Sum(t => t.Amount);
+        var totalIn = cash + card + tax + opening + funding.Sum(t => t.Amount) + assetSales;
         var totalOut = outgoing.Sum(o => o.Amount);
 
         decimal? Share(decimal part, decimal whole) => whole != 0 ? Math.Round(part * 100 / whole, 1, MidpointRounding.AwayFromZero) : null;
@@ -408,6 +416,9 @@ public sealed class TreasuryService(CostingDbContext db, IBusinessCalendar clock
                     .Where(l => l.Amount != 0)
                     .ToList()),
         };
+        // Fixed assets sold for cash: investing, never revenue.
+        if (assetSales != 0)
+            inflows.Add(Line("assetSales", "Fixed assets sold", "بيع أصول ثابتة", assetSales, totalIn));
 
         // The expense vouchers by their expense's category, as the profit and loss files them.
         var expenseIds = outgoing.Where(o => o.Payment.ExpenseItemId != null).Select(o => o.Payment.ExpenseItemId!.Value).Distinct().ToList();
@@ -441,6 +452,9 @@ public sealed class TreasuryService(CostingDbContext db, IBusinessCalendar clock
                 ]),
             Line("tax", "Tax paid over", "سداد الضرائب", Paid(SafeTransactionKind.TaxPayment), totalOut),
         };
+        // Fixed assets bought out of the safe (CAPEX): investing, never an operating expense.
+        if (Paid(SafeTransactionKind.AssetPurchase) is not 0 and var capex)
+            outflows.Add(Line("capex", "Fixed assets bought (CAPEX)", "شراء أصول ثابتة", capex, totalOut));
         // Takings whose payments out of them are not on record any more: said apart, not lost.
         if (Paid(SafeTransactionKind.RevenueTransfer) is not 0 and var unnamed)
             outflows.Add(Line("takings", "Paid out of the takings", "مصروف من الإيراد", unnamed, totalOut));
@@ -453,7 +467,7 @@ public sealed class TreasuryService(CostingDbContext db, IBusinessCalendar clock
                 var dayIn = g.Sum(t => t.Kind switch
                 {
                     SafeTransactionKind.RevenueTransfer => t.TakingsTotal,
-                    SafeTransactionKind.OpeningBalance or SafeTransactionKind.Funding => t.Amount,
+                    SafeTransactionKind.OpeningBalance or SafeTransactionKind.Funding or SafeTransactionKind.AssetSale => t.Amount,
                     _ => 0,
                 });
                 var dayOut = Out(g);
@@ -877,7 +891,7 @@ public sealed class TreasuryService(CostingDbContext db, IBusinessCalendar clock
 
     private sealed record Names(
         IReadOnlyDictionary<Guid, string> Suppliers, IReadOnlyDictionary<Guid, string> Expenses, IReadOnlyDictionary<Guid, string?> Invoices,
-        IReadOnlyDictionary<Guid, string> Employees);
+        IReadOnlyDictionary<Guid, string> Employees, IReadOnlyDictionary<Guid, string> Assets);
 
     private async Task<Names> NamesAsync(IReadOnlyList<SafeTransaction> rows, CancellationToken cancellationToken)
     {
@@ -887,11 +901,18 @@ public sealed class TreasuryService(CostingDbContext db, IBusinessCalendar clock
             await db.ExpenseItems.AsNoTracking().ToDictionaryAsync(e => e.Id, e => e.Name, cancellationToken),
             await db.PurchaseInvoices.AsNoTracking().Where(i => invoiceIds.Contains(i.Id))
                 .ToDictionaryAsync(i => i.Id, i => i.SupplierInvoiceNumber, cancellationToken),
-            await db.Staff.AsNoTracking().ToDictionaryAsync(e => e.Id, e => e.Name, cancellationToken));
+            await db.Staff.AsNoTracking().ToDictionaryAsync(e => e.Id, e => e.Name, cancellationToken),
+            await AssetNamesAsync(rows.Where(t => t.FixedAssetId != null).Select(t => t.FixedAssetId!.Value).Distinct().ToList(), cancellationToken));
     }
+
+    private async Task<IReadOnlyDictionary<Guid, string>> AssetNamesAsync(List<Guid> ids, CancellationToken cancellationToken) =>
+        ids.Count == 0
+            ? new Dictionary<Guid, string>()
+            : await db.FixedAssets.AsNoTracking().Where(a => ids.Contains(a.Id)).ToDictionaryAsync(a => a.Id, a => a.AssetCode + " " + a.Name, cancellationToken);
 
     private static SafeEntryRow Row(SafeTransaction t, Names names, decimal? balance)
     {
+        string Asset() => t.FixedAssetId is { } id ? names.Assets.GetValueOrDefault(id) ?? "a removed asset" : "an asset";
         string Supplier() => t.SupplierId is { } id ? names.Suppliers.GetValueOrDefault(id) ?? "a removed supplier" : "no supplier";
         string Takings() => t.RevenueDate is { } day ? $" · from the takings of {day.ToString("d MMM", Invariant)}" : "";
         string Employee() => t.EmployeeId is { } id ? names.Employees.GetValueOrDefault(id) ?? "a removed employee" : "an employee";
@@ -909,6 +930,8 @@ public sealed class TreasuryService(CostingDbContext db, IBusinessCalendar clock
             SafeTransactionKind.EmployeeAdvance => $"Advance to {Employee()}" + Takings(),
             SafeTransactionKind.SalaryPayment => $"Salary of {Employee()}" + (t.PayrollMonth is { } month ? $" · {month.ToString("MMMM yyyy", Invariant)}" : "") + Takings(),
             SafeTransactionKind.PayrollPayment => "Payroll from HR" + (t.PayrollMonth is { } run ? $" · {run.ToString("MMMM yyyy", Invariant)}" : ""),
+            SafeTransactionKind.AssetPurchase => $"Fixed asset bought (CAPEX) · {Asset()}" + (t.Fund == CashFund.Bank ? " · by the bank" : ""),
+            SafeTransactionKind.AssetSale => $"Fixed asset sold · {Asset()}" + (t.Fund == CashFund.Bank ? " · into the bank" : ""),
             _ => (t.PurchaseInvoiceId is { } i && names.Invoices.GetValueOrDefault(i) is { } number ? $"Invoice {number}" : "Invoice") +
                  (t.SupplierId is null ? "" : $" · {Supplier()}") +
                  (t.RevenueDate is { } day ? $" · from the takings of {day.ToString("d MMM", Invariant)}" : ""),

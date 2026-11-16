@@ -404,6 +404,8 @@ export class SafeVoucherDialog {
     SalaryPayment: 'Cash paid to an employee, from the safe or a day’s takings.',
     TaxPayment: '',
     PayrollPayment: '',
+    AssetPurchase: '',
+    AssetSale: '',
   }[this.data.kind];
   protected readonly taxExplanation =
     'The tax the takings collected, held in the safe, paid over to the tax authority. It comes out of the safe and off the tax owed; it is not an expense, so the profit and loss leaves it out.';

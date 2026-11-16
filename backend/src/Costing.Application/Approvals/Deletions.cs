@@ -286,6 +286,7 @@ internal sealed class DeletionTargets(
             throw new DomainException("This undoes another entry: it is not voided itself.");
         if (entry.IsVoided)
             throw new DomainException("This has already been voided.");
+        await treasury.CheckVoidAsync(entry, cancellationToken);
         return entry;
     }
 

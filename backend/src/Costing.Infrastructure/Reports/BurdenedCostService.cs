@@ -128,7 +128,7 @@ public sealed record BurdenedCostReport(
 public sealed record BurdenedRecipeCost(
     DateOnly From, DateOnly To, OverheadAllocationMethod Method, decimal TargetNetMarginPercent, decimal PlatesSold, BurdenedPlateRow? Plate);
 
-public sealed class BurdenedCostService(CostingDbContext db, Application.Common.IBusinessCalendar clock, CostingService costing, PurchaseSpendingService spending)
+public sealed class BurdenedCostService(CostingDbContext db, Application.Common.IBusinessCalendar clock, CostingService costing, PurchaseSpendingService spending, FixedAssetService fixedAssets)
 {
     private static readonly ExpenseLine[] OverheadLines = [ExpenseLine.Occupation, ExpenseLine.Controllable, ExpenseLine.OtherFixed];
 
@@ -299,8 +299,10 @@ public sealed class BurdenedCostService(CostingDbContext db, Application.Common.
                 wagesLogged += Logged(ExpenseLine.Wages) * share;
             }
 
+            // The fixed assets register's depreciation for the month, with any entered.
+            var assetDepreciation = (await fixedAssets.MonthAsync(month, cancellationToken)).Depreciation;
             var overheadRecorded = e is { OccupationCost: not null } or { OtherControllableCosts: not null } or { Interest: not null } or { Depreciation: not null }
-                || OverheadLines.Any(l => Logged(l) != 0);
+                || OverheadLines.Any(l => Logged(l) != 0) || assetDepreciation != 0;
             if (!overheadRecorded && settings.FallbackMonthlyOverheadCost is { } overheadFallback)
             {
                 overheadStandIn += overheadFallback * share;
@@ -312,7 +314,7 @@ public sealed class BurdenedCostService(CostingDbContext db, Application.Common.
                 controllable += ((e?.OtherControllableCosts ?? 0) + Logged(ExpenseLine.Controllable)) * share;
                 otherFixed += Logged(ExpenseLine.OtherFixed) * share;
                 interest += (e?.Interest ?? 0) * share;
-                depreciation += (e?.Depreciation ?? 0) * share;
+                depreciation += ((e?.Depreciation ?? 0) + assetDepreciation) * share;
             }
         }
 

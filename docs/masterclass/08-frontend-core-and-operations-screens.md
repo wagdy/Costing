@@ -443,7 +443,7 @@ export const appConfig: ApplicationConfig = {
 
 كل قسم بـ `canActivate: [costingTabGuard('Materials')]` و `loadComponent` كسول، والأقسام الفرعية (الوصفات، المشتريات، الماليات، التقارير، التحليلات) كأبناء لـ Shell خاص بها، والمسار الفارغ يفتح أول قسم يملكه المستخدم.
 
-> 📄 **`frontend/src/app/app.routes.ts`** — 299 سطر
+> 📄 **`frontend/src/app/app.routes.ts`** — 302 سطر
 
 ```ts
 import { Routes } from '@angular/router';
@@ -649,8 +649,11 @@ const costingChildren: Routes = [
       { path: 'staff', loadComponent: () => import('./features/costing/staff-page').then((m) => m.StaffPage) },
       { path: 'payroll', loadComponent: () => import('./features/costing/payroll-page').then((m) => m.PayrollPage) },
       { path: 'tax-service', loadComponent: () => import('./features/costing/tax-service-page').then((m) => m.TaxServicePage) },
+      // The fixed assets register (سجل الأصول الثابتة): CAPEX and its depreciation.
+      { path: 'fixed-assets', loadComponent: () => import('./features/costing/fixed-assets-page').then((m) => m.FixedAssetsPage) },
     ],
   },
+  { path: 'fixed-assets', redirectTo: 'financials/fixed-assets' },
   {
     // Reports (التقارير): where the money went, the safe's money in and out, and the food cost reports.
     path: 'reports',
@@ -1394,7 +1397,7 @@ function insert(field: HTMLInputElement, text: string): void {
 
 `costing.api.ts`: أكبر ملف: كل الأنواع والنداءات لـ `api/costing` و `api/inventory` و `api/financials` (الخامات، التكاليف، الوصفات، المصنعات، الإنتاج، المشتريات، الجرد، الهالك، الخزنة، التقارير، الموافقات…). الأنواع تطابق DTOs الـ API، والـ enums كـ union types، وقواميس التسميات ثنائية اللغة (`Record<Kind, { en; ar }>`) تجبر TypeScript على تسمية كل حالة.
 
-> 📄 **`frontend/src/app/core/costing/costing.api.ts`** — 3002 سطر
+> 📄 **`frontend/src/app/core/costing/costing.api.ts`** — 3231 سطر
 
 ```ts
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
@@ -1808,6 +1811,15 @@ export interface MonthStatement {
   staffMeals?: number;
   hospitality?: number;
   recipeTasting?: number;
+  // Below the gross profit: every overhead but interest and depreciation (operatingExpenses), and what
+  // is left, EBITDA (null until the wages are in). The depreciation: the fixed assets register's
+  // (assetDepreciation) and any entered, together (depreciationExpense); and the gains less the
+  // losses on the assets disposed of or sold in the month. netProfit is after all of them.
+  operatingExpenses?: number;
+  ebitda?: number | null;
+  assetDepreciation?: number;
+  depreciationExpense?: number;
+  disposalGainOrLoss?: number;
 }
 
 export interface LoggedExpense {
@@ -3086,6 +3098,40 @@ export class CostingApi {
     return this.http.get<KpiReport>('/api/costing/kpis', { params: { year, month } });
   }
 
+  profitAndLoss(year: number, month: number): Observable<ProfitAndLoss> {
+    return this.http.get<ProfitAndLoss>('/api/costing/reports/pnl', { params: { year, month } });
+  }
+
+  // The fixed assets register at the end of a month (this one when none).
+  fixedAssets(year?: number, month?: number): Observable<FixedAssetRegister> {
+    return this.http.get<FixedAssetRegister>('/api/financials/fixed-assets', { params: year && month ? { year, month } : {} });
+  }
+
+  exportFixedAssets(year: number, month: number): Observable<Blob> {
+    return this.http.get('/api/financials/fixed-assets/export', { params: { year, month }, responseType: 'blob' });
+  }
+
+  // Paid out of the safe or the bank: made at once for a manager (200), a request for anyone else (202).
+  acquireFixedAsset(asset: AcquireFixedAsset): Observable<FixedAssetResult> {
+    return this.http.post<FixedAssetResult>('/api/financials/fixed-assets', asset);
+  }
+
+  changeFixedAsset(id: string, asset: ChangeFixedAsset): Observable<{ id: string; assetCode: string }> {
+    return this.http.put<{ id: string; assetCode: string }>(`/api/financials/fixed-assets/${id}`, asset);
+  }
+
+  disposeFixedAsset(id: string, disposal: DisposeFixedAsset): Observable<FixedAssetResult> {
+    return this.http.post<FixedAssetResult>(`/api/financials/fixed-assets/${id}/dispose`, disposal);
+  }
+
+  reinstateFixedAsset(id: string): Observable<{ id: string; assetCode: string }> {
+    return this.http.post<{ id: string; assetCode: string }>(`/api/financials/fixed-assets/${id}/reinstate`, null);
+  }
+
+  removeFixedAsset(id: string): Observable<void> {
+    return this.http.delete<void>(`/api/financials/fixed-assets/${id}`);
+  }
+
   // The whole month each time: a figure left empty is not known yet.
   saveExpenses(year: number, month: number, expenses: MonthlyExpenses): Observable<MonthlyExpenses> {
     return this.http.put<MonthlyExpenses>(`/api/costing/expenses/${year}/${month}`, expenses);
@@ -3712,8 +3758,13 @@ export type SafeTransactionKind =
   // The tax collected paid over to the tax authority (سداد ضرائب): out of the safe, not an expense.
   | 'TaxPayment'
   // A month's payroll approved on HR, paid out of the safe (صرف مسير رواتب): its net cash, once.
-  | 'PayrollPayment';
-export type CashFund = 'Safe' | 'DayRevenue';
+  | 'PayrollPayment'
+  // A fixed asset bought (CAPEX), out of the safe or the bank: never an expense.
+  | 'AssetPurchase'
+  // A fixed asset sold, into the safe or the bank: never revenue.
+  | 'AssetSale';
+// Bank: what a fixed asset is paid from or sold into when it is not cash; the safe never counts it.
+export type CashFund = 'Safe' | 'DayRevenue' | 'Bank';
 // Where money put into the safe came from (مصدر التمويل).
 export type FundingSource = 'CarriedOver' | 'OwnerFinancing' | 'Other';
 
@@ -3734,6 +3785,8 @@ export const safeKindLabels: Record<SafeTransactionKind, { en: string; ar: strin
   SalaryPayment: { en: 'Salary paid', ar: 'صرف راتب' },
   TaxPayment: { en: 'Tax payment', ar: 'سداد ضرائب' },
   PayrollPayment: { en: 'Payroll paid', ar: 'صرف مسير رواتب' },
+  AssetPurchase: { en: 'Asset acquisition (CAPEX)', ar: 'شراء أصل ثابت' },
+  AssetSale: { en: 'Asset sold', ar: 'بيع أصل ثابت' },
 };
 
 // One line of the safe's ledger: in or out, and the balance after it (null where not running).
@@ -3805,6 +3858,9 @@ export interface SafeMonth {
   totalIn?: number;
   totalOut?: number;
   taxOwedNow?: number;
+  // Fixed assets sold for cash into the safe this month (in totalIn), and bought out of it (in totalOut).
+  assetSales?: number;
+  assetPurchases?: number;
 }
 
 // The tax the takings collected and what was paid over: what is still owed, held in the safe.
@@ -4063,6 +4119,182 @@ export interface SafeTransaction {
   netAmount?: number;
   discountsAmount?: number;
   discountReasons?: DiscountReason[] | null;
+  // An asset purchase's or sale's: the fixed asset.
+  fixedAssetId?: string | null;
+}
+
+// ---- Fixed assets (سجل الأصول الثابتة) ----
+
+export type FixedAssetCategory = 'KitchenEquipment' | 'Furniture' | 'Vehicles' | 'ItAndPos' | 'FitOut' | 'Other';
+// Active and FullyDepreciated: as of the month; Disposed and Sold: what was done with it.
+export type FixedAssetStatus = 'Active' | 'FullyDepreciated' | 'Disposed' | 'Sold';
+// Where an asset bought was paid from: a safe entry out of the safe or the bank, or owned already.
+export type AssetPaymentSource = 'Safe' | 'Bank' | 'OwnedAlready';
+
+export const fixedAssetCategoryLabels: Record<FixedAssetCategory, { en: string; ar: string }> = {
+  KitchenEquipment: { en: 'Kitchen equipment', ar: 'معدات المطبخ' },
+  Furniture: { en: 'Furniture', ar: 'الأثاث' },
+  Vehicles: { en: 'Vehicles', ar: 'السيارات' },
+  ItAndPos: { en: 'IT & POS', ar: 'أجهزة الحاسب ونقاط البيع' },
+  FitOut: { en: 'Fit-out & decoration', ar: 'تجهيزات وديكورات' },
+  Other: { en: 'Other', ar: 'أخرى' },
+};
+
+export const fixedAssetStatusLabels: Record<FixedAssetStatus, { en: string; ar: string }> = {
+  Active: { en: 'Active', ar: 'نشط' },
+  FullyDepreciated: { en: 'Fully depreciated', ar: 'مهلك بالكامل' },
+  Disposed: { en: 'Disposed', ar: 'مستبعد' },
+  Sold: { en: 'Sold', ar: 'مباع' },
+};
+
+// One asset as it stood at the end of the month: straight-line, (cost − salvage) ÷ life a month.
+export interface FixedAssetRow {
+  id: string;
+  assetCode: string;
+  name: string;
+  category: FixedAssetCategory;
+  location: string | null;
+  notes: string | null;
+  purchaseDate: string;
+  purchaseCost: number;
+  salvageValue: number;
+  usefulLifeMonths: number;
+  monthlyDepreciation: number;
+  monthsCharged: number;
+  monthsLeft: number;
+  accumulatedDepreciation: number;
+  netBookValue: number;
+  depreciationThisMonth: number;
+  lastMonth: string;
+  status: FixedAssetStatus;
+  // Null: owned already, paid through no entry here.
+  paidFrom: CashFund | null;
+  purchaseTransactionId: string | null;
+  disposalDate: string | null;
+  saleProceeds: number | null;
+  saleFund: CashFund | null;
+  saleTransactionId: string | null;
+  netBookValueAtDisposal: number | null;
+  gainOrLoss: number | null;
+  disposalNotes: string | null;
+  createdBy: string;
+  createdAtUtc: string;
+}
+
+export interface FixedAssetCategoryTotal {
+  category: FixedAssetCategory;
+  count: number;
+  cost: number;
+  accumulatedDepreciation: number;
+  netBookValue: number;
+  depreciationThisMonth: number;
+}
+
+// The register at the end of a month: the cards count what was still held then. The month's
+// investing cash: bought out of the safe and the bank, owned already added, what sales brought in.
+export interface FixedAssetRegister {
+  year: number;
+  month: number;
+  asOf: string;
+  totalCost: number;
+  accumulatedDepreciation: number;
+  netBookValue: number;
+  depreciationThisMonth: number;
+  activeCount: number;
+  fullyDepreciatedCount: number;
+  disposedCount: number;
+  boughtFromSafe: number;
+  boughtFromBank: number;
+  ownedAlreadyAdded: number;
+  saleProceeds: number;
+  disposalGainOrLoss: number;
+  categories: FixedAssetCategoryTotal[];
+  assets: FixedAssetRow[];
+  locations: string[];
+}
+
+export interface AcquireFixedAsset {
+  requestId: string;
+  assetId: string;
+  transactionId: string;
+  name: string;
+  category: FixedAssetCategory;
+  purchaseDate: string;
+  purchaseCost: number;
+  usefulLifeMonths: number;
+  salvageValue: number;
+  location: string | null;
+  notes: string | null;
+  paidFrom: AssetPaymentSource;
+  reason?: string | null;
+}
+
+// Cost and purchase date: an asset owned already's only.
+export interface ChangeFixedAsset {
+  name: string;
+  category: FixedAssetCategory;
+  usefulLifeMonths: number;
+  salvageValue: number;
+  location: string | null;
+  notes: string | null;
+  purchaseDate?: string | null;
+  purchaseCost?: number | null;
+}
+
+// saleProceeds more than nothing: sold into the safe or the bank (fund); otherwise written off.
+export interface DisposeFixedAsset {
+  requestId: string;
+  transactionId: string;
+  date: string;
+  saleProceeds: number | null;
+  fund: CashFund | null;
+  notes: string | null;
+  reason?: string | null;
+}
+
+// Applied: on the register (assetCode), paid (transaction); Requested: waits for a manager (request).
+export interface FixedAssetResult {
+  outcome: ApprovalOutcome;
+  assetId: string;
+  assetCode: string | null;
+  transaction: SafeTransaction | null;
+  request: ApprovalRequest | null;
+}
+
+// ---- The profit and loss (قائمة الدخل) ----
+
+export interface PnlLine {
+  key: string;
+  en: string;
+  ar: string;
+  amount: number | null;
+  percentOfRevenue: number | null;
+  level: number;
+  isTotal: boolean;
+}
+
+// Gross profit − operating expenses = EBITDA; − interest − depreciation ± disposals = net profit.
+export interface ProfitAndLoss {
+  year: number;
+  month: number;
+  from: string;
+  to: string;
+  revenue: number;
+  costOfSales: number;
+  grossProfit: number;
+  operatingExpenses: number;
+  ebitda: number | null;
+  interest: number;
+  assetDepreciation: number;
+  enteredDepreciation: number;
+  depreciation: number;
+  disposalGainOrLoss: number;
+  netProfit: number | null;
+  grossMarginPercent: number | null;
+  ebitdaMarginPercent: number | null;
+  netMarginPercent: number | null;
+  lines: PnlLine[];
+  missing: string | null;
 }
 
 // Tax and service (إعدادات الضريبة والخدمة): the till's tax rate, as the delivery system set it
@@ -8134,7 +8366,7 @@ export class InfoTip implements OnDestroy {
 ```
 
 
-> 📄 **`frontend/src/app/features/costing/info-tips.ts`** — 1008 سطر
+> 📄 **`frontend/src/app/features/costing/info-tips.ts`** — 1065 سطر
 
 ```ts
 // What each figure on the costing screens is, and how it is worked out, in Arabic and English: the
@@ -9141,6 +9373,63 @@ export const infoTips = {
     { en: 'Top discount reasons', ar: 'أهم أسباب الخصومات' },
     { en: 'Why the discounts were given, the largest first, with how many bills.', ar: 'أسباب الخصومات، الأكبر أولًا، مع عدد الفواتير.' },
     { en: 'Each reason\'s amounts and counts over the month\'s takings; a voided day\'s taken back out.', ar: 'مجموع مبالغ وعدد كل سبب في توريدات الشهر؛ ويُطرح اليوم الملغى.' },
+  ),
+
+  // ---- Fixed assets and the profit and loss ----
+  faTotalCost: tip(
+    { en: 'Total assets cost', ar: 'إجمالي تكلفة الأصول' },
+    {
+      en: 'What the assets still held at the end of the month cost to buy and put in place. Capital spending: it left the safe or the bank, never the P&L.',
+      ar: 'ما تكلفه شراء وتركيب الأصول القائمة في نهاية الشهر. إنفاق رأسمالي: خرج من الخزنة أو البنك، ولا يظهر في قائمة الدخل.',
+    },
+    { en: 'Σ purchase cost of every asset bought by the month’s end and not disposed of or sold by then.', ar: 'مجموع تكلفة شراء كل أصل اشتري حتى نهاية الشهر ولم يُستبعد أو يُبع.' },
+  ),
+  faAccumulated: tip(
+    { en: 'Accumulated depreciation', ar: 'مجمع الإهلاك' },
+    {
+      en: 'How much of the assets’ cost the P&L has taken so far, a month at a time.',
+      ar: 'ما حمّلته قائمة الدخل من تكلفة الأصول حتى الآن، شهرًا بشهر.',
+    },
+    {
+      en: 'Σ monthly depreciation × months charged (from the month bought, never the month disposed of), at most the cost less the salvage value.',
+      ar: 'مجموع (قسط الإهلاك الشهري × عدد الأشهر المحملة من شهر الشراء)، بحد أقصى التكلفة ناقص القيمة التخريدية.',
+    },
+  ),
+  faNetBookValue: tip(
+    { en: 'Net book value', ar: 'القيمة الدفترية الحالية' },
+    { en: 'What is left of the assets’ cost on the books: what is still to be depreciated, and the salvage value.', ar: 'ما تبقى من تكلفة الأصول في الدفاتر: الجزء الذي لم يُهلك بعد والقيمة التخريدية.' },
+    { en: 'Total assets cost − accumulated depreciation.', ar: 'إجمالي تكلفة الأصول − مجمع الإهلاك.' },
+  ),
+  faRunRate: tip(
+    { en: 'Monthly depreciation run rate', ar: 'قسط الإهلاك الشهري الحالي' },
+    {
+      en: 'What this month’s P&L is charged for the assets: the Depreciation expense line, below EBITDA.',
+      ar: 'ما تُحمّله قائمة دخل هذا الشهر للأصول: بند إهلاك الأصول الثابتة بعد الربح التشغيلي (EBITDA).',
+    },
+    {
+      en: 'Σ (purchase cost − salvage value) ÷ useful life in months, over each asset still within its life; its last month takes what the rounding left.',
+      ar: 'مجموع (تكلفة الشراء − القيمة التخريدية) ÷ العمر الإنتاجي بالأشهر لكل أصل داخل عمره؛ والشهر الأخير يأخذ فرق التقريب.',
+    },
+  ),
+  faGainLoss: tip(
+    { en: 'Capital gain / (loss)', ar: 'ربح / (خسارة) رأسمالية' },
+    { en: 'What disposing of or selling the asset made or lost against what was left of its cost: on the P&L of the month it went.', ar: 'ما حققه أو خسره بيع الأصل أو استبعاده مقارنة بالمتبقي من تكلفته: في قائمة دخل شهر الاستبعاد.' },
+    { en: 'Sale proceeds − net book value when it went (nothing, for a write-off).', ar: 'قيمة البيع − القيمة الدفترية وقت الاستبعاد (صفر في حالة الاستبعاد بلا مقابل).' },
+  ),
+  plEbitda: tip(
+    { en: 'EBITDA', ar: 'الربح التشغيلي قبل الفوائد والضرائب والإهلاك' },
+    { en: 'What running the restaurant made before interest, taxes, depreciation and amortization: the operating result, not hidden by what the equipment cost.', ar: 'ما حققه تشغيل المطعم قبل الفوائد والضرائب والإهلاك: نتيجة التشغيل دون أن تخفيها تكلفة المعدات.' },
+    { en: 'Gross profit − operating expenses (wages, running costs, occupation, other fixed costs, hospitality).', ar: 'مجمل الربح − المصروفات التشغيلية (الأجور، المصاريف الجارية، الإيجار، المصاريف الثابتة الأخرى، الضيافة).' },
+  ),
+  plDepreciation: tip(
+    { en: 'Depreciation expense', ar: 'إهلاك الأصول الثابتة' },
+    { en: 'The month’s share of what the fixed assets cost. Buying them (CAPEX) never comes here: only this, a month at a time.', ar: 'نصيب الشهر من تكلفة الأصول الثابتة. شراؤها (CAPEX) لا يظهر هنا: فقط هذا القسط شهرًا بشهر.' },
+    { en: 'The fixed assets register’s straight-line depreciation for the month + any depreciation entered for the month.', ar: 'إهلاك القسط الثابت للشهر من سجل الأصول + أي إهلاك مُدخل يدويًا للشهر.' },
+  ),
+  plNetProfit: tip(
+    { en: 'Net profit', ar: 'صافي الربح النهائي' },
+    { en: 'What is left after everything: the running costs, the interest, the assets’ depreciation and what disposing of them made or lost.', ar: 'ما يتبقى بعد كل شيء: مصاريف التشغيل والفوائد وإهلاك الأصول وأرباح أو خسائر استبعادها.' },
+    { en: 'EBITDA − interest − depreciation expense ± gain / (loss) on asset disposals.', ar: 'EBITDA − الفوائد − إهلاك الأصول ± أرباح / (خسائر) استبعاد الأصول.' },
   ),
 } satisfies Record<string, InfoTipContent>;
 

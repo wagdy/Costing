@@ -86,7 +86,17 @@ public sealed record MonthStatement(
     // tastings, costs of their own in the total expenses. None of them is food cost or a loss.
     decimal StaffMeals = 0,
     decimal Hospitality = 0,
-    decimal RecipeTasting = 0);
+    decimal RecipeTasting = 0,
+    // The P&L below the gross profit (ProfitAndLoss): what it costs to run the place, every overhead
+    // but the interest and the depreciation; and what is left, EBITDA, null until the wages are in.
+    decimal OperatingExpenses = 0,
+    decimal? Ebitda = null,
+    // The fixed assets register's straight-line depreciation for the month (FixedAssetService), on top
+    // of any entered above; all of it; and the gains less the losses on the assets disposed of or sold
+    // in the month, what they brought in less what was left of their cost.
+    decimal AssetDepreciation = 0,
+    decimal DepreciationExpense = 0,
+    decimal DisposalGainOrLoss = 0);
 
 public sealed record MonthlyExpensesDto(
     decimal? WagesAndBenefits,
@@ -143,7 +153,8 @@ public sealed record DiscountImpact(
 // Pillar 4: the template's financial KPIs for a business month. Sales and recipe costs come
 // from the till; losses from the stock ledger; wages, hours and overheads from what the manager
 // enters for the month.
-public sealed class KpiService(CostingDbContext db, IBusinessCalendar clock, CostingService costing, SalesLedger ledger, PurchaseSpendingService spending)
+public sealed class KpiService(
+    CostingDbContext db, IBusinessCalendar clock, CostingService costing, SalesLedger ledger, PurchaseSpendingService spending, FixedAssetService fixedAssets)
 {
     // The template's healthy ranges.
     private static readonly (decimal From, decimal To) FoodCostRange = (28, 35);
@@ -259,10 +270,16 @@ public sealed class KpiService(CostingDbContext db, IBusinessCalendar clock, Cos
 
         // Known once entered or paid: wages as entered plus wages paid as expenses, with the staff's meals.
         decimal? wages = expenses?.WagesAndBenefits is null && loggedWages == 0 ? null : (expenses?.WagesAndBenefits ?? 0) + loggedWages + staffMeals;
-        var totalExpenses = (wages ?? 0) + (expenses?.OtherControllableCosts ?? 0) + (expenses?.OccupationCost ?? 0)
-            + (expenses?.Interest ?? 0) + (expenses?.Depreciation ?? 0) + loggedControllable + loggedOccupation + loggedOtherFixed
-            + hospitality + tasting;
-        decimal? netProfit = wages is not null ? grossProfit - totalExpenses : null;
+        // Gross profit − operating expenses = EBITDA; − interest − depreciation ± disposals = net profit.
+        // A fixed asset bought is never an operating expense: its cost left the safe or the bank, and
+        // comes here a month at a time as depreciation (FixedAsset).
+        var operating = (wages ?? 0) + (expenses?.OtherControllableCosts ?? 0) + (expenses?.OccupationCost ?? 0)
+            + loggedControllable + loggedOccupation + loggedOtherFixed + hospitality + tasting;
+        var assetMonth = await fixedAssets.MonthAsync(theoretical.From, cancellationToken);
+        var depreciation = (expenses?.Depreciation ?? 0) + assetMonth.Depreciation;
+        var totalExpenses = operating + (expenses?.Interest ?? 0) + depreciation;
+        decimal? ebitda = wages is not null ? grossProfit - operating : null;
+        decimal? netProfit = ebitda is { } e ? e - (expenses?.Interest ?? 0) - depreciation + assetMonth.DisposalGainOrLoss : null;
         var breakage = Money(await db.BreakageEntries.AsNoTracking()
             .Where(b => b.BusinessDate >= theoretical.From && b.BusinessDate <= theoretical.To && b.VoidedAtUtc == null)
             .SumAsync(b => b.Cost, cancellationToken));
@@ -311,7 +328,8 @@ public sealed class KpiService(CostingDbContext db, IBusinessCalendar clock, Cos
                 Money(netProfit), loggedControllable, loggedOccupation, loggedOtherFixed, logged, loggedWages, Money(totalExpenses), breakage,
                 Money(takings.Sum(t => t.GrossAmount ?? t.Amount)), Money(takings.Sum(t => t.CardAmount)), Money(takings.Sum(t => t.TakingsTotal)),
                 Money(takings.Sum(t => t.TaxAmount)), Money(takings.Sum(t => t.VoidsAmount)),
-                takingsDays, Money(soldAtMenuPrices), staffMeals, hospitality, tasting),
+                takingsDays, Money(soldAtMenuPrices), staffMeals, hospitality, tasting,
+                Money(operating), Money(ebitda), assetMonth.Depreciation, Money(depreciation), assetMonth.DisposalGainOrLoss),
             ToDto(expenses), kpis, items,
             withoutRecipe.Count, withoutRecipe.Sum(r => r.NetSales),
             Erosion(takings, Money(revenueTotal), Money(foodRecipe + drinksRecipe)));

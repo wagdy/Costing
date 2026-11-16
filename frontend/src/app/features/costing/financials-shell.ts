@@ -6,7 +6,8 @@ import { Permissions } from '../../core/auth/permissions';
 
 // Financials (الماليات): the safe, where its money comes from, each day's cash reconciled with its
 // sales, the expense vouchers paid out of the safe, what is owed to suppliers and the payments made
-// to them, the staff the safe pays and their advances, and the tax and service settings.
+// to them, the fixed assets bought and their depreciation, the staff the safe pays and their
+// advances, and the tax and service settings.
 @Component({
   selector: 'app-financials-shell',
   imports: [RouterOutlet, SubNav],
@@ -25,6 +26,7 @@ export class FinancialsShell {
     { path: 'reconciliation', icon: 'rule', en: 'Reconciliation', ar: 'مطابقة الإيرادات' },
     { path: 'daily-cash', icon: 'calendar_view_day', en: 'Daily cash', ar: 'يومية الإيراد' },
     { path: 'expenses', icon: 'receipt', en: 'Expense vouchers', ar: 'إذن صرف مصروفات' },
+    { path: 'fixed-assets', icon: 'precision_manufacturing', en: 'Fixed assets', ar: 'الأصول الثابتة' },
     { path: 'suppliers', icon: 'account_balance', en: 'Supplier debts', ar: 'مديونيات الموردين' },
     { path: 'ap-aging', icon: 'hourglass_bottom', en: 'AP aging', ar: 'أعمار ديون الموردين' },
     { path: 'payments', icon: 'payments', en: 'Supplier payments', ar: 'أذونات صرف الموردين' },

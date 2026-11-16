@@ -733,7 +733,7 @@ public static class DependencyInjection
 
 البنية التحتية: كل "منفذ" يُربط بتطبيقه. `Singleton` للساعة وملف الشركة والتشفير؛ `Scoped` لكل ما يلمس `CostingDbContext`؛ `RetryOnConflictBehavior` يلف كل أمر؛ و `AddHttpClient` + `AddHostedService<HrSyncWorker>` للربط مع HR.
 
-> 📄 **`backend/src/Costing.Infrastructure/DependencyInjection.cs`** — 124 سطر
+> 📄 **`backend/src/Costing.Infrastructure/DependencyInjection.cs`** — 126 سطر
 
 ```csharp
 using MediatR;
@@ -796,6 +796,7 @@ public static class DependencyInjection
         // The menu, its sales, and the staff the safe pays.
         services.AddScoped<IMenuRepository, MenuRepository>();
         services.AddScoped<IComboOfferRepository, ComboOfferRepository>();
+        services.AddScoped<Domain.FixedAssets.IFixedAssetRepository, FixedAssetRepository>();
         services.AddScoped<Domain.Integrations.IPosLinkStore, PosLinkStore>();
         services.AddScoped<Domain.Integrations.IPosZReportRepository, PosZReportRepository>();
         services.AddScoped<Domain.Integrations.IPosDayRepository, PosDayRepository>();
@@ -843,6 +844,7 @@ public static class DependencyInjection
         services.AddScoped<SalesLedger>();
         services.AddScoped<CostingService>();
         services.AddScoped<VarianceService>();
+        services.AddScoped<FixedAssetService>();
         services.AddScoped<KpiService>();
         services.AddScoped<BreakEvenService>();
         services.AddScoped<PurchaseSpendingService>();
@@ -1426,6 +1428,7 @@ Costing/
                     CostingController.cs
                     EndOfDayController.cs
                     FinancialsController.cs
+                    FixedAssetsController.cs
                     HrIntegrationController.cs
                     IntelligenceController.cs
                     InventoryController.cs
@@ -1470,6 +1473,8 @@ Costing/
                 Expenses/
                     ExpenseItemSheet.cs
                     ExpenseItems.cs
+                FixedAssets/
+                    FixedAssets.cs
                 Integrations/
                     HrIntegration.cs
                     PosIntegration.cs
@@ -1536,6 +1541,8 @@ Costing/
                     EndOfDayReport.cs
                 Expenses/
                     ExpenseItem.cs
+                FixedAssets/
+                    FixedAsset.cs
                 Integrations/
                     HrIntegration.cs
                     PosIntegration.cs
@@ -1594,6 +1601,7 @@ Costing/
                 DependencyInjection.cs
                 Excel/
                     ExpenseItemWorkbook.cs
+                    FixedAssetWorkbook.cs
                     MenuSalesWorkbooks.cs
                     PrepItemWorkbook.cs
                     RawMaterialWorkbook.cs
@@ -1614,6 +1622,7 @@ Costing/
                     CostingDbContextFactory.cs
                     DatabaseConnection.cs
                     EndOfDayRepositories.cs
+                    FixedAssetPersistence.cs
                     HrIntegrationPersistence.cs
                     InventoryRepositories.cs
                     ItemConversions.cs
@@ -1633,6 +1642,7 @@ Costing/
                         20261115215556_AddBurdenedPlateCost.cs
                         20261116112941_AddSupplierTermsAndStaffMeals.cs
                         20261116193324_AddCombosAndDiscounts.cs
+                        20261116223159_AddFixedAssets.cs
                         CostingDbContextModelSnapshot.cs
                     PosIntegrationPersistence.cs
                     RetryOnConflictBehavior.cs
@@ -1648,8 +1658,10 @@ Costing/
                     CostingService.cs
                     CostingTables.cs
                     DailyBreakEvenService.cs
+                    FixedAssetService.cs
                     IntelligenceService.cs
                     KpiService.cs
+                    ProfitAndLoss.cs
                     PurchaseSpendingService.cs
                     SalesLedger.cs
                     StaffMealsService.cs
@@ -1666,6 +1678,7 @@ Costing/
                 Costing.Api.Tests.csproj
                 CostingApiTests.cs
                 DailyBreakEvenApiTests.cs
+                FixedAssetsApiTests.cs
                 HrIntegrationApiTests.cs
                 PosIntegrationApiTests.cs
                 SettingsApiTests.cs
@@ -1696,6 +1709,7 @@ Costing/
                 Costing.Domain.Tests.csproj
                 CostingTests.cs
                 EndOfDayTests.cs
+                FixedAssetTests.cs
                 IngredientSwapTests.cs
                 MaterialExplosionTests.cs
                 MenuSalesTests.cs
@@ -1718,6 +1732,7 @@ Costing/
                 DailyBreakEvenTests.cs
                 DatabaseConnectionTests.cs
                 DatabaseTests.cs
+                FixedAssetsTests.cs
                 IntelligenceTests.cs
                 PosIntegrationTests.cs
                 StaffMealsAndInflationTests.cs
@@ -1848,6 +1863,9 @@ Costing/
                         financials-shell.ts
                         financials.spec.ts
                         financials.ts
+                        fixed-asset-dialogs.ts
+                        fixed-assets-page.ts
+                        fixed-assets.spec.ts
                         form-checks.ts
                         funding-page.spec.ts
                         funding-page.ts

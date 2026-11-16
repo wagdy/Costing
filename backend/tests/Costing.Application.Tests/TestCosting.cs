@@ -39,6 +39,7 @@ public sealed class TestCosting
     public InventoryStore Inventory { get; } = new();
     public MenuStore Menu { get; } = new();
     public ComboStore Combos { get; } = new();
+    public FixedAssetStore FixedAssets { get; } = new();
     public SalesStore Sales { get; } = new();
     public StaffStore Staff { get; } = new();
     public BreakageStore Breakage { get; } = new();
@@ -83,6 +84,7 @@ public sealed class TestCosting
         services.AddSingleton<Costing.Application.Categories.IItemConversions>(new NoItemConversions());
         services.AddSingleton<IMenuRepository>(Menu);
         services.AddSingleton<Costing.Domain.Menu.IComboOfferRepository>(Combos);
+        services.AddSingleton<Costing.Domain.FixedAssets.IFixedAssetRepository>(FixedAssets);
         services.AddSingleton<ISalesReceiptRepository>(Sales);
         services.AddSingleton<IStaffMemberRepository>(Staff);
         services.AddSingleton<IBreakageEntryRepository>(Breakage);
@@ -519,6 +521,19 @@ public sealed class ComboStore : Costing.Domain.Menu.IComboOfferRepository
         Task.FromResult<IReadOnlyDictionary<int, IReadOnlyList<ComboPart>>>(All.Where(c => menuItemIds.Contains(c.Code)).ToDictionary(c => c.Code, c => c.Parts));
     public Task<IReadOnlyList<Costing.Domain.Menu.ComboOffer>> GetUsingRecipeAsync(Guid recipeId, CancellationToken cancellationToken = default) =>
         Task.FromResult<IReadOnlyList<Costing.Domain.Menu.ComboOffer>>(All.Where(c => !c.IsDeleted && c.Items.Any(i => i.RecipeId == recipeId)).ToList());
+}
+
+public sealed class FixedAssetStore : Costing.Domain.FixedAssets.IFixedAssetRepository
+{
+    public List<Costing.Domain.FixedAssets.FixedAsset> All { get; } = new();
+
+    public Task<Costing.Domain.FixedAssets.FixedAsset?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default) => Task.FromResult(All.SingleOrDefault(a => a.Id == id));
+    public void Add(Costing.Domain.FixedAssets.FixedAsset aggregate) => All.Add(aggregate);
+    public Task<IReadOnlyList<Costing.Domain.FixedAssets.FixedAsset>> GetAllAsync(CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyList<Costing.Domain.FixedAssets.FixedAsset>>(All.Where(a => !a.IsVoided).OrderBy(a => a.Number).ToList());
+    public Task<Costing.Domain.FixedAssets.FixedAsset?> GetByTransactionAsync(Guid transactionId, CancellationToken cancellationToken = default) =>
+        Task.FromResult(All.SingleOrDefault(a => a.PurchaseTransactionId == transactionId || a.SaleTransactionId == transactionId));
+    public Task<int> NextNumberAsync(CancellationToken cancellationToken = default) => Task.FromResult(All.Select(a => a.Number).DefaultIfEmpty(0).Max() + 1);
 }
 
 public sealed class MovementStore : IStockMovementRepository

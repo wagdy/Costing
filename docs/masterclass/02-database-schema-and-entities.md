@@ -43,7 +43,8 @@
 | المنيو والمبيعات | `MenuCategories`, `MenuItems`, `MenuItemVariants`, `AddOns`, `SalesReceipts`, `SalesReceiptLines`, `ManualSalesSheets`, `ManualSalesLines` |
 | المخزون | `StockMovements`, `StockCounts`, `StockCountLines`, `BreakageEntries` |
 | المشتريات | `PurchaseInvoices`, `PurchaseInvoiceLines`, `PurchaseInvoiceAttachments` |
-| الخزنة | `SafeTransactions`, `SupplierLedgerEntries` |
+| الخزنة | `SafeTransactions` (وفيها `FixedAssetId` لشراء أصل أو بيعه)، `SupplierLedgerEntries` |
+| الأصول الثابتة | `FixedAssets`: الكود FA-0001، التكلفة، القيمة التخريدية، العمر بالأشهر، الحالة، مصدر الدفع وقيد الشراء والبيع |
 | تقفيل اليوم | `EndOfDayReports`, `EndOfDayInvoices`, `EndOfDayPayouts`, `EndOfDayPhotos` |
 | الموظفون | `Staff`, `PayrollRuns`, `PayrollRunDepartments`, `StaffDeductions`, `SyncedEmployees` |
 | الصلاحيات والموافقات | `UserTabAccess`, `ApprovalRequests`, `identity.Users` |
@@ -3700,7 +3701,7 @@ public interface IBreakageEntryRepository : IRepository<BreakageEntry>
 
 `SafeTransaction`: كل قيد في الخزنة. **صندوقان** (`CashFund`): الخزنة (`Safe`)، و **درج اليوم** (`DayRevenue`: إيراد يوم لم يُورَّد بعد؛ يمكن الدفع منه مباشرة). الأنواع: رصيد افتتاحي، تمويل، **توريد إيراد** (`RevenueTransfer`: كاش وفيزا **قبل الضريبة** + الضريبة فوقها)، إذن صرف مصروفات، سداد مورد، سداد فاتورة، سلفة موظف، صرف راتب، **سداد ضرائب** (`TaxPayment`)، و **صرف مسير رواتب** (`PayrollPayment`). و `Takings(...)` تفصل الضريبة من مبلغ شامل **بحيث يرجع الجمع للمبلغ المُدخل بالقرش** (الفصل 06).
 
-> 📄 **`backend/src/Costing.Domain/Treasury/SafeTransaction.cs`** — 467 سطر
+> 📄 **`backend/src/Costing.Domain/Treasury/SafeTransaction.cs`** — 497 سطر
 
 ```csharp
 using Costing.Domain.Common;
@@ -3718,6 +3719,10 @@ public enum CashFund
 
     // One business day's cash sales (RevenueDate), before they go into the safe.
     DayRevenue = 2,
+
+    // The restaurant's bank account (البنك): what a fixed asset is paid from or sold into when it
+    // is not cash. The safe's balance and its reports never count it.
+    Bank = 3,
 }
 
 public enum SafeTransactionKind
@@ -3759,6 +3764,15 @@ public enum SafeTransactionKind
     // payable (PayrollRunId), the advances paid during the month taken off already. Its labor cost
     // is the run's, counted for the month it pays.
     PayrollPayment = 10,
+
+    // A fixed asset bought (شراء أصل ثابت, CAPEX), out of the safe or the bank (FixedAssetId): cash
+    // out on the day it is bought, never an expense. The profit and loss takes its depreciation, a
+    // month at a time over its useful life.
+    AssetPurchase = 11,
+
+    // A fixed asset sold (بيع أصل ثابت): what it brought in, into the safe or the bank. Not revenue:
+    // set against what was left of its cost, the gain or loss is the profit and loss's.
+    AssetSale = 12,
 }
 
 // Where money put into the safe came from (مصدر التمويل).
@@ -3839,6 +3853,9 @@ public sealed class SafeTransaction : AggregateRoot
 
     // A payroll payment's: the payroll run from HR it pays.
     public Guid? PayrollRunId { get; private set; }
+
+    // An asset purchase's or sale's: the fixed asset it bought or sold.
+    public Guid? FixedAssetId { get; private set; }
 
     public string? Notes { get; private set; }
 
@@ -4094,6 +4111,16 @@ public sealed class SafeTransaction : AggregateRoot
         };
     }
 
+    // A fixed asset bought out of the safe or the bank (fund): its whole cost, out on the day.
+    public static SafeTransaction AssetPurchase(
+        Guid id, decimal amount, DateOnly date, Guid fixedAssetId, CashFund fund, string? notes, string recordedBy, string? approvedBy = null) =>
+        new(id, SafeTransactionKind.AssetPurchase, CashOrBank(fund), -Positive(amount), date, notes, recordedBy, approvedBy) { FixedAssetId = fixedAssetId };
+
+    // A fixed asset sold: what it brought in, into the safe or the bank (fund) on the day.
+    public static SafeTransaction AssetSale(
+        Guid id, decimal amount, DateOnly date, Guid fixedAssetId, CashFund fund, string? notes, string recordedBy, string? approvedBy = null) =>
+        new(id, SafeTransactionKind.AssetSale, CashOrBank(fund), Positive(amount), date, notes, recordedBy, approvedBy) { FixedAssetId = fixedAssetId };
+
     // Voids it: the opposite amount, entered on `today`, naming it. Voiding again is refused. A
     // payment out of a day's takings made before they were entered goes back into the safe when
     // they are in it now (takingsInSafe): it was taken off what went in.
@@ -4123,6 +4150,7 @@ public sealed class SafeTransaction : AggregateRoot
             EmployeeId = EmployeeId,
             PayrollMonth = PayrollMonth,
             PayrollRunId = PayrollRunId,
+            FixedAssetId = FixedAssetId,
             ReversalOf = Id,
         };
         reversal._discountReasons.AddRange(Discounts.Negated(_discountReasons));
@@ -4131,6 +4159,9 @@ public sealed class SafeTransaction : AggregateRoot
 
     private static decimal Positive(decimal amount) =>
         amount > 0 ? Math.Round(amount, 2, MidpointRounding.AwayFromZero) : throw new DomainException("Enter an amount more than nothing.");
+
+    private static CashFund CashOrBank(CashFund fund) =>
+        fund is CashFund.Safe or CashFund.Bank ? fund : throw new DomainException("Pay it from the safe or the bank. · من الخزنة أو البنك.");
 
     private static DateOnly Month(DateOnly month) =>
         month.Day == 1 ? month : throw new DomainException("A payroll month is named by its first day.");
@@ -5198,7 +5229,7 @@ public static class DatabaseConnection
 - `ConfigureConventions`: كل `decimal` بدقة (10,2) افتراضيًا (والكميات تتجاوزه صراحة بـ `IsQuantity()`).
 - `SaveChangesAsync`: `TouchRootsOfChangedChildren` (تعديل ابن يعلّم أباه معدّلًا ليُفحص `xmin` الخاص به)، وترجمة أخطاء EF/Npgsql (تزامن، تكرار فريد، مفتاح أجنبي) إلى `ConflictException`، فلا تعرف الطبقات العليا شيئًا عن EF.
 
-> 📄 **`backend/src/Costing.Infrastructure/Persistence/CostingDbContext.cs`** — 169 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Persistence/CostingDbContext.cs`** — 170 سطر
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
@@ -5265,6 +5296,7 @@ public sealed class CostingDbContext(DbContextOptions<CostingDbContext> options)
     public DbSet<ExpenseItem> ExpenseItems => Set<ExpenseItem>();
     public DbSet<ApprovalRequest> ApprovalRequests => Set<ApprovalRequest>();
     public DbSet<SafeTransaction> SafeTransactions => Set<SafeTransaction>();
+    public DbSet<Domain.FixedAssets.FixedAsset> FixedAssets => Set<Domain.FixedAssets.FixedAsset>();
     public DbSet<SupplierLedgerEntry> SupplierLedgerEntries => Set<SupplierLedgerEntry>();
     public DbSet<PrepRecipe> PrepRecipes => Set<PrepRecipe>();
     public DbSet<ProductionOrder> ProductionOrders => Set<ProductionOrder>();
@@ -5456,7 +5488,7 @@ internal static class PropertyBuilderExtensions
 
 `InventoryConfigurations.cs`: الخامات، الوصفات، المخزون، الجرد، المشتريات، الخزنة، الموردون، الموافقات. لاحظ: **وصفة فعّالة واحدة لكل هدف** (فهرس فريد مرشّح `NULLS NOT DISTINCT` على `(TargetKind, CatalogItemId, VariantId)`)، فهرس الحركات الفريد، خامة واحدة لكل بند جرد ولكل بند فاتورة، **طلب موافقة معلّق واحد لكل سجل** (فهرس فريد على `RecordId` بشرط `Status = 'Pending'`)، قيد عكسي واحد لكل قيد خزنة، `Cascade` على البنود و `Restrict` على المراجع، وفهرس `PayrollRunId` على قيود الخزنة.
 
-> 📄 **`backend/src/Costing.Infrastructure/Persistence/Configurations/InventoryConfigurations.cs`** — 464 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Persistence/Configurations/InventoryConfigurations.cs`** — 467 سطر
 
 ```csharp
 using System.Text.Json;
@@ -5701,6 +5733,9 @@ internal sealed class SafeTransactionConfiguration : IEntityTypeConfiguration<Sa
         builder.HasIndex(t => new { t.Fund, t.BusinessDate });
         builder.HasIndex(t => t.RevenueDate);
         builder.HasIndex(t => t.PurchaseInvoiceId);
+        // The fixed asset an entry bought or sold. No key to it: the asset names its entries, and
+        // both are made in one save.
+        builder.HasIndex(t => t.FixedAssetId).HasFilter("\"FixedAssetId\" IS NOT NULL");
         // An employee's advances and salaries, month by month.
         builder.HasIndex(t => new { t.EmployeeId, t.PayrollMonth }).HasFilter("\"EmployeeId\" IS NOT NULL");
     }
@@ -7260,6 +7295,7 @@ dotnet ef migrations add <Name> \
 | 11 | `20261115215556_AddBurdenedPlateCost` | Add Burdened Plate Cost |
 | 12 | `20261116112941_AddSupplierTermsAndStaffMeals` | Add Supplier Terms And Staff Meals |
 | 13 | `20261116193324_AddCombosAndDiscounts` | Add Combos And Discounts |
+| 14 | `20261116223159_AddFixedAssets` | Add Fixed Assets |
 
 
 ### 14.1 `UnifySafeTakings`: migration تحوّل بيانات لا شكلًا فقط

@@ -43,7 +43,8 @@
 | المنيو والمبيعات | `MenuCategories`, `MenuItems`, `MenuItemVariants`, `AddOns`, `SalesReceipts`, `SalesReceiptLines`, `ManualSalesSheets`, `ManualSalesLines` |
 | المخزون | `StockMovements`, `StockCounts`, `StockCountLines`, `BreakageEntries` |
 | المشتريات | `PurchaseInvoices`, `PurchaseInvoiceLines`, `PurchaseInvoiceAttachments` |
-| الخزنة | `SafeTransactions`, `SupplierLedgerEntries` |
+| الخزنة | `SafeTransactions` (وفيها `FixedAssetId` لشراء أصل أو بيعه)، `SupplierLedgerEntries` |
+| الأصول الثابتة | `FixedAssets`: الكود FA-0001، التكلفة، القيمة التخريدية، العمر بالأشهر، الحالة، مصدر الدفع وقيد الشراء والبيع |
 | تقفيل اليوم | `EndOfDayReports`, `EndOfDayInvoices`, `EndOfDayPayouts`, `EndOfDayPhotos` |
 | الموظفون | `Staff`, `PayrollRuns`, `PayrollRunDepartments`, `StaffDeductions`, `SyncedEmployees` |
 | الصلاحيات والموافقات | `UserTabAccess`, `ApprovalRequests`, `identity.Users` |

@@ -58,6 +58,7 @@ public static class DependencyInjection
         // The menu, its sales, and the staff the safe pays.
         services.AddScoped<IMenuRepository, MenuRepository>();
         services.AddScoped<IComboOfferRepository, ComboOfferRepository>();
+        services.AddScoped<Domain.FixedAssets.IFixedAssetRepository, FixedAssetRepository>();
         services.AddScoped<Domain.Integrations.IPosLinkStore, PosLinkStore>();
         services.AddScoped<Domain.Integrations.IPosZReportRepository, PosZReportRepository>();
         services.AddScoped<Domain.Integrations.IPosDayRepository, PosDayRepository>();
@@ -105,6 +106,7 @@ public static class DependencyInjection
         services.AddScoped<SalesLedger>();
         services.AddScoped<CostingService>();
         services.AddScoped<VarianceService>();
+        services.AddScoped<FixedAssetService>();
         services.AddScoped<KpiService>();
         services.AddScoped<BreakEvenService>();
         services.AddScoped<PurchaseSpendingService>();

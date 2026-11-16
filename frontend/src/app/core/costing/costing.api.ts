@@ -409,6 +409,15 @@ export interface MonthStatement {
   staffMeals?: number;
   hospitality?: number;
   recipeTasting?: number;
+  // Below the gross profit: every overhead but interest and depreciation (operatingExpenses), and what
+  // is left, EBITDA (null until the wages are in). The depreciation: the fixed assets register's
+  // (assetDepreciation) and any entered, together (depreciationExpense); and the gains less the
+  // losses on the assets disposed of or sold in the month. netProfit is after all of them.
+  operatingExpenses?: number;
+  ebitda?: number | null;
+  assetDepreciation?: number;
+  depreciationExpense?: number;
+  disposalGainOrLoss?: number;
 }
 
 export interface LoggedExpense {
@@ -1687,6 +1696,40 @@ export class CostingApi {
     return this.http.get<KpiReport>('/api/costing/kpis', { params: { year, month } });
   }
 
+  profitAndLoss(year: number, month: number): Observable<ProfitAndLoss> {
+    return this.http.get<ProfitAndLoss>('/api/costing/reports/pnl', { params: { year, month } });
+  }
+
+  // The fixed assets register at the end of a month (this one when none).
+  fixedAssets(year?: number, month?: number): Observable<FixedAssetRegister> {
+    return this.http.get<FixedAssetRegister>('/api/financials/fixed-assets', { params: year && month ? { year, month } : {} });
+  }
+
+  exportFixedAssets(year: number, month: number): Observable<Blob> {
+    return this.http.get('/api/financials/fixed-assets/export', { params: { year, month }, responseType: 'blob' });
+  }
+
+  // Paid out of the safe or the bank: made at once for a manager (200), a request for anyone else (202).
+  acquireFixedAsset(asset: AcquireFixedAsset): Observable<FixedAssetResult> {
+    return this.http.post<FixedAssetResult>('/api/financials/fixed-assets', asset);
+  }
+
+  changeFixedAsset(id: string, asset: ChangeFixedAsset): Observable<{ id: string; assetCode: string }> {
+    return this.http.put<{ id: string; assetCode: string }>(`/api/financials/fixed-assets/${id}`, asset);
+  }
+
+  disposeFixedAsset(id: string, disposal: DisposeFixedAsset): Observable<FixedAssetResult> {
+    return this.http.post<FixedAssetResult>(`/api/financials/fixed-assets/${id}/dispose`, disposal);
+  }
+
+  reinstateFixedAsset(id: string): Observable<{ id: string; assetCode: string }> {
+    return this.http.post<{ id: string; assetCode: string }>(`/api/financials/fixed-assets/${id}/reinstate`, null);
+  }
+
+  removeFixedAsset(id: string): Observable<void> {
+    return this.http.delete<void>(`/api/financials/fixed-assets/${id}`);
+  }
+
   // The whole month each time: a figure left empty is not known yet.
   saveExpenses(year: number, month: number, expenses: MonthlyExpenses): Observable<MonthlyExpenses> {
     return this.http.put<MonthlyExpenses>(`/api/costing/expenses/${year}/${month}`, expenses);
@@ -2313,8 +2356,13 @@ export type SafeTransactionKind =
   // The tax collected paid over to the tax authority (سداد ضرائب): out of the safe, not an expense.
   | 'TaxPayment'
   // A month's payroll approved on HR, paid out of the safe (صرف مسير رواتب): its net cash, once.
-  | 'PayrollPayment';
-export type CashFund = 'Safe' | 'DayRevenue';
+  | 'PayrollPayment'
+  // A fixed asset bought (CAPEX), out of the safe or the bank: never an expense.
+  | 'AssetPurchase'
+  // A fixed asset sold, into the safe or the bank: never revenue.
+  | 'AssetSale';
+// Bank: what a fixed asset is paid from or sold into when it is not cash; the safe never counts it.
+export type CashFund = 'Safe' | 'DayRevenue' | 'Bank';
 // Where money put into the safe came from (مصدر التمويل).
 export type FundingSource = 'CarriedOver' | 'OwnerFinancing' | 'Other';
 
@@ -2335,6 +2383,8 @@ export const safeKindLabels: Record<SafeTransactionKind, { en: string; ar: strin
   SalaryPayment: { en: 'Salary paid', ar: 'صرف راتب' },
   TaxPayment: { en: 'Tax payment', ar: 'سداد ضرائب' },
   PayrollPayment: { en: 'Payroll paid', ar: 'صرف مسير رواتب' },
+  AssetPurchase: { en: 'Asset acquisition (CAPEX)', ar: 'شراء أصل ثابت' },
+  AssetSale: { en: 'Asset sold', ar: 'بيع أصل ثابت' },
 };
 
 // One line of the safe's ledger: in or out, and the balance after it (null where not running).
@@ -2406,6 +2456,9 @@ export interface SafeMonth {
   totalIn?: number;
   totalOut?: number;
   taxOwedNow?: number;
+  // Fixed assets sold for cash into the safe this month (in totalIn), and bought out of it (in totalOut).
+  assetSales?: number;
+  assetPurchases?: number;
 }
 
 // The tax the takings collected and what was paid over: what is still owed, held in the safe.
@@ -2664,6 +2717,182 @@ export interface SafeTransaction {
   netAmount?: number;
   discountsAmount?: number;
   discountReasons?: DiscountReason[] | null;
+  // An asset purchase's or sale's: the fixed asset.
+  fixedAssetId?: string | null;
+}
+
+// ---- Fixed assets (سجل الأصول الثابتة) ----
+
+export type FixedAssetCategory = 'KitchenEquipment' | 'Furniture' | 'Vehicles' | 'ItAndPos' | 'FitOut' | 'Other';
+// Active and FullyDepreciated: as of the month; Disposed and Sold: what was done with it.
+export type FixedAssetStatus = 'Active' | 'FullyDepreciated' | 'Disposed' | 'Sold';
+// Where an asset bought was paid from: a safe entry out of the safe or the bank, or owned already.
+export type AssetPaymentSource = 'Safe' | 'Bank' | 'OwnedAlready';
+
+export const fixedAssetCategoryLabels: Record<FixedAssetCategory, { en: string; ar: string }> = {
+  KitchenEquipment: { en: 'Kitchen equipment', ar: 'معدات المطبخ' },
+  Furniture: { en: 'Furniture', ar: 'الأثاث' },
+  Vehicles: { en: 'Vehicles', ar: 'السيارات' },
+  ItAndPos: { en: 'IT & POS', ar: 'أجهزة الحاسب ونقاط البيع' },
+  FitOut: { en: 'Fit-out & decoration', ar: 'تجهيزات وديكورات' },
+  Other: { en: 'Other', ar: 'أخرى' },
+};
+
+export const fixedAssetStatusLabels: Record<FixedAssetStatus, { en: string; ar: string }> = {
+  Active: { en: 'Active', ar: 'نشط' },
+  FullyDepreciated: { en: 'Fully depreciated', ar: 'مهلك بالكامل' },
+  Disposed: { en: 'Disposed', ar: 'مستبعد' },
+  Sold: { en: 'Sold', ar: 'مباع' },
+};
+
+// One asset as it stood at the end of the month: straight-line, (cost − salvage) ÷ life a month.
+export interface FixedAssetRow {
+  id: string;
+  assetCode: string;
+  name: string;
+  category: FixedAssetCategory;
+  location: string | null;
+  notes: string | null;
+  purchaseDate: string;
+  purchaseCost: number;
+  salvageValue: number;
+  usefulLifeMonths: number;
+  monthlyDepreciation: number;
+  monthsCharged: number;
+  monthsLeft: number;
+  accumulatedDepreciation: number;
+  netBookValue: number;
+  depreciationThisMonth: number;
+  lastMonth: string;
+  status: FixedAssetStatus;
+  // Null: owned already, paid through no entry here.
+  paidFrom: CashFund | null;
+  purchaseTransactionId: string | null;
+  disposalDate: string | null;
+  saleProceeds: number | null;
+  saleFund: CashFund | null;
+  saleTransactionId: string | null;
+  netBookValueAtDisposal: number | null;
+  gainOrLoss: number | null;
+  disposalNotes: string | null;
+  createdBy: string;
+  createdAtUtc: string;
+}
+
+export interface FixedAssetCategoryTotal {
+  category: FixedAssetCategory;
+  count: number;
+  cost: number;
+  accumulatedDepreciation: number;
+  netBookValue: number;
+  depreciationThisMonth: number;
+}
+
+// The register at the end of a month: the cards count what was still held then. The month's
+// investing cash: bought out of the safe and the bank, owned already added, what sales brought in.
+export interface FixedAssetRegister {
+  year: number;
+  month: number;
+  asOf: string;
+  totalCost: number;
+  accumulatedDepreciation: number;
+  netBookValue: number;
+  depreciationThisMonth: number;
+  activeCount: number;
+  fullyDepreciatedCount: number;
+  disposedCount: number;
+  boughtFromSafe: number;
+  boughtFromBank: number;
+  ownedAlreadyAdded: number;
+  saleProceeds: number;
+  disposalGainOrLoss: number;
+  categories: FixedAssetCategoryTotal[];
+  assets: FixedAssetRow[];
+  locations: string[];
+}
+
+export interface AcquireFixedAsset {
+  requestId: string;
+  assetId: string;
+  transactionId: string;
+  name: string;
+  category: FixedAssetCategory;
+  purchaseDate: string;
+  purchaseCost: number;
+  usefulLifeMonths: number;
+  salvageValue: number;
+  location: string | null;
+  notes: string | null;
+  paidFrom: AssetPaymentSource;
+  reason?: string | null;
+}
+
+// Cost and purchase date: an asset owned already's only.
+export interface ChangeFixedAsset {
+  name: string;
+  category: FixedAssetCategory;
+  usefulLifeMonths: number;
+  salvageValue: number;
+  location: string | null;
+  notes: string | null;
+  purchaseDate?: string | null;
+  purchaseCost?: number | null;
+}
+
+// saleProceeds more than nothing: sold into the safe or the bank (fund); otherwise written off.
+export interface DisposeFixedAsset {
+  requestId: string;
+  transactionId: string;
+  date: string;
+  saleProceeds: number | null;
+  fund: CashFund | null;
+  notes: string | null;
+  reason?: string | null;
+}
+
+// Applied: on the register (assetCode), paid (transaction); Requested: waits for a manager (request).
+export interface FixedAssetResult {
+  outcome: ApprovalOutcome;
+  assetId: string;
+  assetCode: string | null;
+  transaction: SafeTransaction | null;
+  request: ApprovalRequest | null;
+}
+
+// ---- The profit and loss (قائمة الدخل) ----
+
+export interface PnlLine {
+  key: string;
+  en: string;
+  ar: string;
+  amount: number | null;
+  percentOfRevenue: number | null;
+  level: number;
+  isTotal: boolean;
+}
+
+// Gross profit − operating expenses = EBITDA; − interest − depreciation ± disposals = net profit.
+export interface ProfitAndLoss {
+  year: number;
+  month: number;
+  from: string;
+  to: string;
+  revenue: number;
+  costOfSales: number;
+  grossProfit: number;
+  operatingExpenses: number;
+  ebitda: number | null;
+  interest: number;
+  assetDepreciation: number;
+  enteredDepreciation: number;
+  depreciation: number;
+  disposalGainOrLoss: number;
+  netProfit: number | null;
+  grossMarginPercent: number | null;
+  ebitdaMarginPercent: number | null;
+  netMarginPercent: number | null;
+  lines: PnlLine[];
+  missing: string | null;
 }
 
 // Tax and service (إعدادات الضريبة والخدمة): the till's tax rate, as the delivery system set it

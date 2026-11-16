@@ -201,8 +201,11 @@ const costingChildren: Routes = [
       { path: 'staff', loadComponent: () => import('./features/costing/staff-page').then((m) => m.StaffPage) },
       { path: 'payroll', loadComponent: () => import('./features/costing/payroll-page').then((m) => m.PayrollPage) },
       { path: 'tax-service', loadComponent: () => import('./features/costing/tax-service-page').then((m) => m.TaxServicePage) },
+      // The fixed assets register (سجل الأصول الثابتة): CAPEX and its depreciation.
+      { path: 'fixed-assets', loadComponent: () => import('./features/costing/fixed-assets-page').then((m) => m.FixedAssetsPage) },
     ],
   },
+  { path: 'fixed-assets', redirectTo: 'financials/fixed-assets' },
   {
     // Reports (التقارير): where the money went, the safe's money in and out, and the food cost reports.
     path: 'reports',

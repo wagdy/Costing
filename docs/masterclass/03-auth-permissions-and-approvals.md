@@ -1536,7 +1536,7 @@ internal sealed class GetApprovalPreviewHandler(IApprovalRequestRepository reque
 
 **في الدفاتر لا يُحذف شيء مُرحّل؛ يُلغى (Void).** حذف فاتورة مرحّلة = حركات مخزون عكسية بنفس تكلفتها + عكس قيد الخزنة أو حساب المورد. حذف قيد خزنة = قيد عكسي بتاريخ اليوم. `DeletionTargets` يعرف لكل وحدة كيف "يلغي" سجلها، و `RequestDeletionCommand`: من يملك القرار يلغي فورًا (ويُسجل كموافَق منه)، وغيره يطلب. نقطة النهاية `POST api/inventory/deletion-requests` في `InventoryController` (الفصل 05).
 
-> 📄 **`backend/src/Costing.Application/Approvals/Deletions.cs`** — 385 سطر
+> 📄 **`backend/src/Costing.Application/Approvals/Deletions.cs`** — 386 سطر
 
 ```csharp
 using System.Globalization;
@@ -1827,6 +1827,7 @@ internal sealed class DeletionTargets(
             throw new DomainException("This undoes another entry: it is not voided itself.");
         if (entry.IsVoided)
             throw new DomainException("This has already been voided.");
+        await treasury.CheckVoidAsync(entry, cancellationToken);
         return entry;
     }
 

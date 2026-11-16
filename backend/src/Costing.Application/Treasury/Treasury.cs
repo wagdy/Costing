@@ -6,6 +6,7 @@ using Costing.Application.Approvals;
 using Costing.Application.Common;
 using Costing.Domain.Approvals;
 using Costing.Domain.Expenses;
+using Costing.Domain.FixedAssets;
 using Costing.Domain.Purchases;
 using Costing.Domain.Sales;
 using Costing.Domain.Suppliers;
@@ -58,7 +59,23 @@ public sealed record SafeVoucher(
     Guid? PayrollRunId = null,
     // A day's takings': the discounts and promos taken off the menu prices, and why (Discounts).
     decimal? DiscountsAmount = null,
-    IReadOnlyList<DiscountReason>? DiscountReasons = null);
+    IReadOnlyList<DiscountReason>? DiscountReasons = null,
+    // A fixed asset bought or sold: out of or into the safe (the default) or the bank (Fund); the
+    // asset (FixedAssetId, made by the till for one bought); and, bought, what it is (Asset). Amount
+    // is what it cost or brought in, Date the day it was bought or sold.
+    CashFund? Fund = null,
+    Guid? FixedAssetId = null,
+    FixedAssetInput? Asset = null);
+
+// A fixed asset as it is entered: what it is, where it is, and what its depreciation is worked out
+// from. Its cost and the day it was bought are its payment's, or entered with it when it is owned already.
+public sealed record FixedAssetInput(
+    string Name,
+    FixedAssetCategory Category,
+    int UsefulLifeMonths,
+    decimal SalvageValue = 0,
+    string? Location = null,
+    string? Notes = null);
 
 // The tax rate the bills are charged, as set on Tax & service.
 public interface ITaxRate
@@ -94,13 +111,14 @@ public sealed record SafeTransactionDto(
     decimal VoidsAmount = 0,
     decimal NetAmount = 0,
     decimal DiscountsAmount = 0,
-    IReadOnlyList<DiscountReason>? DiscountReasons = null)
+    IReadOnlyList<DiscountReason>? DiscountReasons = null,
+    Guid? FixedAssetId = null)
 {
     public static SafeTransactionDto From(SafeTransaction t) => new(
         t.Id, t.Kind, t.Fund, t.Amount, t.BusinessDate, t.RevenueDate, t.Source, t.SupplierId, t.PurchaseInvoiceId, t.ExpenseItemId, t.Notes,
         t.RecordedBy, t.RecordedAtUtc, t.ApprovedBy, t.ReversalOf, t.VoidedAtUtc, t.VoidedBy, t.IncludesTax, t.TaxPercent, t.TaxAmount,
         t.GrossAmount, t.EmployeeId, t.PayrollMonth, t.CardAmount, t.VoidsAmount, t.Kind == SafeTransactionKind.RevenueTransfer ? t.NetAmount : 0,
-        t.DiscountsAmount, t.DiscountReasons.ToList());
+        t.DiscountsAmount, t.DiscountReasons.ToList(), t.FixedAssetId);
 }
 
 // Checks, describes and enters safe entries: for a manager's own and for an approval alike. What
@@ -115,7 +133,8 @@ internal sealed class TreasuryWriter(
     ITaxRate taxRate,
     IStaffMemberRepository employees,
     IPayrollRunRepository payrollRuns,
-    Costing.Application.Integrations.HrOutbox hr)
+    Costing.Application.Integrations.HrOutbox hr,
+    IFixedAssetRepository assets)
 {
     private static readonly CultureInfo Invariant = CultureInfo.InvariantCulture;
 
@@ -127,7 +146,7 @@ internal sealed class TreasuryWriter(
     // entry dated that calendar day is taken as well (Latest), never one later.
     public DateOnly Today => descriptions.BusinessDateOf(DateTime.UtcNow);
 
-    private DateOnly Latest
+    public DateOnly Latest
     {
         get
         {
@@ -168,6 +187,13 @@ internal sealed class TreasuryWriter(
         if (voucher.Kind != SafeTransactionKind.RevenueTransfer && (voucher.CardAmount is not null || voucher.TaxAmount is not null || voucher.VoidsAmount is not null
             || voucher.DiscountsAmount is not null || voucher.DiscountReasons is { Count: > 0 }))
             throw new DomainException("Only a day's takings have card takings, tax, voids and discounts.");
+        var forAsset = voucher.Kind is SafeTransactionKind.AssetPurchase or SafeTransactionKind.AssetSale;
+        if (!forAsset && (voucher.Fund is not (null or CashFund.Safe) || voucher.FixedAssetId is not null || voucher.Asset is not null))
+            throw new DomainException("Only a fixed asset is bought or sold through the bank. · البنك للأصول الثابتة فقط.");
+        if (forAsset && voucher.Fund is not (null or CashFund.Safe or CashFund.Bank))
+            throw new DomainException("Pay it from the safe or the bank. · من الخزنة أو البنك.");
+        if (forAsset && voucher.RevenueDate is not null)
+            throw new DomainException("A fixed asset is paid from the safe or the bank, not a day's takings.");
         switch (voucher.Kind)
         {
             case SafeTransactionKind.OpeningBalance:
@@ -234,6 +260,25 @@ internal sealed class TreasuryWriter(
                 var run = await PayrollRunAsync(voucher.PayrollRunId, cancellationToken);
                 if (voucher.Amount != run.NetCashPayable || voucher.PayrollMonth != run.Period)
                     throw new DomainException($"The payroll of {run.PeriodName} is paid as HR sent it: {Money(run.NetCashPayable)}.");
+                break;
+            }
+            case SafeTransactionKind.AssetPurchase:
+            {
+                if (voucher.FixedAssetId is not { } assetId || voucher.Asset is not { } asset)
+                    throw new DomainException("Say what the asset is. · أدخل بيانات الأصل.");
+                if (await assets.GetByIdAsync(assetId, cancellationToken) is not null)
+                    throw new DomainException("This asset is on the register already.");
+                // Checked as it would be made: its name, category, life and salvage value against its cost.
+                _ = NewAsset(voucher, asset, assetId, 1, voucher.Fund ?? CashFund.Safe, Guid.NewGuid(), "check");
+                break;
+            }
+            case SafeTransactionKind.AssetSale:
+            {
+                var sold = await AssetOnRegisterAsync(voucher.FixedAssetId, cancellationToken);
+                if (sold.IsGone)
+                    throw new DomainException($"{sold.AssetCode} {sold.Name} is disposed of already. · الأصل مستبعد بالفعل.");
+                if (voucher.Date < sold.PurchaseDate)
+                    throw new DomainException("An asset is sold on the day it was bought or after. · تاريخ البيع بعد تاريخ الشراء.");
                 break;
             }
             default:
@@ -312,6 +357,23 @@ internal sealed class TreasuryWriter(
                 await hr.PayrollAsync(run, entry, voided: false, cancellationToken);
                 break;
             }
+            case SafeTransactionKind.AssetPurchase:
+            {
+                // Out of the safe or the bank on the day it is bought, and on the register from then.
+                var fund = voucher.Fund ?? CashFund.Safe;
+                entry = SafeTransaction.AssetPurchase(id, voucher.Amount, voucher.Date, voucher.FixedAssetId!.Value, fund, voucher.Notes, recordedBy, approvedBy);
+                assets.Add(NewAsset(voucher, voucher.Asset!, voucher.FixedAssetId.Value, await assets.NextNumberAsync(cancellationToken), fund, entry.Id,
+                    approvedBy ?? recordedBy));
+                break;
+            }
+            case SafeTransactionKind.AssetSale:
+            {
+                var fund = voucher.Fund ?? CashFund.Safe;
+                var sold = await AssetOnRegisterAsync(voucher.FixedAssetId, cancellationToken);
+                entry = SafeTransaction.AssetSale(id, voucher.Amount, voucher.Date, sold.Id, fund, voucher.Notes, recordedBy, approvedBy);
+                sold.Sell(voucher.Date, voucher.Amount, fund, entry.Id, voucher.Notes, approvedBy ?? recordedBy);
+                break;
+            }
             default:
                 throw new DomainException("Say what the safe entry is.");
         }
@@ -320,12 +382,41 @@ internal sealed class TreasuryWriter(
         return entry;
     }
 
+    private static FixedAsset NewAsset(SafeVoucher voucher, FixedAssetInput asset, Guid assetId, int number, CashFund fund, Guid paidBy, string by) =>
+        new(assetId, number, asset.Name, asset.Category, asset.Location, asset.Notes, voucher.Date, voucher.Amount, asset.SalvageValue,
+            asset.UsefulLifeMonths, fund, paidBy, by);
+
+    // What would stop it being voided: a sold asset's purchase, before its sale is.
+    public async Task CheckVoidAsync(SafeTransaction entry, CancellationToken cancellationToken)
+    {
+        if (entry.Kind == SafeTransactionKind.AssetPurchase && entry.FixedAssetId is { } assetId
+            && await assets.GetByIdAsync(assetId, cancellationToken) is { Status: FixedAssetStatus.Sold } sold)
+            throw new DomainException($"{sold.AssetCode} {sold.Name} is sold: void its sale first. · ألغِ بيع الأصل أولًا.");
+    }
+
+    private async Task<FixedAsset> AssetOnRegisterAsync(Guid? id, CancellationToken cancellationToken)
+    {
+        var asset = id is { } assetId
+            ? await assets.GetByIdAsync(assetId, cancellationToken) ?? throw new NotFoundException("Fixed asset", assetId)
+            : throw new DomainException("Choose the asset. · اختر الأصل.");
+        return asset.IsVoided ? throw new DomainException("This asset is off the register. · الأصل محذوف من السجل.") : asset;
+    }
+
     // Voids it, today: the opposite amount in the safe's ledger, and on the supplier's account too
     // for a supplier payment. A payment out of a day's takings goes back into the safe when they
     // are in it.
     public async Task VoidAsync(SafeTransaction entry, string by, CancellationToken cancellationToken)
     {
+        await CheckVoidAsync(entry, cancellationToken);
         safe.Add(entry.Void(Guid.NewGuid(), Today, by, await TakingsInSafeAsync(entry.RevenueDate, cancellationToken)));
+        // A fixed asset's purchase voided: off the register. Its sale voided: back in use.
+        if (entry.FixedAssetId is { } assetId && await assets.GetByIdAsync(assetId, cancellationToken) is { IsVoided: false } asset)
+        {
+            if (entry.Kind == SafeTransactionKind.AssetPurchase)
+                asset.Void(by);
+            else if (entry.Kind == SafeTransactionKind.AssetSale && asset.SaleTransactionId == entry.Id)
+                asset.Reinstate(by);
+        }
         // An advance to an employee from HR: taken off their pay there too.
         if (entry.Kind == SafeTransactionKind.EmployeeAdvance)
             await hr.AdvanceAsync(entry, voided: true, cancellationToken);
@@ -486,6 +577,31 @@ internal sealed class TreasuryWriter(
                 changes.Add(new ApprovalChange("Advances already paid", null, Money(run.TotalAdvancesDeducted)));
                 break;
             }
+            case SafeTransactionKind.AssetPurchase:
+            {
+                var asset = voucher.Asset!;
+                var monthly = Math.Round((voucher.Amount - asset.SalvageValue) / Math.Max(asset.UsefulLifeMonths, 1), 2, MidpointRounding.AwayFromZero);
+                summary = $"Fixed asset bought (CAPEX) · {asset.Name} · {amount} from {FundName(voucher.Fund)}";
+                changes.Add(new ApprovalChange("Asset · الأصل", null, asset.Name));
+                changes.Add(new ApprovalChange("Category · الفئة", null, CategoryName(asset.Category)));
+                changes.Add(new ApprovalChange("Useful life · العمر الإنتاجي", null, $"{asset.UsefulLifeMonths} months"));
+                changes.Add(new ApprovalChange("Salvage value · القيمة التخريدية", null, Money(asset.SalvageValue)));
+                changes.Add(new ApprovalChange("Monthly depreciation · قسط الإهلاك الشهري", null, Money(monthly)));
+                changes.Add(new ApprovalChange("Paid from", null, FundName(voucher.Fund)));
+                break;
+            }
+            case SafeTransactionKind.AssetSale:
+            {
+                var sold = await AssetOnRegisterAsync(voucher.FixedAssetId, cancellationToken);
+                var left = sold.NetBookValueThrough(voucher.Date.AddMonths(-1));
+                summary = $"Fixed asset sold · {sold.AssetCode} {sold.Name} · {amount} into {FundName(voucher.Fund)}";
+                changes.Add(new ApprovalChange("Asset · الأصل", null, $"{sold.AssetCode} {sold.Name}"));
+                changes.Add(new ApprovalChange("Net book value · القيمة الدفترية", null, Money(left)));
+                changes.Add(new ApprovalChange(voucher.Amount >= left ? "Gain on sale · ربح البيع" : "Loss on sale · خسارة البيع", null,
+                    Money(Math.Abs(voucher.Amount - left))));
+                changes.Add(new ApprovalChange("Paid into", null, FundName(voucher.Fund)));
+                break;
+            }
             default:
                 throw new DomainException("Say what the safe entry is.");
         }
@@ -499,7 +615,9 @@ internal sealed class TreasuryWriter(
         decimal? moves = voucher.Kind switch
         {
             _ when fromDrawer => null,
-            SafeTransactionKind.OpeningBalance or SafeTransactionKind.Funding => voucher.Amount,
+            // Through the bank: the safe does not move.
+            _ when voucher.Fund == CashFund.Bank => null,
+            SafeTransactionKind.OpeningBalance or SafeTransactionKind.Funding or SafeTransactionKind.AssetSale => voucher.Amount,
             SafeTransactionKind.RevenueTransfer => Takings(voucher) is var (cash, card, tax)
                 ? cash + card + tax - await safe.PaidOutOfTakingsAsync(voucher.RevenueDate!.Value, cancellationToken)
                 : 0,
@@ -534,6 +652,8 @@ internal sealed class TreasuryWriter(
             SafeTransactionKind.SalaryPayment => $"Salary · {await EmployeeNameAsync(entry.EmployeeId, cancellationToken)}" +
                 (entry.PayrollMonth is { } month ? $" · {MonthName(month)}" : "") + From(entry.RevenueDate),
             SafeTransactionKind.PayrollPayment => $"Payroll from HR · {(entry.PayrollMonth is { } paid ? MonthName(paid) : "a month")}",
+            SafeTransactionKind.AssetPurchase => $"Fixed asset bought · {await AssetNameAsync(entry.FixedAssetId, cancellationToken)} from {FundName(entry.Fund)}",
+            SafeTransactionKind.AssetSale => $"Fixed asset sold · {await AssetNameAsync(entry.FixedAssetId, cancellationToken)} into {FundName(entry.Fund)}",
             _ => $"Invoice payment from {(entry.RevenueDate is { } day ? $"the takings of {Day(day)}" : "the safe")}",
         };
         return $"{what} · {Money(Math.Abs(entry.Amount))} · {Day(entry.BusinessDate)}";
@@ -570,6 +690,13 @@ internal sealed class TreasuryWriter(
 
     private async Task<string> EmployeeNameAsync(Guid? id, CancellationToken cancellationToken) =>
         (id is { } employeeId ? (await employees.GetByIdAsync(employeeId, cancellationToken))?.Name : null) ?? "an employee";
+
+    private async Task<string> AssetNameAsync(Guid? id, CancellationToken cancellationToken) =>
+        (id is { } assetId && await assets.GetByIdAsync(assetId, cancellationToken) is { } asset ? $"{asset.AssetCode} {asset.Name}" : null) ?? "an asset";
+
+    private static string FundName(CashFund? fund) => fund == CashFund.Bank ? "the bank" : "the safe";
+
+    private static string CategoryName(FixedAssetCategory category) => TreasuryNames.Category(category);
 
     private static string From(DateOnly? revenueDate) => revenueDate is { } day ? $" from the takings of {Day(day)}" : "";
 
@@ -624,6 +751,20 @@ internal sealed class TreasuryWriter(
         SafeTransaction.Takings(voucher.Amount, voucher.CardAmount ?? 0, voucher.TaxAmount, voucher.IncludesTax ? voucher.TaxPercent : null);
 
     private static string Day(DateOnly day) => day.ToString("d MMM yyyy", Invariant);
+}
+
+// How the treasury names a fixed asset's category, in both languages.
+public static class TreasuryNames
+{
+    public static string Category(FixedAssetCategory category) => category switch
+    {
+        FixedAssetCategory.KitchenEquipment => "Kitchen equipment · معدات المطبخ",
+        FixedAssetCategory.Furniture => "Furniture · الأثاث",
+        FixedAssetCategory.Vehicles => "Vehicles · السيارات",
+        FixedAssetCategory.ItAndPos => "IT & POS · أجهزة الحاسب ونقاط البيع",
+        FixedAssetCategory.FitOut => "Fit-out & decoration · تجهيزات وديكورات",
+        _ => "Other · أخرى",
+    };
 }
 
 // A safe entry: entered at once for a manager (Transaction), asked of a manager for anyone else

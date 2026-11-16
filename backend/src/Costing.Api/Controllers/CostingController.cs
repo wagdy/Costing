@@ -198,6 +198,13 @@ public sealed class CostingController(
     public Task<KpiReport> GetKpis([FromQuery] int year, [FromQuery] int month, CancellationToken cancellationToken) =>
         kpis.GetAsync(year, month, cancellationToken);
 
+    // The month's profit and loss (قائمة الدخل): gross profit, operating expenses, EBITDA, interest,
+    // the fixed assets' depreciation and disposals, net profit. Read from the KPIs' statement.
+    [HttpGet("reports/pnl")]
+    [CostingTab(CostingTabs.Reports | CostingTabs.CostSettings)]
+    public async Task<ProfitAndLoss> GetProfitAndLoss([FromQuery] int year, [FromQuery] int month, CancellationToken cancellationToken) =>
+        ProfitAndLoss.Of(await kpis.GetAsync(year, month, cancellationToken));
+
     // A month's wages, labour hours and overheads, as the manager enters them. The whole month
     // each time: a figure left out is not known yet.
     [HttpPut("expenses/{year:int}/{month:int}")]
