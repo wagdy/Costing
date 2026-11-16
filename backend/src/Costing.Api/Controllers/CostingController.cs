@@ -17,7 +17,7 @@ namespace Costing.Api.Controllers;
 public sealed class CostingController(
     CostingService costing, VarianceService variance, KpiService kpis, BreakEvenService breakEven, PurchaseSpendingService spending,
     TreasuryService treasury, StockCardService stockCard, IntelligenceService intelligence, BurdenedCostService burdened, DailyBreakEvenService dailyBreakEven,
-    MediatR.ISender sender,
+    StaffMealsService staffMeals, MediatR.ISender sender,
     Costing.Application.Common.IBusinessCalendar calendar) : ControllerBase
 {
     // Raw materials with their costs: what each costs per purchase unit, the last price paid, and
@@ -86,6 +86,20 @@ public sealed class CostingController(
     public Task<RecipeCostCard> GetRecipeCardById(Guid recipeId, CancellationToken cancellationToken) =>
         costing.GetRecipeCardAsync(recipeId, cancellationToken);
 
+    // The vendor price matrix (مقارنة أسعار الموردين): each material bought in the period and every
+    // supplier who sold it, net of every discount, the cheapest marked. Here, not on the intelligence
+    // controller, so Purchases may read it too.
+    [HttpGet("intelligence/vendor-prices")]
+    [CostingTab(CostingTabs.Intelligence | CostingTabs.Purchases)]
+    public Task<VendorPriceReport> GetVendorPrices([FromQuery] DateOnly from, [FromQuery] DateOnly to, CancellationToken cancellationToken) =>
+        intelligence.GetVendorPricesAsync(from, to, cancellationToken);
+
+    [HttpGet("intelligence/vendor-prices/sheet")]
+    [CostingTab(CostingTabs.Intelligence | CostingTabs.Purchases)]
+    public async Task<IActionResult> GetVendorPricesSheet([FromQuery] DateOnly from, [FromQuery] DateOnly to, CancellationToken cancellationToken) =>
+        File(VendorPriceWorkbook.Build(await intelligence.GetVendorPricesAsync(from, to, cancellationToken)), ReportWorkbook.ContentType,
+            $"vendor-prices-{from:yyyy-MM-dd}-to-{to:yyyy-MM-dd}.xlsx");
+
     // The recipe's fully burdened plate (التكلفة الكلية شاملة التشغيل), for its card: its food, its
     // share of this month's labor and overheads so far, as the cost settings share them.
     [HttpGet("recipes/{recipeId:guid}/burdened")]
@@ -119,6 +133,13 @@ public sealed class CostingController(
     [CostingTab(CostingTabs.Reports | CostingTabs.Counts)]
     public Task<VarianceReport> GetVariance([FromQuery] Guid? fromCountId, [FromQuery] Guid? toCountId, CancellationToken cancellationToken) =>
         variance.GetVarianceAsync(fromCountId, toCountId, cancellationToken);
+
+    // Staff meals, hospitality and recipe tastings over the days: each entry, each day against the
+    // daily staff meal budget, and the period's totals.
+    [HttpGet("staff-meals")]
+    [CostingTab(CostingTabs.Waste | CostingTabs.Reports)]
+    public Task<StaffMealReport> GetStaffMeals([FromQuery] DateOnly from, [FromQuery] DateOnly to, CancellationToken cancellationToken) =>
+        staffMeals.GetAsync(from, to, cancellationToken);
 
     // Spoilage recorded in the last so many days, with what it cost.
     [HttpGet("spoilage")]

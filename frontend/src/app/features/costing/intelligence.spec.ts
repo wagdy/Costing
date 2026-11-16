@@ -258,24 +258,29 @@ const consumption: ConsumptionReport = {
     },
     {
       rawMaterialId: 'patty', code: null, material: 'Beef patty', categoryId: 'meat', category: 'Meat', categoryAr: null, purchaseUnit: 'piece',
-      opening: 0, purchases: 20, waste: 0, closing: 5, actualUsage: 15, theoreticalUsage: 15, heldInPrep: 0, unexplainedQuantity: 0,
-      unexplainedPercent: 0, unitCost: 20, varianceCost: 0, evaluation: 'WithinLimit',
+      opening: 0, purchases: 20, waste: 0, closing: 5, actualUsage: 13, theoreticalUsage: 13, heldInPrep: 0, unexplainedQuantity: 0,
+      unexplainedPercent: 0, unitCost: 20, varianceCost: 0, evaluation: 'WithinLimit', staffMeals: 2,
     },
   ],
   soldWithoutRecipe: [{ itemCode: '10-101', menuItem: 'Shawarma (Kilo tray)', quantity: 2 }],
+  // 0.5 kg of tomatoes thrown away; two patties eaten by the staff, apart from the loss.
+  wasteValue: 10.84,
+  staffMealsValue: 40,
 };
 
 describe('theoretical against actual consumption', () => {
   it('sets what left the stores against what the sales should have taken, the high losses in red', async () => {
     const { fixture, el, page } = await render(ConsumptionPage, { consumption: vi.fn(() => of(consumption)), consumptionSheet: vi.fn() });
 
-    expect([...el.querySelectorAll('.tile strong')].map(text)).toEqual(['L.E 10.83', '1', 'L.E 343.33', 'L.E 353.34']);
+    expect([...el.querySelectorAll('.tile strong')].map(text)).toEqual(['L.E 10.83', '1', 'L.E 10.84', 'L.E 40.00', 'L.E 343.33', 'L.E 353.34']);
     expect(text(el.querySelector('.note')!)).toContain('10-101 Shawarma (Kilo tray) (2)');
     const rows = [...el.querySelectorAll('table.consumption tbody tr')];
     expect(rows[0].classList).toContain('high-loss');
     expect(cells(rows[0])).toEqual([
-      'Tomatoesin kg · VegetablesHigh lossفاقد مرتفع', '10', '5', '0.5', '12', '2.5', '20.5 in prep stock', '+0.5 +25.0%', 'L.E 10.83',
+      'Tomatoesin kg · VegetablesHigh lossفاقد مرتفع', '10', '5', '0.5', '—', '12', '2.5', '20.5 in prep stock', '+0.5 +25.0%', 'L.E 10.83',
     ]);
+    // The staff's patties, apart: not waste, not unexplained.
+    expect(cells([...el.querySelectorAll('table.consumption tbody tr')][1]).slice(3, 5)).toEqual(['0', '2']);
     expect(rows[1].classList).not.toContain('high-loss');
 
     page['evaluation'].set('WithinLimit');

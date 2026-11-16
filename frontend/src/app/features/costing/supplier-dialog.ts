@@ -51,6 +51,11 @@ export interface SupplierDialogData {
           <mat-label>Email · البريد الإلكتروني</mat-label>
           <input matInput type="email" formControlName="email" maxlength="200" />
         </mat-form-field>
+        <mat-form-field>
+          <mat-label>Pays in (days) · مدة السداد</mat-label>
+          <input matInput type="number" min="0" max="365" step="1" formControlName="paymentTermsDays" aria-label="Payment terms in days" />
+          <mat-hint>A credit invoice falls due this many days after its date.</mat-hint>
+        </mat-form-field>
         <mat-form-field class="wide">
           <mat-label>Notes · ملاحظات</mat-label>
           <textarea matInput formControlName="notes" maxlength="500" rows="2" placeholder="Delivers Mondays and Thursdays"></textarea>
@@ -114,6 +119,10 @@ export class SupplierDialog {
     phone: new FormControl(this.data.supplier?.phone ?? '', { nonNullable: true }),
     email: new FormControl(this.data.supplier?.email ?? '', { nonNullable: true, validators: [Validators.email] }),
     notes: new FormControl(this.data.supplier?.notes ?? '', { nonNullable: true }),
+    paymentTermsDays: new FormControl(this.data.supplier?.paymentTermsDays ?? 0, {
+      nonNullable: true,
+      validators: [Validators.required, Validators.min(0), Validators.max(365), Validators.pattern(/^\d+$/)],
+    }),
   });
 
   // The id is made here for a new one: a retry after a lost answer adds it once.
@@ -135,6 +144,7 @@ export class SupplierDialog {
           phone: blank(v.phone),
           email: blank(v.email),
           notes: blank(v.notes),
+          paymentTermsDays: Number(v.paymentTermsDays),
         }),
       );
       this.ref.close(saved);

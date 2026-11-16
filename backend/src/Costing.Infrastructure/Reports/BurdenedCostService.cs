@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using Costing.Domain.Categories;
 using Costing.Domain.Common;
 using Costing.Domain.Recipes;
+using Costing.Domain.StockMovements;
 using Costing.Domain.Treasury;
 using Costing.Infrastructure.Persistence;
 using static Costing.Infrastructure.Reports.CostingService;
@@ -256,7 +257,19 @@ public sealed class BurdenedCostService(CostingDbContext db, Application.Common.
             .Select(g => new { Month = g.Key, Paid = -g.Sum(t => t.Amount) })
             .ToListAsync(cancellationToken);
 
-        decimal payroll = 0, salariesPaid = 0, wagesEntered = 0, wagesLogged = 0, laborStandIn = 0;
+        // Staff meals (labor) and hospitality and tastings (overheads), each month's whole, at the cost then.
+        var (consumedFrom, _) = clock.Bounds(months[0].Month);
+        var (_, consumedTo) = clock.Bounds(months[^1].Month.AddMonths(1).AddDays(-1));
+        var consumed = (await db.StockMovements.AsNoTracking()
+                .Where(m => m.OccurredAtUtc >= consumedFrom && m.OccurredAtUtc < consumedTo && StaffConsumption.Reasons.Contains(m.Reason) && m.UnitCost != null)
+                .Select(m => new { m.OccurredAtUtc, m.Reason, Value = -m.Quantity * m.UnitCost!.Value })
+                .ToListAsync(cancellationToken))
+            .Select(m => (Month: clock.BusinessDateOf(m.OccurredAtUtc), m.Reason, m.Value))
+            .ToList();
+        decimal Consumed(DateOnly month, params StockMovementReason[] reasons) =>
+            consumed.Where(c => c.Month.Year == month.Year && c.Month.Month == month.Month && reasons.Contains(c.Reason)).Sum(c => c.Value);
+
+        decimal payroll = 0, salariesPaid = 0, wagesEntered = 0, wagesLogged = 0, laborStandIn = 0, staffMeals = 0, hospitality = 0;
         decimal occupation = 0, controllable = 0, otherFixed = 0, interest = 0, depreciation = 0, overheadStandIn = 0;
         var laborStandInMonths = new List<string>();
         var overheadStandInMonths = new List<string>();
@@ -266,6 +279,8 @@ public sealed class BurdenedCostService(CostingDbContext db, Application.Common.
             var logged = await spending.LoggedExpensesAsync(month, month.AddMonths(1).AddDays(-1), cancellationToken);
             decimal Logged(ExpenseLine line) => logged.Where(l => l.ExpenseLine == line).Sum(l => l.Amount);
 
+            staffMeals += Consumed(month, StockMovementReason.StaffMeal) * share;
+            hospitality += Consumed(month, StockMovementReason.Hospitality, StockMovementReason.RecipeTasting) * share;
             var run = payrolls.SingleOrDefault(r => r.Period == month);
             var paid = salaries.SingleOrDefault(s => s.Month == month)?.Paid ?? 0;
             var laborRecorded = run is not null || paid != 0 || e?.WagesAndBenefits is not null || Logged(ExpenseLine.Wages) != 0;
@@ -313,6 +328,7 @@ public sealed class BurdenedCostService(CostingDbContext db, Application.Common.
                 new("salaries", "Salaries paid from the safe", "الرواتب المصروفة من الخزنة", salariesPaid),
                 new("wagesEntered", "Wages & benefits entered", "الأجور والمزايا المدخلة", wagesEntered),
                 new("wagesLogged", "Wages paid as expenses", "أجور مسجلة كمصروفات", wagesLogged),
+                new("staffMeals", "Staff meals", "وجبات العاملين", staffMeals),
                 new("standIn", "Stand-in monthly labor", "عمالة شهرية تقديرية", laborStandIn)),
             Pool(overheadStandInMonths,
                 new("occupation", "Rent & occupation", "الإيجار والمكان", occupation),
@@ -320,6 +336,7 @@ public sealed class BurdenedCostService(CostingDbContext db, Application.Common.
                 new("otherFixed", "Other fixed costs", "مصاريف ثابتة أخرى", otherFixed),
                 new("interest", "Interest", "الفوائد", interest),
                 new("depreciation", "Depreciation", "الإهلاك", depreciation),
+                new("hospitality", "Hospitality & recipe tastings", "الضيافة وتجارب الوصفات", hospitality),
                 new("standIn", "Stand-in monthly overheads", "مصاريف تشغيل شهرية تقديرية", overheadStandIn)));
     }
 

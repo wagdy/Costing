@@ -19,7 +19,7 @@ namespace Costing.Api.Controllers;
 [ApiController]
 [Route("api/financials")]
 [Authorize(Policy = Permissions.InventoryManage)]
-public sealed class FinancialsController(ISender sender, TreasuryService treasury) : ControllerBase
+public sealed class FinancialsController(ISender sender, TreasuryService treasury, SupplierAccountsService accounts) : ControllerBase
 {
     // The till's business day: the date a safe entry is given unless another is chosen. Between
     // midnight and the hour the business day starts it is still yesterday.
@@ -84,6 +84,13 @@ public sealed class FinancialsController(ISender sender, TreasuryService treasur
     [CostingTab(CostingTabs.Financials | CostingTabs.Purchases)]
     public Task<IReadOnlyList<SupplierBalance>> GetSupplierBalances(CancellationToken cancellationToken) =>
         treasury.GetSupplierBalancesAsync(cancellationToken);
+
+    // What is owed to each supplier by how long it has been due (أعمار ديون الموردين), on a day
+    // (today when none): Current, 1–30, 31–60, 61–90 and 90+ days past due.
+    [HttpGet("ap-aging")]
+    [CostingTab(CostingTabs.Financials | CostingTabs.Purchases)]
+    public Task<ApAgingReport> GetApAging([FromQuery] DateOnly? asOf, CancellationToken cancellationToken) =>
+        accounts.GetAgingAsync(asOf, cancellationToken);
 
     [HttpGet("suppliers/{supplierId:guid}")]
     [CostingTab(CostingTabs.Financials | CostingTabs.Purchases)]

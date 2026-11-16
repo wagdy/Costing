@@ -190,7 +190,10 @@ public sealed record ManualSalesLineDto(ManualSalesItemKind Kind, Guid ItemId, d
 // VarianceTolerancePercent, BeverageCategories and PlateCost: left out of a save, they stay as they are.
 public sealed record CostingSettingsDto(
     decimal FoodCostTargetPercent, decimal? VarianceTolerancePercent = null, IReadOnlyList<string>? BeverageCategories = null,
-    PlateCostSettingsDto? PlateCost = null);
+    PlateCostSettingsDto? PlateCost = null, StaffMealSettingsDto? StaffMeals = null);
+
+// The staff meals' daily budget, saved on its own: none clears it.
+public sealed record StaffMealSettingsDto(decimal? DailyBudget);
 
 // The fully burdened plate cost's settings, saved together: how labor and overheads are shared
 // unless asked otherwise, the net margin a plate should leave, and the months' stand-in figures
@@ -250,7 +253,8 @@ public sealed partial class CostingService(CostingDbContext db, IBusinessCalenda
     public async Task<CostingSettingsDto> GetSettingsAsync(CancellationToken cancellationToken)
     {
         var settings = await SettingsAsync(cancellationToken);
-        return new(settings.FoodCostTargetPercent, settings.VarianceTolerancePercent, settings.BeverageCategories, PlateCostSettingsDto.Of(settings));
+        return new(settings.FoodCostTargetPercent, settings.VarianceTolerancePercent, settings.BeverageCategories, PlateCostSettingsDto.Of(settings),
+            new StaffMealSettingsDto(settings.DailyStaffMealBudget));
     }
 
     public async Task<CostingSettingsDto> SaveSettingsAsync(CostingSettingsDto settings, CancellationToken cancellationToken)
@@ -279,8 +283,15 @@ public sealed partial class CostingService(CostingDbContext db, IBusinessCalenda
             row.FallbackMonthlyLaborCost = plate.FallbackMonthlyLaborCost;
             row.FallbackMonthlyOverheadCost = plate.FallbackMonthlyOverheadCost;
         }
+        if (settings.StaffMeals is { } staffMeals)
+        {
+            if (staffMeals.DailyBudget < 0)
+                throw new DomainException("A daily staff meal budget cannot be negative. · لا يكون الحد اليومي سالبًا.");
+            row.DailyStaffMealBudget = staffMeals.DailyBudget;
+        }
         await db.SaveChangesAsync(cancellationToken);
-        return new(row.FoodCostTargetPercent, row.VarianceTolerancePercent, row.BeverageCategories, PlateCostSettingsDto.Of(row));
+        return new(row.FoodCostTargetPercent, row.VarianceTolerancePercent, row.BeverageCategories, PlateCostSettingsDto.Of(row),
+            new StaffMealSettingsDto(row.DailyStaffMealBudget));
     }
 
     public async Task<IReadOnlyList<SharedCostDto>> GetSharedCostsAsync(CancellationToken cancellationToken)

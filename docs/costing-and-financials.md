@@ -16,16 +16,16 @@ works it.
 | Recipes (الوصفات) | `/costing/recipes` | Recipe cards, prep items (مصنعات) and recipe categories |
 | Production (الإنتاج) | `/costing/production` | Prep items made in batches |
 | Menu (قائمة الطعام) | `/costing/menu` | Categories, items, sizes, add-ons; an Excel import |
-| Material & demand intelligence (تحليلات الخامات والطلبيات) | `/costing/intelligence` | Purchase price variance and what it does to the recipes, the order planner, theoretical against actual usage, ABC and days on hand, menu engineering, and the fully burdened plate cost; each to Excel |
+| Material & demand intelligence (تحليلات الخامات والطلبيات) | `/costing/intelligence` | Purchase price variance and what it does to the recipes, the order planner, theoretical against actual usage, ABC and days on hand, menu engineering, the fully burdened plate cost, the vendor price comparison and the inflation what-if simulator; each to Excel |
 | Sales (المبيعات) | `/costing/sales` | Each day's sales summary, entered or imported from its sheet, for stock and food cost |
 | End of the day (تقفيل اليوم) | `/costing/end-of-day` | Each day's invoices photographed, cash and on credit, and its sales report, handed in for the daily batch and the takings |
-| Purchases (المشتريات) | `/costing/purchases` | Invoices, the day's batch, suppliers, categories |
+| Purchases (المشتريات) | `/costing/purchases` | Invoices, the day's batch, suppliers (their payment terms and statements of account), categories, the vendor price comparison |
 | Expense items (المصروفات العمومية) | `/costing/expense-items` | General expenses, never stock |
 | Stock counts (الجرد) | `/costing/counts` | Full and spot counts drafted, blind for who counts, reconciled, then posted |
-| Waste (الهالك) | `/costing/waste` | Spoilage, and breakage |
-| Financials (الماليات) | `/costing/financials` | The safe, funding, each day's takings (cash, card, tax, voids), vouchers, suppliers owed and paid, advances, staff, tax and service |
+| Waste (الهالك) | `/costing/waste` | Spoilage and breakage; staff meals, hospitality and recipe tastings |
+| Financials (الماليات) | `/costing/financials` | The safe, funding, each day's takings (cash, card, tax, voids), vouchers, suppliers owed and paid, the AP aging, advances, staff, tax and service |
 | Reports (التقارير) | `/costing/reports` | Spending, theoretical cost, variance, the daily break-even, KPIs, break-even |
-| Cost settings (إعدادات التكاليف) | `/costing/settings` | Cost targets, plate cost (allocation method, target net margin, stand-in monthly labor and overheads), beverage categories, shared costs, monthly expenses |
+| Cost settings (إعدادات التكاليف) | `/costing/settings` | Cost targets, plate cost (allocation method, target net margin, stand-in monthly labor and overheads), beverage categories, shared costs, monthly expenses, the daily staff meal budget |
 | Approvals (طلبات معلقة) | `/costing/approvals` | What waits for a manager |
 | Permissions (الصلاحيات) | `/costing/permissions` | Who works which section; a manager's |
 
@@ -208,7 +208,7 @@ approval is not added and said why, in English and Arabic, and the rest are.
 
 ## Material & demand intelligence (تحليلات الخامات والطلبيات)
 
-Under Catalog & Production, five tabs that read the stores and the menu as a cost accountant does
+Under Catalog & Production, tabs that read the stores and the menu as a cost accountant does
 (`/api/costing/intelligence`, the Material & demand intelligence section and `inventory.view`).
 Every quantity is in the material's purchase unit (kg, L, a carton) and every price per it. Each
 tab has its summary cards on top, the list's search, filters and sort, and its Excel sheet with the
@@ -246,14 +246,18 @@ coverageDays (1–60), growthPercent (−90 to +500), dishes: [{ menuItemId, var
   the material's cost with none). Avg daily usage: what the days looked back took a day, down to
   bought materials.
 - The **approved** quantity starts at the suggested one and can be changed; the approved order goes
-  to Excel (`POST orders/sheet`), grouped under each category or the supplier who sold it last, with
-  each group's subtotal and the total.
+  to Excel (`POST orders/sheet`), grouped under each category, the supplier who sold it last, or
+  the **cheapest supplier** (`groupBy: CheapestSupplier`): the one with the lowest last net price in
+  the last 180 days, at that price, as the vendor price comparison finds it. Each group has its
+  subtotal, and the sheet its total.
 
 **Theoretical vs actual consumption (الاستهلاك النظري مقابل الفعلي)** (`GET consumption?from&to`),
 each bought material over the period, from the book's stock either side:
 
-- **Actual** = opening + purchases − logged waste − closing. A prep item's waste counts as its
-  ingredients'.
+- **Actual** = opening + purchases − logged waste − staff meals, hospitality and tastings −
+  closing. A prep item's waste, and what was taken of it for staff or guests, counts as its
+  ingredients'. What was taken on purpose has its own column and card (**Staff meals &
+  hospitality**, beside **Logged waste**), so it is never part of the unexplained variance.
 - **Theoretical** = Σ each dish sold × its recipe's gross quantity, down through the prep items; plus
   **held in prep**, the change in the prep items' stock in what they are made of (made and not sold
   yet; below zero when sales used what was made before).
@@ -289,6 +293,18 @@ each dish (or size) sold in the period, as Kasavana and Smith place it:
   is listed, not placed, and its quantity is not in the mix. One menu category at a time compares
   like with like.
 
+**Vendor price comparison (مصفوفة مقارنة أسعار الموردين)** (`GET api/costing/intelligence/vendor-prices?from&to`,
+and `…/sheet`; for Material & demand intelligence or Purchases, a tab in each; the last quarter
+unless set), each material bought on posted invoices in the period and every supplier who sold it:
+
+- Per purchase unit, net of the line's discount and its share of the invoice's: the **last net
+  price** and when, the **lowest** and **highest**, the **weighted average** (Σ net paid ÷ Σ
+  quantity) and the **quantity** bought, with how many purchases.
+- Suppliers are listed cheapest last price first, and where there is more than one the cheapest
+  is marked **Best price** (الأقل سعراً) and the material shows the **spread**, how much dearer the
+  dearest last price is than the cheapest, in %. A filter keeps only the materials with a choice.
+- The order planner's **Cheapest supplier** grouping sends each material to that supplier.
+
 ## The fully burdened plate cost (التكلفة الكلية للطبق)
 
 Food cost alone flatters a dish: a plate also takes the kitchen's time and its share of the rent,
@@ -316,16 +332,16 @@ month carries its share by days (16 of 30 days: 16/30).
 
 | Pool | A month's amount |
 | --- | --- |
-| Labor (إجمالي وعاء العمالة) | The payroll HR approved for it (its labor cost), or the salaries paid from the safe for it when HR sent none; the wages and benefits entered on the KPIs; expense invoices and vouchers under a Wages category |
-| Overheads (وعاء الإيجار والمرافق والتشغيل) | The occupation (rent), controllable costs, interest and depreciation entered on the KPIs; expense invoices and vouchers under an Occupation, Controllable or Other fixed category |
+| Labor (إجمالي وعاء العمالة) | The payroll HR approved for it (its labor cost), or the salaries paid from the safe for it when HR sent none; the wages and benefits entered on the KPIs; expense invoices and vouchers under a Wages category; the staff meals logged in it, at their cost |
+| Overheads (وعاء الإيجار والمرافق والتشغيل) | The occupation (rent), controllable costs, interest and depreciation entered on the KPIs; expense invoices and vouchers under an Occupation, Controllable or Other fixed category; the hospitality and recipe tastings logged in it, at their cost |
 
 A month with nothing recorded for a pool takes the **stand-in monthly figure** from Cost settings
 (Plate cost), when one is set, and the screen names the months that did. **Simulate monthly labor
 & overhead** replaces the pools with monthly figures typed on the screen (blank: the stand-in
 figures), spread the same way, to test the plates before a month's payroll and bills are in.
 
-Costing has no fixed-asset register, prepaid-expense schedule, staff-meal log or card-commission
-record of its own: depreciation is what is entered for the month on the KPIs; a prepaid rent is
+Costing has no fixed-asset register, prepaid-expense schedule or card-commission record of its
+own (staff meals and hospitality are logged under Waste, below): depreciation is what is entered for the month on the KPIs; a prepaid rent is
 amortised by entering the month's share as its occupation cost (a voucher counts in the month it is
 dated); bank and card charges are expense vouchers or invoices under a Controllable category.
 
@@ -397,6 +413,36 @@ Operating result      = contribution margin − daily fixed cost
   the operating profit in green or loss in red), draws the sales from 0 against the break-even line
   (amber until it is crossed, then green), and shows the daily fixed costs, the WACM, the net sales
   and the food cost, with the month's fixed costs by part. Earlier days can be looked back at.
+
+## The inflation what-if simulator (محاكي التضخم والتسعير)
+
+Material & demand intelligence → **Inflation simulator** (`/costing/intelligence/inflation`,
+`POST api/costing/intelligence/simulate-inflation`, and `…/sheet` for Excel) costs every dish,
+off-menu recipe and prep item again at prices that have not happened yet, in memory: nothing is
+saved, and no average, recipe or price changes.
+
+```
+{ "globalPercent": 10,
+  "categories": [{ "categoryId": "…", "percent": 25 }],
+  "materials":  [{ "rawMaterialId": "…", "costPerPurchaseUnit": 180 }] }
+```
+
+- **The rules.** A bought material's price changes by the most specific rule given, never two at
+  once: its own new price (per purchase unit) > its category's % > the global % > as it is. A
+  percentage is from −90% to +1,000%; a new price is never below zero.
+- **Prep items carry it through.** One never made is costed by its recipe at the new prices; one
+  made, at its average × (its batch at the new prices ÷ its batch now), so a prep item inside a
+  prep item moves with what it is made of.
+- **Each dish:** its cost a portion now and at the new prices, the change, its food cost % now and
+  then, flagged when the simulated % is over the food cost target (and newly so). Two suggested
+  prices: **keep the food cost %** = price × simulated cost ÷ current cost; **keep the cash margin**
+  = price + (simulated cost − current cost). **Monthly profit impact** = (current cost − simulated
+  cost) × plates sold in the last 30 days: what the month would lose at today's prices.
+- Off-menu recipes show the same against their planned price, with no sales to weigh; prep items
+  their cost per display unit (kg, L). The materials changed are listed with their price now and
+  simulated, and the Excel sheet has both.
+- The screen recalculates as the sliders and rules change (a global slider, a % per category, a new
+  price per material), with the dishes over target counted, and the totals and each column's (ⓘ).
 
 ## The item's stock card (كارتة الصنف / حركة الصنف)
 
@@ -665,11 +711,70 @@ and the papers are sent once the batch is posted, each to its invoice, kept in t
 archive as one entered alone. One that could not be sent is offered again in the posted batch
 (Try again); a paper chosen is not kept by the browser if the page is reloaded before sending.
 
+## Suppliers: payment terms, aging and the statement of account
+
+**Payment terms** (مدة السداد): each supplier has the days it gives to pay a credit invoice, 0 to
+365 (0 unless set: due on the day), on the supplier's dialog under Purchases → Suppliers.
+
+**AP aging (تقرير أعمار ديون الموردين وتخطيط السيولة)**, Financials → **AP aging**
+(`GET api/financials/ap-aging?asOf`, today unless set): what is owed to each supplier on a day, and
+by how long it has been past due.
+
+- Payments are set against what was owed before the treasury first, then the credit invoices,
+  oldest first, as the open invoices are. Each invoice still owed is due its supplier's payment
+  terms after its date; what was owed before the treasury is due from when it was entered.
+- Days past due on the day asked put what is left of each in a bucket: **Current** (not due yet,
+  0 or less), **1–30**, **31–60**, **61–90** and **90+ days**.
+- The strip shows the **total AP liability** and each bucket with its share of it, and a bar of
+  the same; the table each supplier owed anything, its terms and open invoices, its buckets and
+  its oldest due date. A supplier opens its statement.
+
+**The statement of account (كشف حساب مورد تفصيلي)** (`GET api/suppliers/{id}/statement?from&to`,
+and `…/statement/sheet` for Excel; for Financials or Purchases; this year unless set): one
+supplier's account from one day to another, opened from Purchases → Suppliers, Financials →
+Supplier debts (**Full statement**) and the AP aging.
+
+- **The summary:** the opening balance (what was owed coming in), what was entered in the period
+  as owed before the treasury (only when there is any: added like an invoice), the credit
+  invoices, the cash invoices, the payments, and the closing balance = opening + owed before +
+  credit invoices − payments. A cash invoice is owed and paid at once, so it is in both columns
+  and leaves the balance where it was; the ledger's totals add up the same way.
+- **The ledger**, in order, with the running balance after each line: the opening balance, each
+  invoice (credit or cash: its number, who entered it and who approved it), and each payment (from
+  the safe or a day's takings, and its notes). An invoice opens its lines; a payment opens its
+  voucher's details.
+
 ## Waste and breakage
 
 Spoilage takes materials or prep items from stock at their cost. Breakage (كسر) is something
 broken (a plate, a glass): its description, how many and what each cost, and who broke it if
 known; its cost counts on the day, and voiding it (on approval) takes it off.
+
+## Staff meals and hospitality (وجبات العاملين والضيافة)
+
+What leaves stock on purpose is not spoilage and not a loss. Waste → **Staff meals & hospitality**
+(`/costing/waste/staff-meals`) logs it apart, in three kinds, each a stock movement reason of its
+own:
+
+| Kind | Reason | Where its cost goes |
+| --- | --- | --- |
+| Staff meal (وجبة عاملين) | `StaffMeal` | Labor: the KPIs' wages and benefits (when wages are known) and the plate cost's labor pool |
+| Hospitality (ضيافة) | `Hospitality` | A cost of its own: the KPIs' expenses and the overhead pool |
+| Recipe tasting (تجربة وصفة) | `RecipeTasting` | The same as hospitality |
+
+- **Recording** (`POST api/inventory/staff-meals`, `{ entryId, kind, note, lines: [{ rawMaterialId
+  | recipeId, quantity }] }`, Waste's): a line is a material or prep item (its quantity in its own
+  unit: grams, millilitres, pieces) or a dish (in whole plates). A dish takes what a sale takes:
+  its recipe's ingredients, prep items from their own stock. Each is taken at the average cost
+  now; the entry is recorded once however often it is sent.
+- **The report** (`GET api/costing/staff-meals?from&to`, for Waste or Reports): each day's staff
+  meals, hospitality and tastings, and each entry with what it took and what it cost.
+- **The daily budget** (Cost settings → Staff meals, `dailyStaffMealBudget`, blank for none): a day
+  whose staff meals cost more is marked **over budget** in amber, by how much.
+- **Kept out of the unexplained:** the consumption report takes it out of the actual usage, and
+  variance out of what was expected, each with its own column and figure; the stock card lists
+  each entry as waste of its kind and opens it.
+- **Voiding** an entry works as a spoilage's: on approval, it puts back what it took.
 
 ## Financials: takings, tax and the safe
 

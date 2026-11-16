@@ -28,4 +28,24 @@ public enum StockMovementReason
     // Stock as found when costing starts (جرد افتتاحي): where it begins, not a shortage or a
     // surplus, so no report counts it as a loss or a gain.
     OpeningStock = 9,
+
+    // Eaten by the staff (وجبات العاملين): a benefit of the staff, in the labor cost, never a loss
+    // of the kitchen's.
+    StaffMeal = 10,
+
+    // Given to guests on the house (ضيافة وإكراميات): a cost of its own on the P&L.
+    Hospitality = 11,
+
+    // Used trying or testing a recipe (تجارب واختبار وصفات): development, not loss.
+    RecipeTasting = 12,
+}
+
+public static class StaffConsumption
+{
+    // Taken out of stock on purpose, by the staff, for guests or for a recipe being tried: logged,
+    // so never part of the unexplained variance, and never spoilage.
+    public static readonly StockMovementReason[] Reasons =
+        [StockMovementReason.StaffMeal, StockMovementReason.Hospitality, StockMovementReason.RecipeTasting];
+
+    public static bool Is(StockMovementReason reason) => Reasons.Contains(reason);
 }

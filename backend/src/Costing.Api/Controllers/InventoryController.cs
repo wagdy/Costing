@@ -275,7 +275,8 @@ public sealed class InventoryController(ISender sender) : ControllerBase
     [CostingTab(CostingTabs.Purchases)]
     [Authorize(Policy = Permissions.InventoryManage)]
     public Task<SupplierDto> SaveSupplier(Guid supplierId, SaveSupplierRequest request, CancellationToken cancellationToken) =>
-        sender.Send(new SaveSupplierCommand(supplierId, request.Name, request.ContactPerson, request.Phone, request.Email, request.Notes), cancellationToken);
+        sender.Send(new SaveSupplierCommand(
+            supplierId, request.Name, request.ContactPerson, request.Phone, request.Email, request.Notes, request.PaymentTermsDays), cancellationToken);
 
     // Deleted if it is on no invoice, archived if it is: the answer says which.
     [HttpDelete("suppliers/{supplierId:guid}")]
@@ -545,6 +546,15 @@ public sealed class InventoryController(ISender sender) : ControllerBase
             StaffId, StaffName, CanApprove), cancellationToken);
         return result.Outcome == ApprovalOutcome.Requested ? Accepted(result) : Ok(result);
     }
+
+    // Staff meals, hospitality and recipe tastings (وجبات العاملين والضيافة): taken on purpose, kept
+    // apart from spoilage. A recipe's plates take its ingredients as a sale does. EntryId makes a
+    // retry harmless; voided like a waste entry, through Waste's approvals.
+    [HttpPost("staff-meals")]
+    [CostingTab(CostingTabs.Waste)]
+    [Authorize(Policy = Permissions.InventoryManage)]
+    public async Task<object> RecordStaffMeal(Costing.Application.Waste.RecordStaffConsumptionCommand command, CancellationToken cancellationToken) =>
+        new { entryId = await sender.Send(command with { RecordedBy = StaffName }, cancellationToken) };
 
     // Thrown-away raw stock: expired, spoiled, dropped. SpoilageId makes a retry harmless.
     [HttpPost("spoilage")]
@@ -857,7 +867,9 @@ public sealed record RequestDeletionBody(Guid RequestId, ApprovalModule Module, 
 
 public sealed record RejectRequestBody(string? Note = null);
 
-public sealed record SaveSupplierRequest(string Name, string? ContactPerson = null, string? Phone = null, string? Email = null, string? Notes = null);
+// PaymentTermsDays: none keeps them as they are.
+public sealed record SaveSupplierRequest(
+    string Name, string? ContactPerson = null, string? Phone = null, string? Email = null, string? Notes = null, int? PaymentTermsDays = null);
 
 // Kind: raw materials or general expenses; a new one is raw materials unless said.
 public sealed record SavePurchaseCategoryRequest(string Name, string? NameAr = null, ExpenseLine? ExpenseLine = null, CategoryKind? Kind = null);

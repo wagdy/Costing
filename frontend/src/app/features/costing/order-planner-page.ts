@@ -5,6 +5,7 @@ import { MatButtonModule } from '@angular/material/button';
 import { MatButtonToggleModule } from '@angular/material/button-toggle';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatIconModule } from '@angular/material/icon';
+import { MatTooltipModule } from '@angular/material/tooltip';
 import { MatInputModule } from '@angular/material/input';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { firstValueFrom } from 'rxjs';
@@ -44,8 +45,7 @@ const dishKey = (d: { menuItemId: number; variantId: number | null }) => `${d.me
     InfoTip,
     MoneyPipe,
     SearchField,
-    StockCardButton,
-  ],
+    StockCardButton, MatTooltipModule],
   template: `
     <section class="controls" aria-label="What the order is planned from">
       <div class="control">
@@ -178,6 +178,9 @@ const dishKey = (d: { menuItemId: number; variantId: number | null }) => `${d.me
         <mat-button-toggle-group [value]="groupBy()" (change)="groupBy.set($event.value)" aria-label="Group the sheet by" class="group">
           <mat-button-toggle value="Category">By category</mat-button-toggle>
           <mat-button-toggle value="Supplier">By supplier</mat-button-toggle>
+          <mat-button-toggle value="CheapestSupplier" matTooltip="Each material to the supplier with the lowest last net price, at that price · للمورد الأقل سعراً">
+            Cheapest supplier · الأقل سعراً
+          </mat-button-toggle>
         </mat-button-toggle-group>
         <button mat-flat-button (click)="download()" [disabled]="!approvedLines()"><mat-icon>download</mat-icon> Excel order sheet</button>
       </div>

@@ -578,6 +578,89 @@ export const infoTips = {
     { en: '(Counted − book) × average cost per unit; flagged when |counted − book| ÷ book × 100 > tolerance %.', ar: '(المجرود − الدفتري) × متوسط تكلفة الوحدة؛ ويُعلّم إذا تجاوز |الفرق| ÷ الدفتري × 100 نسبة السماح.' },
   ),
 
+  // ---- Supplier accounts ----
+  apTotal: tip(
+    { en: 'Total owed to suppliers', ar: 'إجمالي مديونيات الموردين' },
+    { en: 'All that is owed to suppliers on the day, by how long it has been due: pay the oldest first and plan the week\'s cash.', ar: 'كل ما على المطعم للموردين في هذا اليوم حسب عمر الدين: سدد الأقدم أولًا وخطط سيولة الأسبوع.' },
+    { en: 'Opening debt + credit invoices − payments, each supplier; payments settle the oldest first.', ar: 'الرصيد السابق + الفواتير الآجلة − المسدد لكل مورد؛ والسداد يُخصم من الأقدم أولًا.' },
+  ),
+  apCurrent: tip(
+    { en: 'Current (not due)', ar: 'غير مستحق بعد' },
+    { en: 'Invoices still within the supplier\'s payment terms.', ar: 'فواتير ما زالت داخل مدة السداد المتفق عليها مع المورد.' },
+    { en: 'Due date = invoice date + the supplier\'s payment terms (days); not due while that day has not passed.', ar: 'تاريخ الاستحقاق = تاريخ الفاتورة + مدة السداد بالأيام؛ غير مستحق ما لم يمر هذا اليوم.' },
+  ),
+  apPastDue: tip(
+    { en: 'Days past due', ar: 'أيام التأخير' },
+    { en: 'What is left of each invoice after its due date, by how late it is: the older, the more pressing.', ar: 'ما تبقى من كل فاتورة بعد تاريخ استحقاقها حسب مدة التأخير: الأقدم هو الأكثر إلحاحًا.' },
+    { en: 'Days late = the day − the due date: 1–30, 31–60, 61–90, 90+. What was owed before the treasury is due from when it was entered.', ar: 'أيام التأخير = اليوم − تاريخ الاستحقاق: 1–30، 31–60، 61–90، أكثر من 90. والرصيد السابق مستحق من تاريخ إدخاله.' },
+  ),
+  stOpening: tip(
+    { en: 'Opening balance owed', ar: 'رصيد أول المدة' },
+    { en: 'What was owed to the supplier when the first day began.', ar: 'ما كان مستحقًا للمورد في بداية أول يوم.' },
+    { en: 'Σ every credit invoice, opening debt and payment before the first day.', ar: 'مجموع الفواتير الآجلة والرصيد السابق والمدفوعات قبل أول يوم.' },
+  ),
+  stClosing: tip(
+    { en: 'Closing balance owed', ar: 'الرصيد المستحق حالياً' },
+    { en: 'What is owed at the end of the last day: the running balance of the last line.', ar: 'المستحق في نهاية آخر يوم: الرصيد التراكمي لآخر سطر.' },
+    { en: 'Opening + credit invoices − payments; a cash invoice is owed and paid at once, so it leaves the balance as it was.', ar: 'رصيد أول المدة + الفواتير الآجلة − المسدد؛ والفاتورة النقدية مستحقة ومسددة معًا فلا تغير الرصيد.' },
+  ),
+
+  // ---- Vendor prices ----
+  vpBest: tip(
+    { en: 'Best price', ar: 'الأقل سعراً' },
+    { en: 'The supplier whose last net price for it is the lowest: the order planner can send each material to it.', ar: 'المورد صاحب أقل سعر صافٍ أخير للخامة: ويمكن لمخطط الطلبيات توجيه الطلب إليه.' },
+    { en: 'Net price = line total − its discount − its share of the invoice\'s discount, ÷ quantity, per purchase unit.', ar: 'السعر الصافي = قيمة السطر − خصمه − نصيبه من خصم الفاتورة، ÷ الكمية، لوحدة الشراء.' },
+  ),
+  vpAverage: tip(
+    { en: 'Weighted average price', ar: 'المتوسط المرجح للسعر' },
+    { en: 'What a unit cost on average from this supplier over the period, the larger purchases counting more.', ar: 'متوسط سعر الوحدة من هذا المورد خلال الفترة، والكميات الأكبر تؤثر أكثر.' },
+    { en: 'Σ net cost ÷ Σ quantity, per purchase unit.', ar: 'مجموع التكلفة الصافية ÷ مجموع الكمية، لوحدة الشراء.' },
+  ),
+  vpSpread: tip(
+    { en: 'Price spread', ar: 'فرق الأسعار' },
+    { en: 'How much dearer the dearest supplier\'s last price is than the cheapest\'s: where switching saves most.', ar: 'كم يزيد آخر سعر لأغلى مورد عن أرخصهم: حيث يوفر التغيير أكثر.' },
+    { en: '(Highest last price ÷ lowest last price − 1) × 100.', ar: '(أعلى سعر أخير ÷ أقل سعر أخير − 1) × 100.' },
+  ),
+
+  // ---- Staff meals & hospitality ----
+  smStaff: tip(
+    { en: 'Staff meals', ar: 'وجبات العاملين' },
+    { en: 'What the staff ate, at the cost when taken: a benefit of the staff, in the labor cost on the KPIs, never the kitchen\'s loss.', ar: 'ما أكله العاملون بتكلفته وقت الأخذ: ميزة للعاملين تُحسب ضمن تكلفة العمالة في المؤشرات، وليست هالكًا للمطبخ.' },
+    { en: 'Σ quantity × average cost at the time; a dish takes its recipe\'s ingredients as a sale does. Over the daily budget: flagged.', ar: 'مجموع الكمية × متوسط التكلفة وقتها؛ والطبق يأخذ مكونات وصفته كالمبيعات. وما يتجاوز الحد اليومي يُعلَّم.' },
+  ),
+  smHospitality: tip(
+    { en: 'Hospitality & tastings', ar: 'الضيافة وتجارب الوصفات' },
+    { en: 'Given to guests on the house, or used trying recipes: costs of their own on the P&L, not food cost and not loss.', ar: 'ما قُدم للضيوف مجانًا أو استُخدم في تجربة الوصفات: تكاليف مستقلة في قائمة الدخل، ليست تكلفة طعام ولا هالكًا.' },
+    { en: 'Σ quantity × average cost at the time.', ar: 'مجموع الكمية × متوسط التكلفة وقتها.' },
+  ),
+  smUnexplained: tip(
+    { en: 'Staff meals & hospitality', ar: 'وجبات العاملين والضيافة' },
+    { en: 'Taken on purpose and logged: set apart from the waste, so the unexplained variance is only what no record explains.', ar: 'مأخوذ عمدًا ومسجل: يُفصل عن الهالك، فيبقى الانحراف غير المفسر هو ما لا يفسره أي سجل فقط.' },
+    { en: 'Actual usage = opening + purchases − waste − staff meals & hospitality − closing.', ar: 'الاستهلاك الفعلي = أول المدة + المشتريات − الهالك − وجبات العاملين والضيافة − آخر المدة.' },
+  ),
+
+  // ---- The inflation simulator ----
+  inSimulated: tip(
+    { en: 'Simulated portion cost', ar: 'تكلفة الحصة المتوقعة' },
+    { en: 'What a portion would cost at the prices tried; prep items carry the change through, as nested as they are. Nothing is saved.', ar: 'تكلفة الحصة بالأسعار المفترضة؛ والمصنّعات تنقل التغير مهما تداخلت. لا يُحفظ شيء.' },
+    { en: 'Each price by the most specific rule: its own new price, else its category\'s %, else the global %. A made prep item: its average × (batch at the new prices ÷ batch now).', ar: 'كل سعر بأدق قاعدة: سعره الجديد، وإلا نسبة قسمه، وإلا النسبة العامة. والمصنّع المنتج: متوسطه × (التشغيلة بالأسعار الجديدة ÷ التشغيلة الحالية).' },
+  ),
+  inKeepFc: tip(
+    { en: 'Price to keep food cost %', ar: 'سعر للحفاظ على نسبة التكلفة' },
+    { en: 'The price that keeps the dish\'s food cost % where it is now.', ar: 'السعر الذي يبقي نسبة تكلفة الطبق كما هي الآن.' },
+    { en: 'Price × simulated cost ÷ current cost.', ar: 'السعر × التكلفة المتوقعة ÷ التكلفة الحالية.' },
+  ),
+  inKeepMargin: tip(
+    { en: 'Price to keep cash margin', ar: 'سعر للحفاظ على هامش الربح' },
+    { en: 'The price that keeps the same pounds of gross profit on each plate.', ar: 'السعر الذي يبقي نفس الجنيهات من مجمل الربح في كل طبق.' },
+    { en: 'Price + (simulated cost − current cost).', ar: 'السعر + (التكلفة المتوقعة − التكلفة الحالية).' },
+  ),
+  inImpact: tip(
+    { en: 'Monthly profit impact', ar: 'أثر الربح الشهري' },
+    { en: 'What the new prices would take from a month\'s profit if the menu prices stay as they are.', ar: 'ما ستأخذه الأسعار الجديدة من ربح الشهر إذا بقيت أسعار المنيو كما هي.' },
+    { en: '(Current cost − simulated cost) × plates sold in the last 30 days.', ar: '(التكلفة الحالية − التكلفة المتوقعة) × الأطباق المباعة في آخر 30 يومًا.' },
+  ),
+
   // ---- The daily break-even ----
   dbeFixed: tip(
     { en: 'Daily fixed costs', ar: 'نصيب اليوم من المصاريف الثابتة' },

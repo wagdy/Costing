@@ -72,8 +72,8 @@ internal sealed class DeletionTargets(
                 return await VoidInvoiceAsync(await InvoiceAsync(recordId, cancellationToken), by, null, cancellationToken);
 
             case ApprovalModule.Waste:
-                await WasteAsync(recordId, cancellationToken);
-                return await ReverseAsync(recordId, StockMovementReason.Spoilage, by, cancellationToken);
+                // Spoilage, or a staff meal, hospitality or a recipe tasting, voided alike.
+                return await ReverseAsync(recordId, (await WasteAsync(recordId, cancellationToken))[0].Reason, by, cancellationToken);
 
             case ApprovalModule.StockCount:
             {
@@ -204,7 +204,10 @@ internal sealed class DeletionTargets(
 
     private async Task<IReadOnlyList<StockMovement>> WasteAsync(Guid spoilageId, CancellationToken cancellationToken)
     {
-        var entries = await movements.GetBySourceAsync(spoilageId, StockMovementReason.Spoilage, cancellationToken);
+        IReadOnlyList<StockMovement> entries = [];
+        foreach (var reason in StaffConsumption.Reasons.Prepend(StockMovementReason.Spoilage))
+            if ((entries = await movements.GetBySourceAsync(spoilageId, reason, cancellationToken)).Count > 0)
+                break;
         if (entries.Count == 0)
             throw new NotFoundException("Waste entry", spoilageId);
         if (entries.Any(m => m.IsReversal))
@@ -222,7 +225,14 @@ internal sealed class DeletionTargets(
             .ToList();
         var value = entries.Sum(e => -e.Quantity * (e.UnitCost ?? 0));
         var first = entries[0];
-        return $"Waste of {descriptions.BusinessDateOf(first.OccurredAtUtc).ToString("d MMM yyyy", Invariant)}" +
+        var what = first.Reason switch
+        {
+            StockMovementReason.StaffMeal => "Staff meal",
+            StockMovementReason.Hospitality => "Hospitality",
+            StockMovementReason.RecipeTasting => "Recipe tasting",
+            _ => "Waste",
+        };
+        return $"{what} of {descriptions.BusinessDateOf(first.OccurredAtUtc).ToString("d MMM yyyy", Invariant)}" +
                (first.RecordedBy is null ? "" : $" by {first.RecordedBy}") +
                $": {string.Join(", ", lines.Take(3))}{(lines.Count > 3 ? $" and {lines.Count - 3} more" : "")} · {CompanyMoney.Text(value)}";
     }

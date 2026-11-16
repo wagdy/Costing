@@ -19,11 +19,13 @@ public sealed record SupplierDto(
     // Invoices it is on, drafts included: any at all and deleting it archives it instead.
     int Invoices,
     decimal PostedTotal,
-    DateTime? LastPostedAtUtc)
+    DateTime? LastPostedAtUtc,
+    // Days it gives to pay a credit invoice (مدة السداد).
+    int PaymentTermsDays = 0)
 {
     public static SupplierDto From(Supplier supplier, SupplierUse? use) => new(
         supplier.Id, supplier.Name, supplier.ContactPerson, supplier.Phone, supplier.Email, supplier.Notes, supplier.IsArchived,
-        use?.Invoices ?? 0, use?.PostedTotal ?? 0, use?.LastPostedAtUtc);
+        use?.Invoices ?? 0, use?.PostedTotal ?? 0, use?.LastPostedAtUtc, supplier.PaymentTermsDays);
 }
 
 public enum SupplierRemoval
@@ -56,7 +58,8 @@ internal sealed class GetSuppliersQueryHandler(ISupplierRepository suppliers, IP
 // Adds the supplier, or changes its details. Two suppliers cannot share a name, archived or not:
 // the invoices would not say which was which.
 public sealed record SaveSupplierCommand(
-    Guid SupplierId, string Name, string? ContactPerson = null, string? Phone = null, string? Email = null, string? Notes = null)
+    Guid SupplierId, string Name, string? ContactPerson = null, string? Phone = null, string? Email = null, string? Notes = null,
+    int? PaymentTermsDays = null)
     : IRequest<SupplierDto>;
 
 internal sealed class SaveSupplierCommandHandler(ISupplierRepository suppliers, IPurchaseInvoiceRepository invoices, IUnitOfWork unitOfWork)
@@ -64,7 +67,8 @@ internal sealed class SaveSupplierCommandHandler(ISupplierRepository suppliers, 
 {
     public async Task<SupplierDto> Handle(SaveSupplierCommand request, CancellationToken cancellationToken)
     {
-        var details = new SupplierDetails(request.Name ?? string.Empty, request.ContactPerson, request.Phone, request.Email, request.Notes);
+        var details = new SupplierDetails(
+            request.Name ?? string.Empty, request.ContactPerson, request.Phone, request.Email, request.Notes, request.PaymentTermsDays);
         if (!string.IsNullOrWhiteSpace(details.Name)
             && await suppliers.GetByNormalizedNameAsync(Supplier.Normalize(details.Name), cancellationToken) is { } namesake
             && namesake.Id != request.SupplierId)

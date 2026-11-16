@@ -43,6 +43,10 @@ public sealed class CostingSettings
     // with nothing recorded of either, and as the simulation's starting figures. None until set.
     public decimal? FallbackMonthlyLaborCost { get; set; }
     public decimal? FallbackMonthlyOverheadCost { get; set; }
+
+    // What a day's staff meals should cost at most (الحد اليومي لتكلفة وجبات العاملين): a day over it
+    // is flagged. None until set.
+    public decimal? DailyStaffMealBudget { get; set; }
 }
 
 // The treasury's tax and service settings (إعدادات الضريبة والخدمة). The tax rate is not here: it is
@@ -195,6 +199,7 @@ internal sealed class CostingSettingsConfiguration : IEntityTypeConfiguration<Co
         builder.Property(s => s.TargetNetMarginPercent).HasPrecision(5, 2).HasDefaultValue(CostingSettings.DefaultTargetNetMargin);
         builder.Property(s => s.FallbackMonthlyLaborCost).HasPrecision(18, 2);
         builder.Property(s => s.FallbackMonthlyOverheadCost).HasPrecision(18, 2);
+        builder.Property(s => s.DailyStaffMealBudget).HasPrecision(18, 2);
     }
 }
 

@@ -93,6 +93,10 @@ import { StockCardButton } from './stock-card-dialog';
           <span class="label">Recorded waste <app-info-tip tip="recordedWaste" /><span class="ar">الهالك المسجل</span></span>
           <strong>{{ r.recordedWasteValue | money }}</strong>
         </div>
+        <div class="box">
+          <span class="label">Staff meals & hospitality <app-info-tip tip="smUnexplained" /><span class="ar">وجبات العاملين والضيافة</span></span>
+          <strong>{{ r.staffMealsValue ?? 0 | money }}</strong>
+        </div>
         <div class="box" [class.deficit]="r.unexplainedValue > 0" [class.surplus]="r.unexplainedValue < 0">
           <span class="label">Unexplained <app-info-tip tip="unexplainedBetweenCounts" /><span class="ar">غير مبرر</span></span>
           <strong>{{ r.unexplainedValue | money }}</strong>
@@ -145,6 +149,9 @@ import { StockCardButton } from './stock-card-dialog';
                   {{ qty(row, row.rawWaste + row.productWaste) }}
                   @if (row.rawWaste && row.productWaste) {
                     <small class="muted block">{{ qty(row, row.rawWaste) }} raw · {{ qty(row, row.productWaste) }} dishes</small>
+                  }
+                  @if (row.staffMeals) {
+                    <small class="muted block">+ {{ qty(row, row.staffMeals) }} staff meals &amp; hospitality, not waste</small>
                   }
                 </td>
                 <td class="num">{{ qty(row, row.standardUsage) }}</td>

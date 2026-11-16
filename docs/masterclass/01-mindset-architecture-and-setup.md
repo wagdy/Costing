@@ -733,7 +733,7 @@ public static class DependencyInjection
 
 البنية التحتية: كل "منفذ" يُربط بتطبيقه. `Singleton` للساعة وملف الشركة والتشفير؛ `Scoped` لكل ما يلمس `CostingDbContext`؛ `RetryOnConflictBehavior` يلف كل أمر؛ و `AddHttpClient` + `AddHostedService<HrSyncWorker>` للربط مع HR.
 
-> 📄 **`backend/src/Costing.Infrastructure/DependencyInjection.cs`** — 121 سطر
+> 📄 **`backend/src/Costing.Infrastructure/DependencyInjection.cs`** — 123 سطر
 
 ```csharp
 using MediatR;
@@ -849,6 +849,8 @@ public static class DependencyInjection
         services.AddScoped<IntelligenceService>();
         services.AddScoped<BurdenedCostService>();
         services.AddScoped<DailyBreakEvenService>();
+        services.AddScoped<StaffMealsService>();
+        services.AddScoped<SupplierAccountsService>();
         services.AddScoped<StockCardService>();
 
         // The system's users.
@@ -1429,6 +1431,7 @@ Costing/
                     MenuSalesController.cs
                     PosIntegrationController.cs
                     SettingsController.cs
+                    SuppliersController.cs
                     UsersController.cs
                 Costing.Api.csproj
                 ErrorHandling/
@@ -1505,6 +1508,7 @@ Costing/
                     Treasury.cs
                 Waste/
                     Breakage.cs
+                    StaffMeals.cs
             Costing.Domain/
                 Access/
                     CostingTabs.cs
@@ -1620,12 +1624,14 @@ Costing/
                         20261110175322_AddHrIntegration.cs
                         20261112143520_AddBlindAndSpotCounts.cs
                         20261115215556_AddBurdenedPlateCost.cs
+                        20261116112941_AddSupplierTermsAndStaffMeals.cs
                         CostingDbContextModelSnapshot.cs
                     PosIntegrationPersistence.cs
                     RetryOnConflictBehavior.cs
                 Reports/
                     BreakEvenService.cs
                     BurdenedCostService.cs
+                    CostingService.Inflation.cs
                     CostingService.MenuEngineering.cs
                     CostingService.PlateCost.cs
                     CostingService.cs
@@ -1635,12 +1641,15 @@ Costing/
                     KpiService.cs
                     PurchaseSpendingService.cs
                     SalesLedger.cs
+                    StaffMealsService.cs
                     StockCardService.cs
+                    SupplierAccountsService.cs
                     TreasuryService.cs
                     VarianceService.cs
         tests/
             Costing.Api.Tests/
                 BurdenedCostApiTests.cs
+                ControllershipApiTests.cs
                 Costing.Api.Tests.csproj
                 CostingApiTests.cs
                 DailyBreakEvenApiTests.cs
@@ -1684,6 +1693,7 @@ Costing/
                 StockRequirementsTests.cs
                 SupplierTests.cs
                 TreasuryTests.cs
+                WhatIfAndConsumptionTests.cs
             Costing.Infrastructure.Tests/
                 BurdenedCostTests.cs
                 Costing.Infrastructure.Tests.csproj
@@ -1693,6 +1703,8 @@ Costing/
                 DatabaseTests.cs
                 IntelligenceTests.cs
                 PosIntegrationTests.cs
+                StaffMealsAndInflationTests.cs
+                SupplierAccountsTests.cs
                 TestSystem.cs
                 Till.cs
                 WorkClockTests.cs
@@ -1774,6 +1786,7 @@ Costing/
                         advance-fields.ts
                         advances-page.spec.ts
                         advances-page.ts
+                        ap-aging-page.ts
                         approval-changes.ts
                         approvals-page.spec.ts
                         approvals-page.ts
@@ -1787,6 +1800,7 @@ Costing/
                         category-delete-dialog.ts
                         category-filters.spec.ts
                         consumption-page.ts
+                        controllership.spec.ts
                         costing-navigation.spec.ts
                         costing-reports-shell.ts
                         costing-shell.ts
@@ -1815,6 +1829,7 @@ Costing/
                         form-checks.ts
                         funding-page.spec.ts
                         funding-page.ts
+                        inflation-page.ts
                         info-tip.spec.ts
                         info-tip.ts
                         info-tips.ts
@@ -1893,6 +1908,7 @@ Costing/
                         spending-page.ts
                         spending-pie.spec.ts
                         spending-pie.ts
+                        staff-meals-page.ts
                         staff-page.spec.ts
                         staff-page.ts
                         stock-card-dialog.spec.ts
@@ -1903,6 +1919,7 @@ Costing/
                         supplier-dialog.ts
                         supplier-payment-fields.ts
                         supplier-payments-page.ts
+                        supplier-statement-dialog.ts
                         suppliers-page.spec.ts
                         suppliers-page.ts
                         takings-badges.ts
@@ -1914,7 +1931,9 @@ Costing/
                         treasury-page.ts
                         variance-page.spec.ts
                         variance-page.ts
+                        vendor-prices-page.ts
                         waste-page.ts
+                        waste-shell.ts
                     settings/
                         hr-integration-page.spec.ts
                         hr-integration-page.ts

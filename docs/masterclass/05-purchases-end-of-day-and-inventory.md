@@ -1160,7 +1160,7 @@ internal sealed class RecordSpoilageCommandHandler(
 
 مورد له فواتير يُؤرشف (يختفي من قائمة الاختيار ويبقى على فواتيره) ويُستعاد؛ والمورد بلا فواتير يُحذف.
 
-> 📄 **`backend/src/Costing.Application/Suppliers/Suppliers.cs`** — 129 سطر
+> 📄 **`backend/src/Costing.Application/Suppliers/Suppliers.cs`** — 133 سطر
 
 ```csharp
 using MediatR;
@@ -1184,11 +1184,13 @@ public sealed record SupplierDto(
     // Invoices it is on, drafts included: any at all and deleting it archives it instead.
     int Invoices,
     decimal PostedTotal,
-    DateTime? LastPostedAtUtc)
+    DateTime? LastPostedAtUtc,
+    // Days it gives to pay a credit invoice (مدة السداد).
+    int PaymentTermsDays = 0)
 {
     public static SupplierDto From(Supplier supplier, SupplierUse? use) => new(
         supplier.Id, supplier.Name, supplier.ContactPerson, supplier.Phone, supplier.Email, supplier.Notes, supplier.IsArchived,
-        use?.Invoices ?? 0, use?.PostedTotal ?? 0, use?.LastPostedAtUtc);
+        use?.Invoices ?? 0, use?.PostedTotal ?? 0, use?.LastPostedAtUtc, supplier.PaymentTermsDays);
 }
 
 public enum SupplierRemoval
@@ -1221,7 +1223,8 @@ internal sealed class GetSuppliersQueryHandler(ISupplierRepository suppliers, IP
 // Adds the supplier, or changes its details. Two suppliers cannot share a name, archived or not:
 // the invoices would not say which was which.
 public sealed record SaveSupplierCommand(
-    Guid SupplierId, string Name, string? ContactPerson = null, string? Phone = null, string? Email = null, string? Notes = null)
+    Guid SupplierId, string Name, string? ContactPerson = null, string? Phone = null, string? Email = null, string? Notes = null,
+    int? PaymentTermsDays = null)
     : IRequest<SupplierDto>;
 
 internal sealed class SaveSupplierCommandHandler(ISupplierRepository suppliers, IPurchaseInvoiceRepository invoices, IUnitOfWork unitOfWork)
@@ -1229,7 +1232,8 @@ internal sealed class SaveSupplierCommandHandler(ISupplierRepository suppliers, 
 {
     public async Task<SupplierDto> Handle(SaveSupplierCommand request, CancellationToken cancellationToken)
     {
-        var details = new SupplierDetails(request.Name ?? string.Empty, request.ContactPerson, request.Phone, request.Email, request.Notes);
+        var details = new SupplierDetails(
+            request.Name ?? string.Empty, request.ContactPerson, request.Phone, request.Email, request.Notes, request.PaymentTermsDays);
         if (!string.IsNullOrWhiteSpace(details.Name)
             && await suppliers.GetByNormalizedNameAsync(Supplier.Normalize(details.Name), cancellationToken) is { } namesake
             && namesake.Id != request.SupplierId)
@@ -3161,11 +3165,116 @@ internal static class BreakageDtos
 ```
 
 
+- **وجبات العاملين والضيافة وتجارب الوصفات:** ما يخرج من المخزون **عن قصد** ليس هالكًا ولا عجزًا. لكل نوع سبب حركة مستقل (`StaffMeal` و`Hospitality` و`RecipeTasting`، ومجموعتها `StaffConsumption.Reasons`)، فتقرير الاستهلاك والفروقات يخرجه من "غير المبرر" في عمود خاص. السطر إما خامة/مصنع بكميته بوحدته، أو **وصفة بأطباق كاملة** تأخذ مكوناتها كما يأخذها البيع (`RequirementsFor`: المصنعات من مخزونها، لا تُفكّ لخاماتها). و `EntryId` يجعل إعادة الإرسال تسجّل مرة واحدة، والإلغاء بنفس موافقة الهالك (`Deletions.cs` يبحث بسبب الهالك ثم أسباب العاملين ويعكس بسبب أول قيد). وجبة العاملين تذهب لتكلفة العمالة، والضيافة والتجارب لمصروفات مستقلة.
+
+> 📄 **`backend/src/Costing.Application/Waste/StaffMeals.cs`** — 97 سطر
+
+```csharp
+using MediatR;
+using Costing.Application.Common;
+using Costing.Application.RawMaterials;
+using Costing.Domain.Common;
+using Costing.Domain.Menu;
+using Costing.Domain.RawMaterials;
+using Costing.Domain.Recipes;
+using Costing.Domain.StockMovements;
+
+namespace Costing.Application.Waste;
+
+// What was taken from stock on purpose (وجبات العاملين والضيافة): a staff meal, hospitality to a
+// guest, or a recipe tried. Logged apart from spoilage, so the kitchen is never charged with them
+// as unexplained loss, and the P&L carries them where they belong: staff meals in the labor cost,
+// hospitality and tastings as costs of their own.
+public enum StaffConsumptionKind
+{
+    StaffMeal = 1,
+    Hospitality = 2,
+    RecipeTasting = 3,
+}
+
+// A line: a material or prep item (Quantity in its own unit: grams, millilitres, pieces), or a
+// recipe (Quantity in plates, whole): its ingredients taken as a sale takes them, prep items from
+// their own stock, at the average cost now.
+public sealed record StaffConsumptionLine(Guid? RawMaterialId, Guid? RecipeId, decimal Quantity);
+
+// EntryId works as a spoilage's: made by the screen, so a retry records it once. RecordedBy is
+// set by the API from who is signed in.
+public sealed record RecordStaffConsumptionCommand(
+    Guid EntryId, StaffConsumptionKind Kind, IReadOnlyList<StaffConsumptionLine> Lines, string? Note = null, string RecordedBy = "")
+    : IRequest<Guid>, IRetryOnConflict;
+
+public static class StaffConsumptionKinds
+{
+    public static StockMovementReason ReasonOf(StaffConsumptionKind kind) => kind switch
+    {
+        StaffConsumptionKind.StaffMeal => StockMovementReason.StaffMeal,
+        StaffConsumptionKind.Hospitality => StockMovementReason.Hospitality,
+        StaffConsumptionKind.RecipeTasting => StockMovementReason.RecipeTasting,
+        _ => throw new DomainException("A staff meal, hospitality or a recipe tasting. · وجبة عاملين أو ضيافة أو تجربة وصفة."),
+    };
+}
+
+internal sealed class RecordStaffConsumptionHandler(
+    IRawMaterialRepository materials, IRecipeRepository recipes, IMenuRepository menu, IStockMovementRepository movements, IUnitOfWork unitOfWork)
+    : IRequestHandler<RecordStaffConsumptionCommand, Guid>
+{
+    public async Task<Guid> Handle(RecordStaffConsumptionCommand request, CancellationToken cancellationToken)
+    {
+        var reason = StaffConsumptionKinds.ReasonOf(request.Kind);
+        if (await movements.ExistsAsync(request.EntryId, reason, cancellationToken))
+            return request.EntryId;
+        if (request.Lines.Count == 0)
+            throw new DomainException("Add at least one item. · أضف صنفًا واحدًا على الأقل.");
+        var note = string.IsNullOrWhiteSpace(request.Note) ? null : request.Note.Trim();
+        if (note?.Length > 120)
+            throw new DomainException("Keep the note under 120 characters.");
+
+        // Each line, as what it takes from stock: (material, quantity, what to call it).
+        var taken = new List<(Guid Material, decimal Quantity, string? Note)>();
+        IReadOnlyList<MenuItem>? items = null;
+        foreach (var line in request.Lines)
+        {
+            if ((line.RawMaterialId is null) == (line.RecipeId is null))
+                throw new DomainException("Each line is a material or a recipe. · كل سطر خامة أو وصفة.");
+            if (line.Quantity <= 0)
+                throw new DomainException("Each line needs a quantity greater than zero. · الكمية أكبر من صفر.");
+            if (line.RawMaterialId is { } materialId)
+            {
+                taken.Add((materialId, line.Quantity, note));
+                continue;
+            }
+
+            var recipe = await recipes.GetRequiredAsync(line.RecipeId!.Value, cancellationToken);
+            if (recipe.IsDeleted)
+                throw new DomainException("That recipe is deleted. · الوصفة محذوفة.");
+            if (line.Quantity != decimal.Truncate(line.Quantity))
+                throw new DomainException("A recipe is taken in whole plates. · الوصفة بالطبق الكامل.");
+            items ??= await menu.GetItemsAsync(cancellationToken);
+            var name = recipe.Name
+                ?? (recipe.CatalogItemId is { } id ? items.FirstOrDefault(i => i.Id == id)?.Name : null)
+                ?? "A recipe";
+            var plates = (int)line.Quantity;
+            var said = $"{plates} × {name}{(note is null ? "" : $" · {note}")}";
+            taken.AddRange(recipe.RequirementsFor(plates).Select(r => (r.RawMaterialId, r.Quantity, (string?)(said.Length > 200 ? said[..200] : said))));
+        }
+
+        var byId = await materials.GetRequiredByIdsAsync(taken.Select(t => t.Material).Distinct().ToList(), cancellationToken);
+        if (byId.Values.FirstOrDefault(m => m.IsArchived) is { } archived)
+            throw new DomainException($"{archived.Name} has been deleted from the raw materials.");
+        foreach (var (material, quantity, said) in taken)
+            movements.Add(byId[material].RecordConsumption(quantity, request.EntryId, reason, said, request.RecordedBy));
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+        return request.EntryId;
+    }
+}
+```
+
+
 ## 6. `InventoryController` (`api/inventory`)
 
 أكبر Controller: الخامات والوحدات، الوصفات والمصنعات، أوامر الإنتاج، الجرد، الهالك، الفواتير ويومية المشتريات وتعديلها وصورها، الفئات والمصروفات والموردون، و **طلبات الحذف** (`deletion-requests`). الصلاحيات على كل endpoint (لا تعتمد على السجل)، و `CanApprove` يقرر "200 تنفيذ" أم "202 طلب".
 
-> 📄 **`backend/src/Costing.Api/Controllers/InventoryController.cs`** — 893 سطر
+> 📄 **`backend/src/Costing.Api/Controllers/InventoryController.cs`** — 905 سطر
 
 ```csharp
 using MediatR;
@@ -3445,7 +3554,8 @@ public sealed class InventoryController(ISender sender) : ControllerBase
     [CostingTab(CostingTabs.Purchases)]
     [Authorize(Policy = Permissions.InventoryManage)]
     public Task<SupplierDto> SaveSupplier(Guid supplierId, SaveSupplierRequest request, CancellationToken cancellationToken) =>
-        sender.Send(new SaveSupplierCommand(supplierId, request.Name, request.ContactPerson, request.Phone, request.Email, request.Notes), cancellationToken);
+        sender.Send(new SaveSupplierCommand(
+            supplierId, request.Name, request.ContactPerson, request.Phone, request.Email, request.Notes, request.PaymentTermsDays), cancellationToken);
 
     // Deleted if it is on no invoice, archived if it is: the answer says which.
     [HttpDelete("suppliers/{supplierId:guid}")]
@@ -3715,6 +3825,15 @@ public sealed class InventoryController(ISender sender) : ControllerBase
             StaffId, StaffName, CanApprove), cancellationToken);
         return result.Outcome == ApprovalOutcome.Requested ? Accepted(result) : Ok(result);
     }
+
+    // Staff meals, hospitality and recipe tastings (وجبات العاملين والضيافة): taken on purpose, kept
+    // apart from spoilage. A recipe's plates take its ingredients as a sale does. EntryId makes a
+    // retry harmless; voided like a waste entry, through Waste's approvals.
+    [HttpPost("staff-meals")]
+    [CostingTab(CostingTabs.Waste)]
+    [Authorize(Policy = Permissions.InventoryManage)]
+    public async Task<object> RecordStaffMeal(Costing.Application.Waste.RecordStaffConsumptionCommand command, CancellationToken cancellationToken) =>
+        new { entryId = await sender.Send(command with { RecordedBy = StaffName }, cancellationToken) };
 
     // Thrown-away raw stock: expired, spoiled, dropped. SpoilageId makes a retry harmless.
     [HttpPost("spoilage")]
@@ -4027,7 +4146,9 @@ public sealed record RequestDeletionBody(Guid RequestId, ApprovalModule Module, 
 
 public sealed record RejectRequestBody(string? Note = null);
 
-public sealed record SaveSupplierRequest(string Name, string? ContactPerson = null, string? Phone = null, string? Email = null, string? Notes = null);
+// PaymentTermsDays: none keeps them as they are.
+public sealed record SaveSupplierRequest(
+    string Name, string? ContactPerson = null, string? Phone = null, string? Email = null, string? Notes = null, int? PaymentTermsDays = null);
 
 // Kind: raw materials or general expenses; a new one is raw materials unless said.
 public sealed record SavePurchaseCategoryRequest(string Name, string? NameAr = null, ExpenseLine? ExpenseLine = null, CategoryKind? Kind = null);

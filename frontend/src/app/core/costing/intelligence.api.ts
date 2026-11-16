@@ -133,7 +133,7 @@ export interface OrderPlan {
   noPrice: string[];
 }
 
-export type OrderSheetGrouping = 'Category' | 'Supplier';
+export type OrderSheetGrouping = 'Category' | 'Supplier' | 'CheapestSupplier';
 
 export type VarianceEvaluation = 'WithinLimit' | 'Unfavourable' | 'Favourable' | 'SharedCost';
 
@@ -160,6 +160,8 @@ export interface ConsumptionRow {
   unitCost: number | null;
   varianceCost: number | null;
   evaluation: VarianceEvaluation;
+  // Staff meals, hospitality and tastings: taken on purpose, out of the actual usage judged.
+  staffMeals?: number;
 }
 
 export interface SoldWithoutRecipe {
@@ -178,6 +180,8 @@ export interface ConsumptionReport {
   highLoss: number;
   rows: ConsumptionRow[];
   soldWithoutRecipe: SoldWithoutRecipe[];
+  wasteValue?: number;
+  staffMealsValue?: number;
 }
 
 export type AbcClass = 'A' | 'B' | 'C';
@@ -292,6 +296,86 @@ export const menuClassLabels: Record<MenuClass, { en: string; ar: string; icon: 
   Puzzle: { en: 'Puzzles', ar: 'الألغاز', icon: 'extension', action: 'Promote and reposition', actionAr: 'روّج لها وغيّر مكانها' },
   Dog: { en: 'Dogs', ar: 'الأصناف الضعيفة', icon: 'trending_down', action: 'Rework or remove', actionAr: 'أعد تصميمها أو احذفها' },
 };
+
+// ---- Vendor price comparison (مقارنة أسعار الموردين) ----
+
+export interface VendorPrice {
+  supplierId: string | null;
+  supplier: string;
+  lastPrice: number | null;
+  lastDate: string;
+  lowestPrice: number | null;
+  highestPrice: number | null;
+  averagePrice: number | null;
+  quantity: number;
+  purchases: number;
+  bestPrice: boolean;
+}
+
+export interface VendorPriceRow {
+  rawMaterialId: string;
+  code: string | null;
+  material: string;
+  categoryId: string;
+  category: string | null;
+  categoryAr: string | null;
+  purchaseUnit: string;
+  suppliers: VendorPrice[];
+  spreadPercent: number | null;
+}
+
+export interface VendorPriceReport {
+  from: string;
+  to: string;
+  materials: number;
+  withChoice: number;
+  rows: VendorPriceRow[];
+}
+
+// ---- The inflation & pricing simulator (محاكي التضخم والتسعير) ----
+
+export interface InflationScenario {
+  globalPercent: number | null;
+  categories: { categoryId: string; percent: number }[];
+  materials: { rawMaterialId: string; costPerPurchaseUnit: number }[];
+}
+
+export type SimulatedItemKind = 'Dish' | 'OffMenuRecipe' | 'PrepItem';
+
+export interface SimulatedItem {
+  kind: SimulatedItemKind;
+  itemCode: string;
+  recipeId: string | null;
+  prepItemId: string | null;
+  name: string;
+  category: string | null;
+  unit: string;
+  sellingPrice: number | null;
+  currentCost: number;
+  simulatedCost: number;
+  change: number;
+  changePercent: number | null;
+  currentFoodCostPercent: number | null;
+  simulatedFoodCostPercent: number | null;
+  aboveTarget: boolean;
+  newlyAboveTarget: boolean;
+  suggestedPriceKeepFoodCost: number | null;
+  suggestedPriceKeepMargin: number | null;
+  quantityLast30Days: number;
+  monthlyProfitImpact: number | null;
+}
+
+export interface InflationReport {
+  salesFrom: string;
+  salesTo: string;
+  foodCostTargetPercent: number;
+  materialsChanged: number;
+  dishes: number;
+  newlyAboveTarget: number;
+  monthlyProfitImpact: number;
+  materials: { rawMaterialId: string; material: string; purchaseUnit: string; currentPrice: number | null; simulatedPrice: number; changePercent: number | null }[];
+  items: SimulatedItem[];
+}
 
 // The fully burdened plate cost (التكلفة الكلية للطبق): each dish's food, its share of the period's
 // labor and overheads, and what is left of its price.
@@ -466,6 +550,22 @@ export class IntelligenceApi {
 
   menuEngineeringSheet(from: string, to: string, category: string | null = null): Observable<Blob> {
     return this.http.get('/api/costing/intelligence/menu-engineering/sheet', { params: menuParams(from, to, category), responseType: 'blob' });
+  }
+
+  vendorPrices(from: string, to: string): Observable<VendorPriceReport> {
+    return this.http.get<VendorPriceReport>('/api/costing/intelligence/vendor-prices', { params: { from, to } });
+  }
+
+  vendorPricesSheet(from: string, to: string): Observable<Blob> {
+    return this.http.get('/api/costing/intelligence/vendor-prices/sheet', { params: { from, to }, responseType: 'blob' });
+  }
+
+  simulateInflation(scenario: InflationScenario): Observable<InflationReport> {
+    return this.http.post<InflationReport>('/api/costing/intelligence/simulate-inflation', scenario);
+  }
+
+  simulateInflationSheet(scenario: InflationScenario): Observable<Blob> {
+    return this.http.post('/api/costing/intelligence/simulate-inflation/sheet', scenario, { responseType: 'blob' });
   }
 
   burdenedCosts(query: BurdenedCostQuery): Observable<BurdenedCostReport> {

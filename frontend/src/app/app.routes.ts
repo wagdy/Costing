@@ -102,6 +102,8 @@ const costingChildren: Routes = [
       { path: 'abc', loadComponent: () => import('./features/costing/abc-page').then((m) => m.AbcPage) },
       { path: 'menu', loadComponent: () => import('./features/costing/menu-engineering-page').then((m) => m.MenuEngineeringPage) },
       { path: 'burdened', loadComponent: () => import('./features/costing/burdened-cost-page').then((m) => m.BurdenedCostPage) },
+      { path: 'vendor-prices', loadComponent: () => import('./features/costing/vendor-prices-page').then((m) => m.VendorPricesPage) },
+      { path: 'inflation', loadComponent: () => import('./features/costing/inflation-page').then((m) => m.InflationPage) },
     ],
   },
   {
@@ -130,6 +132,10 @@ const costingChildren: Routes = [
         path: 'suppliers',
         loadComponent: () => import('./features/costing/suppliers-page').then((m) => m.SuppliersPage),
       },
+      {
+        path: 'vendor-prices',
+        loadComponent: () => import('./features/costing/vendor-prices-page').then((m) => m.VendorPricesPage),
+      },
       { path: 'spending', redirectTo: '/costing/reports/spending' },
       { path: 'expense-items', redirectTo: '/costing/expense-items' },
       {
@@ -157,9 +163,15 @@ const costingChildren: Routes = [
     loadComponent: () => import('./features/costing/count-sheet-page').then((m) => m.CountSheetPage),
   },
   {
+    // Waste: spoilage and breakage (?spoilage= opens an entry), and staff meals & hospitality apart.
     path: 'waste',
     canActivate: [costingTabGuard('Waste')],
-    loadComponent: () => import('./features/costing/waste-page').then((m) => m.WastePage),
+    loadComponent: () => import('./features/costing/waste-shell').then((m) => m.WasteShell),
+    children: [
+      { path: '', pathMatch: 'full', redirectTo: 'spoilage' },
+      { path: 'spoilage', loadComponent: () => import('./features/costing/waste-page').then((m) => m.WastePage) },
+      { path: 'staff-meals', loadComponent: () => import('./features/costing/staff-meals-page').then((m) => m.StaffMealsPage) },
+    ],
   },
   {
     // Financials (الماليات): the safe, its funding, takings, expense vouchers, what suppliers are owed
@@ -179,6 +191,7 @@ const costingChildren: Routes = [
         path: 'suppliers',
         loadComponent: () => import('./features/costing/supplier-debts-page').then((m) => m.SupplierDebtsPage),
       },
+      { path: 'ap-aging', loadComponent: () => import('./features/costing/ap-aging-page').then((m) => m.ApAgingPage) },
       { path: 'payments', loadComponent: () => import('./features/costing/supplier-payments-page').then((m) => m.SupplierPaymentsPage) },
       { path: 'advances', loadComponent: () => import('./features/costing/advances-page').then((m) => m.AdvancesPage) },
       { path: 'staff', loadComponent: () => import('./features/costing/staff-page').then((m) => m.StaffPage) },

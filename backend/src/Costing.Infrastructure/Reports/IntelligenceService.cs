@@ -127,8 +127,43 @@ public sealed record OrderPlan(
 public enum OrderSheetGrouping
 {
     Category = 1,
+    // By the supplier who sold each last.
     Supplier = 2,
+    // By the supplier whose last net price for it is the lowest (الأقل سعراً), at that price.
+    CheapestSupplier = 3,
 }
+
+// ---- Vendor price comparison (مقارنة أسعار الموردين) ----
+
+// One supplier's prices for one material over the period, per purchase unit and net of every
+// discount (the line's and its share of the invoice's): the last paid and when, the lowest, the
+// highest, the average weighted by quantity, and what was bought. BestPrice: the lowest last price.
+public sealed record VendorPrice(
+    Guid? SupplierId,
+    string Supplier,
+    decimal? LastPrice,
+    DateOnly LastDate,
+    decimal? LowestPrice,
+    decimal? HighestPrice,
+    decimal? AveragePrice,
+    decimal Quantity,
+    int Purchases,
+    bool BestPrice);
+
+// A material bought in the period, its suppliers cheapest first. Spread: how far the dearest last
+// price is above the cheapest, as a percentage; none with a single supplier.
+public sealed record VendorPriceRow(
+    Guid RawMaterialId,
+    string? Code,
+    string Material,
+    Guid CategoryId,
+    string? Category,
+    string? CategoryAr,
+    string PurchaseUnit,
+    IReadOnlyList<VendorPrice> Suppliers,
+    decimal? SpreadPercent);
+
+public sealed record VendorPriceReport(DateOnly From, DateOnly To, int Materials, int WithChoice, IReadOnlyList<VendorPriceRow> Rows);
 
 // The order as approved: each material's quantity in its purchase unit.
 public sealed record OrderSheetLine(Guid RawMaterialId, decimal Quantity);
@@ -142,7 +177,8 @@ public sealed record OrderSheet(OrderSheetGrouping GroupBy, int? CoverageDays, D
 
 // ---- Theoretical against actual consumption ----
 
-// One bought material over the period. Actual usage: opening + purchases − logged waste − closing,
+// One bought material over the period. Actual usage: opening + purchases − logged waste − staff
+// meals, hospitality and tastings (StaffMeals: taken on purpose, never a loss) − closing,
 // the book's stock either side. Theoretical: what the sales should have taken by the recipes, down
 // through the prep items, and what is held in the prep items' stock made from it (HeldInPrep: made
 // and not sold yet, or below zero, sold from what was made before). Unexplained: actual −
@@ -166,8 +202,11 @@ public sealed record ConsumptionRow(
     decimal? UnexplainedPercent,
     decimal? UnitCost,
     decimal? VarianceCost,
-    VarianceEvaluation Evaluation);
+    VarianceEvaluation Evaluation,
+    decimal StaffMeals = 0);
 
+// WasteValue and StaffMealsValue: the logged spoilage and the staff meals, hospitality and tastings,
+// at the average cost now, each apart from the unexplained.
 public sealed record ConsumptionReport(
     DateOnly From,
     DateOnly To,
@@ -177,7 +216,9 @@ public sealed record ConsumptionReport(
     decimal UnexplainedValue,
     int HighLoss,
     IReadOnlyList<ConsumptionRow> Rows,
-    IReadOnlyList<SoldWithoutStock> SoldWithoutRecipe);
+    IReadOnlyList<SoldWithoutStock> SoldWithoutRecipe,
+    decimal WasteValue = 0,
+    decimal StaffMealsValue = 0);
 
 // ---- ABC and days on hand ----
 
@@ -253,7 +294,8 @@ public sealed class IntelligenceService(CostingDbContext db, IBusinessCalendar c
     private static readonly StockMovementReason[] Uses =
     [
         StockMovementReason.Sale, StockMovementReason.ProductionInput, StockMovementReason.Waste, StockMovementReason.Spoilage,
-        StockMovementReason.VoidReturn, StockMovementReason.CountAdjustment,
+        StockMovementReason.VoidReturn, StockMovementReason.CountAdjustment, StockMovementReason.StaffMeal, StockMovementReason.Hospitality,
+        StockMovementReason.RecipeTasting,
     ];
 
     // Waste logged: spoilage, and dishes voided after the kitchen made them, less what refunds put back.
@@ -264,6 +306,7 @@ public sealed class IntelligenceService(CostingDbContext db, IBusinessCalendar c
     [
         StockMovementReason.Sale, StockMovementReason.Waste, StockMovementReason.VoidReturn, StockMovementReason.Spoilage,
         StockMovementReason.ProductionInput, StockMovementReason.CountAdjustment, StockMovementReason.OpeningStock,
+        StockMovementReason.StaffMeal, StockMovementReason.Hospitality, StockMovementReason.RecipeTasting,
     ];
 
     public DateOnly Today => clock.BusinessDateOf(DateTime.UtcNow);
@@ -549,18 +592,23 @@ public sealed class IntelligenceService(CostingDbContext db, IBusinessCalendar c
         var categories = await db.PurchaseCategories.AsNoTracking().ToDictionaryAsync(c => c.Id, c => c.Name, cancellationToken);
         var suppliers = await db.Suppliers.AsNoTracking().ToDictionaryAsync(s => s.Id, s => s.Name, cancellationToken);
         var prices = await LatestPricesAsync(cancellationToken);
+        var cheapest = request.GroupBy == OrderSheetGrouping.CheapestSupplier
+            ? await CheapestPricesAsync(Today.AddDays(-CheapestLookbackDays), Today, cancellationToken)
+            : new Dictionary<Guid, Bought>();
 
         var rows = request.Lines.Where(l => l.Quantity > 0 && materials.ContainsKey(l.RawMaterialId))
             .GroupBy(l => l.RawMaterialId)
             .Select(g =>
             {
                 var material = materials[g.Key];
-                var last = prices.GetValueOrDefault(material.Id);
+                var last = request.GroupBy == OrderSheetGrouping.CheapestSupplier
+                    ? cheapest.GetValueOrDefault(material.Id) ?? prices.GetValueOrDefault(material.Id)
+                    : prices.GetValueOrDefault(material.Id);
                 var price = Money(last?.UnitCost * material.PurchaseUnitSize ?? material.CostPerPurchaseUnit);
                 var quantity = g.Sum(l => l.Quantity);
                 var category = categories.GetValueOrDefault(material.CategoryId) ?? "Uncategorized";
                 var supplier = last?.SupplierId is { } s ? suppliers.GetValueOrDefault(s) : null;
-                return request.GroupBy == OrderSheetGrouping.Supplier
+                return request.GroupBy is OrderSheetGrouping.Supplier or OrderSheetGrouping.CheapestSupplier
                     ? new OrderSheetRow(supplier ?? "No supplier yet", material.Code, material.Name, material.PurchaseUnit, quantity, price, Money(quantity * price), category)
                     : new OrderSheetRow(category, material.Code, material.Name, material.PurchaseUnit, quantity, price, Money(quantity * price), supplier);
             })
@@ -602,6 +650,7 @@ public sealed class IntelligenceService(CostingDbContext db, IBusinessCalendar c
         var prepItems = catalog.Materials.Values.Where(m => m.IsPrepItem && catalog.Explosion.IsMade(m.Id)).ToList();
         var held = catalog.Explosion.Explode(prepItems.Select(p => KeyValuePair.Create(p.Id, stock.Closing(p.Id) - stock.Opening(p.Id))));
         var prepWaste = catalog.Explosion.Explode(prepItems.Select(p => KeyValuePair.Create(p.Id, stock.Wasted(p.Id))));
+        var prepStaff = catalog.Explosion.Explode(prepItems.Select(p => KeyValuePair.Create(p.Id, stock.Staff(p.Id))));
 
         var rows = new List<ConsumptionRow>();
         foreach (var material in catalog.Materials.Values.Where(m => !m.IsPrepItem))
@@ -609,11 +658,12 @@ public sealed class IntelligenceService(CostingDbContext db, IBusinessCalendar c
             var id = material.Id;
             var (opening, purchases, closing) = (stock.Opening(id), stock.Moved(id, StockMovementReason.Purchase), stock.Closing(id));
             var waste = stock.Wasted(id) + prepWaste.GetValueOrDefault(id);
+            var staff = stock.Staff(id) + prepStaff.GetValueOrDefault(id);
             var inPrep = held.GetValueOrDefault(id);
             var expected = theoretical.GetValueOrDefault(id) + inPrep;
-            if (opening == 0 && purchases == 0 && waste == 0 && closing == 0 && expected == 0)
+            if (opening == 0 && purchases == 0 && waste == 0 && staff == 0 && closing == 0 && expected == 0)
                 continue;
-            var actual = opening + purchases - waste - closing;
+            var actual = opening + purchases - waste - staff - closing;
             var unexplained = actual - expected;
             decimal? percent = expected > 0 ? Percent(unexplained / expected) : null;
             var evaluation = shared.Contains(id) && expected == 0 ? VarianceEvaluation.SharedCost
@@ -625,7 +675,7 @@ public sealed class IntelligenceService(CostingDbContext db, IBusinessCalendar c
                 id, material.Code, material.Name, material.CategoryId, catalog.CategoryName(material.CategoryId), catalog.CategoryAr(material.CategoryId),
                 material.PurchaseUnit, Quantity(opening / size), Quantity(purchases / size), Quantity(waste / size), Quantity(closing / size),
                 Quantity(actual / size), Quantity(expected / size), Quantity(inPrep / size), Quantity(unexplained / size), percent,
-                Money(material.CostPerPurchaseUnit), Money(unexplained * material.AverageCost), evaluation));
+                Money(material.CostPerPurchaseUnit), Money(unexplained * material.AverageCost), evaluation, Quantity(staff / size)));
         }
 
         rows = rows.OrderBy(r => r.Evaluation == VarianceEvaluation.SharedCost).ThenByDescending(r => r.VarianceCost ?? 0).ThenBy(r => r.Material).ToList();
@@ -635,7 +685,8 @@ public sealed class IntelligenceService(CostingDbContext db, IBusinessCalendar c
             from, to, tolerance, Worth(r => r.TheoreticalUsage), Worth(r => r.ActualUsage), Money(measured.Sum(r => r.VarianceCost ?? 0)),
             measured.Count(r => r.Evaluation == VarianceEvaluation.Unfavourable), rows,
             withoutRecipe.GroupBy(w => (w.ItemCode, w.MenuItem)).Select(g => new SoldWithoutStock(g.Key.ItemCode, g.Key.MenuItem, g.Sum(w => w.Quantity)))
-                .OrderByDescending(w => w.Quantity).ToList());
+                .OrderByDescending(w => w.Quantity).ToList(),
+            Worth(r => r.Waste), Worth(r => r.StaffMeals));
     }
 
     // ---- ABC classification and days on hand ----
@@ -795,6 +846,9 @@ public sealed class IntelligenceService(CostingDbContext db, IBusinessCalendar c
         public decimal Closing(Guid id) => before.GetValueOrDefault(id) + moved.Where(m => m.Key.Item1 == id).Sum(m => m.Value);
 
         public decimal Wasted(Guid id) => -WasteReasons.Sum(r => Moved(id, r));
+
+        // Staff meals, hospitality and tastings: taken on purpose, apart from the waste.
+        public decimal Staff(Guid id) => -StaffConsumption.Reasons.Sum(r => Moved(id, r));
     }
 
     private async Task<Stock> StockAsync(DateTime fromUtc, DateTime toUtc, CancellationToken cancellationToken)
@@ -830,6 +884,68 @@ public sealed class IntelligenceService(CostingDbContext db, IBusinessCalendar c
     }
 
     // The latest net price paid a unit for each material, and who sold it.
+    // The cheapest supplier is judged on the last six months' purchases: an old price is not an offer.
+    public const int CheapestLookbackDays = 180;
+
+    // Each material's cheapest supplier in the period: of each supplier's last net price, the lowest.
+    private async Task<IReadOnlyDictionary<Guid, Bought>> CheapestPricesAsync(DateOnly from, DateOnly to, CancellationToken cancellationToken) =>
+        (await PurchasesAsync(cancellationToken))
+            .Where(p => p.UnitCost is not null && p.Date >= from && p.Date <= to)
+            .GroupBy(p => p.RawMaterialId)
+            .ToDictionary(g => g.Key, g => g
+                .GroupBy(p => p.SupplierId)
+                .Select(s => s.OrderBy(p => p.Date).ThenBy(p => p.PostedAtUtc).Last())
+                .OrderBy(p => p.UnitCost)
+                .ThenByDescending(p => p.Date)
+                .First());
+
+    public async Task<VendorPriceReport> GetVendorPricesAsync(DateOnly from, DateOnly to, CancellationToken cancellationToken)
+    {
+        Period(from, to);
+        var catalog = await CatalogAsync(cancellationToken);
+        var suppliers = await db.Suppliers.AsNoTracking().ToDictionaryAsync(s => s.Id, s => s.Name, cancellationToken);
+        var bought = (await PurchasesAsync(cancellationToken)).Where(p => p.Date >= from && p.Date <= to).ToList();
+
+        var rows = bought
+            .GroupBy(p => p.RawMaterialId)
+            .Where(g => catalog.Materials.ContainsKey(g.Key) && !catalog.Materials[g.Key].IsPrepItem)
+            .Select(g =>
+            {
+                var material = catalog.Materials[g.Key];
+                var size = material.PurchaseUnitSize;
+                var offers = g.GroupBy(p => p.SupplierId)
+                    .Select(s =>
+                    {
+                        var ordered = s.OrderBy(p => p.Date).ThenBy(p => p.PostedAtUtc).ToList();
+                        var priced = ordered.Where(p => p.UnitCost is not null).ToList();
+                        var pricedQuantity = priced.Sum(p => p.Quantity);
+                        decimal? PerUnit(decimal? unitCost) => unitCost is { } c ? Money(c * size) : null;
+                        return new VendorPrice(
+                            s.Key, s.Key is { } id ? suppliers.GetValueOrDefault(id) ?? "A removed supplier" : "No supplier",
+                            PerUnit(priced.LastOrDefault()?.UnitCost), ordered[^1].Date,
+                            PerUnit(priced.Min(p => p.UnitCost)), PerUnit(priced.Max(p => p.UnitCost)),
+                            pricedQuantity > 0 ? PerUnit(priced.Sum(p => p.Quantity * p.UnitCost!.Value) / pricedQuantity) : null,
+                            Math.Round(ordered.Sum(p => p.Quantity) / size, 3), ordered.Select(p => p.InvoiceId).Distinct().Count(), false);
+                    })
+                    .OrderBy(v => v.LastPrice ?? decimal.MaxValue)
+                    .ThenBy(v => v.Supplier, StringComparer.CurrentCultureIgnoreCase)
+                    .ToList();
+                var cheapest = offers.FirstOrDefault(v => v.LastPrice is not null);
+                if (cheapest is not null)
+                    offers = offers.Select(v => v.LastPrice == cheapest.LastPrice ? v with { BestPrice = true } : v).ToList();
+                var lasts = offers.Where(v => v.LastPrice is > 0).Select(v => v.LastPrice!.Value).ToList();
+                return new VendorPriceRow(
+                    material.Id, material.Code, material.Name, material.CategoryId, catalog.CategoryName(material.CategoryId),
+                    catalog.CategoryAr(material.CategoryId), material.PurchaseUnit, offers,
+                    lasts.Count > 1 ? Percent(lasts.Max() / lasts.Min() - 1) : null);
+            })
+            .OrderByDescending(r => r.Suppliers.Count > 1)
+            .ThenByDescending(r => r.SpreadPercent ?? 0)
+            .ThenBy(r => r.Material, StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+        return new VendorPriceReport(from, to, rows.Count, rows.Count(r => r.Suppliers.Count > 1), rows);
+    }
+
     private async Task<IReadOnlyDictionary<Guid, Bought>> LatestPricesAsync(CancellationToken cancellationToken) =>
         (await PurchasesAsync(cancellationToken))
             .Where(p => p.UnitCost is not null)

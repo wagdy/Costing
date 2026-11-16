@@ -1094,7 +1094,7 @@ export class Treasury {
 ```
 
 
-> 📄 **`frontend/src/app/features/costing/financials-shell.ts`** — 37 سطر
+> 📄 **`frontend/src/app/features/costing/financials-shell.ts`** — 38 سطر
 
 ```ts
 import { Component, computed, inject } from '@angular/core';
@@ -1125,6 +1125,7 @@ export class FinancialsShell {
     { path: 'daily-cash', icon: 'calendar_view_day', en: 'Daily cash', ar: 'يومية الإيراد' },
     { path: 'expenses', icon: 'receipt', en: 'Expense vouchers', ar: 'إذن صرف مصروفات' },
     { path: 'suppliers', icon: 'account_balance', en: 'Supplier debts', ar: 'مديونيات الموردين' },
+    { path: 'ap-aging', icon: 'hourglass_bottom', en: 'AP aging', ar: 'أعمار ديون الموردين' },
     { path: 'payments', icon: 'payments', en: 'Supplier payments', ar: 'أذونات صرف الموردين' },
     { path: 'advances', icon: 'request_quote', en: 'Advances', ar: 'السلفيات' },
     { path: 'staff', icon: 'badge', en: 'Staff', ar: 'الموظفين' },
@@ -2519,13 +2520,14 @@ export class ExpenseVouchersPage {
 ```
 
 
-> 📄 **`frontend/src/app/features/costing/supplier-debts-page.ts`** — 272 سطر
+> 📄 **`frontend/src/app/features/costing/supplier-debts-page.ts`** — 281 سطر
 
 ```ts
 import { DatePipe } from '@angular/common';
 import { Component, computed, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
+import { MatDialog } from '@angular/material/dialog';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatIconModule } from '@angular/material/icon';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
@@ -2536,6 +2538,7 @@ import { CostingApi, Supplier, SupplierBalance, SupplierStatement } from '../../
 import { errorMessage } from '../../core/http/error-message';
 import { MoneyPipe } from '../../core/ui/money.pipe';
 import { Treasury } from './financials';
+import { showSupplierStatement } from './supplier-statement-dialog';
 
 // Supplier debts (مديونيات الموردين): what the restaurant owes each supplier, from invoices bought
 // on credit and what was owed before the treasury, less what was paid them. A supplier chosen
@@ -2602,6 +2605,7 @@ import { Treasury } from './financials';
       </mat-form-field>
       @if (statement(); as st) {
         <span class="spacer"></span>
+        <button mat-stroked-button (click)="fullStatement(st)"><mat-icon>receipt_long</mat-icon> Full statement · كشف تفصيلي</button>
         <button mat-stroked-button (click)="opening(st)"><mat-icon>history</mat-icon> Owed from before</button>
         <button mat-flat-button (click)="pay(st)" [disabled]="st.balance <= 0"><mat-icon>payments</mat-icon> Pay {{ st.supplier }}</button>
       }
@@ -2730,6 +2734,7 @@ import { Treasury } from './financials';
 })
 export class SupplierDebtsPage {
   private readonly api = inject(CostingApi);
+  private readonly dialog = inject(MatDialog);
   private readonly treasury = inject(Treasury);
   private readonly router = inject(Router);
   private readonly route = inject(ActivatedRoute);
@@ -2752,6 +2757,11 @@ export class SupplierDebtsPage {
     this.supplierId.set(supplierId);
     void this.router.navigate([], { queryParams: { supplier: supplierId }, replaceUrl: true });
     void this.loadStatement();
+  }
+
+  // The account over a period, with cash invoices, drill-down and Excel.
+  protected fullStatement(statement: SupplierStatement): void {
+    showSupplierStatement(this.dialog, statement.supplierId, statement.supplier);
   }
 
   protected async pay(statement: SupplierStatement): Promise<void> {
@@ -2791,6 +2801,509 @@ export class SupplierDebtsPage {
       this.statement.set(await firstValueFrom(this.api.supplierStatement(id)));
     } catch (error) {
       this.error.set(errorMessage(error, 'The statement could not be loaded.'));
+    }
+  }
+}
+```
+
+
+كشف حساب المورد نافذة واحدة (`showSupplierStatement`) تُفتح من الموردين، وديون الموردين (كشف كامل)، وتقرير الأعمار: ملخص (افتتاحي، آجل، كاش، مدفوعات، ختامي)، ودفتر بالرصيد الجاري، والفاتورة تفتح بنودها والدفعة تتمدد لتفاصيل سندها، وExcel.
+
+> 📄 **`frontend/src/app/features/costing/supplier-statement-dialog.ts`** — 250 سطر
+
+```ts
+import { DatePipe } from '@angular/common';
+import { Component, effect, inject, signal, untracked } from '@angular/core';
+import { MAT_DIALOG_DATA, MatDialog, MatDialogActions, MatDialogClose, MatDialogContent, MatDialogTitle } from '@angular/material/dialog';
+import { MatButtonModule } from '@angular/material/button';
+import { MatIconModule } from '@angular/material/icon';
+import { MatProgressBarModule } from '@angular/material/progress-bar';
+import { MatTooltipModule } from '@angular/material/tooltip';
+import { firstValueFrom } from 'rxjs';
+import { CostingApi, SupplierAccount, SupplierAccountEntryKind, SupplierAccountLine } from '../../core/costing/costing.api';
+import { errorMessage } from '../../core/http/error-message';
+import { MoneyPipe } from '../../core/ui/money.pipe';
+import { NotifyService } from '../../core/ui/notify.service';
+import { saveBlob } from '../../core/ui/save-blob';
+import { InfoTip } from './info-tip';
+import { showInvoice } from './invoice-view-dialog';
+import { PeriodBar, periodDays } from './period-bar';
+
+export interface SupplierStatementData {
+  supplierId: string;
+  supplier: string;
+}
+
+export const accountKindLabels: Record<SupplierAccountEntryKind, { en: string; ar: string; icon: string }> = {
+  OpeningBalance: { en: 'Owed before', ar: 'رصيد سابق', icon: 'history' },
+  CreditInvoice: { en: 'Credit invoice', ar: 'فاتورة آجل', icon: 'receipt_long' },
+  CashInvoice: { en: 'Cash invoice', ar: 'فاتورة نقدي', icon: 'payments' },
+  Payment: { en: 'Payment', ar: 'سداد', icon: 'outbound' },
+};
+
+// A supplier's account over a period (كشف حساب مورد تفصيلي): what was owed coming in, each credit
+// and cash invoice and each payment with the running balance owed, and what is owed going out. An
+// invoice opens over it; a payment shows its voucher's details in place. From Suppliers, Supplier
+// debts and the AP aging alike.
+@Component({
+  selector: 'app-supplier-statement-dialog',
+  imports: [
+    DatePipe,
+    InfoTip,
+    MatButtonModule,
+    MatDialogActions,
+    MatDialogClose,
+    MatDialogContent,
+    MatDialogTitle,
+    MatIconModule,
+    MatProgressBarModule,
+    MatTooltipModule,
+    MoneyPipe,
+    PeriodBar,
+  ],
+  template: `
+    <h2 mat-dialog-title>{{ data.supplier }} · Statement of account <span class="inline-ar">كشف حساب مورد</span></h2>
+    <mat-dialog-content>
+      <div class="toolbar">
+        <app-period-bar [(from)]="from" [(to)]="to" />
+        <span class="spacer"></span>
+        <button mat-stroked-button (click)="download()" [disabled]="!account()"><mat-icon>download</mat-icon> Export statement · Excel</button>
+      </div>
+      @if (loading()) {
+        <mat-progress-bar mode="indeterminate" />
+      }
+      @if (error()) {
+        <p class="error">{{ error() }}</p>
+      } @else if (account(); as a) {
+        <div class="tiles">
+          <div class="tile">
+            <span class="label">Opening balance owed · رصيد أول المدة <app-info-tip tip="stOpening" /></span>
+            <strong>{{ a.openingBalance | money }}</strong>
+          </div>
+          @if (a.owedBefore) {
+            <div class="tile">
+              <span class="label">+ Owed before the treasury · رصيد سابق</span>
+              <strong>{{ a.owedBefore | money }}</strong>
+            </div>
+          }
+          <div class="tile">
+            <span class="label">+ Credit invoices · فواتير آجل</span>
+            <strong>{{ a.creditInvoices | money }}</strong>
+          </div>
+          <div class="tile">
+            <span class="label">Cash invoices · فواتير نقدي</span>
+            <strong>{{ a.cashInvoices | money }}</strong>
+            <small class="chip">paid at once</small>
+          </div>
+          <div class="tile">
+            <span class="label">− Payments made · مسدد للمورد</span>
+            <strong>{{ a.payments | money }}</strong>
+          </div>
+          <div class="tile key">
+            <span class="label">Closing balance owed · الرصيد المستحق حالياً <app-info-tip tip="stClosing" /></span>
+            <strong>{{ a.closingBalance | money }}</strong>
+            <small class="chip">pays in {{ a.paymentTermsDays }} {{ a.paymentTermsDays === 1 ? 'day' : 'days' }}</small>
+          </div>
+        </div>
+
+        <div class="table-wrap">
+          <table class="grid statement">
+            <thead>
+              <tr>
+                <th>Date<span class="ar">التاريخ</span></th>
+                <th>Document<span class="ar">المستند</span></th>
+                <th>Description<span class="ar">البيان</span></th>
+                <th class="num">Paid (−)<span class="ar">مسدد</span></th>
+                <th class="num">Owed (+)<span class="ar">مستحق</span></th>
+                <th class="num">Balance owed<span class="ar">الرصيد التراكمي</span></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr class="carried">
+                <td class="nowrap">{{ a.from | date: 'd MMM y' }}</td>
+                <td colspan="4">Opening balance · رصيد أول المدة</td>
+                <td class="num strong">{{ a.openingBalance | money }}</td>
+              </tr>
+              @for (l of a.lines; track l.id + l.kind) {
+                <tr [class.reversal]="l.isReversal">
+                  <td class="nowrap">{{ l.date | date: 'd MMM y' }}</td>
+                  <td>
+                    <button mat-button class="doc" (click)="open(l)" [matTooltip]="l.kind === 'Payment' ? 'Show the voucher · تفاصيل السند' : 'Open the invoice · فتح الفاتورة'"
+                      [disabled]="l.kind === 'OpeningBalance'">
+                      <mat-icon>{{ labels[l.kind].icon }}</mat-icon> {{ labels[l.kind].en }} · {{ l.reference }}
+                    </button>
+                  </td>
+                  <td>{{ l.description }}</td>
+                  <td class="num">{{ l.paid ? (l.paid | money) : '' }}</td>
+                  <td class="num">{{ l.owed ? (l.owed | money) : '' }}</td>
+                  <td class="num strong">{{ l.balance | money }}</td>
+                </tr>
+                @if (expanded() === l.id) {
+                  <tr class="voucher">
+                    <td></td>
+                    <td colspan="5">
+                      Recorded by {{ l.recordedBy ?? '—' }}{{ l.approvedBy ? ', approved by ' + l.approvedBy : '' }}
+                      {{ l.fromTakingsOf ? '· from the takings of ' + (l.fromTakingsOf | date: 'd MMM y') : '· from the safe' }}
+                      {{ l.notes ? '· ' + l.notes : '' }}
+                    </td>
+                  </tr>
+                }
+              } @empty {
+                <tr><td colspan="6" class="muted">Nothing on {{ a.supplier }}'s account in these days.</td></tr>
+              }
+            </tbody>
+            <tfoot>
+              <tr>
+                <td colspan="3">Closing balance · الرصيد المستحق</td>
+                <td class="num">{{ a.payments + a.cashInvoices | money }}</td>
+                <td class="num">{{ a.owedBefore + a.creditInvoices + a.cashInvoices | money }}</td>
+                <td class="num">{{ a.closingBalance | money }}</td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      }
+    </mat-dialog-content>
+    <mat-dialog-actions align="end">
+      <button mat-button mat-dialog-close>Close</button>
+    </mat-dialog-actions>
+  `,
+  styleUrl: './costing.scss',
+  styles: `
+    .tiles {
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    }
+    .chip {
+      justify-self: start;
+      padding: 0 8px;
+      border-radius: 999px;
+      font: var(--mat-sys-label-small);
+      background: var(--mat-sys-surface-container-high);
+    }
+    .doc {
+      margin-inline-start: -12px;
+    }
+    tr.carried td,
+    tfoot td {
+      font-weight: 600;
+    }
+    tr.reversal td {
+      color: var(--mat-sys-on-surface-variant);
+      text-decoration: line-through;
+    }
+    tr.voucher td {
+      font: var(--mat-sys-body-small);
+      color: var(--mat-sys-on-surface-variant);
+      background: var(--mat-sys-surface-container-low);
+    }
+  `,
+})
+export class SupplierStatementDialog {
+  protected readonly data = inject<SupplierStatementData>(MAT_DIALOG_DATA);
+  private readonly api = inject(CostingApi);
+  private readonly dialog = inject(MatDialog);
+  private readonly notify = inject(NotifyService);
+  protected readonly labels = accountKindLabels;
+
+  // This year to today unless another period is chosen.
+  protected readonly from = signal(periodDays('year').from);
+  protected readonly to = signal(periodDays('year').to);
+  protected readonly account = signal<SupplierAccount | null>(null);
+  protected readonly loading = signal(false);
+  protected readonly error = signal<string | null>(null);
+  protected readonly expanded = signal<string | null>(null);
+
+  constructor() {
+    effect(() => {
+      const [from, to] = [this.from(), this.to()];
+      untracked(() => void this.load(from, to));
+    });
+  }
+
+  // An invoice opens over the statement; a payment shows its voucher's details under its line.
+  protected open(line: SupplierAccountLine): void {
+    if (line.kind === 'Payment') {
+      this.expanded.set(this.expanded() === line.id ? null : line.id);
+    } else if (line.kind !== 'OpeningBalance') {
+      showInvoice(this.dialog, line.sourceId);
+    }
+  }
+
+  protected async download(): Promise<void> {
+    try {
+      saveBlob(
+        await firstValueFrom(this.api.supplierAccountSheet(this.data.supplierId, this.from(), this.to())),
+        `statement-${this.data.supplier}-${this.from()}-to-${this.to()}.xlsx`,
+      );
+    } catch (error) {
+      this.notify.error(error, 'The statement could not be downloaded.');
+    }
+  }
+
+  private async load(from: string, to: string): Promise<void> {
+    this.loading.set(true);
+    this.error.set(null);
+    try {
+      this.account.set(await firstValueFrom(this.api.supplierAccount(this.data.supplierId, from, to)));
+    } catch (error) {
+      this.error.set(errorMessage(error, 'The statement could not be loaded.'));
+    } finally {
+      this.loading.set(false);
+    }
+  }
+}
+
+// Opens a supplier's statement of account over whatever screen it is asked from.
+export function showSupplierStatement(dialog: MatDialog, supplierId: string, supplier: string): void {
+  dialog.open<SupplierStatementDialog, SupplierStatementData>(SupplierStatementDialog, {
+    data: { supplierId, supplier },
+    width: '1100px',
+    maxWidth: '96vw',
+    autoFocus: 'dialog',
+  });
+}
+```
+
+
+`ApAgingPage`: يوم السؤال، بطاقات الإجمالي والشرائح بنسبها، شريط ملوّن من الرمادي (غير مستحق) للأحمر (90+) مع اسم كل شريحة في البطاقة فلا يعتمد اللون وحده، والصف يفتح الكشف.
+
+> 📄 **`frontend/src/app/features/costing/ap-aging-page.ts`** — 237 سطر
+
+```ts
+import { DatePipe } from '@angular/common';
+import { Component, effect, inject, signal, untracked } from '@angular/core';
+import { FormsModule } from '@angular/forms';
+import { MatButtonModule } from '@angular/material/button';
+import { MatDialog } from '@angular/material/dialog';
+import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatIconModule } from '@angular/material/icon';
+import { MatInputModule } from '@angular/material/input';
+import { MatProgressBarModule } from '@angular/material/progress-bar';
+import { firstValueFrom } from 'rxjs';
+import { ApAgingReport, ApAgingRow, CostingApi } from '../../core/costing/costing.api';
+import { errorMessage } from '../../core/http/error-message';
+import { MoneyPipe } from '../../core/ui/money.pipe';
+import { isoDay } from './financials';
+import { InfoTip } from './info-tip';
+import { showSupplierStatement } from './supplier-statement-dialog';
+
+type Bucket = 'current' | 'days1To30' | 'days31To60' | 'days61To90' | 'over90';
+
+const buckets: { key: Bucket; en: string; ar: string }[] = [
+  { key: 'current', en: 'Current (not due)', ar: 'غير مستحق' },
+  { key: 'days1To30', en: '1–30 days', ar: '1–30 يوم' },
+  { key: 'days31To60', en: '31–60 days', ar: '31–60 يوم' },
+  { key: 'days61To90', en: '61–90 days', ar: '61–90 يوم' },
+  { key: 'over90', en: '90+ days', ar: 'أكثر من 90 يوم' },
+];
+
+// Accounts payable aging (تقرير أعمار ديون الموردين وتخطيط السيولة): what is owed to each supplier
+// on a day, by how long past its due date (its payment terms after the invoice), the total split
+// the same way, to plan the week's cash and pay the oldest first. A supplier opens its statement.
+@Component({
+  selector: 'app-ap-aging-page',
+  imports: [DatePipe, FormsModule, InfoTip, MatButtonModule, MatFormFieldModule, MatIconModule, MatInputModule, MatProgressBarModule, MoneyPipe],
+  template: `
+    <div class="toolbar">
+      <mat-form-field subscriptSizing="dynamic" class="day">
+        <mat-label>Owed on · في يوم</mat-label>
+        <input matInput type="date" [ngModel]="asOf()" (ngModelChange)="pick($event)" [max]="today" aria-label="Owed on" />
+      </mat-form-field>
+      <span class="spacer"></span>
+    </div>
+    @if (loading()) {
+      <mat-progress-bar mode="indeterminate" />
+    }
+    @if (error()) {
+      <p class="error">{{ error() }}</p>
+    } @else if (report(); as r) {
+      <div class="tiles">
+        <div class="tile key">
+          <span class="label">Total AP liability · إجمالي المديونيات <app-info-tip tip="apTotal" /></span>
+          <strong>{{ r.totalOwed | money }}</strong>
+          <small class="chip">{{ r.rows.length }} {{ r.rows.length === 1 ? 'supplier' : 'suppliers' }}</small>
+        </div>
+        @for (b of buckets; track b.key) {
+          <div class="tile" [class.late]="b.key !== 'current' && r[b.key] > 0" [class.oldest]="b.key === 'over90' && r.over90 > 0">
+            <span class="label">
+              {{ b.en }} · {{ b.ar }}
+              <app-info-tip [tip]="b.key === 'current' ? 'apCurrent' : 'apPastDue'" />
+            </span>
+            <strong>{{ r[b.key] | money }}</strong>
+            <small class="chip">{{ share(r[b.key], r.totalOwed) }}</small>
+          </div>
+        }
+      </div>
+      <div class="aging-bar" role="img" [attr.aria-label]="barLabel(r)">
+        @for (b of buckets; track b.key) {
+          @if (r[b.key] > 0) {
+            <span [class]="b.key" [style.flex-grow]="r[b.key]" [title]="b.en + ': ' + (r[b.key] | money)"></span>
+          }
+        }
+      </div>
+
+      <div class="table-wrap">
+        <table class="grid aging">
+          <thead>
+            <tr>
+              <th>Supplier<span class="ar">المورد</span></th>
+              <th class="num">Total owed<span class="ar">إجمالي المستحق</span></th>
+              @for (b of buckets; track b.key) {
+                <th class="num">{{ b.en }}<span class="ar">{{ b.ar }}</span></th>
+              }
+              <th>Oldest due<span class="ar">أقدم استحقاق</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            @for (row of r.rows; track row.supplierId) {
+              <tr class="clickable" (click)="statement(row)" tabindex="0" (keydown.enter)="statement(row)">
+                <td>
+                  <strong>{{ row.supplier }}</strong>
+                  <div class="muted small">pays in {{ row.paymentTermsDays }} {{ row.paymentTermsDays === 1 ? 'day' : 'days' }} · {{ row.openInvoices }} open</div>
+                </td>
+                <td class="num strong">{{ row.totalOwed | money }}</td>
+                @for (b of buckets; track b.key) {
+                  <td class="num" [class.late]="b.key !== 'current' && row[b.key] > 0">{{ row[b.key] ? (row[b.key] | money) : '—' }}</td>
+                }
+                <td class="nowrap">{{ row.oldestDueDate ? (row.oldestDueDate | date: 'd MMM y') : '—' }}</td>
+              </tr>
+            } @empty {
+              <tr><td colspan="8" class="muted">Nothing is owed to any supplier on this day.</td></tr>
+            }
+          </tbody>
+          @if (r.rows.length) {
+            <tfoot>
+              <tr>
+                <td>Total · الإجمالي</td>
+                <td class="num">{{ r.totalOwed | money }}</td>
+                @for (b of buckets; track b.key) {
+                  <td class="num">{{ r[b.key] | money }}</td>
+                }
+                <td></td>
+              </tr>
+            </tfoot>
+          }
+        </table>
+      </div>
+      <p class="muted small">A supplier opens its statement of account. Payments settle what was owed before the treasury first, then the oldest invoices.</p>
+    }
+  `,
+  styleUrl: './costing.scss',
+  styles: `
+    .day {
+      width: 170px;
+    }
+    .tiles {
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    }
+    .chip {
+      justify-self: start;
+      padding: 0 8px;
+      border-radius: 999px;
+      font: var(--mat-sys-label-small);
+      background: var(--mat-sys-surface-container-high);
+    }
+    .tile.late strong {
+      color: var(--app-warn);
+    }
+    .tile.oldest {
+      border-color: color-mix(in srgb, var(--mat-sys-error) 45%, transparent);
+      strong {
+        color: var(--mat-sys-error);
+      }
+    }
+    td.late {
+      color: var(--app-warn);
+      font-weight: 600;
+    }
+    .aging-bar {
+      display: flex;
+      gap: 2px;
+      height: 12px;
+      margin: -6px 0 16px;
+
+      span {
+        height: 100%;
+        min-width: 3px;
+      }
+      span:first-child {
+        border-radius: 4px 0 0 4px;
+      }
+      span:last-child {
+        border-radius: 0 4px 4px 0;
+      }
+      .current {
+        background: #94a3b8;
+      }
+      .days1To30 {
+        background: #fbbf24;
+      }
+      .days31To60 {
+        background: #f59e0b;
+      }
+      .days61To90 {
+        background: #ea580c;
+      }
+      .over90 {
+        background: #dc2626;
+      }
+    }
+    tr.clickable {
+      cursor: pointer;
+    }
+    tfoot td {
+      font-weight: 600;
+    }
+    .small {
+      font-size: 0.85em;
+    }
+  `,
+})
+export class ApAgingPage {
+  private readonly api = inject(CostingApi);
+  private readonly dialog = inject(MatDialog);
+  protected readonly buckets = buckets;
+  protected readonly today = isoDay(new Date());
+  protected readonly asOf = signal(this.today);
+  protected readonly report = signal<ApAgingReport | null>(null);
+  protected readonly loading = signal(false);
+  protected readonly error = signal<string | null>(null);
+
+  constructor() {
+    effect(() => {
+      const asOf = this.asOf();
+      untracked(() => void this.load(asOf));
+    });
+  }
+
+  protected pick(value: string): void {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(value ?? '') && value <= this.today) {
+      this.asOf.set(value);
+    }
+  }
+
+  protected share(part: number, whole: number): string {
+    return whole > 0 ? `${Math.round((part / whole) * 100)}%` : '—';
+  }
+
+  protected barLabel(report: ApAgingReport): string {
+    return buckets.map((b) => `${b.en} ${report[b.key].toFixed(2)}`).join(', ');
+  }
+
+  protected statement(row: ApAgingRow): void {
+    showSupplierStatement(this.dialog, row.supplierId, row.supplier);
+  }
+
+  // Today asks the server for its own business day.
+  private async load(asOf: string): Promise<void> {
+    this.loading.set(true);
+    this.error.set(null);
+    try {
+      this.report.set(await firstValueFrom(this.api.apAging(asOf === this.today ? null : asOf)));
+    } catch (error) {
+      this.error.set(errorMessage(error, 'The AP aging could not be worked out.'));
+    } finally {
+      this.loading.set(false);
     }
   }
 }
@@ -4460,7 +4973,7 @@ export class TaxServicePage {
 
 وفي كل هذه الشاشات (وتقارير الإنفاق والخزنة والفروقات والـ KPIs وبطاقة الوصفة) البطاقة **عنوان ورقم وشارة قصيرة** فقط؛ المعادلات التي كانت تحت البطاقات وفي ذيل الصفحة انتقلت إلى (ⓘ) بجانب العنوان (الفصل 08). واسم الخامة في جداول التحليلات بجانبه زر كارتة الصنف على فترة التقرير، و "آخر سعر صافي" في انحراف الأسعار يفتح فاتورته وسطرها مُعلَّم.
 
-> 📄 **`frontend/src/app/core/costing/intelligence.api.ts`** — 497 سطر
+> 📄 **`frontend/src/app/core/costing/intelligence.api.ts`** — 597 سطر
 
 ```ts
 import { HttpClient } from '@angular/common/http';
@@ -4598,7 +5111,7 @@ export interface OrderPlan {
   noPrice: string[];
 }
 
-export type OrderSheetGrouping = 'Category' | 'Supplier';
+export type OrderSheetGrouping = 'Category' | 'Supplier' | 'CheapestSupplier';
 
 export type VarianceEvaluation = 'WithinLimit' | 'Unfavourable' | 'Favourable' | 'SharedCost';
 
@@ -4625,6 +5138,8 @@ export interface ConsumptionRow {
   unitCost: number | null;
   varianceCost: number | null;
   evaluation: VarianceEvaluation;
+  // Staff meals, hospitality and tastings: taken on purpose, out of the actual usage judged.
+  staffMeals?: number;
 }
 
 export interface SoldWithoutRecipe {
@@ -4643,6 +5158,8 @@ export interface ConsumptionReport {
   highLoss: number;
   rows: ConsumptionRow[];
   soldWithoutRecipe: SoldWithoutRecipe[];
+  wasteValue?: number;
+  staffMealsValue?: number;
 }
 
 export type AbcClass = 'A' | 'B' | 'C';
@@ -4757,6 +5274,86 @@ export const menuClassLabels: Record<MenuClass, { en: string; ar: string; icon: 
   Puzzle: { en: 'Puzzles', ar: 'الألغاز', icon: 'extension', action: 'Promote and reposition', actionAr: 'روّج لها وغيّر مكانها' },
   Dog: { en: 'Dogs', ar: 'الأصناف الضعيفة', icon: 'trending_down', action: 'Rework or remove', actionAr: 'أعد تصميمها أو احذفها' },
 };
+
+// ---- Vendor price comparison (مقارنة أسعار الموردين) ----
+
+export interface VendorPrice {
+  supplierId: string | null;
+  supplier: string;
+  lastPrice: number | null;
+  lastDate: string;
+  lowestPrice: number | null;
+  highestPrice: number | null;
+  averagePrice: number | null;
+  quantity: number;
+  purchases: number;
+  bestPrice: boolean;
+}
+
+export interface VendorPriceRow {
+  rawMaterialId: string;
+  code: string | null;
+  material: string;
+  categoryId: string;
+  category: string | null;
+  categoryAr: string | null;
+  purchaseUnit: string;
+  suppliers: VendorPrice[];
+  spreadPercent: number | null;
+}
+
+export interface VendorPriceReport {
+  from: string;
+  to: string;
+  materials: number;
+  withChoice: number;
+  rows: VendorPriceRow[];
+}
+
+// ---- The inflation & pricing simulator (محاكي التضخم والتسعير) ----
+
+export interface InflationScenario {
+  globalPercent: number | null;
+  categories: { categoryId: string; percent: number }[];
+  materials: { rawMaterialId: string; costPerPurchaseUnit: number }[];
+}
+
+export type SimulatedItemKind = 'Dish' | 'OffMenuRecipe' | 'PrepItem';
+
+export interface SimulatedItem {
+  kind: SimulatedItemKind;
+  itemCode: string;
+  recipeId: string | null;
+  prepItemId: string | null;
+  name: string;
+  category: string | null;
+  unit: string;
+  sellingPrice: number | null;
+  currentCost: number;
+  simulatedCost: number;
+  change: number;
+  changePercent: number | null;
+  currentFoodCostPercent: number | null;
+  simulatedFoodCostPercent: number | null;
+  aboveTarget: boolean;
+  newlyAboveTarget: boolean;
+  suggestedPriceKeepFoodCost: number | null;
+  suggestedPriceKeepMargin: number | null;
+  quantityLast30Days: number;
+  monthlyProfitImpact: number | null;
+}
+
+export interface InflationReport {
+  salesFrom: string;
+  salesTo: string;
+  foodCostTargetPercent: number;
+  materialsChanged: number;
+  dishes: number;
+  newlyAboveTarget: number;
+  monthlyProfitImpact: number;
+  materials: { rawMaterialId: string; material: string; purchaseUnit: string; currentPrice: number | null; simulatedPrice: number; changePercent: number | null }[];
+  items: SimulatedItem[];
+}
 
 // The fully burdened plate cost (التكلفة الكلية للطبق): each dish's food, its share of the period's
 // labor and overheads, and what is left of its price.
@@ -4933,6 +5530,22 @@ export class IntelligenceApi {
     return this.http.get('/api/costing/intelligence/menu-engineering/sheet', { params: menuParams(from, to, category), responseType: 'blob' });
   }
 
+  vendorPrices(from: string, to: string): Observable<VendorPriceReport> {
+    return this.http.get<VendorPriceReport>('/api/costing/intelligence/vendor-prices', { params: { from, to } });
+  }
+
+  vendorPricesSheet(from: string, to: string): Observable<Blob> {
+    return this.http.get('/api/costing/intelligence/vendor-prices/sheet', { params: { from, to }, responseType: 'blob' });
+  }
+
+  simulateInflation(scenario: InflationScenario): Observable<InflationReport> {
+    return this.http.post<InflationReport>('/api/costing/intelligence/simulate-inflation', scenario);
+  }
+
+  simulateInflationSheet(scenario: InflationScenario): Observable<Blob> {
+    return this.http.post('/api/costing/intelligence/simulate-inflation/sheet', scenario, { responseType: 'blob' });
+  }
+
   burdenedCosts(query: BurdenedCostQuery): Observable<BurdenedCostReport> {
     return this.http.get<BurdenedCostReport>('/api/costing/intelligence/burdened-costs', { params: burdenedParams(query) });
   }
@@ -4963,7 +5576,7 @@ function menuParams(from: string, to: string, category: string | null): Record<s
 ```
 
 
-> 📄 **`frontend/src/app/features/costing/intelligence-shell.ts`** — 27 سطر
+> 📄 **`frontend/src/app/features/costing/intelligence-shell.ts`** — 29 سطر
 
 ```ts
 import { Component } from '@angular/core';
@@ -4991,6 +5604,8 @@ export class IntelligenceShell {
     { path: 'abc', icon: 'stacked_bar_chart', en: 'ABC & days on hand', ar: 'تصنيف ABC وكفاية المخزون' },
     { path: 'menu', icon: 'grid_view', en: 'Menu engineering', ar: 'هندسة المنيو والربحية' },
     { path: 'burdened', icon: 'layers', en: 'Burdened plate cost', ar: 'التكلفة الكلية للطبق' },
+    { path: 'vendor-prices', icon: 'compare', en: 'Vendor prices', ar: 'مقارنة أسعار الموردين' },
+    { path: 'inflation', icon: 'trending_up', en: 'Inflation & pricing simulator', ar: 'محاكي التضخم والتسعير' },
   ];
 }
 ```
@@ -5374,7 +5989,7 @@ export class PriceVariancePage {
 ```
 
 
-> 📄 **`frontend/src/app/features/costing/order-planner-page.ts`** — 475 سطر
+> 📄 **`frontend/src/app/features/costing/order-planner-page.ts`** — 478 سطر
 
 ```ts
 import { DatePipe, DecimalPipe } from '@angular/common';
@@ -5384,6 +5999,7 @@ import { MatButtonModule } from '@angular/material/button';
 import { MatButtonToggleModule } from '@angular/material/button-toggle';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatIconModule } from '@angular/material/icon';
+import { MatTooltipModule } from '@angular/material/tooltip';
 import { MatInputModule } from '@angular/material/input';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { firstValueFrom } from 'rxjs';
@@ -5423,8 +6039,7 @@ const dishKey = (d: { menuItemId: number; variantId: number | null }) => `${d.me
     InfoTip,
     MoneyPipe,
     SearchField,
-    StockCardButton,
-  ],
+    StockCardButton, MatTooltipModule],
   template: `
     <section class="controls" aria-label="What the order is planned from">
       <div class="control">
@@ -5557,6 +6172,9 @@ const dishKey = (d: { menuItemId: number; variantId: number | null }) => `${d.me
         <mat-button-toggle-group [value]="groupBy()" (change)="groupBy.set($event.value)" aria-label="Group the sheet by" class="group">
           <mat-button-toggle value="Category">By category</mat-button-toggle>
           <mat-button-toggle value="Supplier">By supplier</mat-button-toggle>
+          <mat-button-toggle value="CheapestSupplier" matTooltip="Each material to the supplier with the lowest last net price, at that price · للمورد الأقل سعراً">
+            Cheapest supplier · الأقل سعراً
+          </mat-button-toggle>
         </mat-button-toggle-group>
         <button mat-flat-button (click)="download()" [disabled]="!approvedLines()"><mat-icon>download</mat-icon> Excel order sheet</button>
       </div>
@@ -5855,7 +6473,7 @@ export class OrderPlannerPage {
 ```
 
 
-> 📄 **`frontend/src/app/features/costing/consumption-page.ts`** — 288 سطر
+> 📄 **`frontend/src/app/features/costing/consumption-page.ts`** — 299 سطر
 
 ```ts
 import { DecimalPipe } from '@angular/common';
@@ -5928,6 +6546,15 @@ const sorts: SortOption<ConsumptionSort>[] = [
           <small class="chip">&gt; {{ r.tolerancePercent }}%</small>
         </div>
         <div class="tile">
+          <span class="label">Logged spoilage waste · الهالك المسجل <app-info-tip tip="recordedWaste" /></span>
+          <strong>{{ r.wasteValue ?? 0 | money }}</strong>
+        </div>
+        <div class="tile">
+          <span class="label">Staff meals & hospitality · وجبات العاملين والضيافة <app-info-tip tip="smUnexplained" /></span>
+          <strong>{{ r.staffMealsValue ?? 0 | money }}</strong>
+          <small class="chip">not counted as loss</small>
+        </div>
+        <div class="tile">
           <span class="label">Theoretical usage · الاستهلاك النظري <app-info-tip tip="theoreticalUsage" /></span>
           <strong>{{ r.theoreticalValue | money }}</strong>
         </div>
@@ -5964,6 +6591,7 @@ const sorts: SortOption<ConsumptionSort>[] = [
               <th class="num">Opening<span class="ar">أول المدة</span></th>
               <th class="num">Purchases<span class="ar">المشتريات</span></th>
               <th class="num">Logged waste<span class="ar">الهالك المسجل</span></th>
+              <th class="num">Staff meals & hospitality <app-info-tip tip="smUnexplained" /><span class="ar">وجبات العاملين والضيافة</span></th>
               <th class="num">Closing<span class="ar">آخر المدة</span></th>
               <th class="num">Actual <app-info-tip tip="actualUsage" /><span class="ar">الاستهلاك الفعلي</span></th>
               <th class="num">Theoretical <app-info-tip tip="theoreticalUsage" /><span class="ar">الاستهلاك النظري</span></th>
@@ -5983,6 +6611,7 @@ const sorts: SortOption<ConsumptionSort>[] = [
                 <td class="num">{{ row.opening | number: '1.0-3' }}</td>
                 <td class="num">{{ row.purchases | number: '1.0-3' }}</td>
                 <td class="num">{{ row.waste | number: '1.0-3' }}</td>
+                <td class="num">{{ row.staffMeals ? (row.staffMeals | number: '1.0-3') : '—' }}</td>
                 <td class="num">{{ row.closing | number: '1.0-3' }}</td>
                 <td class="num"><strong>{{ row.actualUsage | number: '1.0-3' }}</strong></td>
                 <td class="num">
@@ -6002,12 +6631,12 @@ const sorts: SortOption<ConsumptionSort>[] = [
                 </td>
               </tr>
             } @empty {
-              <tr><td colspan="9" class="muted">Nothing moved in these days{{ search() || category() || evaluation() ? ' that matches' : '' }}.</td></tr>
+              <tr><td colspan="10" class="muted">Nothing moved in these days{{ search() || category() || evaluation() ? ' that matches' : '' }}.</td></tr>
             }
           </tbody>
           <tfoot>
             <tr>
-              <td colspan="8">Unexplained variance · الانحراف غير المبرر</td>
+              <td colspan="9">Unexplained variance · الانحراف غير المبرر</td>
               <td class="num">{{ r.unexplainedValue | money }}</td>
             </tr>
           </tfoot>
@@ -7695,6 +8324,684 @@ export class BurdenedCostPage {
     } catch (error) {
       if (asked === this.asked) {
         this.error.set(errorMessage(error, 'The burdened plate cost could not be worked out.'));
+      }
+    } finally {
+      if (asked === this.asked) {
+        this.loading.set(false);
+      }
+    }
+  }
+}
+```
+
+
+`VendorPricesPage`: تبويب في المشتريات وفي التحليلات معًا (نفس المكوّن). لكل خامة صفوف مورديها (`rowspan`)، الأرخص أولًا بشارة "الأقل سعراً"، ونسبة الفرق بين الأغلى والأرخص.
+
+> 📄 **`frontend/src/app/features/costing/vendor-prices-page.ts`** — 208 سطر
+
+```ts
+import { DatePipe, DecimalPipe } from '@angular/common';
+import { Component, computed, effect, inject, signal, untracked } from '@angular/core';
+import { MatButtonModule } from '@angular/material/button';
+import { MatIconModule } from '@angular/material/icon';
+import { MatProgressBarModule } from '@angular/material/progress-bar';
+import { firstValueFrom } from 'rxjs';
+import { IntelligenceApi, VendorPriceReport, VendorPriceRow } from '../../core/costing/intelligence.api';
+import { errorMessage } from '../../core/http/error-message';
+import { MoneyPipe } from '../../core/ui/money.pipe';
+import { NotifyService } from '../../core/ui/notify.service';
+import { saveBlob } from '../../core/ui/save-blob';
+import { FilterOption, FilterSelect } from '../shared/filter-select';
+import { SearchField } from '../shared/search-field';
+import { smartMatch } from '../shared/smart-search';
+import { InfoTip } from './info-tip';
+import { PeriodBar, periodDays } from './period-bar';
+
+// The vendor price matrix (مصفوفة مقارنة أسعار الموردين): each material bought in the period and every
+// supplier who sold it, cheapest first, net of every discount: the last price and when, the lowest
+// and highest, the weighted average and what was bought. The cheapest marked Best price, where
+// there is a choice (one supplier is no comparison). On
+// Purchases and on Material & demand intelligence alike.
+@Component({
+  selector: 'app-vendor-prices-page',
+  imports: [DatePipe, DecimalPipe, FilterSelect, InfoTip, MatButtonModule, MatIconModule, MatProgressBarModule, MoneyPipe, PeriodBar, SearchField],
+  template: `
+    <div class="toolbar">
+      <app-period-bar [(from)]="from" [(to)]="to" />
+      <span class="spacer"></span>
+      <button mat-stroked-button (click)="download()" [disabled]="!report()"><mat-icon>download</mat-icon> Excel</button>
+    </div>
+    @if (loading()) {
+      <mat-progress-bar mode="indeterminate" />
+    }
+    @if (error()) {
+      <p class="error">{{ error() }}</p>
+    } @else if (report(); as r) {
+      <div class="tiles">
+        <div class="tile key">
+          <span class="label">Materials bought · الخامات المشتراة</span>
+          <strong>{{ r.materials }}</strong>
+        </div>
+        <div class="tile">
+          <span class="label">With a choice of supplier · لها أكثر من مورد <app-info-tip tip="vpSpread" /></span>
+          <strong>{{ r.withChoice }}</strong>
+        </div>
+      </div>
+
+      <div class="toolbar smart">
+        <app-search-field [(value)]="search" placeholder="Material, code or supplier · الخامة أو المورد" />
+        <div class="pills">
+          <app-filter-select label="Show · عرض" icon="filter_list" [options]="filters()" [(value)]="show" />
+        </div>
+      </div>
+
+      <div class="table-wrap">
+        <table class="grid vendors">
+          <thead>
+            <tr>
+              <th>Material<span class="ar">الخامة</span></th>
+              <th>Supplier<span class="ar">المورد</span></th>
+              <th class="num">Last net price<span class="ar">آخر سعر صافي</span></th>
+              <th>Last bought<span class="ar">آخر شراء</span></th>
+              <th class="num">Lowest<span class="ar">الأقل</span></th>
+              <th class="num">Highest<span class="ar">الأعلى</span></th>
+              <th class="num">Weighted avg <app-info-tip tip="vpAverage" /><span class="ar">المتوسط المرجح</span></th>
+              <th class="num">Quantity<span class="ar">الكمية</span></th>
+              <th>Best <app-info-tip tip="vpBest" /><span class="ar">الأفضل</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            @for (row of shown(); track row.rawMaterialId) {
+              @for (v of row.suppliers; track v.supplierId ?? v.supplier; let first = $first) {
+                <tr [class.first]="first" [class.best]="v.bestPrice && row.suppliers.length > 1">
+                  @if (first) {
+                    <td [attr.rowspan]="row.suppliers.length" class="material">
+                      <strong>{{ row.material }}</strong>
+                      <div class="muted small">
+                        {{ row.code ? row.code + ' · ' : '' }}{{ row.category ?? '' }} · per {{ row.purchaseUnit }}
+                      </div>
+                      @if (row.spreadPercent !== null) {
+                        <span class="chip">+{{ row.spreadPercent | number: '1.0-1' }}% spread</span>
+                      }
+                    </td>
+                  }
+                  <td>{{ v.supplier }}</td>
+                  <td class="num strong">{{ v.lastPrice === null ? '—' : (v.lastPrice | money) }}</td>
+                  <td class="nowrap">{{ v.lastDate | date: 'd MMM y' }}</td>
+                  <td class="num">{{ v.lowestPrice === null ? '—' : (v.lowestPrice | money) }}</td>
+                  <td class="num">{{ v.highestPrice === null ? '—' : (v.highestPrice | money) }}</td>
+                  <td class="num">{{ v.averagePrice === null ? '—' : (v.averagePrice | money) }}</td>
+                  <td class="num">{{ v.quantity | number: '1.0-3' }} <span class="muted small">· {{ v.purchases }}×</span></td>
+                  <td>
+                    @if (v.bestPrice && row.suppliers.length > 1) {
+                      <span class="best-badge"><mat-icon aria-hidden="true">verified</mat-icon> Best price · الأقل سعراً</span>
+                    }
+                  </td>
+                </tr>
+              }
+            } @empty {
+              <tr><td colspan="9" class="muted">No material bought in these days{{ search() || show() ? ' matches' : '' }}.</td></tr>
+            }
+          </tbody>
+        </table>
+      </div>
+      <p class="muted small">Net prices per purchase unit, after the line's discount and its share of the invoice's. The order planner can send each material to its cheapest supplier.</p>
+    }
+  `,
+  styleUrl: './costing.scss',
+  styles: `
+    .tiles {
+      grid-template-columns: repeat(auto-fit, minmax(200px, 260px));
+    }
+    tr.first td {
+      border-top: 2px solid var(--app-line-strong);
+    }
+    td.material {
+      vertical-align: top;
+      background: var(--mat-sys-surface-container-lowest);
+    }
+    tr.best td:not(.material) {
+      background: color-mix(in srgb, var(--app-ok) 7%, transparent);
+    }
+    .chip {
+      display: inline-block;
+      margin-top: 4px;
+      padding: 0 8px;
+      border-radius: 999px;
+      font: var(--mat-sys-label-small);
+      background: var(--mat-sys-surface-container-high);
+    }
+    .best-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 0 8px;
+      border-radius: 999px;
+      font: var(--mat-sys-label-small);
+      line-height: 22px;
+      white-space: nowrap;
+      background: color-mix(in srgb, var(--app-ok) 14%, transparent);
+      color: var(--app-ok);
+
+      mat-icon {
+        width: 14px;
+        height: 14px;
+        font-size: 14px;
+      }
+    }
+    .small {
+      font-size: 0.85em;
+    }
+  `,
+})
+export class VendorPricesPage {
+  private readonly api = inject(IntelligenceApi);
+  private readonly notify = inject(NotifyService);
+  protected readonly from = signal(periodDays('quarter').from);
+  protected readonly to = signal(periodDays('quarter').to);
+  protected readonly report = signal<VendorPriceReport | null>(null);
+  protected readonly loading = signal(false);
+  protected readonly error = signal<string | null>(null);
+  protected readonly search = signal('');
+  protected readonly show = signal('');
+
+  protected readonly filters = computed<FilterOption[]>(() => {
+    const rows = this.report()?.rows ?? [];
+    return [
+      { value: '', label: 'All · الكل', count: rows.length },
+      { value: 'choice', label: 'More than one supplier · أكثر من مورد', count: rows.filter((r) => r.suppliers.length > 1).length },
+    ];
+  });
+
+  protected readonly shown = computed<VendorPriceRow[]>(() =>
+    (this.report()?.rows ?? []).filter(
+      (r) =>
+        (this.show() !== 'choice' || r.suppliers.length > 1) &&
+        smartMatch(this.search(), r.material, r.code, r.category, ...r.suppliers.map((v) => v.supplier)),
+    ),
+  );
+
+  constructor() {
+    effect(() => {
+      const [from, to] = [this.from(), this.to()];
+      untracked(() => void this.load(from, to));
+    });
+  }
+
+  protected async download(): Promise<void> {
+    try {
+      saveBlob(await firstValueFrom(this.api.vendorPricesSheet(this.from(), this.to())), `vendor-prices-${this.from()}-to-${this.to()}.xlsx`);
+    } catch (error) {
+      this.notify.error(error, 'The sheet could not be downloaded.');
+    }
+  }
+
+  private async load(from: string, to: string): Promise<void> {
+    this.loading.set(true);
+    this.error.set(null);
+    try {
+      this.report.set(await firstValueFrom(this.api.vendorPrices(from, to)));
+    } catch (error) {
+      this.error.set(errorMessage(error, 'The vendor prices could not be compared.'));
+    } finally {
+      this.loading.set(false);
+    }
+  }
+}
+```
+
+
+`InflationPage`: شريط النسبة العامة، وقواعد الفئات والخامات، وكل تغيير ينتظر 400ms ثم يطلب؛ و **رقم تسلسل** يتجاهل الرد الأقدم إن وصل بعد الأحدث. الصف فوق المستهدف يُعلَّم (`tr.breach`)، والتبديل بين الأطباق والوصفات والمصنعات.
+
+> 📄 **`frontend/src/app/features/costing/inflation-page.ts`** — 454 سطر
+
+```ts
+import { DecimalPipe } from '@angular/common';
+import { Component, computed, effect, inject, signal, untracked } from '@angular/core';
+import { FormsModule } from '@angular/forms';
+import { MatButtonModule } from '@angular/material/button';
+import { MatButtonToggleModule } from '@angular/material/button-toggle';
+import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatIconModule } from '@angular/material/icon';
+import { MatInputModule } from '@angular/material/input';
+import { MatProgressBarModule } from '@angular/material/progress-bar';
+import { MatSelectModule } from '@angular/material/select';
+import { MatSliderModule } from '@angular/material/slider';
+import { firstValueFrom } from 'rxjs';
+import { CostingApi, MaterialCost } from '../../core/costing/costing.api';
+import { InflationReport, InflationScenario, IntelligenceApi, SimulatedItem, SimulatedItemKind } from '../../core/costing/intelligence.api';
+import { errorMessage } from '../../core/http/error-message';
+import { MoneyPipe } from '../../core/ui/money.pipe';
+import { NotifyService } from '../../core/ui/notify.service';
+import { saveBlob } from '../../core/ui/save-blob';
+import { SearchField } from '../shared/search-field';
+import { smartMatch } from '../shared/smart-search';
+import { InfoTip } from './info-tip';
+import { MaterialPicker } from './material-picker';
+
+interface CategoryRule {
+  categoryId: string | null;
+  percent: number | null;
+}
+
+interface MaterialRule {
+  rawMaterialId: string | null;
+  price: number | null;
+}
+
+const kindLabels: Record<SimulatedItemKind, { en: string; ar: string }> = {
+  Dish: { en: 'Dishes', ar: 'الأطباق' },
+  OffMenuRecipe: { en: 'Off the menu', ar: 'خارج المنيو' },
+  PrepItem: { en: 'Prep items', ar: 'المصنعات' },
+};
+
+// The inflation & pricing simulator (محاكي التضخم والتسعير): what-if prices for the bought
+// materials (a global %, a % by category, a new price for a material: the most specific wins), and
+// every dish, off-menu recipe and prep item costed again at them, nested prep items included; the
+// food cost % before and after, the prices that would keep the food cost % or the cash margin, and
+// what a month's profit would lose at the last 30 days' sales. Nothing is saved.
+@Component({
+  selector: 'app-inflation-page',
+  imports: [
+    DecimalPipe,
+    FormsModule,
+    InfoTip,
+    MatButtonModule,
+    MatButtonToggleModule,
+    MatFormFieldModule,
+    MatIconModule,
+    MatInputModule,
+    MatProgressBarModule,
+    MatSelectModule,
+    MatSliderModule,
+    MaterialPicker,
+    MoneyPipe,
+    SearchField,
+  ],
+  template: `
+    <section class="controls" aria-label="What if">
+      <div class="global">
+        <span class="label">Every material · كل الخامات</span>
+        <mat-slider min="-20" max="50" step="1" discrete class="slider">
+          <input matSliderThumb [ngModel]="global() ?? 0" (ngModelChange)="global.set($event || null)" aria-label="Global change slider" />
+        </mat-slider>
+        <mat-form-field subscriptSizing="dynamic" class="percent">
+          <input matInput type="number" step="0.5" [ngModel]="global()" (ngModelChange)="global.set(figure($event))" aria-label="Global change" placeholder="0" />
+          <span matTextSuffix>%</span>
+        </mat-form-field>
+      </div>
+
+      <div class="rules">
+        <h3>By category · حسب القسم</h3>
+        @for (rule of categoryRules(); track $index; let i = $index) {
+          <div class="rule">
+            <mat-form-field subscriptSizing="dynamic" class="category">
+              <mat-label>Category · القسم</mat-label>
+              <mat-select [ngModel]="rule.categoryId" (ngModelChange)="patchCategory(i, { categoryId: $event })" [attr.aria-label]="'Category, rule ' + (i + 1)">
+                @for (c of categories(); track c.id) {
+                  <mat-option [value]="c.id">{{ c.name }}</mat-option>
+                }
+              </mat-select>
+            </mat-form-field>
+            <mat-form-field subscriptSizing="dynamic" class="percent">
+              <input matInput type="number" step="0.5" [ngModel]="rule.percent" (ngModelChange)="patchCategory(i, { percent: figure($event) })"
+                [attr.aria-label]="'Change, rule ' + (i + 1)" placeholder="0" />
+              <span matTextSuffix>%</span>
+            </mat-form-field>
+            <button mat-icon-button (click)="removeCategory(i)" [attr.aria-label]="'Remove category rule ' + (i + 1)"><mat-icon>close</mat-icon></button>
+          </div>
+        }
+        <button mat-button (click)="addCategory()"><mat-icon>add</mat-icon> A category · قسم</button>
+      </div>
+
+      <div class="rules">
+        <h3>A material's new price · سعر خامة بعينها</h3>
+        @for (rule of materialRules(); track $index; let i = $index) {
+          <div class="rule">
+            <app-material-picker class="material" [materials]="bought()" [value]="rule.rawMaterialId" (valueChange)="patchMaterial(i, { rawMaterialId: $event })"
+              [label]="'Material, rule ' + (i + 1)" />
+            <mat-form-field subscriptSizing="dynamic" class="price">
+              <mat-label>New price · السعر الجديد</mat-label>
+              <input matInput type="number" min="0" step="any" [ngModel]="rule.price" (ngModelChange)="patchMaterial(i, { price: figure($event) })"
+                [attr.aria-label]="'New price, rule ' + (i + 1)" />
+              <span matTextSuffix>&nbsp;/ {{ unitOf(rule) }}</span>
+            </mat-form-field>
+            <button mat-icon-button (click)="removeMaterial(i)" [attr.aria-label]="'Remove material rule ' + (i + 1)"><mat-icon>close</mat-icon></button>
+          </div>
+        }
+        <button mat-button (click)="addMaterial()"><mat-icon>add</mat-icon> A material · خامة</button>
+      </div>
+      <p class="muted small">The most specific rule wins: a material's own price, then its category's %, then every material's %. Nothing is saved.</p>
+    </section>
+
+    <div class="toolbar">
+      <button mat-button (click)="reset()" [disabled]="!touched()"><mat-icon>restart_alt</mat-icon> Clear · مسح</button>
+      <span class="spacer"></span>
+      <button mat-stroked-button (click)="download()" [disabled]="!report()"><mat-icon>download</mat-icon> Export simulation · Excel</button>
+    </div>
+    @if (loading()) {
+      <mat-progress-bar mode="indeterminate" />
+    }
+    @if (error()) {
+      <p class="error">{{ error() }}</p>
+    } @else if (report(); as r) {
+      <div class="tiles">
+        <div class="tile key">
+          <span class="label">Monthly profit impact · أثر الربح الشهري <app-info-tip tip="inImpact" /></span>
+          <strong [class.loss]="r.monthlyProfitImpact < 0">{{ r.monthlyProfitImpact | money }}</strong>
+          <small class="chip">at the last 30 days' sales</small>
+        </div>
+        <div class="tile" [class.alert]="r.newlyAboveTarget > 0">
+          <span class="label">Dishes newly above target · أطباق تجاوزت النسبة</span>
+          <strong>{{ r.newlyAboveTarget }}</strong>
+          <small class="chip">target {{ r.foodCostTargetPercent | number: '1.0-1' }}%</small>
+        </div>
+        <div class="tile">
+          <span class="label">Materials repriced · خامات تغير سعرها</span>
+          <strong>{{ r.materialsChanged }}</strong>
+        </div>
+        <div class="tile">
+          <span class="label">Dishes · الأطباق</span>
+          <strong>{{ r.dishes }}</strong>
+        </div>
+      </div>
+
+      <div class="toolbar smart">
+        <app-search-field [(value)]="search" placeholder="Dish, recipe or prep item · الطبق أو الوصفة" />
+        <mat-button-toggle-group [value]="kind()" (change)="kind.set($event.value)" aria-label="Show">
+          @for (k of kinds; track k) {
+            <mat-button-toggle [value]="k">{{ kindLabels[k].en }} · {{ kindLabels[k].ar }}</mat-button-toggle>
+          }
+        </mat-button-toggle-group>
+      </div>
+
+      <div class="table-wrap">
+        <table class="grid simulated">
+          <thead>
+            <tr>
+              <th>{{ kind() === 'PrepItem' ? 'Prep item' : 'Dish / recipe' }}<span class="ar">الاسم</span></th>
+              <th class="num">Selling price<span class="ar">سعر البيع</span></th>
+              <th class="num">Cost now → simulated <app-info-tip tip="inSimulated" /><span class="ar">التكلفة الحالية ← المتوقعة</span></th>
+              <th class="num">Change<span class="ar">التغير</span></th>
+              @if (kind() !== 'PrepItem') {
+                <th class="num">Food cost %<span class="ar">نسبة التكلفة</span></th>
+                <th class="num">Keep food cost % <app-info-tip tip="inKeepFc" /><span class="ar">للحفاظ على النسبة</span></th>
+                <th class="num">Keep cash margin <app-info-tip tip="inKeepMargin" /><span class="ar">للحفاظ على الهامش</span></th>
+              }
+              @if (kind() === 'Dish') {
+                <th class="num">Monthly impact <app-info-tip tip="inImpact" /><span class="ar">الأثر الشهري</span></th>
+              }
+            </tr>
+          </thead>
+          <tbody>
+            @for (i of shown(); track i.kind + i.itemCode + (i.recipeId ?? i.prepItemId ?? i.name)) {
+              <tr [class.breach]="i.newlyAboveTarget">
+                <td>
+                  <strong>{{ i.name }}</strong>
+                  <div class="muted small">{{ i.itemCode ? i.itemCode + ' · ' : '' }}{{ i.category ?? '' }} · per {{ i.unit }}</div>
+                </td>
+                <td class="num">{{ i.sellingPrice === null ? '—' : (i.sellingPrice | money) }}</td>
+                <td class="num">{{ i.currentCost | money }} → <strong>{{ i.simulatedCost | money }}</strong></td>
+                <td class="num" [class.up]="i.change > 0">
+                  {{ i.change > 0 ? '+' : '' }}{{ i.change | money }}
+                  @if (i.changePercent !== null) {
+                    <div class="small">{{ i.changePercent > 0 ? '+' : '' }}{{ i.changePercent | number: '1.1-1' }}%</div>
+                  }
+                </td>
+                @if (kind() !== 'PrepItem') {
+                  <td class="num">
+                    {{ i.currentFoodCostPercent === null ? '—' : (i.currentFoodCostPercent | number: '1.1-1') + '%' }} →
+                    <strong [class.over]="i.aboveTarget">{{ i.simulatedFoodCostPercent === null ? '—' : (i.simulatedFoodCostPercent | number: '1.1-1') + '%' }}</strong>
+                    @if (i.newlyAboveTarget) {
+                      <div class="breach-badge"><mat-icon aria-hidden="true">error</mat-icon> Over target · تجاوز</div>
+                    }
+                  </td>
+                  <td class="num">{{ i.suggestedPriceKeepFoodCost === null ? '—' : (i.suggestedPriceKeepFoodCost | money) }}</td>
+                  <td class="num">{{ i.suggestedPriceKeepMargin === null ? '—' : (i.suggestedPriceKeepMargin | money) }}</td>
+                }
+                @if (kind() === 'Dish') {
+                  <td class="num" [class.loss]="(i.monthlyProfitImpact ?? 0) < 0">
+                    {{ i.monthlyProfitImpact === null ? '—' : (i.monthlyProfitImpact | money) }}
+                    <div class="small muted">{{ i.quantityLast30Days | number: '1.0-0' }} sold</div>
+                  </td>
+                }
+              </tr>
+            } @empty {
+              <tr><td colspan="8" class="muted">Nothing to show{{ search() ? ' that matches' : '' }}.</td></tr>
+            }
+          </tbody>
+        </table>
+      </div>
+    }
+  `,
+  styleUrl: './costing.scss',
+  styles: `
+    .controls {
+      display: grid;
+      gap: 12px;
+      margin: 0 0 12px;
+      padding: 14px 16px;
+      border-radius: 16px;
+      border: 1px solid var(--app-line);
+      background: var(--mat-sys-surface-container-lowest);
+
+      h3 {
+        margin: 0 0 6px;
+        font: var(--mat-sys-title-small);
+      }
+    }
+    .global {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px 14px;
+
+      .label {
+        font: var(--mat-sys-title-small);
+      }
+      .slider {
+        flex: 1 1 220px;
+        max-width: 420px;
+      }
+    }
+    .rule {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 6px;
+
+      .category {
+        width: 240px;
+      }
+      .material {
+        flex: 1 1 240px;
+        max-width: 420px;
+      }
+      .price {
+        width: 200px;
+      }
+    }
+    .percent {
+      width: 110px;
+    }
+    .chip {
+      justify-self: start;
+      padding: 0 8px;
+      border-radius: 999px;
+      font: var(--mat-sys-label-small);
+      background: var(--mat-sys-surface-container-high);
+    }
+    .tile.alert {
+      border-color: color-mix(in srgb, var(--mat-sys-error) 45%, transparent);
+      strong {
+        color: var(--mat-sys-error);
+      }
+    }
+    .loss,
+    .over {
+      color: var(--mat-sys-error);
+    }
+    .up {
+      color: var(--app-warn);
+    }
+    tr.breach td {
+      background: color-mix(in srgb, var(--mat-sys-error) 6%, transparent);
+    }
+    .breach-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 2px;
+      font: var(--mat-sys-label-small);
+      color: var(--mat-sys-error);
+
+      mat-icon {
+        width: 14px;
+        height: 14px;
+        font-size: 14px;
+      }
+    }
+    .small {
+      font-size: 0.85em;
+    }
+    @media (max-width: 600px) {
+      .rule .category,
+      .rule .price {
+        width: 100%;
+      }
+    }
+  `,
+})
+export class InflationPage {
+  private readonly api = inject(IntelligenceApi);
+  private readonly costing = inject(CostingApi);
+  private readonly notify = inject(NotifyService);
+  protected readonly kindLabels = kindLabels;
+  protected readonly kinds: SimulatedItemKind[] = ['Dish', 'OffMenuRecipe', 'PrepItem'];
+
+  protected readonly global = signal<number | null>(null);
+  protected readonly categoryRules = signal<CategoryRule[]>([]);
+  protected readonly materialRules = signal<MaterialRule[]>([]);
+  protected readonly materials = signal<MaterialCost[]>([]);
+  protected readonly bought = computed(() => this.materials().filter((m) => m.kind !== 'Prep' && !m.misplaced));
+  // Every category a bought material is filed under.
+  protected readonly categories = computed(() => {
+    const seen = new Map<string, string>();
+    for (const m of this.bought()) {
+      if (!seen.has(m.categoryId)) {
+        seen.set(m.categoryId, m.category ?? 'General');
+      }
+    }
+    return [...seen].map(([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name));
+  });
+
+  protected readonly report = signal<InflationReport | null>(null);
+  protected readonly loading = signal(false);
+  protected readonly error = signal<string | null>(null);
+  protected readonly search = signal('');
+  protected readonly kind = signal<SimulatedItemKind>('Dish');
+
+  protected readonly scenario = computed<InflationScenario>(() => ({
+    globalPercent: this.global(),
+    categories: this.categoryRules()
+      .filter((r) => r.categoryId && r.percent !== null)
+      .map((r) => ({ categoryId: r.categoryId!, percent: r.percent! })),
+    materials: this.materialRules()
+      .filter((r) => r.rawMaterialId && r.price !== null && r.price >= 0)
+      .map((r) => ({ rawMaterialId: r.rawMaterialId!, costPerPurchaseUnit: r.price! })),
+  }));
+
+  protected readonly touched = computed(
+    () => this.global() !== null || this.categoryRules().length > 0 || this.materialRules().length > 0,
+  );
+
+  protected readonly shown = computed<SimulatedItem[]>(() =>
+    (this.report()?.items ?? []).filter((i) => i.kind === this.kind() && smartMatch(this.search(), i.name, i.itemCode, i.category)),
+  );
+
+  private timer: ReturnType<typeof setTimeout> | null = null;
+  private asked = 0;
+
+  constructor() {
+    effect(() => {
+      const scenario = this.scenario();
+      untracked(() => {
+        if (this.timer) {
+          clearTimeout(this.timer);
+        }
+        // The first answer at once; what is typed after it, after a pause.
+        if (this.report() === null) {
+          void this.load(scenario);
+        } else {
+          this.timer = setTimeout(() => void this.load(scenario), 400);
+        }
+      });
+    });
+    firstValueFrom(this.costing.materials()).then(
+      (materials) => this.materials.set(materials),
+      () => this.materials.set([]),
+    );
+  }
+
+  // A typed figure; cleared, none.
+  protected figure(value: unknown): number | null {
+    return value === null || value === '' || value === undefined || Number.isNaN(Number(value)) ? null : Number(value);
+  }
+
+  protected unitOf(rule: MaterialRule): string {
+    return this.materials().find((m) => m.id === rule.rawMaterialId)?.purchaseUnit ?? 'unit';
+  }
+
+  protected addCategory(): void {
+    this.categoryRules.update((all) => [...all, { categoryId: null, percent: null }]);
+  }
+
+  protected patchCategory(i: number, patch: Partial<CategoryRule>): void {
+    this.categoryRules.update((all) => all.map((r, at) => (at === i ? { ...r, ...patch } : r)));
+  }
+
+  protected removeCategory(i: number): void {
+    this.categoryRules.update((all) => all.filter((_, at) => at !== i));
+  }
+
+  protected addMaterial(): void {
+    this.materialRules.update((all) => [...all, { rawMaterialId: null, price: null }]);
+  }
+
+  protected patchMaterial(i: number, patch: Partial<MaterialRule>): void {
+    this.materialRules.update((all) => all.map((r, at) => (at === i ? { ...r, ...patch } : r)));
+  }
+
+  protected removeMaterial(i: number): void {
+    this.materialRules.update((all) => all.filter((_, at) => at !== i));
+  }
+
+  protected reset(): void {
+    this.global.set(null);
+    this.categoryRules.set([]);
+    this.materialRules.set([]);
+  }
+
+  protected async download(): Promise<void> {
+    try {
+      saveBlob(await firstValueFrom(this.api.simulateInflationSheet(this.scenario())), 'inflation-simulation.xlsx');
+    } catch (error) {
+      this.notify.error(error, 'The sheet could not be downloaded.');
+    }
+  }
+
+  private async load(scenario: InflationScenario): Promise<void> {
+    const asked = ++this.asked;
+    this.loading.set(true);
+    this.error.set(null);
+    try {
+      const report = await firstValueFrom(this.api.simulateInflation(scenario));
+      if (asked === this.asked) {
+        this.report.set(report);
+      }
+    } catch (error) {
+      if (asked === this.asked) {
+        this.error.set(errorMessage(error, 'The simulation could not be worked out.'));
       }
     } finally {
       if (asked === this.asked) {
@@ -9928,7 +11235,7 @@ export class TheoreticalPage {
 ```
 
 
-> 📄 **`frontend/src/app/features/costing/variance-page.ts`** — 404 سطر
+> 📄 **`frontend/src/app/features/costing/variance-page.ts`** — 411 سطر
 
 ```ts
 import { DatePipe, DecimalPipe } from '@angular/common';
@@ -10026,6 +11333,10 @@ import { StockCardButton } from './stock-card-dialog';
           <span class="label">Recorded waste <app-info-tip tip="recordedWaste" /><span class="ar">الهالك المسجل</span></span>
           <strong>{{ r.recordedWasteValue | money }}</strong>
         </div>
+        <div class="box">
+          <span class="label">Staff meals & hospitality <app-info-tip tip="smUnexplained" /><span class="ar">وجبات العاملين والضيافة</span></span>
+          <strong>{{ r.staffMealsValue ?? 0 | money }}</strong>
+        </div>
         <div class="box" [class.deficit]="r.unexplainedValue > 0" [class.surplus]="r.unexplainedValue < 0">
           <span class="label">Unexplained <app-info-tip tip="unexplainedBetweenCounts" /><span class="ar">غير مبرر</span></span>
           <strong>{{ r.unexplainedValue | money }}</strong>
@@ -10078,6 +11389,9 @@ import { StockCardButton } from './stock-card-dialog';
                   {{ qty(row, row.rawWaste + row.productWaste) }}
                   @if (row.rawWaste && row.productWaste) {
                     <small class="muted block">{{ qty(row, row.rawWaste) }} raw · {{ qty(row, row.productWaste) }} dishes</small>
+                  }
+                  @if (row.staffMeals) {
+                    <small class="muted block">+ {{ qty(row, row.staffMeals) }} staff meals &amp; hospitality, not waste</small>
                   }
                 </td>
                 <td class="num">{{ qty(row, row.standardUsage) }}</td>
@@ -10338,7 +11652,7 @@ export class VariancePage {
 ```
 
 
-> 📄 **`frontend/src/app/features/costing/kpis-page.ts`** — 580 سطر
+> 📄 **`frontend/src/app/features/costing/kpis-page.ts`** — 601 سطر
 
 ```ts
 import { DecimalPipe } from '@angular/common';
@@ -10514,6 +11828,13 @@ const expenseFields: { key: keyof MonthlyExpenses; en: string; ar: string; hours
                   <td class="num">{{ combined(r.statement.wagesAndBenefits, r.statement.loggedWages) }}</td>
                   <td class="num muted">{{ pct(sum(r.statement.wagesAndBenefits, r.statement.loggedWages), r) }}</td>
                 </tr>
+                @if (r.statement.staffMeals) {
+                  <tr class="staff-meals">
+                    <td>Staff meals · وجبات العاملين <small class="muted part">a staff benefit, in the labor cost</small> <app-info-tip tip="smStaff" /></td>
+                    <td class="num">{{ r.statement.staffMeals | money }}</td>
+                    <td class="num muted">{{ pct(r.statement.staffMeals, r) }}</td>
+                  </tr>
+                }
                 <tr>
                   <td>
                     Rent and occupation · الإيجار
@@ -10534,6 +11855,20 @@ const expenseFields: { key: keyof MonthlyExpenses; en: string; ar: string; hours
                   <td class="num">{{ combined(r.statement.otherControllableCosts, r.statement.loggedControllableCosts) }}</td>
                   <td class="num muted">{{ pct(sum(r.statement.otherControllableCosts, r.statement.loggedControllableCosts), r) }}</td>
                 </tr>
+                @if (r.statement.hospitality) {
+                  <tr>
+                    <td>Hospitality · الضيافة والإكراميات <app-info-tip tip="smHospitality" /></td>
+                    <td class="num">{{ r.statement.hospitality | money }}</td>
+                    <td class="num muted">{{ pct(r.statement.hospitality, r) }}</td>
+                  </tr>
+                }
+                @if (r.statement.recipeTasting) {
+                  <tr>
+                    <td>Recipe tastings · تجارب الوصفات</td>
+                    <td class="num">{{ r.statement.recipeTasting | money }}</td>
+                    <td class="num muted">{{ pct(r.statement.recipeTasting, r) }}</td>
+                  </tr>
+                }
                 @if (r.statement.loggedOtherFixedCosts) {
                   <tr>
                     <td>Other fixed costs · تكاليف ثابتة أخرى <small class="muted part">from invoices</small></td>
@@ -11862,7 +13197,7 @@ export class DailyBreakEvenPage {
 
 `SettingsPage` (إعدادات التكلفة): نسبة تكلفة الطعام المستهدفة، فئات المشروبات، التكاليف المشتركة، المصروفات الشهرية.
 
-> 📄 **`frontend/src/app/features/costing/settings-page.ts`** — 486 سطر
+> 📄 **`frontend/src/app/features/costing/settings-page.ts`** — 528 سطر
 
 ```ts
 import { Component, computed, inject, signal } from '@angular/core';
@@ -11979,6 +13314,22 @@ interface Draft {
           </mat-form-field>
           @if (canEdit()) {
             <button mat-flat-button (click)="savePlate()" [disabled]="!plateValid() || samePlate() || busy()">Save</button>
+          }
+        </div>
+      </section>
+
+      <section class="block">
+        <h2>Staff meals <span class="inline-ar">وجبات العاملين</span></h2>
+        <p class="note">What a day's staff meals should cost at most: a day over it is flagged on Waste → Staff meals &amp; hospitality.</p>
+        <div class="toolbar">
+          <mat-form-field subscriptSizing="dynamic" class="amount" floatLabel="always">
+            <mat-label>Daily staff meal budget · الحد اليومي لتكلفة وجبات العاملين</mat-label>
+            <input matInput type="number" min="0" step="any" [(ngModel)]="staffMealBudget" [disabled]="!canEdit()" placeholder="None · لا يوجد"
+              aria-label="Daily staff meal budget" />
+            <span matTextSuffix>&nbsp;{{ company.currency() }}</span>
+          </mat-form-field>
+          @if (canEdit()) {
+            <button mat-flat-button (click)="saveStaffMeals()" [disabled]="sameStaffMeals() || (staffMealBudget ?? 0) < 0 || busy()">Save</button>
           }
         </div>
       </section>
@@ -12188,6 +13539,9 @@ export class SettingsPage {
 
   protected readonly methods: OverheadAllocationMethod[] = ['ActivityBasedPrepTime', 'ByQuantitySold', 'ByRevenueShare'];
   protected readonly methodLabels = allocationMethodLabels;
+  protected staffMealBudget: number | null = null;
+  private savedStaffMealBudget: number | null = null;
+
   protected plate: PlateCostSettings = {
     defaultOverheadAllocationMethod: 'ActivityBasedPrepTime',
     targetNetMarginPercent: 15,
@@ -12262,6 +13616,28 @@ export class SettingsPage {
     if (plate) {
       this.plate = { ...plate };
       this.savedPlate = JSON.stringify(this.cleanPlate());
+    }
+  }
+
+  protected sameStaffMeals(): boolean {
+    return this.budgetValue() === this.savedStaffMealBudget;
+  }
+
+  private budgetValue(): number | null {
+    const value = this.staffMealBudget as unknown;
+    return value === null || value === '' || value === undefined ? null : Number(value);
+  }
+
+  protected async saveStaffMeals(): Promise<void> {
+    this.busy.set(true);
+    try {
+      const saved = await firstValueFrom(this.api.saveSettings({ foodCostTargetPercent: this.savedTarget, staffMeals: { dailyBudget: this.budgetValue() } }));
+      this.staffMealBudget = this.savedStaffMealBudget = saved.staffMeals?.dailyBudget ?? null;
+      this.notify.info('Staff meal budget saved. · تم الحفظ.');
+    } catch (error) {
+      this.notify.error(error, 'The staff meal budget could not be saved.');
+    } finally {
+      this.busy.set(false);
     }
   }
 
@@ -12342,6 +13718,7 @@ export class SettingsPage {
       this.beverages = [...(settings.beverageCategories ?? [])];
       this.savedBeverages = [...this.beverages];
       this.keepPlate(settings.plateCost);
+      this.staffMealBudget = this.savedStaffMealBudget = settings.staffMeals?.dailyBudget ?? null;
       this.shared.set(shared);
       this.materials.set(materials);
     } catch (error) {

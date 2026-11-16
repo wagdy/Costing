@@ -95,7 +95,10 @@ export type StockMovementReason =
   | 'Spoilage'
   | 'ProductionInput'
   | 'ProductionOutput'
-  | 'OpeningStock';
+  | 'OpeningStock'
+  | 'StaffMeal'
+  | 'Hospitality'
+  | 'RecipeTasting';
 
 export const stockCardTypes: { type: StockCardMovementType; en: string; ar: string }[] = [
   { type: 'Opening', en: 'Opening', ar: 'افتتاحي' },
@@ -325,6 +328,8 @@ export interface CostingSettings {
   beverageCategories?: string[] | null;
   // The fully burdened plate cost's, saved together.
   plateCost?: PlateCostSettings | null;
+  // The staff meals' daily budget; none clears it.
+  staffMeals?: { dailyBudget: number | null } | null;
 }
 
 export interface PlateCostSettings {
@@ -397,6 +402,11 @@ export interface MonthStatement {
   voids?: number;
   takingsDays?: number;
   salesAtMenuPrices?: number;
+  // Taken from stock on purpose: staff meals (in the wages and benefits), hospitality and recipe
+  // tastings (costs of their own). None is food cost or a loss.
+  staffMeals?: number;
+  hospitality?: number;
+  recipeTasting?: number;
 }
 
 export interface LoggedExpense {
@@ -738,6 +748,8 @@ export interface VarianceRow {
   varianceValue: number | null;
   unexplainedValue: number | null;
   evaluation: VarianceEvaluation;
+  // Staff meals, hospitality and tastings: taken on purpose, out of the unexplained.
+  staffMeals?: number;
 }
 
 export interface VarianceReport {
@@ -755,6 +767,7 @@ export interface VarianceReport {
   notInBothCounts: string[];
   soldWithoutStock: { itemCode: string; menuItem: string; quantity: number }[];
   missingPrices: string[];
+  staffMealsValue?: number;
 }
 
 export interface SharedCost {
@@ -1196,6 +1209,8 @@ export interface Supplier {
   invoices: number;
   postedTotal: number;
   lastPostedAtUtc: string | null;
+  // Days it gives to pay a credit invoice (مدة السداد).
+  paymentTermsDays?: number;
 }
 
 export interface SaveSupplier {
@@ -1204,6 +1219,8 @@ export interface SaveSupplier {
   phone: string | null;
   email: string | null;
   notes: string | null;
+  // Left out, kept as it is.
+  paymentTermsDays?: number;
 }
 
 export type SupplierRemoval = 'Deleted' | 'Archived';
@@ -1765,6 +1782,29 @@ export class CostingApi {
 
   supplierStatement(supplierId: string): Observable<SupplierStatement> {
     return this.http.get<SupplierStatement>(`/api/financials/suppliers/${supplierId}`);
+  }
+
+  // A supplier's account over a period (كشف حساب مورد تفصيلي).
+  supplierAccount(supplierId: string, from: string, to: string): Observable<SupplierAccount> {
+    return this.http.get<SupplierAccount>(`/api/suppliers/${supplierId}/statement`, { params: { from, to } });
+  }
+
+  supplierAccountSheet(supplierId: string, from: string, to: string): Observable<Blob> {
+    return this.http.get(`/api/suppliers/${supplierId}/statement/sheet`, { params: { from, to }, responseType: 'blob' });
+  }
+
+  // What is owed to suppliers by how long it has been due (أعمار ديون الموردين).
+  apAging(asOf: string | null = null): Observable<ApAgingReport> {
+    return this.http.get<ApAgingReport>('/api/financials/ap-aging', { params: asOf ? { asOf } : {} });
+  }
+
+  // Staff meals, hospitality and recipe tastings (وجبات العاملين والضيافة).
+  staffMeals(from: string, to: string): Observable<StaffMealReport> {
+    return this.http.get<StaffMealReport>('/api/costing/staff-meals', { params: { from, to } });
+  }
+
+  recordStaffMeal(entry: RecordStaffMeal): Observable<{ entryId: string }> {
+    return this.http.post<{ entryId: string }>('/api/inventory/staff-meals', entry);
   }
 
   supplierPayments(from: string, to: string): Observable<SupplierPaymentRow[]> {
@@ -2633,4 +2673,108 @@ export interface DailyCashReport {
   deductions: number;
   netToSafe: number;
   days: DailyCashDay[];
+}
+
+// ---- Supplier accounts: AP aging and the period statement ----
+
+export interface ApAgingRow {
+  supplierId: string;
+  supplier: string;
+  paymentTermsDays: number;
+  totalOwed: number;
+  current: number;
+  days1To30: number;
+  days31To60: number;
+  days61To90: number;
+  over90: number;
+  openInvoices: number;
+  oldestDueDate: string | null;
+}
+
+export interface ApAgingReport {
+  asOf: string;
+  totalOwed: number;
+  current: number;
+  days1To30: number;
+  days31To60: number;
+  days61To90: number;
+  over90: number;
+  rows: ApAgingRow[];
+}
+
+export type SupplierAccountEntryKind = 'OpeningBalance' | 'CreditInvoice' | 'CashInvoice' | 'Payment';
+
+export interface SupplierAccountLine {
+  id: string;
+  date: string;
+  kind: SupplierAccountEntryKind;
+  reference: string;
+  description: string;
+  paid: number;
+  owed: number;
+  balance: number;
+  sourceId: string;
+  isReversal: boolean;
+  recordedBy: string | null;
+  approvedBy: string | null;
+  fromTakingsOf: string | null;
+  notes: string | null;
+}
+
+export interface SupplierAccount {
+  supplierId: string;
+  supplier: string;
+  paymentTermsDays: number;
+  from: string;
+  to: string;
+  openingBalance: number;
+  creditInvoices: number;
+  cashInvoices: number;
+  payments: number;
+  closingBalance: number;
+  // Entered in the period as owed before the treasury: added like an invoice.
+  owedBefore: number;
+  lines: SupplierAccountLine[];
+  openInvoices: { invoiceId: string; supplierInvoiceNumber: string | null; date: string; total: number; paid: number; remaining: number; status: 'Unpaid' | 'PartlyPaid' }[];
+}
+
+// ---- Staff meals, hospitality and recipe tastings ----
+
+export type StaffMealKind = 'StaffMeal' | 'Hospitality' | 'RecipeTasting';
+
+export const staffMealKindLabels: Record<StaffMealKind, { en: string; ar: string; icon: string }> = {
+  StaffMeal: { en: 'Staff meal', ar: 'وجبات العاملين', icon: 'restaurant' },
+  Hospitality: { en: 'Hospitality', ar: 'ضيافة وإكراميات', icon: 'volunteer_activism' },
+  RecipeTasting: { en: 'Recipe tasting', ar: 'تجارب واختبار وصفات', icon: 'science' },
+};
+
+// A line: a material or prep item (quantity in its own unit: g, ml, pieces) or a recipe (whole plates).
+export interface RecordStaffMeal {
+  entryId: string;
+  kind: StaffMealKind;
+  lines: { rawMaterialId: string | null; recipeId: string | null; quantity: number }[];
+  note: string | null;
+}
+
+export interface StaffMealEntry {
+  entryId: string;
+  kind: StaffMealKind;
+  date: string;
+  recordedAtUtc: string;
+  recordedBy: string | null;
+  note: string | null;
+  lines: { rawMaterialId: string; material: string; purchaseUnit: string; quantity: number; value: number | null; note: string | null }[];
+  value: number;
+}
+
+export interface StaffMealReport {
+  from: string;
+  to: string;
+  dailyBudget: number | null;
+  staffMeals: number;
+  hospitality: number;
+  recipeTasting: number;
+  daysOverBudget: number;
+  days: { date: string; staffMeals: number; hospitality: number; recipeTasting: number; overBudget: boolean }[];
+  entries: StaffMealEntry[];
 }

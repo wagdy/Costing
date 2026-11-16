@@ -26,6 +26,7 @@ export class FinancialsShell {
     { path: 'daily-cash', icon: 'calendar_view_day', en: 'Daily cash', ar: 'يومية الإيراد' },
     { path: 'expenses', icon: 'receipt', en: 'Expense vouchers', ar: 'إذن صرف مصروفات' },
     { path: 'suppliers', icon: 'account_balance', en: 'Supplier debts', ar: 'مديونيات الموردين' },
+    { path: 'ap-aging', icon: 'hourglass_bottom', en: 'AP aging', ar: 'أعمار ديون الموردين' },
     { path: 'payments', icon: 'payments', en: 'Supplier payments', ar: 'أذونات صرف الموردين' },
     { path: 'advances', icon: 'request_quote', en: 'Advances', ar: 'السلفيات' },
     { path: 'staff', icon: 'badge', en: 'Staff', ar: 'الموظفين' },

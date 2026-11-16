@@ -117,6 +117,22 @@ interface Draft {
       </section>
 
       <section class="block">
+        <h2>Staff meals <span class="inline-ar">وجبات العاملين</span></h2>
+        <p class="note">What a day's staff meals should cost at most: a day over it is flagged on Waste → Staff meals &amp; hospitality.</p>
+        <div class="toolbar">
+          <mat-form-field subscriptSizing="dynamic" class="amount" floatLabel="always">
+            <mat-label>Daily staff meal budget · الحد اليومي لتكلفة وجبات العاملين</mat-label>
+            <input matInput type="number" min="0" step="any" [(ngModel)]="staffMealBudget" [disabled]="!canEdit()" placeholder="None · لا يوجد"
+              aria-label="Daily staff meal budget" />
+            <span matTextSuffix>&nbsp;{{ company.currency() }}</span>
+          </mat-form-field>
+          @if (canEdit()) {
+            <button mat-flat-button (click)="saveStaffMeals()" [disabled]="sameStaffMeals() || (staffMealBudget ?? 0) < 0 || busy()">Save</button>
+          }
+        </div>
+      </section>
+
+      <section class="block">
         <h2>Drinks <span class="inline-ar">المشروبات</span></h2>
         <p class="note">The menu categories that are drinks: their sales and costs make the beverage cost %, the rest the food cost %.</p>
         <div class="toolbar">
@@ -321,6 +337,9 @@ export class SettingsPage {
 
   protected readonly methods: OverheadAllocationMethod[] = ['ActivityBasedPrepTime', 'ByQuantitySold', 'ByRevenueShare'];
   protected readonly methodLabels = allocationMethodLabels;
+  protected staffMealBudget: number | null = null;
+  private savedStaffMealBudget: number | null = null;
+
   protected plate: PlateCostSettings = {
     defaultOverheadAllocationMethod: 'ActivityBasedPrepTime',
     targetNetMarginPercent: 15,
@@ -395,6 +414,28 @@ export class SettingsPage {
     if (plate) {
       this.plate = { ...plate };
       this.savedPlate = JSON.stringify(this.cleanPlate());
+    }
+  }
+
+  protected sameStaffMeals(): boolean {
+    return this.budgetValue() === this.savedStaffMealBudget;
+  }
+
+  private budgetValue(): number | null {
+    const value = this.staffMealBudget as unknown;
+    return value === null || value === '' || value === undefined ? null : Number(value);
+  }
+
+  protected async saveStaffMeals(): Promise<void> {
+    this.busy.set(true);
+    try {
+      const saved = await firstValueFrom(this.api.saveSettings({ foodCostTargetPercent: this.savedTarget, staffMeals: { dailyBudget: this.budgetValue() } }));
+      this.staffMealBudget = this.savedStaffMealBudget = saved.staffMeals?.dailyBudget ?? null;
+      this.notify.info('Staff meal budget saved. · تم الحفظ.');
+    } catch (error) {
+      this.notify.error(error, 'The staff meal budget could not be saved.');
+    } finally {
+      this.busy.set(false);
     }
   }
 
@@ -475,6 +516,7 @@ export class SettingsPage {
       this.beverages = [...(settings.beverageCategories ?? [])];
       this.savedBeverages = [...this.beverages];
       this.keepPlate(settings.plateCost);
+      this.staffMealBudget = this.savedStaffMealBudget = settings.staffMeals?.dailyBudget ?? null;
       this.shared.set(shared);
       this.materials.set(materials);
     } catch (error) {

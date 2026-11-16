@@ -1652,7 +1652,7 @@ public sealed class TreasuryService(CostingDbContext db, IBusinessCalendar clock
     }
 
     // Opening debt, credit purchases and payments, each net of what was undone.
-    private static (decimal Opening, decimal Credit, decimal Paid) Totals(IEnumerable<SupplierLedgerEntry> lines)
+    internal static (decimal Opening, decimal Credit, decimal Paid) Totals(IEnumerable<SupplierLedgerEntry> lines)
     {
         var all = lines.ToList();
         return (
@@ -1663,7 +1663,7 @@ public sealed class TreasuryService(CostingDbContext db, IBusinessCalendar clock
 
     // The credit invoices still owed, oldest first: what was paid is set against the opening debt,
     // then against each invoice in turn.
-    private static IReadOnlyList<OpenInvoice> OpenInvoices(IReadOnlyList<SupplierLedgerEntry> lines, IReadOnlyDictionary<Guid, PurchaseInvoice> invoices)
+    internal static IReadOnlyList<OpenInvoice> OpenInvoices(IReadOnlyList<SupplierLedgerEntry> lines, IReadOnlyDictionary<Guid, PurchaseInvoice> invoices)
     {
         var (opening, _, paid) = Totals(lines);
         var left = Math.Max(paid - opening, 0);
@@ -1876,7 +1876,7 @@ internal sealed class AddLocalStaffMemberHandler(IStaffMemberRepository staff, I
 
 `FinancialsController` (`api/financials`): الدفتر، التمويل، المطابقة، يومية الإيراد، المصروفات، ديون الموردين وكشوفهم، السلف، الضريبة، وتسجيل القيود.
 
-> 📄 **`backend/src/Costing.Api/Controllers/FinancialsController.cs`** — 162 سطر
+> 📄 **`backend/src/Costing.Api/Controllers/FinancialsController.cs`** — 169 سطر
 
 ```csharp
 using MediatR;
@@ -1900,7 +1900,7 @@ namespace Costing.Api.Controllers;
 [ApiController]
 [Route("api/financials")]
 [Authorize(Policy = Permissions.InventoryManage)]
-public sealed class FinancialsController(ISender sender, TreasuryService treasury) : ControllerBase
+public sealed class FinancialsController(ISender sender, TreasuryService treasury, SupplierAccountsService accounts) : ControllerBase
 {
     // The till's business day: the date a safe entry is given unless another is chosen. Between
     // midnight and the hour the business day starts it is still yesterday.
@@ -1965,6 +1965,13 @@ public sealed class FinancialsController(ISender sender, TreasuryService treasur
     [CostingTab(CostingTabs.Financials | CostingTabs.Purchases)]
     public Task<IReadOnlyList<SupplierBalance>> GetSupplierBalances(CancellationToken cancellationToken) =>
         treasury.GetSupplierBalancesAsync(cancellationToken);
+
+    // What is owed to each supplier by how long it has been due (أعمار ديون الموردين), on a day
+    // (today when none): Current, 1–30, 31–60, 61–90 and 90+ days past due.
+    [HttpGet("ap-aging")]
+    [CostingTab(CostingTabs.Financials | CostingTabs.Purchases)]
+    public Task<ApAgingReport> GetApAging([FromQuery] DateOnly? asOf, CancellationToken cancellationToken) =>
+        accounts.GetAgingAsync(asOf, cancellationToken);
 
     [HttpGet("suppliers/{supplierId:guid}")]
     [CostingTab(CostingTabs.Financials | CostingTabs.Purchases)]
@@ -2044,6 +2051,282 @@ public sealed record SupplierOpeningBalanceRequest(Guid EntryId, decimal Owed, D
 ```
 
 
+### 2.1 أعمار ديون الموردين وكشف الحساب التفصيلي (`SupplierAccountsService`)
+
+لكل مورد **مدة سداد** (`Supplier.PaymentTermsDays`، 0 إلى 365). **الأعمار:** المدفوعات تُخصم أولًا من الرصيد الافتتاحي (ما كان مستحقًا قبل الخزنة)، ثم من فواتير الآجل **الأقدم فالأحدث** (نفس منطق `TreasuryService.OpenInvoices`، صار `internal static` لهذا مع `Totals`). كل فاتورة باقٍ منها شيء تستحق في `تاريخها + مدة السداد`، وأيام التأخير يوم السؤال تضعها في شريحة: غير مستحق (≤ 0)، 1–30، 31–60، 61–90، أكثر من 90.
+
+**كشف الحساب:** من يوم ليوم (افتراضيًا أول السنة): الرصيد الافتتاحي، ثم كل فاتورة آجل (دائن +) وكل فاتورة كاش (مدين ودائن معًا فلا يتحرك الرصيد؛ لاحظ `Include(i => i.Lines)` لأن إجمالي الفاتورة يُحسب من بنودها) وكل دفعة (مدين −)، بالترتيب ورصيد جارٍ بعد كل سطر، و `SourceId` يفتح الفاتورة أو السند في الواجهة.
+
+```
+الرصيد الختامي = الافتتاحي + فواتير الآجل − المدفوعات
+```
+
+> 📄 **`backend/src/Costing.Infrastructure/Reports/SupplierAccountsService.cs`** — 220 سطر
+
+```csharp
+using Microsoft.EntityFrameworkCore;
+using Costing.Application.Common;
+using Costing.Domain.Common;
+using Costing.Domain.Purchases;
+using Costing.Domain.Treasury;
+using Costing.Infrastructure.Persistence;
+using static Costing.Infrastructure.Reports.CostingService;
+
+namespace Costing.Infrastructure.Reports;
+
+// What the restaurant owes its suppliers, by how long it has been owed (أعمار ديون الموردين), and one
+// supplier's account over a period (كشف حساب مورد تفصيلي).
+//
+// Aging: payments are set against what was owed before the treasury first, then the credit invoices
+// oldest first (as the open invoices are). Each invoice still owed falls due its supplier's payment
+// terms after its date; what was owed before the treasury is due from when it was entered. Days
+// past due on the day asked: 0 or less is Current (not due), then 1–30, 31–60, 61–90 and 90+.
+public sealed record ApAgingRow(
+    Guid SupplierId,
+    string Supplier,
+    int PaymentTermsDays,
+    decimal TotalOwed,
+    decimal Current,
+    decimal Days1To30,
+    decimal Days31To60,
+    decimal Days61To90,
+    decimal Over90,
+    int OpenInvoices,
+    DateOnly? OldestDueDate);
+
+public sealed record ApAgingReport(
+    DateOnly AsOf,
+    decimal TotalOwed,
+    decimal Current,
+    decimal Days1To30,
+    decimal Days31To60,
+    decimal Days61To90,
+    decimal Over90,
+    IReadOnlyList<ApAgingRow> Rows);
+
+public enum SupplierAccountEntryKind
+{
+    // Owed before the treasury was kept.
+    OpeningBalance = 1,
+    CreditInvoice = 2,
+    // Paid when posted, from the safe or a day's takings: owed and paid at once.
+    CashInvoice = 3,
+    Payment = 4,
+}
+
+// A line of the account: Owed (+, credit) adds to what is owed, Paid (−, debit) takes from it; a
+// cash invoice is both. A payment carries its voucher's details, to open it where it is listed.
+public sealed record SupplierAccountLine(
+    Guid Id,
+    DateOnly Date,
+    SupplierAccountEntryKind Kind,
+    string Reference,
+    string Description,
+    decimal Paid,
+    decimal Owed,
+    decimal Balance,
+    Guid SourceId,
+    bool IsReversal,
+    string? RecordedBy = null,
+    string? ApprovedBy = null,
+    DateOnly? FromTakingsOf = null,
+    string? Notes = null);
+
+public sealed record SupplierAccount(
+    Guid SupplierId,
+    string Supplier,
+    int PaymentTermsDays,
+    DateOnly From,
+    DateOnly To,
+    decimal OpeningBalance,
+    decimal CreditInvoices,
+    decimal CashInvoices,
+    decimal Payments,
+    decimal ClosingBalance,
+    IReadOnlyList<SupplierAccountLine> Lines,
+    IReadOnlyList<OpenInvoice> OpenInvoices,
+    // What was entered in the period as owed before the treasury was kept: added like an invoice.
+    // Closing = opening + owed before + credit invoices − payments.
+    decimal OwedBefore = 0);
+
+public sealed class SupplierAccountsService(CostingDbContext db, IBusinessCalendar clock)
+{
+    public async Task<ApAgingReport> GetAgingAsync(DateOnly? asOf, CancellationToken cancellationToken)
+    {
+        var day = asOf ?? clock.BusinessDateOf(DateTime.UtcNow);
+        var entries = await db.SupplierLedgerEntries.AsNoTracking().Where(l => l.BusinessDate <= day).ToListAsync(cancellationToken);
+        var suppliers = await db.Suppliers.AsNoTracking().ToDictionaryAsync(s => s.Id, cancellationToken);
+
+        var rows = new List<ApAgingRow>();
+        foreach (var group in entries.GroupBy(l => l.SupplierId))
+        {
+            var lines = group.OrderBy(l => l.BusinessDate).ThenBy(l => l.RecordedAtUtc).ToList();
+            var (opening, credit, paid) = TreasuryService.Totals(lines);
+            var balance = Money(opening + credit - paid);
+            if (balance == 0)
+                continue;
+            var supplier = suppliers.GetValueOrDefault(group.Key);
+            var terms = supplier?.PaymentTermsDays ?? 0;
+
+            // What is still owed, each with the day it fell due.
+            var owed = new List<(DateOnly Due, decimal Amount)>();
+            var openingLeft = Math.Max(opening - paid, 0);
+            if (openingLeft > 0)
+                owed.Add((lines.Where(l => l.Kind == SupplierLedgerKind.OpeningBalance).Min(l => l.BusinessDate), openingLeft));
+            var open = TreasuryService.OpenInvoices(lines, new Dictionary<Guid, PurchaseInvoice>());
+            owed.AddRange(open.Select(i => (i.Date.AddDays(terms), i.Remaining)));
+
+            decimal Bucket(int fromDays, int toDays) =>
+                Money(owed.Where(o => day.DayNumber - o.Due.DayNumber is var late && late >= fromDays && late <= toDays).Sum(o => o.Amount));
+            rows.Add(new ApAgingRow(
+                group.Key, supplier?.Name ?? "A removed supplier", terms, balance,
+                Bucket(int.MinValue, 0), Bucket(1, 30), Bucket(31, 60), Bucket(61, 90), Bucket(91, int.MaxValue),
+                open.Count, owed.Count > 0 ? owed.Min(o => o.Due) : null));
+        }
+
+        rows = rows.OrderByDescending(r => r.Over90).ThenByDescending(r => r.TotalOwed).ThenBy(r => r.Supplier, StringComparer.CurrentCultureIgnoreCase).ToList();
+        return new ApAgingReport(
+            day, Money(rows.Sum(r => r.TotalOwed)), Money(rows.Sum(r => r.Current)), Money(rows.Sum(r => r.Days1To30)), Money(rows.Sum(r => r.Days31To60)),
+            Money(rows.Sum(r => r.Days61To90)), Money(rows.Sum(r => r.Over90)), rows);
+    }
+
+    // One supplier's account from one day to another: what was owed coming in, every credit and
+    // cash invoice and every payment in order with the balance after each, and what is owed going out.
+    public async Task<SupplierAccount?> GetAccountAsync(Guid supplierId, DateOnly? from, DateOnly? to, CancellationToken cancellationToken)
+    {
+        if (await db.Suppliers.AsNoTracking().SingleOrDefaultAsync(s => s.Id == supplierId, cancellationToken) is not { } supplier)
+            return null;
+        var today = clock.BusinessDateOf(DateTime.UtcNow);
+        var last = to ?? today;
+        var first = from ?? new DateOnly(last.Year, 1, 1);
+        if (last < first)
+            throw new DomainException("The first day must come before the last. · اليوم الأول قبل الأخير.");
+        if (last > first.AddYears(5))
+            throw new DomainException("Choose five years at most. · خمس سنوات على الأكثر.");
+
+        var ledger = await db.SupplierLedgerEntries.AsNoTracking()
+            .Where(l => l.SupplierId == supplierId && l.BusinessDate <= last)
+            .OrderBy(l => l.BusinessDate).ThenBy(l => l.RecordedAtUtc)
+            .ToListAsync(cancellationToken);
+        var before = ledger.Where(l => l.BusinessDate < first).ToList();
+        var inPeriod = ledger.Where(l => l.BusinessDate >= first).ToList();
+
+        // Cash invoices of the period: paid when posted, so owed and paid at once.
+        var (firstUtc, _) = clock.Bounds(first);
+        var (_, lastUtc) = clock.Bounds(last);
+        var cash = await db.PurchaseInvoices.AsNoTracking().Include(i => i.Lines)
+            .Where(i => i.SupplierId == supplierId && i.Status == PurchaseInvoiceStatus.Posted && i.PaymentMethod != PurchasePaymentMethod.Credit
+                && ((i.InvoiceDate != null && i.InvoiceDate >= first && i.InvoiceDate <= last)
+                    || (i.InvoiceDate == null && i.PostedAtUtc >= firstUtc && i.PostedAtUtc < lastUtc)))
+            .ToListAsync(cancellationToken);
+
+        var invoiceIds = inPeriod.Where(l => l.Kind == SupplierLedgerKind.CreditInvoice).Select(l => l.SourceId).Distinct().ToList();
+        var invoices = await db.PurchaseInvoices.AsNoTracking().Where(i => invoiceIds.Contains(i.Id)).ToDictionaryAsync(i => i.Id, cancellationToken);
+        var paymentIds = inPeriod.Where(l => l.Kind == SupplierLedgerKind.Payment).Select(l => l.SourceId).Distinct().ToList();
+        var payments = await db.SafeTransactions.AsNoTracking().Where(t => paymentIds.Contains(t.Id)).ToDictionaryAsync(t => t.Id, cancellationToken);
+
+        var opening = Money(before.Sum(l => l.Amount));
+        var rows = inPeriod
+            .Select(l => (Date: l.BusinessDate, At: l.RecordedAtUtc, Line: Line(l, invoices, payments)))
+            .Concat(cash.Select(i => (
+                Date: i.InvoiceDate ?? clock.BusinessDateOf(i.PostedAtUtc ?? i.CreatedAtUtc), At: i.PostedAtUtc ?? i.CreatedAtUtc,
+                Line: new SupplierAccountLine(
+                    i.Id, i.InvoiceDate ?? clock.BusinessDateOf(i.PostedAtUtc ?? i.CreatedAtUtc), SupplierAccountEntryKind.CashInvoice,
+                    i.SupplierInvoiceNumber is { } n ? $"Invoice {n}" : "Invoice",
+                    i.PaymentMethod == PurchasePaymentMethod.DayRevenue ? "Cash invoice, paid from a day's takings · فاتورة نقدي من الإيراد"
+                        : i.PaymentMethod == PurchasePaymentMethod.Safe ? "Cash invoice, paid from the safe · فاتورة نقدي من الخزنة"
+                        : "Invoice before the treasury · فاتورة قبل الخزنة",
+                    i.Total, i.Total, 0, i.Id, false))))
+            .OrderBy(r => r.Date).ThenBy(r => r.At)
+            .ToList();
+
+        var balance = opening;
+        var lines = rows.Select(r =>
+        {
+            balance += r.Line.Owed - r.Line.Paid;
+            return r.Line with { Balance = Money(balance) };
+        }).ToList();
+
+        decimal Sum(SupplierLedgerKind kind) => Money(inPeriod.Where(l => l.Kind == kind).Sum(l => l.Amount));
+        var open = TreasuryService.OpenInvoices(ledger, await db.PurchaseInvoices.AsNoTracking()
+            .Where(i => i.SupplierId == supplierId && i.PaymentMethod == PurchasePaymentMethod.Credit).ToDictionaryAsync(i => i.Id, cancellationToken));
+        return new SupplierAccount(
+            supplierId, supplier.Name, supplier.PaymentTermsDays, first, last, opening, Sum(SupplierLedgerKind.CreditInvoice),
+            Money(cash.Sum(i => i.Total)), -Sum(SupplierLedgerKind.Payment), Money(opening + inPeriod.Sum(l => l.Amount)), lines, open,
+            Sum(SupplierLedgerKind.OpeningBalance));
+    }
+
+    private static SupplierAccountLine Line(
+        SupplierLedgerEntry l, IReadOnlyDictionary<Guid, PurchaseInvoice> invoices, IReadOnlyDictionary<Guid, SafeTransaction> payments)
+    {
+        var owed = l.Amount > 0 ? l.Amount : 0;
+        var paid = l.Amount < 0 ? -l.Amount : 0;
+        string Voided(string what) => l.IsReversal ? $"Voided: {what} · ملغى" : what;
+        switch (l.Kind)
+        {
+            case SupplierLedgerKind.OpeningBalance:
+                return new SupplierAccountLine(l.Id, l.BusinessDate, SupplierAccountEntryKind.OpeningBalance, "Opening balance",
+                    Voided("Owed before the treasury · رصيد سابق"), paid, owed, 0, l.SourceId, l.IsReversal, l.RecordedBy);
+            case SupplierLedgerKind.CreditInvoice:
+            {
+                var number = invoices.GetValueOrDefault(l.SourceId)?.SupplierInvoiceNumber;
+                return new SupplierAccountLine(l.Id, l.BusinessDate, SupplierAccountEntryKind.CreditInvoice, number is null ? "Invoice" : $"Invoice {number}",
+                    Voided("Invoice on credit · فاتورة آجل"), paid, owed, 0, l.SourceId, l.IsReversal, l.RecordedBy);
+            }
+            default:
+            {
+                var voucher = payments.GetValueOrDefault(l.SourceId);
+                var from = voucher?.RevenueDate is { } day ? $"from the takings of {day:d MMM} · من إيراد يوم" : "from the safe · من الخزنة";
+                return new SupplierAccountLine(l.Id, l.BusinessDate, SupplierAccountEntryKind.Payment, "Payment voucher",
+                    Voided($"Payment, {from}"), paid, owed, 0, l.SourceId, l.IsReversal, voucher?.RecordedBy ?? l.RecordedBy, voucher?.ApprovedBy,
+                    voucher?.RevenueDate, voucher?.Notes);
+            }
+        }
+    }
+}
+```
+
+
+`SuppliersController` (`api/suppliers`): الكشف وملف Excel، لمن يعمل الماليات **أو** المشتريات. لماذا Controller مستقل؟ لأن `CostingTab` على مستوى الكلاس يُضاف (AND) لما على الـ endpoint، فلو وُضع في `FinancialsController` لرُفض موظف المشتريات.
+
+> 📄 **`backend/src/Costing.Api/Controllers/SuppliersController.cs`** — 32 سطر
+
+```csharp
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using Costing.Api.Auth;
+using Costing.Domain.Access;
+using Costing.Infrastructure.Excel;
+using Costing.Infrastructure.Reports;
+
+namespace Costing.Api.Controllers;
+
+// A supplier's account over a period (كشف حساب مورد تفصيلي): what was owed coming in, every credit
+// and cash invoice and every payment with the balance after each, and what is owed going out; as a
+// table, and as a workbook. From Purchases → Suppliers, Financials → Supplier debts and the AP aging.
+[ApiController]
+[Route("api/suppliers")]
+[Authorize(Policy = Permissions.InventoryManage)]
+[CostingTab(CostingTabs.Financials | CostingTabs.Purchases)]
+public sealed class SuppliersController(SupplierAccountsService accounts) : ControllerBase
+{
+    // From the start of the year to today when the days are not given.
+    [HttpGet("{supplierId:guid}/statement")]
+    public async Task<ActionResult<SupplierAccount>> GetStatement(
+        Guid supplierId, [FromQuery] DateOnly? from, [FromQuery] DateOnly? to, CancellationToken cancellationToken) =>
+        await accounts.GetAccountAsync(supplierId, from, to, cancellationToken) is { } account ? account : NotFound();
+
+    [HttpGet("{supplierId:guid}/statement/sheet")]
+    public async Task<IActionResult> GetStatementSheet(
+        Guid supplierId, [FromQuery] DateOnly? from, [FromQuery] DateOnly? to, CancellationToken cancellationToken) =>
+        await accounts.GetAccountAsync(supplierId, from, to, cancellationToken) is { } account
+            ? File(SupplierAccountWorkbook.Build(account), ReportWorkbook.ContentType,
+                $"statement-{account.From:yyyy-MM-dd}-to-{account.To:yyyy-MM-dd}.xlsx")
+            : NotFound();
+}
+```
+
+
 ---
 
 ## 3. محركات التحليلات الذكية (`IntelligenceService`) وهندسة المنيو وكارتة الصنف
@@ -2105,7 +2388,7 @@ public sealed record SupplierOpeningBalanceRequest(Guid EntryId, decimal Owed, D
 
 "الحصة قبل الصف" تضمن أن الخامة التي **تعبر** حد 75% تدخل A (فالفئة A دائمًا تغطي 75% على الأقل).
 
-> 📄 **`backend/src/Costing.Infrastructure/Reports/IntelligenceService.cs`** — 849 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Reports/IntelligenceService.cs`** — 965 سطر
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
@@ -2237,8 +2520,43 @@ public sealed record OrderPlan(
 public enum OrderSheetGrouping
 {
     Category = 1,
+    // By the supplier who sold each last.
     Supplier = 2,
+    // By the supplier whose last net price for it is the lowest (الأقل سعراً), at that price.
+    CheapestSupplier = 3,
 }
+
+// ---- Vendor price comparison (مقارنة أسعار الموردين) ----
+
+// One supplier's prices for one material over the period, per purchase unit and net of every
+// discount (the line's and its share of the invoice's): the last paid and when, the lowest, the
+// highest, the average weighted by quantity, and what was bought. BestPrice: the lowest last price.
+public sealed record VendorPrice(
+    Guid? SupplierId,
+    string Supplier,
+    decimal? LastPrice,
+    DateOnly LastDate,
+    decimal? LowestPrice,
+    decimal? HighestPrice,
+    decimal? AveragePrice,
+    decimal Quantity,
+    int Purchases,
+    bool BestPrice);
+
+// A material bought in the period, its suppliers cheapest first. Spread: how far the dearest last
+// price is above the cheapest, as a percentage; none with a single supplier.
+public sealed record VendorPriceRow(
+    Guid RawMaterialId,
+    string? Code,
+    string Material,
+    Guid CategoryId,
+    string? Category,
+    string? CategoryAr,
+    string PurchaseUnit,
+    IReadOnlyList<VendorPrice> Suppliers,
+    decimal? SpreadPercent);
+
+public sealed record VendorPriceReport(DateOnly From, DateOnly To, int Materials, int WithChoice, IReadOnlyList<VendorPriceRow> Rows);
 
 // The order as approved: each material's quantity in its purchase unit.
 public sealed record OrderSheetLine(Guid RawMaterialId, decimal Quantity);
@@ -2252,7 +2570,8 @@ public sealed record OrderSheet(OrderSheetGrouping GroupBy, int? CoverageDays, D
 
 // ---- Theoretical against actual consumption ----
 
-// One bought material over the period. Actual usage: opening + purchases − logged waste − closing,
+// One bought material over the period. Actual usage: opening + purchases − logged waste − staff
+// meals, hospitality and tastings (StaffMeals: taken on purpose, never a loss) − closing,
 // the book's stock either side. Theoretical: what the sales should have taken by the recipes, down
 // through the prep items, and what is held in the prep items' stock made from it (HeldInPrep: made
 // and not sold yet, or below zero, sold from what was made before). Unexplained: actual −
@@ -2276,8 +2595,11 @@ public sealed record ConsumptionRow(
     decimal? UnexplainedPercent,
     decimal? UnitCost,
     decimal? VarianceCost,
-    VarianceEvaluation Evaluation);
+    VarianceEvaluation Evaluation,
+    decimal StaffMeals = 0);
 
+// WasteValue and StaffMealsValue: the logged spoilage and the staff meals, hospitality and tastings,
+// at the average cost now, each apart from the unexplained.
 public sealed record ConsumptionReport(
     DateOnly From,
     DateOnly To,
@@ -2287,7 +2609,9 @@ public sealed record ConsumptionReport(
     decimal UnexplainedValue,
     int HighLoss,
     IReadOnlyList<ConsumptionRow> Rows,
-    IReadOnlyList<SoldWithoutStock> SoldWithoutRecipe);
+    IReadOnlyList<SoldWithoutStock> SoldWithoutRecipe,
+    decimal WasteValue = 0,
+    decimal StaffMealsValue = 0);
 
 // ---- ABC and days on hand ----
 
@@ -2363,7 +2687,8 @@ public sealed class IntelligenceService(CostingDbContext db, IBusinessCalendar c
     private static readonly StockMovementReason[] Uses =
     [
         StockMovementReason.Sale, StockMovementReason.ProductionInput, StockMovementReason.Waste, StockMovementReason.Spoilage,
-        StockMovementReason.VoidReturn, StockMovementReason.CountAdjustment,
+        StockMovementReason.VoidReturn, StockMovementReason.CountAdjustment, StockMovementReason.StaffMeal, StockMovementReason.Hospitality,
+        StockMovementReason.RecipeTasting,
     ];
 
     // Waste logged: spoilage, and dishes voided after the kitchen made them, less what refunds put back.
@@ -2374,6 +2699,7 @@ public sealed class IntelligenceService(CostingDbContext db, IBusinessCalendar c
     [
         StockMovementReason.Sale, StockMovementReason.Waste, StockMovementReason.VoidReturn, StockMovementReason.Spoilage,
         StockMovementReason.ProductionInput, StockMovementReason.CountAdjustment, StockMovementReason.OpeningStock,
+        StockMovementReason.StaffMeal, StockMovementReason.Hospitality, StockMovementReason.RecipeTasting,
     ];
 
     public DateOnly Today => clock.BusinessDateOf(DateTime.UtcNow);
@@ -2659,18 +2985,23 @@ public sealed class IntelligenceService(CostingDbContext db, IBusinessCalendar c
         var categories = await db.PurchaseCategories.AsNoTracking().ToDictionaryAsync(c => c.Id, c => c.Name, cancellationToken);
         var suppliers = await db.Suppliers.AsNoTracking().ToDictionaryAsync(s => s.Id, s => s.Name, cancellationToken);
         var prices = await LatestPricesAsync(cancellationToken);
+        var cheapest = request.GroupBy == OrderSheetGrouping.CheapestSupplier
+            ? await CheapestPricesAsync(Today.AddDays(-CheapestLookbackDays), Today, cancellationToken)
+            : new Dictionary<Guid, Bought>();
 
         var rows = request.Lines.Where(l => l.Quantity > 0 && materials.ContainsKey(l.RawMaterialId))
             .GroupBy(l => l.RawMaterialId)
             .Select(g =>
             {
                 var material = materials[g.Key];
-                var last = prices.GetValueOrDefault(material.Id);
+                var last = request.GroupBy == OrderSheetGrouping.CheapestSupplier
+                    ? cheapest.GetValueOrDefault(material.Id) ?? prices.GetValueOrDefault(material.Id)
+                    : prices.GetValueOrDefault(material.Id);
                 var price = Money(last?.UnitCost * material.PurchaseUnitSize ?? material.CostPerPurchaseUnit);
                 var quantity = g.Sum(l => l.Quantity);
                 var category = categories.GetValueOrDefault(material.CategoryId) ?? "Uncategorized";
                 var supplier = last?.SupplierId is { } s ? suppliers.GetValueOrDefault(s) : null;
-                return request.GroupBy == OrderSheetGrouping.Supplier
+                return request.GroupBy is OrderSheetGrouping.Supplier or OrderSheetGrouping.CheapestSupplier
                     ? new OrderSheetRow(supplier ?? "No supplier yet", material.Code, material.Name, material.PurchaseUnit, quantity, price, Money(quantity * price), category)
                     : new OrderSheetRow(category, material.Code, material.Name, material.PurchaseUnit, quantity, price, Money(quantity * price), supplier);
             })
@@ -2712,6 +3043,7 @@ public sealed class IntelligenceService(CostingDbContext db, IBusinessCalendar c
         var prepItems = catalog.Materials.Values.Where(m => m.IsPrepItem && catalog.Explosion.IsMade(m.Id)).ToList();
         var held = catalog.Explosion.Explode(prepItems.Select(p => KeyValuePair.Create(p.Id, stock.Closing(p.Id) - stock.Opening(p.Id))));
         var prepWaste = catalog.Explosion.Explode(prepItems.Select(p => KeyValuePair.Create(p.Id, stock.Wasted(p.Id))));
+        var prepStaff = catalog.Explosion.Explode(prepItems.Select(p => KeyValuePair.Create(p.Id, stock.Staff(p.Id))));
 
         var rows = new List<ConsumptionRow>();
         foreach (var material in catalog.Materials.Values.Where(m => !m.IsPrepItem))
@@ -2719,11 +3051,12 @@ public sealed class IntelligenceService(CostingDbContext db, IBusinessCalendar c
             var id = material.Id;
             var (opening, purchases, closing) = (stock.Opening(id), stock.Moved(id, StockMovementReason.Purchase), stock.Closing(id));
             var waste = stock.Wasted(id) + prepWaste.GetValueOrDefault(id);
+            var staff = stock.Staff(id) + prepStaff.GetValueOrDefault(id);
             var inPrep = held.GetValueOrDefault(id);
             var expected = theoretical.GetValueOrDefault(id) + inPrep;
-            if (opening == 0 && purchases == 0 && waste == 0 && closing == 0 && expected == 0)
+            if (opening == 0 && purchases == 0 && waste == 0 && staff == 0 && closing == 0 && expected == 0)
                 continue;
-            var actual = opening + purchases - waste - closing;
+            var actual = opening + purchases - waste - staff - closing;
             var unexplained = actual - expected;
             decimal? percent = expected > 0 ? Percent(unexplained / expected) : null;
             var evaluation = shared.Contains(id) && expected == 0 ? VarianceEvaluation.SharedCost
@@ -2735,7 +3068,7 @@ public sealed class IntelligenceService(CostingDbContext db, IBusinessCalendar c
                 id, material.Code, material.Name, material.CategoryId, catalog.CategoryName(material.CategoryId), catalog.CategoryAr(material.CategoryId),
                 material.PurchaseUnit, Quantity(opening / size), Quantity(purchases / size), Quantity(waste / size), Quantity(closing / size),
                 Quantity(actual / size), Quantity(expected / size), Quantity(inPrep / size), Quantity(unexplained / size), percent,
-                Money(material.CostPerPurchaseUnit), Money(unexplained * material.AverageCost), evaluation));
+                Money(material.CostPerPurchaseUnit), Money(unexplained * material.AverageCost), evaluation, Quantity(staff / size)));
         }
 
         rows = rows.OrderBy(r => r.Evaluation == VarianceEvaluation.SharedCost).ThenByDescending(r => r.VarianceCost ?? 0).ThenBy(r => r.Material).ToList();
@@ -2745,7 +3078,8 @@ public sealed class IntelligenceService(CostingDbContext db, IBusinessCalendar c
             from, to, tolerance, Worth(r => r.TheoreticalUsage), Worth(r => r.ActualUsage), Money(measured.Sum(r => r.VarianceCost ?? 0)),
             measured.Count(r => r.Evaluation == VarianceEvaluation.Unfavourable), rows,
             withoutRecipe.GroupBy(w => (w.ItemCode, w.MenuItem)).Select(g => new SoldWithoutStock(g.Key.ItemCode, g.Key.MenuItem, g.Sum(w => w.Quantity)))
-                .OrderByDescending(w => w.Quantity).ToList());
+                .OrderByDescending(w => w.Quantity).ToList(),
+            Worth(r => r.Waste), Worth(r => r.StaffMeals));
     }
 
     // ---- ABC classification and days on hand ----
@@ -2905,6 +3239,9 @@ public sealed class IntelligenceService(CostingDbContext db, IBusinessCalendar c
         public decimal Closing(Guid id) => before.GetValueOrDefault(id) + moved.Where(m => m.Key.Item1 == id).Sum(m => m.Value);
 
         public decimal Wasted(Guid id) => -WasteReasons.Sum(r => Moved(id, r));
+
+        // Staff meals, hospitality and tastings: taken on purpose, apart from the waste.
+        public decimal Staff(Guid id) => -StaffConsumption.Reasons.Sum(r => Moved(id, r));
     }
 
     private async Task<Stock> StockAsync(DateTime fromUtc, DateTime toUtc, CancellationToken cancellationToken)
@@ -2940,6 +3277,68 @@ public sealed class IntelligenceService(CostingDbContext db, IBusinessCalendar c
     }
 
     // The latest net price paid a unit for each material, and who sold it.
+    // The cheapest supplier is judged on the last six months' purchases: an old price is not an offer.
+    public const int CheapestLookbackDays = 180;
+
+    // Each material's cheapest supplier in the period: of each supplier's last net price, the lowest.
+    private async Task<IReadOnlyDictionary<Guid, Bought>> CheapestPricesAsync(DateOnly from, DateOnly to, CancellationToken cancellationToken) =>
+        (await PurchasesAsync(cancellationToken))
+            .Where(p => p.UnitCost is not null && p.Date >= from && p.Date <= to)
+            .GroupBy(p => p.RawMaterialId)
+            .ToDictionary(g => g.Key, g => g
+                .GroupBy(p => p.SupplierId)
+                .Select(s => s.OrderBy(p => p.Date).ThenBy(p => p.PostedAtUtc).Last())
+                .OrderBy(p => p.UnitCost)
+                .ThenByDescending(p => p.Date)
+                .First());
+
+    public async Task<VendorPriceReport> GetVendorPricesAsync(DateOnly from, DateOnly to, CancellationToken cancellationToken)
+    {
+        Period(from, to);
+        var catalog = await CatalogAsync(cancellationToken);
+        var suppliers = await db.Suppliers.AsNoTracking().ToDictionaryAsync(s => s.Id, s => s.Name, cancellationToken);
+        var bought = (await PurchasesAsync(cancellationToken)).Where(p => p.Date >= from && p.Date <= to).ToList();
+
+        var rows = bought
+            .GroupBy(p => p.RawMaterialId)
+            .Where(g => catalog.Materials.ContainsKey(g.Key) && !catalog.Materials[g.Key].IsPrepItem)
+            .Select(g =>
+            {
+                var material = catalog.Materials[g.Key];
+                var size = material.PurchaseUnitSize;
+                var offers = g.GroupBy(p => p.SupplierId)
+                    .Select(s =>
+                    {
+                        var ordered = s.OrderBy(p => p.Date).ThenBy(p => p.PostedAtUtc).ToList();
+                        var priced = ordered.Where(p => p.UnitCost is not null).ToList();
+                        var pricedQuantity = priced.Sum(p => p.Quantity);
+                        decimal? PerUnit(decimal? unitCost) => unitCost is { } c ? Money(c * size) : null;
+                        return new VendorPrice(
+                            s.Key, s.Key is { } id ? suppliers.GetValueOrDefault(id) ?? "A removed supplier" : "No supplier",
+                            PerUnit(priced.LastOrDefault()?.UnitCost), ordered[^1].Date,
+                            PerUnit(priced.Min(p => p.UnitCost)), PerUnit(priced.Max(p => p.UnitCost)),
+                            pricedQuantity > 0 ? PerUnit(priced.Sum(p => p.Quantity * p.UnitCost!.Value) / pricedQuantity) : null,
+                            Math.Round(ordered.Sum(p => p.Quantity) / size, 3), ordered.Select(p => p.InvoiceId).Distinct().Count(), false);
+                    })
+                    .OrderBy(v => v.LastPrice ?? decimal.MaxValue)
+                    .ThenBy(v => v.Supplier, StringComparer.CurrentCultureIgnoreCase)
+                    .ToList();
+                var cheapest = offers.FirstOrDefault(v => v.LastPrice is not null);
+                if (cheapest is not null)
+                    offers = offers.Select(v => v.LastPrice == cheapest.LastPrice ? v with { BestPrice = true } : v).ToList();
+                var lasts = offers.Where(v => v.LastPrice is > 0).Select(v => v.LastPrice!.Value).ToList();
+                return new VendorPriceRow(
+                    material.Id, material.Code, material.Name, material.CategoryId, catalog.CategoryName(material.CategoryId),
+                    catalog.CategoryAr(material.CategoryId), material.PurchaseUnit, offers,
+                    lasts.Count > 1 ? Percent(lasts.Max() / lasts.Min() - 1) : null);
+            })
+            .OrderByDescending(r => r.Suppliers.Count > 1)
+            .ThenByDescending(r => r.SpreadPercent ?? 0)
+            .ThenBy(r => r.Material, StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+        return new VendorPriceReport(from, to, rows.Count, rows.Count(r => r.Suppliers.Count > 1), rows);
+    }
+
     private async Task<IReadOnlyDictionary<Guid, Bought>> LatestPricesAsync(CancellationToken cancellationToken) =>
         (await PurchasesAsync(cancellationToken))
             .Where(p => p.UnitCost is not null)
@@ -3399,13 +3798,14 @@ public sealed partial class CostingService
 ```
 
 
-> 📄 **`backend/src/Costing.Infrastructure/Reports/BurdenedCostService.cs`** — 327 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Reports/BurdenedCostService.cs`** — 344 سطر
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
 using Costing.Domain.Categories;
 using Costing.Domain.Common;
 using Costing.Domain.Recipes;
+using Costing.Domain.StockMovements;
 using Costing.Domain.Treasury;
 using Costing.Infrastructure.Persistence;
 using static Costing.Infrastructure.Reports.CostingService;
@@ -3660,7 +4060,19 @@ public sealed class BurdenedCostService(CostingDbContext db, Application.Common.
             .Select(g => new { Month = g.Key, Paid = -g.Sum(t => t.Amount) })
             .ToListAsync(cancellationToken);
 
-        decimal payroll = 0, salariesPaid = 0, wagesEntered = 0, wagesLogged = 0, laborStandIn = 0;
+        // Staff meals (labor) and hospitality and tastings (overheads), each month's whole, at the cost then.
+        var (consumedFrom, _) = clock.Bounds(months[0].Month);
+        var (_, consumedTo) = clock.Bounds(months[^1].Month.AddMonths(1).AddDays(-1));
+        var consumed = (await db.StockMovements.AsNoTracking()
+                .Where(m => m.OccurredAtUtc >= consumedFrom && m.OccurredAtUtc < consumedTo && StaffConsumption.Reasons.Contains(m.Reason) && m.UnitCost != null)
+                .Select(m => new { m.OccurredAtUtc, m.Reason, Value = -m.Quantity * m.UnitCost!.Value })
+                .ToListAsync(cancellationToken))
+            .Select(m => (Month: clock.BusinessDateOf(m.OccurredAtUtc), m.Reason, m.Value))
+            .ToList();
+        decimal Consumed(DateOnly month, params StockMovementReason[] reasons) =>
+            consumed.Where(c => c.Month.Year == month.Year && c.Month.Month == month.Month && reasons.Contains(c.Reason)).Sum(c => c.Value);
+
+        decimal payroll = 0, salariesPaid = 0, wagesEntered = 0, wagesLogged = 0, laborStandIn = 0, staffMeals = 0, hospitality = 0;
         decimal occupation = 0, controllable = 0, otherFixed = 0, interest = 0, depreciation = 0, overheadStandIn = 0;
         var laborStandInMonths = new List<string>();
         var overheadStandInMonths = new List<string>();
@@ -3670,6 +4082,8 @@ public sealed class BurdenedCostService(CostingDbContext db, Application.Common.
             var logged = await spending.LoggedExpensesAsync(month, month.AddMonths(1).AddDays(-1), cancellationToken);
             decimal Logged(ExpenseLine line) => logged.Where(l => l.ExpenseLine == line).Sum(l => l.Amount);
 
+            staffMeals += Consumed(month, StockMovementReason.StaffMeal) * share;
+            hospitality += Consumed(month, StockMovementReason.Hospitality, StockMovementReason.RecipeTasting) * share;
             var run = payrolls.SingleOrDefault(r => r.Period == month);
             var paid = salaries.SingleOrDefault(s => s.Month == month)?.Paid ?? 0;
             var laborRecorded = run is not null || paid != 0 || e?.WagesAndBenefits is not null || Logged(ExpenseLine.Wages) != 0;
@@ -3717,6 +4131,7 @@ public sealed class BurdenedCostService(CostingDbContext db, Application.Common.
                 new("salaries", "Salaries paid from the safe", "الرواتب المصروفة من الخزنة", salariesPaid),
                 new("wagesEntered", "Wages & benefits entered", "الأجور والمزايا المدخلة", wagesEntered),
                 new("wagesLogged", "Wages paid as expenses", "أجور مسجلة كمصروفات", wagesLogged),
+                new("staffMeals", "Staff meals", "وجبات العاملين", staffMeals),
                 new("standIn", "Stand-in monthly labor", "عمالة شهرية تقديرية", laborStandIn)),
             Pool(overheadStandInMonths,
                 new("occupation", "Rent & occupation", "الإيجار والمكان", occupation),
@@ -3724,6 +4139,7 @@ public sealed class BurdenedCostService(CostingDbContext db, Application.Common.
                 new("otherFixed", "Other fixed costs", "مصاريف ثابتة أخرى", otherFixed),
                 new("interest", "Interest", "الفوائد", interest),
                 new("depreciation", "Depreciation", "الإهلاك", depreciation),
+                new("hospitality", "Hospitality & recipe tastings", "الضيافة وتجارب الوصفات", hospitality),
                 new("standIn", "Stand-in monthly overheads", "مصاريف تشغيل شهرية تقديرية", overheadStandIn)));
     }
 
@@ -3747,7 +4163,7 @@ public sealed class BurdenedCostService(CostingDbContext db, Application.Common.
 
 ولكل سطر **مصدره** ليُفتح بضغطة: `SourceId` في الحركة هو الفاتورة أو أمر الإنتاج أو الجرد كما هو، أما البيع فيحمل رقم **سطر** الإيصال (`PublicId`)، فيُترجم إلى الإيصال نفسه بـ `SelectMany` على السطور المملوكة (owned) ومعه يوم عمله. والتالف بلا كيان، فبيانه سببه (`Note`). و `HasSource` يقول إن السجل وُجد. الكميات بوحدة الشراء والأسعار لكل وحدة شراء، كما تعرضها الشاشات.
 
-> 📄 **`backend/src/Costing.Infrastructure/Reports/StockCardService.cs`** — 310 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Reports/StockCardService.cs`** — 316 سطر
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
@@ -3848,6 +4264,8 @@ public sealed class StockCardService(CostingDbContext db, IBusinessCalendar cloc
         StockMovementReason.ProductionInput or StockMovementReason.ProductionOutput => StockCardMovementType.Production,
         StockMovementReason.Sale or StockMovementReason.VoidReturn => StockCardMovementType.Sales,
         StockMovementReason.Waste or StockMovementReason.Spoilage => StockCardMovementType.Waste,
+        // Taken on purpose, kept apart from spoilage everywhere it is judged; here, out like waste.
+        StockMovementReason.StaffMeal or StockMovementReason.Hospitality or StockMovementReason.RecipeTasting => StockCardMovementType.Waste,
         _ => StockCardMovementType.CountAdjustment,
     };
 
@@ -3857,6 +4275,7 @@ public sealed class StockCardService(CostingDbContext db, IBusinessCalendar cloc
         StockMovementReason.ProductionInput or StockMovementReason.ProductionOutput => StockCardSourceKind.ProductionOrder,
         StockMovementReason.OpeningStock or StockMovementReason.CountAdjustment => StockCardSourceKind.StockCount,
         StockMovementReason.Spoilage => StockCardSourceKind.Spoilage,
+        StockMovementReason.StaffMeal or StockMovementReason.Hospitality or StockMovementReason.RecipeTasting => StockCardSourceKind.Spoilage,
         _ => StockCardSourceKind.SalesReceipt,
     };
 
@@ -3911,7 +4330,7 @@ public sealed class StockCardService(CostingDbContext db, IBusinessCalendar cloc
                 var m = s.Movement;
                 var found = sources.GetValueOrDefault((m.SourceId, SourceOf(m.Reason)));
                 var source = found ?? new Source(m.SourceId, null, Fallback(m.Reason), null);
-                var details = m.Reason == StockMovementReason.Spoilage && !m.IsReversal ? m.Note : source.Details;
+                var details = (m.Reason == StockMovementReason.Spoilage || StaffConsumption.Is(m.Reason)) && !m.IsReversal ? m.Note : source.Details;
                 if (m.IsReversal)
                     details = details is null ? "Voided · ملغاة" : $"Voided · ملغاة — {details}";
                 return new StockCardLine(
@@ -4038,8 +4457,8 @@ public sealed class StockCardService(CostingDbContext db, IBusinessCalendar cloc
 
         foreach (var id in Ids(StockCardSourceKind.Spoilage))
         {
-            var first = movements.First(m => m.SourceId == id && m.Reason == StockMovementReason.Spoilage);
-            result[(id, StockCardSourceKind.Spoilage)] = new Source(id, clock.BusinessDateOf(first.OccurredAtUtc), "Spoilage · تالف", first.Note);
+            var first = movements.First(m => m.SourceId == id && (m.Reason == StockMovementReason.Spoilage || StaffConsumption.Is(m.Reason)));
+            result[(id, StockCardSourceKind.Spoilage)] = new Source(id, clock.BusinessDateOf(first.OccurredAtUtc), Fallback(first.Reason), first.Note);
         }
 
         return result;
@@ -4053,6 +4472,9 @@ public sealed class StockCardService(CostingDbContext db, IBusinessCalendar cloc
         StockMovementReason.OpeningStock => "Opening count · جرد افتتاحي",
         StockMovementReason.CountAdjustment => "Stock count · جرد",
         StockMovementReason.Spoilage => "Spoilage · تالف",
+        StockMovementReason.StaffMeal => "Staff meal · وجبات العاملين",
+        StockMovementReason.Hospitality => "Hospitality · ضيافة",
+        StockMovementReason.RecipeTasting => "Recipe tasting · تجربة وصفة",
         _ => "Sale · فاتورة بيع",
     };
 
@@ -4065,7 +4487,7 @@ public sealed class StockCardService(CostingDbContext db, IBusinessCalendar cloc
 
 `IntelligenceController` (`api/costing/intelligence`): التبويبات الخمسة وكل منها بشيت Excel، و `POST orders` (الخطة) و `POST orders/sheet` (ورقة الطلب). وكارتة الصنف في `CostingController`: `GET api/costing/materials/{id}/stock-card?from&to&type` وشيتها `…/stock-card/sheet`، مفتوحة لكل تبويب يعرض الخامة بسعرها أو رصيدها.
 
-> 📄 **`backend/src/Costing.Api/Controllers/IntelligenceController.cs`** — 101 سطر
+> 📄 **`backend/src/Costing.Api/Controllers/IntelligenceController.cs`** — 111 سطر
 
 ```csharp
 using Microsoft.AspNetCore.Authorization;
@@ -4151,6 +4573,16 @@ public sealed class IntelligenceController(IntelligenceService intelligence, Cos
         File(IntelligenceWorkbooks.MenuEngineering(await costing.GetMenuEngineeringAsync(from, to, category, cancellationToken)), ReportWorkbook.ContentType,
             $"menu-engineering-{from:yyyy-MM-dd}-to-{to:yyyy-MM-dd}.xlsx");
 
+    // The inflation & pricing simulator (محاكي التضخم والتسعير): every dish, recipe and prep item at
+    // hypothetical prices, worked out in memory; nothing is saved.
+    [HttpPost("simulate-inflation")]
+    public Task<InflationReport> SimulateInflation(InflationScenario scenario, CancellationToken cancellationToken) =>
+        costing.SimulateInflationAsync(scenario, cancellationToken);
+
+    [HttpPost("simulate-inflation/sheet")]
+    public async Task<IActionResult> SimulateInflationSheet(InflationScenario scenario, CancellationToken cancellationToken) =>
+        File(InflationWorkbook.Build(await costing.SimulateInflationAsync(scenario, cancellationToken)), ReportWorkbook.ContentType, "inflation-simulation.xlsx");
+
     // The fully burdened plate cost (التكلفة الكلية للطبق): each dish's food, its share of the period's
     // labor and overheads, and its true net profit. method: how they are shared (the cost settings'
     // when none); source=Simulated with monthlyLabor and monthlyOverhead tries monthly figures instead
@@ -4174,7 +4606,7 @@ public sealed class IntelligenceController(IntelligenceService intelligence, Cos
 
 ### 3.5 تقرير الفروقات بين جردين
 
-> 📄 **`backend/src/Costing.Infrastructure/Reports/VarianceService.cs`** — 273 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Reports/VarianceService.cs`** — 280 سطر
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
@@ -4238,7 +4670,10 @@ public sealed record VarianceRow(
     decimal? UnitCost,
     decimal? VarianceValue,
     decimal? UnexplainedValue,
-    VarianceEvaluation Evaluation);
+    VarianceEvaluation Evaluation,
+    // Staff meals, hospitality and tastings (وجبات العاملين والضيافة): taken on purpose, so out of the
+    // unexplained, and not waste.
+    decimal StaffMeals = 0);
 
 // Opening: the opening stock (جرد افتتاحي), which the report starts from but never ends at.
 public sealed record VarianceCount(Guid Id, DateTime PostedAtUtc, string? PostedBy, bool Opening = false);
@@ -4260,7 +4695,8 @@ public sealed record VarianceReport(
     IReadOnlyList<string> NotInBothCounts,
     // Sold with no recipe, so they took nothing from stock: their ingredients show as a shortfall.
     IReadOnlyList<SoldWithoutStock> SoldWithoutStock,
-    IReadOnlyList<string> MissingPrices);
+    IReadOnlyList<string> MissingPrices,
+    decimal StaffMealsValue = 0);
 
 // One spoilage entry as it was recorded, its lines' worth at the cost then.
 public sealed record SpoilageEntry(
@@ -4277,7 +4713,8 @@ public sealed class VarianceService(CostingDbContext db, SalesLedger ledger)
 {
     private static readonly StockMovementReason[] Flows =
         [StockMovementReason.Purchase, StockMovementReason.Waste, StockMovementReason.VoidReturn, StockMovementReason.Spoilage,
-         StockMovementReason.ProductionInput, StockMovementReason.ProductionOutput];
+         StockMovementReason.ProductionInput, StockMovementReason.ProductionOutput, StockMovementReason.StaffMeal, StockMovementReason.Hospitality,
+         StockMovementReason.RecipeTasting];
 
     // Null ids: the last two posted counts; only toId: the count before it.
     public async Task<VarianceReport> GetVarianceAsync(Guid? fromId, Guid? toId, CancellationToken cancellationToken)
@@ -4363,9 +4800,10 @@ public sealed class VarianceService(CostingDbContext db, SalesLedger ledger)
             var received = Flow(id, StockMovementReason.Purchase) + Flow(id, StockMovementReason.ProductionOutput);
             var rawWaste = -Flow(id, StockMovementReason.Spoilage);
             var productWaste = -(Flow(id, StockMovementReason.Waste) + Flow(id, StockMovementReason.VoidReturn));
+            var staffMeals = -StaffConsumption.Reasons.Sum(r => Flow(id, r));
             // What the sales took by their recipes, and what production took by the prep items'.
             var standard = standardBy.GetValueOrDefault(id) - Flow(id, StockMovementReason.ProductionInput);
-            var expected = open + received - rawWaste - productWaste - standard;
+            var expected = open + received - rawWaste - productWaste - staffMeals - standard;
             var actual = open + received - close;
             var variance = actual - standard;
             var unexplained = expected - close;
@@ -4382,7 +4820,7 @@ public sealed class VarianceService(CostingDbContext db, SalesLedger ledger)
                 id, material.Code, material.Name, categories.GetValueOrDefault(material.CategoryId), material.Unit, material.PurchaseUnitSize,
                 Quantity(open), Quantity(received), Quantity(rawWaste), Quantity(productWaste), Quantity(standard),
                 Quantity(expected), Quantity(close), Quantity(actual), Quantity(variance), percent, Quantity(unexplained),
-                unitCost, Money(variance * unitCost), Money(unexplained * unitCost), evaluation));
+                unitCost, Money(variance * unitCost), Money(unexplained * unitCost), evaluation, Quantity(staffMeals)));
         }
 
         rows = rows
@@ -4411,7 +4849,8 @@ public sealed class VarianceService(CostingDbContext db, SalesLedger ledger)
             measured.Sum(r => r.UnexplainedValue ?? 0),
             largest?.Material, largest?.VariancePercent,
             notInBoth, soldWithoutStock,
-            rows.Where(r => r.UnitCost is null).Select(r => r.Material).ToList());
+            rows.Where(r => r.UnitCost is null).Select(r => r.Material).ToList(),
+            Money(measured.Sum(r => r.StaffMeals * (r.UnitCost ?? 0))));
     }
 
     // Spoilage recorded in the period, newest first. An entry voided since (a manager approved
@@ -4480,7 +4919,7 @@ public sealed class VarianceService(CostingDbContext db, SalesLedger ledger)
 
 كل مؤشر بحالته (`KpiStatus`: صحي، خارج المدى، ناقص) **وسبب النقص** ("أدخل توريد الشهر"). و **Prime Cost** (طعام + عمالة) يُقرأ من `FoodCost` + `LabourCost`؛ ليس مؤشرًا منفصلًا في الكود.
 
-> 📄 **`backend/src/Costing.Infrastructure/Reports/KpiService.cs`** — 310 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Reports/KpiService.cs`** — 327 سطر
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
@@ -4565,7 +5004,13 @@ public sealed record MonthStatement(
     decimal Voids = 0,
     int TakingsDays = 0,
     // What the month's sales summaries come to at the menu's prices, before tax.
-    decimal SalesAtMenuPrices = 0);
+    decimal SalesAtMenuPrices = 0,
+    // Taken from stock on purpose, at the cost then (وجبات العاملين والضيافة): staff meals, a benefit
+    // of the staff, in the wages and benefits once the wages are known; hospitality and recipe
+    // tastings, costs of their own in the total expenses. None of them is food cost or a loss.
+    decimal StaffMeals = 0,
+    decimal Hospitality = 0,
+    decimal RecipeTasting = 0);
 
 public sealed record MonthlyExpensesDto(
     decimal? WagesAndBenefits,
@@ -4703,10 +5148,21 @@ public sealed class KpiService(CostingDbContext db, IBusinessCalendar clock, Cos
             loggedWages += Money(-await db.SafeTransactions.AsNoTracking()
                 .Where(t => t.Kind == SafeTransactionKind.SalaryPayment && t.PayrollMonth == payrollMonth)
                 .SumAsync(t => t.Amount, cancellationToken));
-        // Known once entered or paid: wages as entered plus wages paid as expenses.
-        decimal? wages = expenses?.WagesAndBenefits is null && loggedWages == 0 ? null : (expenses?.WagesAndBenefits ?? 0) + loggedWages;
+        // Staff meals, hospitality and tastings, at what they cost when taken.
+        var consumed = await db.StockMovements.AsNoTracking()
+            .Where(m => m.OccurredAtUtc >= from && m.OccurredAtUtc < to && StaffConsumption.Reasons.Contains(m.Reason) && m.UnitCost != null)
+            .GroupBy(m => m.Reason)
+            .Select(g => new { Reason = g.Key, Value = g.Sum(m => -m.Quantity * m.UnitCost!.Value) })
+            .ToListAsync(cancellationToken);
+        decimal Consumed(StockMovementReason reason) => Money(consumed.Where(c => c.Reason == reason).Sum(c => c.Value));
+        var (staffMeals, hospitality, tasting) =
+            (Consumed(StockMovementReason.StaffMeal), Consumed(StockMovementReason.Hospitality), Consumed(StockMovementReason.RecipeTasting));
+
+        // Known once entered or paid: wages as entered plus wages paid as expenses, with the staff's meals.
+        decimal? wages = expenses?.WagesAndBenefits is null && loggedWages == 0 ? null : (expenses?.WagesAndBenefits ?? 0) + loggedWages + staffMeals;
         var totalExpenses = (wages ?? 0) + (expenses?.OtherControllableCosts ?? 0) + (expenses?.OccupationCost ?? 0)
-            + (expenses?.Interest ?? 0) + (expenses?.Depreciation ?? 0) + loggedControllable + loggedOccupation + loggedOtherFixed;
+            + (expenses?.Interest ?? 0) + (expenses?.Depreciation ?? 0) + loggedControllable + loggedOccupation + loggedOtherFixed
+            + hospitality + tasting;
         decimal? netProfit = wages is not null ? grossProfit - totalExpenses : null;
         var breakage = Money(await db.BreakageEntries.AsNoTracking()
             .Where(b => b.BusinessDate >= theoretical.From && b.BusinessDate <= theoretical.To && b.VoidedAtUtc == null)
@@ -4756,7 +5212,7 @@ public sealed class KpiService(CostingDbContext db, IBusinessCalendar clock, Cos
                 Money(netProfit), loggedControllable, loggedOccupation, loggedOtherFixed, logged, loggedWages, Money(totalExpenses), breakage,
                 Money(takings.Sum(t => t.GrossAmount ?? t.Amount)), Money(takings.Sum(t => t.CardAmount)), Money(takings.Sum(t => t.TakingsTotal)),
                 Money(takings.Sum(t => t.TaxAmount)), Money(takings.Sum(t => t.VoidsAmount)),
-                takingsDays, Money(soldAtMenuPrices)),
+                takingsDays, Money(soldAtMenuPrices), staffMeals, hospitality, tasting),
             ToDto(expenses), kpis, items,
             withoutRecipe.Count, withoutRecipe.Sum(r => r.NetSales));
     }
@@ -5117,6 +5573,299 @@ public sealed class DailyBreakEvenService(CostingDbContext db, IBusinessCalendar
                 }
                 return new DaySales(net, food, plates, platesWithoutRecipe, withoutRecipe, missing);
             });
+    }
+}
+```
+
+
+#### محاكي التضخم والتسعير (What-If)
+
+يعيد تكلفة كل طبق ووصفة خارج المنيو ومصنع **بأسعار افتراضية في الذاكرة**، لا شيء يُحفظ. القاعدة **الأدق تغلب** ولا تتراكب: سعر الخامة الجديد > نسبة فئتها > النسبة العامة > كما هي. والسر في `RecipeCosts`: مُنشئ جديد يأخذ دالة `simulated` تعطي سعر الخامة المشتراة، والمصنع المصنوع يأخذ متوسطه × (تكلفة دفعته بالأسعار الجديدة ÷ تكلفتها الآن)، فالمصنع داخل المصنع يتحرك بما صُنع منه. ثم `data with { Costs = simulatedCosts }` فيُعاد استخدام `Card` نفسه بلا تكرار للمنطق.
+
+```
+السعر المقترح (ثبات نسبة التكلفة) = السعر × التكلفة المحاكاة ÷ التكلفة الحالية
+السعر المقترح (ثبات هامش النقدية) = السعر + (التكلفة المحاكاة − التكلفة الحالية)
+أثر الربح الشهري                  = (الحالية − المحاكاة) × أطباق آخر 30 يومًا
+```
+
+> 📄 **`backend/src/Costing.Infrastructure/Reports/CostingService.Inflation.cs`** — 175 سطر
+
+```csharp
+using Microsoft.EntityFrameworkCore;
+using Costing.Domain.Common;
+using Costing.Domain.Production;
+using Costing.Domain.RawMaterials;
+using Costing.Domain.Recipes;
+
+namespace Costing.Infrastructure.Reports;
+
+// The inflation & pricing simulator (محاكي التضخم والتسعير): every dish, off-menu recipe and prep
+// item costed again at hypothetical prices, in memory, nothing saved. The price of a bought material
+// changes by the most specific rule given:
+//
+//   its own new price (per purchase unit)  >  its category's %  >  the global %  >  as it is
+//
+// A prep item never made is costed by its recipe at the new prices; one made, at its average ×
+// (its batch at the new prices ÷ its batch now), so nested prep items carry the change through.
+//
+//   Suggested price (keep food cost %) = price × simulated cost ÷ current cost
+//   Suggested price (keep cash margin) = price + (simulated cost − current cost)
+//   Monthly profit impact              = (current cost − simulated cost) × plates sold in the last 30 days
+public sealed record CategoryInflation(Guid CategoryId, decimal Percent);
+
+public sealed record MaterialPriceOverride(Guid RawMaterialId, decimal CostPerPurchaseUnit);
+
+public sealed record InflationScenario(decimal? GlobalPercent, IReadOnlyList<CategoryInflation>? Categories, IReadOnlyList<MaterialPriceOverride>? Materials);
+
+public enum SimulatedItemKind
+{
+    Dish = 1,
+    OffMenuRecipe = 2,
+    PrepItem = 3,
+}
+
+// A material whose price the scenario changes, per purchase unit.
+public sealed record SimulatedMaterial(Guid RawMaterialId, string Material, string PurchaseUnit, decimal? CurrentPrice, decimal SimulatedPrice, decimal? ChangePercent);
+
+public sealed record SimulatedItem(
+    SimulatedItemKind Kind,
+    string ItemCode,
+    Guid? RecipeId,
+    Guid? PrepItemId,
+    string Name,
+    string? Category,
+    // What the cost is for: a portion, or a prep item's display unit (kg, L).
+    string Unit,
+    decimal? SellingPrice,
+    decimal CurrentCost,
+    decimal SimulatedCost,
+    decimal Change,
+    decimal? ChangePercent,
+    decimal? CurrentFoodCostPercent,
+    decimal? SimulatedFoodCostPercent,
+    bool AboveTarget,
+    // Within the target now, above it at the new prices.
+    bool NewlyAboveTarget,
+    decimal? SuggestedPriceKeepFoodCost,
+    decimal? SuggestedPriceKeepMargin,
+    decimal QuantityLast30Days,
+    decimal? MonthlyProfitImpact);
+
+public sealed record InflationReport(
+    DateOnly SalesFrom,
+    DateOnly SalesTo,
+    decimal FoodCostTargetPercent,
+    int MaterialsChanged,
+    int Dishes,
+    int NewlyAboveTarget,
+    decimal MonthlyProfitImpact,
+    IReadOnlyList<SimulatedMaterial> Materials,
+    IReadOnlyList<SimulatedItem> Items);
+
+public sealed partial class CostingService
+{
+    public const int InflationSalesDays = 30;
+
+    public async Task<InflationReport> SimulateInflationAsync(InflationScenario scenario, CancellationToken cancellationToken)
+    {
+        static void CheckPercent(decimal percent)
+        {
+            if (percent is < -90 or > 1000)
+                throw new DomainException("A change is a percentage from −90% to +1,000%. · نسبة التغير من −90% إلى +1000%.");
+        }
+        if (scenario.GlobalPercent is { } global)
+            CheckPercent(global);
+        foreach (var category in scenario.Categories ?? [])
+            CheckPercent(category.Percent);
+        if ((scenario.Materials ?? []).Any(m => m.CostPerPurchaseUnit < 0))
+            throw new DomainException("A new price cannot be negative. · السعر الجديد لا يكون سالبًا.");
+
+        var data = await LoadMenuAsync(cancellationToken);
+        var byCategory = (scenario.Categories ?? []).GroupBy(c => c.CategoryId).ToDictionary(g => g.Key, g => g.Last().Percent);
+        var byMaterial = (scenario.Materials ?? []).GroupBy(m => m.RawMaterialId).ToDictionary(g => g.Key, g => g.Last().CostPerPurchaseUnit);
+
+        // A bought material's simulated cost a unit, by the most specific rule; null: as it is.
+        decimal? Simulated(RawMaterial m)
+        {
+            if (byMaterial.TryGetValue(m.Id, out var price))
+                return m.PurchaseUnitSize > 0 ? price / m.PurchaseUnitSize : null;
+            var percent = byCategory.TryGetValue(m.CategoryId, out var p) ? p : scenario.GlobalPercent;
+            return percent is { } change && m.AverageCost is { } average ? average * (1 + change / 100) : null;
+        }
+
+        var prepRecipes = await db.PrepRecipes.AsNoTracking().Include(r => r.Ingredients).ToListAsync(cancellationToken);
+        var simulatedCosts = new RecipeCosts(data.Materials, prepRecipes, Simulated);
+        var simulated = data with { Costs = simulatedCosts };
+
+        var today = clock.BusinessDateOf(DateTime.UtcNow);
+        var salesFrom = today.AddDays(-(InflationSalesDays - 1));
+        var sold = (await SalesAsync(salesFrom, today, cancellationToken))
+            .GroupBy(s => (s.MenuItemId, s.VariantId))
+            .ToDictionary(g => g.Key, g => (decimal)g.Sum(s => s.Quantity));
+        var target = data.FoodCostTarget;
+
+        SimulatedItem Item(SimulatedItemKind kind, RecipeCostCard now, RecipeCostCard then, decimal quantity)
+        {
+            var (current, next) = (now.CostPerPortion, then.CostPerPortion);
+            var price = kind == SimulatedItemKind.Dish ? now.MenuPrice : now.PlannedPrice;
+            decimal? Fc(decimal cost) => price > 0 ? Percent(cost / price.Value) : null;
+            var (fcNow, fcThen) = (Fc(current), Fc(next));
+            return new SimulatedItem(
+                kind, now.ItemCode, now.RecipeId, null, now.Recipe, now.Category, "portion", price, current, next, Money(next - current),
+                current > 0 ? Percent(next / current - 1) : null, fcNow, fcThen, fcThen > target, fcThen > target && !(fcNow > target),
+                price > 0 && current > 0 ? Money(price.Value * next / current) : null, price is { } p ? Money(p + next - current) : null,
+                quantity, kind == SimulatedItemKind.Dish ? Money((current - next) * quantity) : null);
+        }
+
+        var items = new List<SimulatedItem>();
+        foreach (var menuTarget in data.Targets.Where(t => t.Kind == RecipeTargetKind.MenuItem))
+        {
+            var own = data.Recipes.GetValueOrDefault(new RecipeTarget(menuTarget.Kind, menuTarget.CatalogItemId, menuTarget.VariantId));
+            var recipe = own ?? (menuTarget.VariantId is not null ? data.Recipes.GetValueOrDefault(RecipeTarget.ForMenuItem(menuTarget.CatalogItemId)) : null);
+            if (recipe is null)
+                continue;
+            var baseUsed = own is null;
+            items.Add(Item(SimulatedItemKind.Dish, Card(menuTarget, recipe, baseUsed, data), Card(menuTarget, recipe, baseUsed, simulated),
+                sold.GetValueOrDefault((menuTarget.CatalogItemId, menuTarget.VariantId))));
+        }
+        foreach (var recipe in data.AllRecipes.Where(r => !r.IsDeleted && !r.IsLinked))
+            items.Add(Item(SimulatedItemKind.OffMenuRecipe, Card(recipe, data), Card(recipe, simulated), 0));
+        foreach (var prep in prepRecipes)
+        {
+            if (data.Materials.GetValueOrDefault(prep.PrepItemId) is not { IsArchived: false } material)
+                continue;
+            var size = material.PurchaseUnitSize;
+            var (now, then) = (data.Costs.Of(material.Id).PerUnit, simulatedCosts.Of(material.Id).PerUnit);
+            if (now is not { } current || then is not { } next)
+                continue;
+            items.Add(new SimulatedItem(
+                SimulatedItemKind.PrepItem, material.Code ?? "", null, material.Id, material.Name, "Prep item · مصنّع", material.PurchaseUnit, null,
+                Money(current * size), Money(next * size), Money((next - current) * size), current > 0 ? Percent(next / current - 1) : null,
+                null, null, false, false, null, null, 0, null));
+        }
+
+        var changed = data.Materials.Values
+            .Where(m => !m.IsPrepItem && !m.IsArchived && Simulated(m) is { } next && next != m.AverageCost)
+            .Select(m => new SimulatedMaterial(
+                m.Id, m.Name, m.PurchaseUnit, Money(m.AverageCost * m.PurchaseUnitSize), Money(Simulated(m)!.Value * m.PurchaseUnitSize),
+                m.AverageCost > 0 ? Percent(Simulated(m)!.Value / m.AverageCost.Value - 1) : null))
+            .OrderByDescending(m => Math.Abs(m.ChangePercent ?? 0))
+            .ThenBy(m => m.Material, StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+
+        items = items
+            .OrderBy(i => i.Kind)
+            .ThenByDescending(i => i.NewlyAboveTarget)
+            .ThenBy(i => i.MonthlyProfitImpact ?? 0)
+            .ThenByDescending(i => i.Change)
+            .ThenBy(i => i.Name, StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+        var dishes = items.Where(i => i.Kind == SimulatedItemKind.Dish).ToList();
+        return new InflationReport(
+            salesFrom, today, target, changed.Count, dishes.Count, items.Count(i => i.NewlyAboveTarget),
+            Money(dishes.Sum(i => i.MonthlyProfitImpact ?? 0)), changed, items);
+    }
+}
+```
+
+
+#### تقرير وجبات العاملين والضيافة
+
+كل يوم: وجبات العاملين والضيافة والتجارب بتكلفتها (المتوسط وقت الأخذ)، مقابل **حد الوجبات اليومي** من إعدادات التكاليف (`DailyStaffMealBudget`). والأثر المحاسبي في مكانه: `KpiService` يضيف الوجبات للأجور (حين تكون الأجور معروفة) والضيافة والتجارب للمصروفات، و `BurdenedCostService` يضيف الوجبات لوعاء العمالة والضيافة لوعاء التشغيل، فتصل لنقطة التعادل اليومية أيضًا.
+
+> 📄 **`backend/src/Costing.Infrastructure/Reports/StaffMealsService.cs`** — 92 سطر
+
+```csharp
+using Microsoft.EntityFrameworkCore;
+using Costing.Application.Common;
+using Costing.Domain.Common;
+using Costing.Domain.RawMaterials;
+using Costing.Domain.StockMovements;
+using Costing.Infrastructure.Persistence;
+using static Costing.Infrastructure.Reports.CostingService;
+
+namespace Costing.Infrastructure.Reports;
+
+// Staff meals, hospitality and recipe tastings (وجبات العاملين والضيافة) over a period: each entry
+// with what it took and its cost at the average when taken, each day's total against the daily
+// staff meal budget, and the period's total of each.
+public sealed record StaffMealLine(Guid RawMaterialId, string Material, string PurchaseUnit, decimal Quantity, decimal? Value, string? Note);
+
+public sealed record StaffMealEntry(
+    Guid EntryId, StockMovementReason Kind, DateOnly Date, DateTime RecordedAtUtc, string? RecordedBy, string? Note, IReadOnlyList<StaffMealLine> Lines,
+    decimal Value);
+
+// A day: what each kind came to, and whether the staff meals passed the budget.
+public sealed record StaffMealDay(DateOnly Date, decimal StaffMeals, decimal Hospitality, decimal RecipeTasting, bool OverBudget);
+
+public sealed record StaffMealReport(
+    DateOnly From,
+    DateOnly To,
+    decimal? DailyBudget,
+    decimal StaffMeals,
+    decimal Hospitality,
+    decimal RecipeTasting,
+    int DaysOverBudget,
+    IReadOnlyList<StaffMealDay> Days,
+    IReadOnlyList<StaffMealEntry> Entries);
+
+public sealed class StaffMealsService(CostingDbContext db, IBusinessCalendar clock)
+{
+    public async Task<StaffMealReport> GetAsync(DateOnly from, DateOnly to, CancellationToken cancellationToken)
+    {
+        if (to < from)
+            throw new DomainException("The first day must come before the last. · اليوم الأول قبل الأخير.");
+        if (to > from.AddYears(1))
+            throw new DomainException("Choose a year at most. · سنة على الأكثر.");
+        var (fromUtc, _) = clock.Bounds(from);
+        var (_, toUtc) = clock.Bounds(to);
+        var reasons = StaffConsumption.Reasons;
+        var movements = await db.StockMovements.AsNoTracking()
+            .Where(m => reasons.Contains(m.Reason) && m.ReversalOf == null && m.OccurredAtUtc >= fromUtc && m.OccurredAtUtc < toUtc)
+            .ToListAsync(cancellationToken);
+        var sources = movements.Select(m => m.SourceId).Distinct().ToList();
+        var voided = (await db.StockMovements.AsNoTracking()
+                .Where(m => reasons.Contains(m.Reason) && m.ReversalOf != null && sources.Contains(m.SourceId))
+                .Select(m => m.SourceId).Distinct().ToListAsync(cancellationToken))
+            .ToHashSet();
+        var ids = movements.Select(m => m.RawMaterialId).Distinct().ToList();
+        var materials = await db.RawMaterials.AsNoTracking().Where(m => ids.Contains(m.Id)).ToDictionaryAsync(m => m.Id, cancellationToken);
+        var settings = await db.CostingSettings.AsNoTracking().SingleOrDefaultAsync(cancellationToken) ?? new CostingSettings();
+
+        var entries = movements
+            .Where(m => !voided.Contains(m.SourceId))
+            .GroupBy(m => m.SourceId)
+            .Select(g =>
+            {
+                var lines = g.Select(m =>
+                    {
+                        var material = materials.GetValueOrDefault(m.RawMaterialId);
+                        var size = material?.PurchaseUnitSize ?? 1;
+                        return new StaffMealLine(
+                            m.RawMaterialId, material?.Name ?? "A removed material", material?.PurchaseUnit ?? "", Math.Round(-m.Quantity / size, 3),
+                            m.UnitCost is { } cost ? Money(-m.Quantity * cost) : null, m.Note);
+                    })
+                    .OrderBy(l => l.Material, StringComparer.CurrentCultureIgnoreCase)
+                    .ToList();
+                var first = g.MinBy(m => m.OccurredAtUtc)!;
+                return new StaffMealEntry(
+                    g.Key, first.Reason, clock.BusinessDateOf(first.OccurredAtUtc), first.OccurredAtUtc, first.RecordedBy,
+                    lines.Select(l => l.Note).FirstOrDefault(n => n is not null), lines, Money(lines.Sum(l => l.Value ?? 0)));
+            })
+            .OrderByDescending(e => e.RecordedAtUtc)
+            .ToList();
+
+        decimal Of(IEnumerable<StaffMealEntry> those, StockMovementReason kind) => Money(those.Where(e => e.Kind == kind).Sum(e => e.Value));
+        var budget = settings.DailyStaffMealBudget;
+        var days = entries.GroupBy(e => e.Date)
+            .Select(g => new StaffMealDay(
+                g.Key, Of(g, StockMovementReason.StaffMeal), Of(g, StockMovementReason.Hospitality), Of(g, StockMovementReason.RecipeTasting),
+                budget is { } b && Of(g, StockMovementReason.StaffMeal) > b))
+            .OrderByDescending(d => d.Date)
+            .ToList();
+        return new StaffMealReport(
+            from, to, budget, Of(entries, StockMovementReason.StaffMeal), Of(entries, StockMovementReason.Hospitality),
+            Of(entries, StockMovementReason.RecipeTasting), days.Count(d => d.OverBudget), days, entries);
     }
 }
 ```

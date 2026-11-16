@@ -39,6 +39,14 @@
 
 @@file frontend/src/app/features/costing/supplier-debts-page.ts
 
+كشف حساب المورد نافذة واحدة (`showSupplierStatement`) تُفتح من الموردين، وديون الموردين (كشف كامل)، وتقرير الأعمار: ملخص (افتتاحي، آجل، كاش، مدفوعات، ختامي)، ودفتر بالرصيد الجاري، والفاتورة تفتح بنودها والدفعة تتمدد لتفاصيل سندها، وExcel.
+
+@@file frontend/src/app/features/costing/supplier-statement-dialog.ts
+
+`ApAgingPage`: يوم السؤال، بطاقات الإجمالي والشرائح بنسبها، شريط ملوّن من الرمادي (غير مستحق) للأحمر (90+) مع اسم كل شريحة في البطاقة فلا يعتمد اللون وحده، والصف يفتح الكشف.
+
+@@file frontend/src/app/features/costing/ap-aging-page.ts
+
 @@file frontend/src/app/features/costing/supplier-payments-page.ts
 
 @@file frontend/src/app/features/costing/supplier-payment-fields.ts
@@ -87,6 +95,14 @@
 @@file frontend/src/app/features/costing/menu-engineering-page.ts
 
 @@file frontend/src/app/features/costing/burdened-cost-page.ts
+
+`VendorPricesPage`: تبويب في المشتريات وفي التحليلات معًا (نفس المكوّن). لكل خامة صفوف مورديها (`rowspan`)، الأرخص أولًا بشارة "الأقل سعراً"، ونسبة الفرق بين الأغلى والأرخص.
+
+@@file frontend/src/app/features/costing/vendor-prices-page.ts
+
+`InflationPage`: شريط النسبة العامة، وقواعد الفئات والخامات، وكل تغيير ينتظر 400ms ثم يطلب؛ و **رقم تسلسل** يتجاهل الرد الأقدم إن وصل بعد الأحدث. الصف فوق المستهدف يُعلَّم (`tr.breach`)، والتبديل بين الأطباق والوصفات والمصنعات.
+
+@@file frontend/src/app/features/costing/inflation-page.ts
 
 ## 3. التقارير
 

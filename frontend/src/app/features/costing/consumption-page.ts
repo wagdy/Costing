@@ -68,6 +68,15 @@ const sorts: SortOption<ConsumptionSort>[] = [
           <small class="chip">&gt; {{ r.tolerancePercent }}%</small>
         </div>
         <div class="tile">
+          <span class="label">Logged spoilage waste · الهالك المسجل <app-info-tip tip="recordedWaste" /></span>
+          <strong>{{ r.wasteValue ?? 0 | money }}</strong>
+        </div>
+        <div class="tile">
+          <span class="label">Staff meals & hospitality · وجبات العاملين والضيافة <app-info-tip tip="smUnexplained" /></span>
+          <strong>{{ r.staffMealsValue ?? 0 | money }}</strong>
+          <small class="chip">not counted as loss</small>
+        </div>
+        <div class="tile">
           <span class="label">Theoretical usage · الاستهلاك النظري <app-info-tip tip="theoreticalUsage" /></span>
           <strong>{{ r.theoreticalValue | money }}</strong>
         </div>
@@ -104,6 +113,7 @@ const sorts: SortOption<ConsumptionSort>[] = [
               <th class="num">Opening<span class="ar">أول المدة</span></th>
               <th class="num">Purchases<span class="ar">المشتريات</span></th>
               <th class="num">Logged waste<span class="ar">الهالك المسجل</span></th>
+              <th class="num">Staff meals & hospitality <app-info-tip tip="smUnexplained" /><span class="ar">وجبات العاملين والضيافة</span></th>
               <th class="num">Closing<span class="ar">آخر المدة</span></th>
               <th class="num">Actual <app-info-tip tip="actualUsage" /><span class="ar">الاستهلاك الفعلي</span></th>
               <th class="num">Theoretical <app-info-tip tip="theoreticalUsage" /><span class="ar">الاستهلاك النظري</span></th>
@@ -123,6 +133,7 @@ const sorts: SortOption<ConsumptionSort>[] = [
                 <td class="num">{{ row.opening | number: '1.0-3' }}</td>
                 <td class="num">{{ row.purchases | number: '1.0-3' }}</td>
                 <td class="num">{{ row.waste | number: '1.0-3' }}</td>
+                <td class="num">{{ row.staffMeals ? (row.staffMeals | number: '1.0-3') : '—' }}</td>
                 <td class="num">{{ row.closing | number: '1.0-3' }}</td>
                 <td class="num"><strong>{{ row.actualUsage | number: '1.0-3' }}</strong></td>
                 <td class="num">
@@ -142,12 +153,12 @@ const sorts: SortOption<ConsumptionSort>[] = [
                 </td>
               </tr>
             } @empty {
-              <tr><td colspan="9" class="muted">Nothing moved in these days{{ search() || category() || evaluation() ? ' that matches' : '' }}.</td></tr>
+              <tr><td colspan="10" class="muted">Nothing moved in these days{{ search() || category() || evaluation() ? ' that matches' : '' }}.</td></tr>
             }
           </tbody>
           <tfoot>
             <tr>
-              <td colspan="8">Unexplained variance · الانحراف غير المبرر</td>
+              <td colspan="9">Unexplained variance · الانحراف غير المبرر</td>
               <td class="num">{{ r.unexplainedValue | money }}</td>
             </tr>
           </tfoot>

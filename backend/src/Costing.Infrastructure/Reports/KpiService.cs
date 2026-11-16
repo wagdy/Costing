@@ -80,7 +80,13 @@ public sealed record MonthStatement(
     decimal Voids = 0,
     int TakingsDays = 0,
     // What the month's sales summaries come to at the menu's prices, before tax.
-    decimal SalesAtMenuPrices = 0);
+    decimal SalesAtMenuPrices = 0,
+    // Taken from stock on purpose, at the cost then (وجبات العاملين والضيافة): staff meals, a benefit
+    // of the staff, in the wages and benefits once the wages are known; hospitality and recipe
+    // tastings, costs of their own in the total expenses. None of them is food cost or a loss.
+    decimal StaffMeals = 0,
+    decimal Hospitality = 0,
+    decimal RecipeTasting = 0);
 
 public sealed record MonthlyExpensesDto(
     decimal? WagesAndBenefits,
@@ -218,10 +224,21 @@ public sealed class KpiService(CostingDbContext db, IBusinessCalendar clock, Cos
             loggedWages += Money(-await db.SafeTransactions.AsNoTracking()
                 .Where(t => t.Kind == SafeTransactionKind.SalaryPayment && t.PayrollMonth == payrollMonth)
                 .SumAsync(t => t.Amount, cancellationToken));
-        // Known once entered or paid: wages as entered plus wages paid as expenses.
-        decimal? wages = expenses?.WagesAndBenefits is null && loggedWages == 0 ? null : (expenses?.WagesAndBenefits ?? 0) + loggedWages;
+        // Staff meals, hospitality and tastings, at what they cost when taken.
+        var consumed = await db.StockMovements.AsNoTracking()
+            .Where(m => m.OccurredAtUtc >= from && m.OccurredAtUtc < to && StaffConsumption.Reasons.Contains(m.Reason) && m.UnitCost != null)
+            .GroupBy(m => m.Reason)
+            .Select(g => new { Reason = g.Key, Value = g.Sum(m => -m.Quantity * m.UnitCost!.Value) })
+            .ToListAsync(cancellationToken);
+        decimal Consumed(StockMovementReason reason) => Money(consumed.Where(c => c.Reason == reason).Sum(c => c.Value));
+        var (staffMeals, hospitality, tasting) =
+            (Consumed(StockMovementReason.StaffMeal), Consumed(StockMovementReason.Hospitality), Consumed(StockMovementReason.RecipeTasting));
+
+        // Known once entered or paid: wages as entered plus wages paid as expenses, with the staff's meals.
+        decimal? wages = expenses?.WagesAndBenefits is null && loggedWages == 0 ? null : (expenses?.WagesAndBenefits ?? 0) + loggedWages + staffMeals;
         var totalExpenses = (wages ?? 0) + (expenses?.OtherControllableCosts ?? 0) + (expenses?.OccupationCost ?? 0)
-            + (expenses?.Interest ?? 0) + (expenses?.Depreciation ?? 0) + loggedControllable + loggedOccupation + loggedOtherFixed;
+            + (expenses?.Interest ?? 0) + (expenses?.Depreciation ?? 0) + loggedControllable + loggedOccupation + loggedOtherFixed
+            + hospitality + tasting;
         decimal? netProfit = wages is not null ? grossProfit - totalExpenses : null;
         var breakage = Money(await db.BreakageEntries.AsNoTracking()
             .Where(b => b.BusinessDate >= theoretical.From && b.BusinessDate <= theoretical.To && b.VoidedAtUtc == null)
@@ -271,7 +288,7 @@ public sealed class KpiService(CostingDbContext db, IBusinessCalendar clock, Cos
                 Money(netProfit), loggedControllable, loggedOccupation, loggedOtherFixed, logged, loggedWages, Money(totalExpenses), breakage,
                 Money(takings.Sum(t => t.GrossAmount ?? t.Amount)), Money(takings.Sum(t => t.CardAmount)), Money(takings.Sum(t => t.TakingsTotal)),
                 Money(takings.Sum(t => t.TaxAmount)), Money(takings.Sum(t => t.VoidsAmount)),
-                takingsDays, Money(soldAtMenuPrices)),
+                takingsDays, Money(soldAtMenuPrices), staffMeals, hospitality, tasting),
             ToDto(expenses), kpis, items,
             withoutRecipe.Count, withoutRecipe.Sum(r => r.NetSales));
     }

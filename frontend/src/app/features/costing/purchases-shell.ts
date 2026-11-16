@@ -41,6 +41,7 @@ export class PurchasesShell {
     { path: 'batch', icon: 'library_add', en: 'Daily batch', ar: 'يومية المشتريات' },
     { path: 'invoices', icon: 'history', en: 'Invoices', ar: 'أرشيف الفواتير' },
     { path: 'suppliers', icon: 'local_shipping', en: 'Suppliers', ar: 'إدارة الموردين' },
+    { path: 'vendor-prices', icon: 'compare', en: 'Vendor prices', ar: 'مقارنة أسعار الموردين' },
     { path: 'categories', icon: 'category', en: 'Categories', ar: 'الأقسام' },
   ];
 }

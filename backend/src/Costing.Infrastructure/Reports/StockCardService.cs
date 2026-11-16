@@ -96,6 +96,8 @@ public sealed class StockCardService(CostingDbContext db, IBusinessCalendar cloc
         StockMovementReason.ProductionInput or StockMovementReason.ProductionOutput => StockCardMovementType.Production,
         StockMovementReason.Sale or StockMovementReason.VoidReturn => StockCardMovementType.Sales,
         StockMovementReason.Waste or StockMovementReason.Spoilage => StockCardMovementType.Waste,
+        // Taken on purpose, kept apart from spoilage everywhere it is judged; here, out like waste.
+        StockMovementReason.StaffMeal or StockMovementReason.Hospitality or StockMovementReason.RecipeTasting => StockCardMovementType.Waste,
         _ => StockCardMovementType.CountAdjustment,
     };
 
@@ -105,6 +107,7 @@ public sealed class StockCardService(CostingDbContext db, IBusinessCalendar cloc
         StockMovementReason.ProductionInput or StockMovementReason.ProductionOutput => StockCardSourceKind.ProductionOrder,
         StockMovementReason.OpeningStock or StockMovementReason.CountAdjustment => StockCardSourceKind.StockCount,
         StockMovementReason.Spoilage => StockCardSourceKind.Spoilage,
+        StockMovementReason.StaffMeal or StockMovementReason.Hospitality or StockMovementReason.RecipeTasting => StockCardSourceKind.Spoilage,
         _ => StockCardSourceKind.SalesReceipt,
     };
 
@@ -159,7 +162,7 @@ public sealed class StockCardService(CostingDbContext db, IBusinessCalendar cloc
                 var m = s.Movement;
                 var found = sources.GetValueOrDefault((m.SourceId, SourceOf(m.Reason)));
                 var source = found ?? new Source(m.SourceId, null, Fallback(m.Reason), null);
-                var details = m.Reason == StockMovementReason.Spoilage && !m.IsReversal ? m.Note : source.Details;
+                var details = (m.Reason == StockMovementReason.Spoilage || StaffConsumption.Is(m.Reason)) && !m.IsReversal ? m.Note : source.Details;
                 if (m.IsReversal)
                     details = details is null ? "Voided · ملغاة" : $"Voided · ملغاة — {details}";
                 return new StockCardLine(
@@ -286,8 +289,8 @@ public sealed class StockCardService(CostingDbContext db, IBusinessCalendar cloc
 
         foreach (var id in Ids(StockCardSourceKind.Spoilage))
         {
-            var first = movements.First(m => m.SourceId == id && m.Reason == StockMovementReason.Spoilage);
-            result[(id, StockCardSourceKind.Spoilage)] = new Source(id, clock.BusinessDateOf(first.OccurredAtUtc), "Spoilage · تالف", first.Note);
+            var first = movements.First(m => m.SourceId == id && (m.Reason == StockMovementReason.Spoilage || StaffConsumption.Is(m.Reason)));
+            result[(id, StockCardSourceKind.Spoilage)] = new Source(id, clock.BusinessDateOf(first.OccurredAtUtc), Fallback(first.Reason), first.Note);
         }
 
         return result;
@@ -301,6 +304,9 @@ public sealed class StockCardService(CostingDbContext db, IBusinessCalendar cloc
         StockMovementReason.OpeningStock => "Opening count · جرد افتتاحي",
         StockMovementReason.CountAdjustment => "Stock count · جرد",
         StockMovementReason.Spoilage => "Spoilage · تالف",
+        StockMovementReason.StaffMeal => "Staff meal · وجبات العاملين",
+        StockMovementReason.Hospitality => "Hospitality · ضيافة",
+        StockMovementReason.RecipeTasting => "Recipe tasting · تجربة وصفة",
         _ => "Sale · فاتورة بيع",
     };
 

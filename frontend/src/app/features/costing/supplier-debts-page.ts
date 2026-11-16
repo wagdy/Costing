@@ -2,6 +2,7 @@ import { DatePipe } from '@angular/common';
 import { Component, computed, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
+import { MatDialog } from '@angular/material/dialog';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatIconModule } from '@angular/material/icon';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
@@ -12,6 +13,7 @@ import { CostingApi, Supplier, SupplierBalance, SupplierStatement } from '../../
 import { errorMessage } from '../../core/http/error-message';
 import { MoneyPipe } from '../../core/ui/money.pipe';
 import { Treasury } from './financials';
+import { showSupplierStatement } from './supplier-statement-dialog';
 
 // Supplier debts (مديونيات الموردين): what the restaurant owes each supplier, from invoices bought
 // on credit and what was owed before the treasury, less what was paid them. A supplier chosen
@@ -78,6 +80,7 @@ import { Treasury } from './financials';
       </mat-form-field>
       @if (statement(); as st) {
         <span class="spacer"></span>
+        <button mat-stroked-button (click)="fullStatement(st)"><mat-icon>receipt_long</mat-icon> Full statement · كشف تفصيلي</button>
         <button mat-stroked-button (click)="opening(st)"><mat-icon>history</mat-icon> Owed from before</button>
         <button mat-flat-button (click)="pay(st)" [disabled]="st.balance <= 0"><mat-icon>payments</mat-icon> Pay {{ st.supplier }}</button>
       }
@@ -206,6 +209,7 @@ import { Treasury } from './financials';
 })
 export class SupplierDebtsPage {
   private readonly api = inject(CostingApi);
+  private readonly dialog = inject(MatDialog);
   private readonly treasury = inject(Treasury);
   private readonly router = inject(Router);
   private readonly route = inject(ActivatedRoute);
@@ -228,6 +232,11 @@ export class SupplierDebtsPage {
     this.supplierId.set(supplierId);
     void this.router.navigate([], { queryParams: { supplier: supplierId }, replaceUrl: true });
     void this.loadStatement();
+  }
+
+  // The account over a period, with cash invoices, drill-down and Excel.
+  protected fullStatement(statement: SupplierStatement): void {
+    showSupplierStatement(this.dialog, statement.supplierId, statement.supplier);
   }
 
   protected async pay(statement: SupplierStatement): Promise<void> {

@@ -823,7 +823,7 @@ public sealed class TreasuryService(CostingDbContext db, IBusinessCalendar clock
     }
 
     // Opening debt, credit purchases and payments, each net of what was undone.
-    private static (decimal Opening, decimal Credit, decimal Paid) Totals(IEnumerable<SupplierLedgerEntry> lines)
+    internal static (decimal Opening, decimal Credit, decimal Paid) Totals(IEnumerable<SupplierLedgerEntry> lines)
     {
         var all = lines.ToList();
         return (
@@ -834,7 +834,7 @@ public sealed class TreasuryService(CostingDbContext db, IBusinessCalendar clock
 
     // The credit invoices still owed, oldest first: what was paid is set against the opening debt,
     // then against each invoice in turn.
-    private static IReadOnlyList<OpenInvoice> OpenInvoices(IReadOnlyList<SupplierLedgerEntry> lines, IReadOnlyDictionary<Guid, PurchaseInvoice> invoices)
+    internal static IReadOnlyList<OpenInvoice> OpenInvoices(IReadOnlyList<SupplierLedgerEntry> lines, IReadOnlyDictionary<Guid, PurchaseInvoice> invoices)
     {
         var (opening, _, paid) = Totals(lines);
         var left = Math.Max(paid - opening, 0);

@@ -120,7 +120,7 @@ describe('the costing navigation', () => {
     await fixture.whenStable();
     const tabs = (fixture.componentInstance as unknown as Record<string, any>)['tabs'] as { path: string; en: string; ar: string }[];
 
-    expect(tabs.map((t) => t.path)).toEqual(['new', 'batch', 'invoices', 'suppliers', 'categories']);
+    expect(tabs.map((t) => t.path)).toEqual(['new', 'batch', 'invoices', 'suppliers', 'vendor-prices', 'categories']);
     expect(tabs.find((t) => t.path === 'categories')).toMatchObject({ en: 'Categories', ar: 'الأقسام' });
   });
 

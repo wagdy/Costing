@@ -50,7 +50,7 @@ describe('the supplier dialog', () => {
 
     const [id, body] = saveSupplier.mock.lastCall!;
     expect(id).toMatch(/^[0-9a-f-]{36}$/);
-    expect(body).toEqual({ name: 'Sinai Dairy', contactPerson: null, phone: '0122 000 1111', email: null, notes: null });
+    expect(body).toEqual({ name: 'Sinai Dairy', contactPerson: null, phone: '0122 000 1111', email: null, notes: null, paymentTermsDays: 0 });
     expect(close).toHaveBeenCalledWith(expect.objectContaining({ id, name: 'Sinai Dairy' }));
   });
 

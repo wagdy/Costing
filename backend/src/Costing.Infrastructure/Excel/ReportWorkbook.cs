@@ -300,6 +300,100 @@ public static class BurdenedCostWorkbook
     }
 }
 
+// A supplier's account over a period (كشف حساب مورد): the summary, then each line with the
+// running balance owed, as the screen lists it.
+public static class SupplierAccountWorkbook
+{
+    private static string KindName(SupplierAccountEntryKind kind) => kind switch
+    {
+        SupplierAccountEntryKind.OpeningBalance => "Owed before · رصيد سابق",
+        SupplierAccountEntryKind.CreditInvoice => "Credit invoice · فاتورة آجل",
+        SupplierAccountEntryKind.CashInvoice => "Cash invoice · فاتورة نقدي",
+        _ => "Payment · سداد",
+    };
+
+    public static Stream Build(SupplierAccount account) =>
+        ReportWorkbook.Build([new ReportSheet(
+            "Statement", $"{account.Supplier} · Statement of account · كشف حساب",
+            $"{account.From:d MMM yyyy} – {account.To:d MMM yyyy} · pays in {account.PaymentTermsDays} days · "
+                + $"opening {account.OpeningBalance:#,##0.00}, owed before {account.OwedBefore:#,##0.00}, credit invoices {account.CreditInvoices:#,##0.00}, cash invoices {account.CashInvoices:#,##0.00}, "
+                + $"payments {account.Payments:#,##0.00}, closing {account.ClosingBalance:#,##0.00}",
+            [
+                new("Date · التاريخ", ReportWorkbook.Date), new("Document · المستند"), new("Reference · المرجع"), new("Description · البيان"),
+                new("Paid (−) · مسدد", ReportWorkbook.Money), new("Owed (+) · مستحق", ReportWorkbook.Money), new("Balance owed · الرصيد", ReportWorkbook.Money),
+            ],
+            [
+                new ReportRow([account.From, "Opening balance · رصيد أول المدة", null, null, null, null, account.OpeningBalance], ReportRowKind.Total),
+                .. account.Lines.Select(l => new ReportRow(
+                    [l.Date, KindName(l.Kind), l.Reference, l.Notes is null ? l.Description : $"{l.Description} — {l.Notes}",
+                     l.Paid == 0 ? null : l.Paid, l.Owed == 0 ? null : l.Owed, l.Balance],
+                    Flagged: l.IsReversal)),
+                new ReportRow([account.To, "Closing balance · الرصيد المستحق", null, null, account.Payments + account.CashInvoices, account.OwedBefore + account.CreditInvoices + account.CashInvoices,
+                    account.ClosingBalance], ReportRowKind.Total),
+            ])]);
+}
+
+// The vendor price matrix: each material and its suppliers, cheapest first.
+public static class VendorPriceWorkbook
+{
+    public static Stream Build(VendorPriceReport report) =>
+        ReportWorkbook.Build([new ReportSheet(
+            "Vendor prices", "Vendor price comparison · مقارنة أسعار الموردين",
+            $"{report.From:d MMM yyyy} – {report.To:d MMM yyyy} · net prices per purchase unit, after every discount · best: the lowest last price",
+            [
+                new("Material · الخامة"), new("Unit · الوحدة"), new("Supplier · المورد"), new("Last price · آخر سعر", ReportWorkbook.Money),
+                new("Last bought · آخر شراء", ReportWorkbook.Date), new("Lowest · الأقل", ReportWorkbook.Money), new("Highest · الأعلى", ReportWorkbook.Money),
+                new("Weighted avg · المتوسط المرجح", ReportWorkbook.Money), new("Quantity · الكمية", ReportWorkbook.Quantity), new("Best price · الأقل سعراً"),
+            ],
+            [
+                .. report.Rows.SelectMany(r => r.Suppliers.Select((v, i) => new ReportRow(
+                    [i == 0 ? r.Material : "", i == 0 ? r.PurchaseUnit : "", v.Supplier, v.LastPrice, v.LastDate, v.LowestPrice, v.HighestPrice,
+                     v.AveragePrice, v.Quantity, v.BestPrice ? "Best price · الأقل سعراً" : ""]))),
+            ])]);
+}
+
+// The inflation simulation: what changed, then every dish, recipe and prep item at the new prices.
+public static class InflationWorkbook
+{
+    private static string KindName(SimulatedItemKind kind) => kind switch
+    {
+        SimulatedItemKind.Dish => "Dish · طبق",
+        SimulatedItemKind.OffMenuRecipe => "Off the menu · خارج المنيو",
+        _ => "Prep item · مصنّع",
+    };
+
+    public static Stream Build(InflationReport report) =>
+        ReportWorkbook.Build([
+            new ReportSheet(
+                "Simulation", "Inflation & pricing simulator · محاكي التضخم والتسعير",
+                $"{report.MaterialsChanged} materials changed · food cost target {report.FoodCostTargetPercent:0.#}% · "
+                    + $"monthly profit impact {report.MonthlyProfitImpact:#,##0.00} at the sales of {report.SalesFrom:d MMM} – {report.SalesTo:d MMM yyyy}",
+                [
+                    new("Kind · النوع"), new("Code · الكود"), new("Name · الاسم"), new("Category · القسم"), new("Price · السعر", ReportWorkbook.Money),
+                    new("Cost now · التكلفة الحالية", ReportWorkbook.Money), new("Simulated · التكلفة المتوقعة", ReportWorkbook.Money),
+                    new("Change · التغير", ReportWorkbook.Money), new("Food cost % now · النسبة الحالية", ReportWorkbook.Percent),
+                    new("Simulated % · النسبة المتوقعة", ReportWorkbook.Percent), new("Price to keep food cost % · سعر للحفاظ على النسبة", ReportWorkbook.Money),
+                    new("Price to keep margin · سعر للحفاظ على الهامش", ReportWorkbook.Money), new("Sold, 30 days · المباع", ReportWorkbook.Quantity),
+                    new("Monthly profit impact · أثر الربح الشهري", ReportWorkbook.Money),
+                ],
+                [
+                    .. report.Items.Select(i => new ReportRow(
+                        [KindName(i.Kind), i.ItemCode, i.Name, i.Category, i.SellingPrice, i.CurrentCost, i.SimulatedCost, i.Change, i.CurrentFoodCostPercent,
+                         i.SimulatedFoodCostPercent, i.SuggestedPriceKeepFoodCost, i.SuggestedPriceKeepMargin, i.QuantityLast30Days, i.MonthlyProfitImpact],
+                        Flagged: i.NewlyAboveTarget)),
+                    new ReportRow(["", "", "Monthly profit impact · أثر الربح الشهري", null, null, null, null, null, null, null, null, null, null,
+                        report.MonthlyProfitImpact], ReportRowKind.Total),
+                ]),
+            new ReportSheet(
+                "Prices", "The prices simulated · الأسعار المفترضة", "per purchase unit",
+                [
+                    new("Material · الخامة"), new("Unit · الوحدة"), new("Now · الحالي", ReportWorkbook.Money), new("Simulated · المفترض", ReportWorkbook.Money),
+                    new("Change · التغير", ReportWorkbook.Percent),
+                ],
+                [.. report.Materials.Select(m => new ReportRow([m.Material, m.PurchaseUnit, m.CurrentPrice, m.SimulatedPrice, m.ChangePercent]))]),
+        ]);
+}
+
 // A material's stock card as a sheet: the period's movements as the screen lists them, its balance
 // opening and closing.
 public static class StockCardWorkbook

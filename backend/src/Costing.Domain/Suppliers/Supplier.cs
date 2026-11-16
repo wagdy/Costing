@@ -28,6 +28,12 @@ public sealed class Supplier : AggregateRoot
     public string? Email { get; private set; }
     public string? Notes { get; private set; }
 
+    // Days it gives to pay an invoice bought on credit (مدة السداد): an invoice falls due that many
+    // days after its date, and is aged from then. 0: due on the day.
+    public int PaymentTermsDays { get; private set; }
+
+    public const int MaxPaymentTermsDays = 365;
+
     public bool IsArchived { get; private set; }
     public DateTime CreatedAtUtc { get; private set; }
     public DateTime? ArchivedAtUtc { get; private set; }
@@ -45,6 +51,8 @@ public sealed class Supplier : AggregateRoot
             throw new DomainException("Keep the notes under 500 characters.");
         if (Clean(details.Email) is { } email && !email.Contains('@'))
             throw new DomainException("That email address is missing its @.");
+        if (details.PaymentTermsDays is < 0 or > MaxPaymentTermsDays)
+            throw new DomainException("The payment terms are days from 0 to 365. · مدة السداد بالأيام من 0 إلى 365.");
 
         Name = Collapse(name);
         NormalizedName = Normalize(name);
@@ -52,6 +60,8 @@ public sealed class Supplier : AggregateRoot
         Phone = Clean(details.Phone);
         Email = Clean(details.Email);
         Notes = Clean(details.Notes);
+        if (details.PaymentTermsDays is { } terms)
+            PaymentTermsDays = terms;
     }
 
     // Off the list new invoices pick from; on the invoices it is already on.
@@ -76,7 +86,9 @@ public sealed class Supplier : AggregateRoot
     private static string? Clean(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 }
 
-public sealed record SupplierDetails(string Name, string? ContactPerson = null, string? Phone = null, string? Email = null, string? Notes = null);
+// PaymentTermsDays: none keeps them as they are (0 for a new supplier).
+public sealed record SupplierDetails(
+    string Name, string? ContactPerson = null, string? Phone = null, string? Email = null, string? Notes = null, int? PaymentTermsDays = null);
 
 public interface ISupplierRepository : IRepository<Supplier>
 {

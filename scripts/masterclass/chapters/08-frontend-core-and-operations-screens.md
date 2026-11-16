@@ -350,4 +350,12 @@
 
 @@file frontend/src/app/features/costing/waste-page.ts
 
+`WasteShell`: تبويبان، الهالك (`spoilage`) ووجبات العاملين والضيافة (`staff-meals`)، والمسار الفارغ يُحوَّل للهالك فالروابط القديمة تعمل.
+
+@@file frontend/src/app/features/costing/waste-shell.ts
+
+`StaffMealsPage`: تسجيل بالطبق (أطباق كاملة من الوصفات) أو بالخامة (كمية × وحدة الجرد)، وجدول الأيام مقابل الحد اليومي (شارة "تجاوز الحد" بالمبلغ الزائد)، وجدول القيود وإلغاؤها بموافقة الهالك. و `?entry=` من كارتة الصنف يُبرز القيد.
+
+@@file frontend/src/app/features/costing/staff-meals-page.ts
+
 [الفصل التالي: شاشات الماليات والتقارير والنشر →](09-frontend-financials-reports-and-deployment.md)

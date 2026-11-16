@@ -59,7 +59,10 @@ public sealed record VarianceRow(
     decimal? UnitCost,
     decimal? VarianceValue,
     decimal? UnexplainedValue,
-    VarianceEvaluation Evaluation);
+    VarianceEvaluation Evaluation,
+    // Staff meals, hospitality and tastings (وجبات العاملين والضيافة): taken on purpose, so out of the
+    // unexplained, and not waste.
+    decimal StaffMeals = 0);
 
 // Opening: the opening stock (جرد افتتاحي), which the report starts from but never ends at.
 public sealed record VarianceCount(Guid Id, DateTime PostedAtUtc, string? PostedBy, bool Opening = false);
@@ -81,7 +84,8 @@ public sealed record VarianceReport(
     IReadOnlyList<string> NotInBothCounts,
     // Sold with no recipe, so they took nothing from stock: their ingredients show as a shortfall.
     IReadOnlyList<SoldWithoutStock> SoldWithoutStock,
-    IReadOnlyList<string> MissingPrices);
+    IReadOnlyList<string> MissingPrices,
+    decimal StaffMealsValue = 0);
 
 // One spoilage entry as it was recorded, its lines' worth at the cost then.
 public sealed record SpoilageEntry(
@@ -98,7 +102,8 @@ public sealed class VarianceService(CostingDbContext db, SalesLedger ledger)
 {
     private static readonly StockMovementReason[] Flows =
         [StockMovementReason.Purchase, StockMovementReason.Waste, StockMovementReason.VoidReturn, StockMovementReason.Spoilage,
-         StockMovementReason.ProductionInput, StockMovementReason.ProductionOutput];
+         StockMovementReason.ProductionInput, StockMovementReason.ProductionOutput, StockMovementReason.StaffMeal, StockMovementReason.Hospitality,
+         StockMovementReason.RecipeTasting];
 
     // Null ids: the last two posted counts; only toId: the count before it.
     public async Task<VarianceReport> GetVarianceAsync(Guid? fromId, Guid? toId, CancellationToken cancellationToken)
@@ -184,9 +189,10 @@ public sealed class VarianceService(CostingDbContext db, SalesLedger ledger)
             var received = Flow(id, StockMovementReason.Purchase) + Flow(id, StockMovementReason.ProductionOutput);
             var rawWaste = -Flow(id, StockMovementReason.Spoilage);
             var productWaste = -(Flow(id, StockMovementReason.Waste) + Flow(id, StockMovementReason.VoidReturn));
+            var staffMeals = -StaffConsumption.Reasons.Sum(r => Flow(id, r));
             // What the sales took by their recipes, and what production took by the prep items'.
             var standard = standardBy.GetValueOrDefault(id) - Flow(id, StockMovementReason.ProductionInput);
-            var expected = open + received - rawWaste - productWaste - standard;
+            var expected = open + received - rawWaste - productWaste - staffMeals - standard;
             var actual = open + received - close;
             var variance = actual - standard;
             var unexplained = expected - close;
@@ -203,7 +209,7 @@ public sealed class VarianceService(CostingDbContext db, SalesLedger ledger)
                 id, material.Code, material.Name, categories.GetValueOrDefault(material.CategoryId), material.Unit, material.PurchaseUnitSize,
                 Quantity(open), Quantity(received), Quantity(rawWaste), Quantity(productWaste), Quantity(standard),
                 Quantity(expected), Quantity(close), Quantity(actual), Quantity(variance), percent, Quantity(unexplained),
-                unitCost, Money(variance * unitCost), Money(unexplained * unitCost), evaluation));
+                unitCost, Money(variance * unitCost), Money(unexplained * unitCost), evaluation, Quantity(staffMeals)));
         }
 
         rows = rows
@@ -232,7 +238,8 @@ public sealed class VarianceService(CostingDbContext db, SalesLedger ledger)
             measured.Sum(r => r.UnexplainedValue ?? 0),
             largest?.Material, largest?.VariancePercent,
             notInBoth, soldWithoutStock,
-            rows.Where(r => r.UnitCost is null).Select(r => r.Material).ToList());
+            rows.Where(r => r.UnitCost is null).Select(r => r.Material).ToList(),
+            Money(measured.Sum(r => r.StaffMeals * (r.UnitCost ?? 0))));
     }
 
     // Spoilage recorded in the period, newest first. An entry voided since (a manager approved

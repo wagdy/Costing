@@ -171,6 +171,13 @@ const expenseFields: { key: keyof MonthlyExpenses; en: string; ar: string; hours
                   <td class="num">{{ combined(r.statement.wagesAndBenefits, r.statement.loggedWages) }}</td>
                   <td class="num muted">{{ pct(sum(r.statement.wagesAndBenefits, r.statement.loggedWages), r) }}</td>
                 </tr>
+                @if (r.statement.staffMeals) {
+                  <tr class="staff-meals">
+                    <td>Staff meals · وجبات العاملين <small class="muted part">a staff benefit, in the labor cost</small> <app-info-tip tip="smStaff" /></td>
+                    <td class="num">{{ r.statement.staffMeals | money }}</td>
+                    <td class="num muted">{{ pct(r.statement.staffMeals, r) }}</td>
+                  </tr>
+                }
                 <tr>
                   <td>
                     Rent and occupation · الإيجار
@@ -191,6 +198,20 @@ const expenseFields: { key: keyof MonthlyExpenses; en: string; ar: string; hours
                   <td class="num">{{ combined(r.statement.otherControllableCosts, r.statement.loggedControllableCosts) }}</td>
                   <td class="num muted">{{ pct(sum(r.statement.otherControllableCosts, r.statement.loggedControllableCosts), r) }}</td>
                 </tr>
+                @if (r.statement.hospitality) {
+                  <tr>
+                    <td>Hospitality · الضيافة والإكراميات <app-info-tip tip="smHospitality" /></td>
+                    <td class="num">{{ r.statement.hospitality | money }}</td>
+                    <td class="num muted">{{ pct(r.statement.hospitality, r) }}</td>
+                  </tr>
+                }
+                @if (r.statement.recipeTasting) {
+                  <tr>
+                    <td>Recipe tastings · تجارب الوصفات</td>
+                    <td class="num">{{ r.statement.recipeTasting | money }}</td>
+                    <td class="num muted">{{ pct(r.statement.recipeTasting, r) }}</td>
+                  </tr>
+                }
                 @if (r.statement.loggedOtherFixedCosts) {
                   <tr>
                     <td>Other fixed costs · تكاليف ثابتة أخرى <small class="muted part">from invoices</small></td>

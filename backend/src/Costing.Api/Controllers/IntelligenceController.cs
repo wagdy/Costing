@@ -81,6 +81,16 @@ public sealed class IntelligenceController(IntelligenceService intelligence, Cos
         File(IntelligenceWorkbooks.MenuEngineering(await costing.GetMenuEngineeringAsync(from, to, category, cancellationToken)), ReportWorkbook.ContentType,
             $"menu-engineering-{from:yyyy-MM-dd}-to-{to:yyyy-MM-dd}.xlsx");
 
+    // The inflation & pricing simulator (محاكي التضخم والتسعير): every dish, recipe and prep item at
+    // hypothetical prices, worked out in memory; nothing is saved.
+    [HttpPost("simulate-inflation")]
+    public Task<InflationReport> SimulateInflation(InflationScenario scenario, CancellationToken cancellationToken) =>
+        costing.SimulateInflationAsync(scenario, cancellationToken);
+
+    [HttpPost("simulate-inflation/sheet")]
+    public async Task<IActionResult> SimulateInflationSheet(InflationScenario scenario, CancellationToken cancellationToken) =>
+        File(InflationWorkbook.Build(await costing.SimulateInflationAsync(scenario, cancellationToken)), ReportWorkbook.ContentType, "inflation-simulation.xlsx");
+
     // The fully burdened plate cost (التكلفة الكلية للطبق): each dish's food, its share of the period's
     // labor and overheads, and its true net profit. method: how they are shared (the cost settings'
     // when none); source=Simulated with monthlyLabor and monthlyOverhead tries monthly figures instead

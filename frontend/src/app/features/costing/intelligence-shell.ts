@@ -23,5 +23,7 @@ export class IntelligenceShell {
     { path: 'abc', icon: 'stacked_bar_chart', en: 'ABC & days on hand', ar: 'تصنيف ABC وكفاية المخزون' },
     { path: 'menu', icon: 'grid_view', en: 'Menu engineering', ar: 'هندسة المنيو والربحية' },
     { path: 'burdened', icon: 'layers', en: 'Burdened plate cost', ar: 'التكلفة الكلية للطبق' },
+    { path: 'vendor-prices', icon: 'compare', en: 'Vendor prices', ar: 'مقارنة أسعار الموردين' },
+    { path: 'inflation', icon: 'trending_up', en: 'Inflation & pricing simulator', ar: 'محاكي التضخم والتسعير' },
   ];
 }

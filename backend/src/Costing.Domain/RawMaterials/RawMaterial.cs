@@ -225,6 +225,18 @@ public sealed class RawMaterial : AggregateRoot
         return Move(-Positive(quantity), StockMovementReason.Spoilage, spoilageId, AverageCost, reason.Trim(), recordedBy);
     }
 
+    // Taken on purpose: a staff meal, hospitality or a recipe tried (StaffConsumption), at the
+    // average cost now. The note says what it was: "2 × Burger", or why.
+    public StockMovement RecordConsumption(decimal quantity, Guid entryId, StockMovementReason reason, string? note, string recordedBy)
+    {
+        if (!StaffConsumption.Is(reason))
+            throw new DomainException("A staff meal, hospitality or a recipe tasting.");
+        var said = string.IsNullOrWhiteSpace(note) ? null : note.Trim();
+        if (said?.Length > 200)
+            throw new DomainException("Keep the note under 200 characters.");
+        return Move(-Positive(quantity), reason, entryId, AverageCost, said, recordedBy);
+    }
+
     public StockMovement AdjustToCount(decimal countedQuantity, Guid stockCountId)
     {
         if (countedQuantity < 0)

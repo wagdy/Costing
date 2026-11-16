@@ -2083,6 +2083,9 @@ namespace Costing.Infrastructure.Persistence.Migrations
                         .HasMaxLength(500)
                         .HasColumnType("character varying(500)");
 
+                    b.Property<int>("PaymentTermsDays")
+                        .HasColumnType("integer");
+
                     b.Property<string>("Phone")
                         .HasMaxLength(32)
                         .HasColumnType("character varying(32)");
@@ -2464,6 +2467,10 @@ namespace Costing.Infrastructure.Persistence.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("numeric[]")
                         .HasDefaultValueSql("'{}'::numeric[]");
+
+                    b.Property<decimal?>("DailyStaffMealBudget")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)");
 
                     b.Property<string>("DefaultOverheadAllocationMethod")
                         .IsRequired()

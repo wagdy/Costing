@@ -421,7 +421,7 @@ public enum UnitOfMeasure
 - **المخزون يُسمح أن يصبح سالبًا**: البيع حدث فعلًا؛ رفض الخصم لن "يلغي البيع" بل سيضيّع السجل. الرصيد السالب **إشارة**: فاتورة لم تُسجل أو وصفة خاطئة، والجرد يصححه.
 - **`Archive`**: لا حذف؛ أرشفة فقط ورصيده صفر، حتى لا تختفي قيمته من الدفاتر.
 
-> 📄 **`backend/src/Costing.Domain/RawMaterials/RawMaterial.cs`** — 335 سطر
+> 📄 **`backend/src/Costing.Domain/RawMaterials/RawMaterial.cs`** — 347 سطر
 
 ```csharp
 using Costing.Domain.Common;
@@ -649,6 +649,18 @@ public sealed class RawMaterial : AggregateRoot
         if (reason.Trim().Length > 200)
             throw new DomainException("Keep the reason under 200 characters.");
         return Move(-Positive(quantity), StockMovementReason.Spoilage, spoilageId, AverageCost, reason.Trim(), recordedBy);
+    }
+
+    // Taken on purpose: a staff meal, hospitality or a recipe tried (StaffConsumption), at the
+    // average cost now. The note says what it was: "2 × Burger", or why.
+    public StockMovement RecordConsumption(decimal quantity, Guid entryId, StockMovementReason reason, string? note, string recordedBy)
+    {
+        if (!StaffConsumption.Is(reason))
+            throw new DomainException("A staff meal, hospitality or a recipe tasting.");
+        var said = string.IsNullOrWhiteSpace(note) ? null : note.Trim();
+        if (said?.Length > 200)
+            throw new DomainException("Keep the note under 200 characters.");
+        return Move(-Positive(quantity), reason, entryId, AverageCost, said, recordedBy);
     }
 
     public StockMovement AdjustToCount(decimal countedQuantity, Guid stockCountId)
@@ -1035,7 +1047,7 @@ public interface IExpenseItemRepository : IRepository<ExpenseItem>
 
 `Supplier`: مورد عليه فواتير لا يُحذف بل يُؤرشف.
 
-> 📄 **`backend/src/Costing.Domain/Suppliers/Supplier.cs`** — 89 سطر
+> 📄 **`backend/src/Costing.Domain/Suppliers/Supplier.cs`** — 101 سطر
 
 ```csharp
 using Costing.Domain.Common;
@@ -1068,6 +1080,12 @@ public sealed class Supplier : AggregateRoot
     public string? Email { get; private set; }
     public string? Notes { get; private set; }
 
+    // Days it gives to pay an invoice bought on credit (مدة السداد): an invoice falls due that many
+    // days after its date, and is aged from then. 0: due on the day.
+    public int PaymentTermsDays { get; private set; }
+
+    public const int MaxPaymentTermsDays = 365;
+
     public bool IsArchived { get; private set; }
     public DateTime CreatedAtUtc { get; private set; }
     public DateTime? ArchivedAtUtc { get; private set; }
@@ -1085,6 +1103,8 @@ public sealed class Supplier : AggregateRoot
             throw new DomainException("Keep the notes under 500 characters.");
         if (Clean(details.Email) is { } email && !email.Contains('@'))
             throw new DomainException("That email address is missing its @.");
+        if (details.PaymentTermsDays is < 0 or > MaxPaymentTermsDays)
+            throw new DomainException("The payment terms are days from 0 to 365. · مدة السداد بالأيام من 0 إلى 365.");
 
         Name = Collapse(name);
         NormalizedName = Normalize(name);
@@ -1092,6 +1112,8 @@ public sealed class Supplier : AggregateRoot
         Phone = Clean(details.Phone);
         Email = Clean(details.Email);
         Notes = Clean(details.Notes);
+        if (details.PaymentTermsDays is { } terms)
+            PaymentTermsDays = terms;
     }
 
     // Off the list new invoices pick from; on the invoices it is already on.
@@ -1116,7 +1138,9 @@ public sealed class Supplier : AggregateRoot
     private static string? Clean(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 }
 
-public sealed record SupplierDetails(string Name, string? ContactPerson = null, string? Phone = null, string? Email = null, string? Notes = null);
+// PaymentTermsDays: none keeps them as they are (0 for a new supplier).
+public sealed record SupplierDetails(
+    string Name, string? ContactPerson = null, string? Phone = null, string? Email = null, string? Notes = null, int? PaymentTermsDays = null);
 
 public interface ISupplierRepository : IRepository<Supplier>
 {
@@ -1132,7 +1156,7 @@ public interface ISupplierRepository : IRepository<Supplier>
 
 ## 5. دفتر المخزون
 
-> 📄 **`backend/src/Costing.Domain/StockMovements/StockMovementReason.cs`** — 31 سطر
+> 📄 **`backend/src/Costing.Domain/StockMovements/StockMovementReason.cs`** — 51 سطر
 
 ```csharp
 namespace Costing.Domain.StockMovements;
@@ -1165,6 +1189,26 @@ public enum StockMovementReason
     // Stock as found when costing starts (جرد افتتاحي): where it begins, not a shortage or a
     // surplus, so no report counts it as a loss or a gain.
     OpeningStock = 9,
+
+    // Eaten by the staff (وجبات العاملين): a benefit of the staff, in the labor cost, never a loss
+    // of the kitchen's.
+    StaffMeal = 10,
+
+    // Given to guests on the house (ضيافة وإكراميات): a cost of its own on the P&L.
+    Hospitality = 11,
+
+    // Used trying or testing a recipe (تجارب واختبار وصفات): development, not loss.
+    RecipeTasting = 12,
+}
+
+public static class StaffConsumption
+{
+    // Taken out of stock on purpose, by the staff, for guests or for a recipe being tried: logged,
+    // so never part of the unexplained variance, and never spoilage.
+    public static readonly StockMovementReason[] Reasons =
+        [StockMovementReason.StaffMeal, StockMovementReason.Hospitality, StockMovementReason.RecipeTasting];
+
+    public static bool Is(StockMovementReason reason) => Reasons.Contains(reason);
 }
 ```
 
@@ -5795,7 +5839,7 @@ internal sealed class CompanyLogoConfiguration : IEntityTypeConfiguration<Compan
 
 جداول التقارير والإعدادات: نسبة تكلفة الطعام المستهدفة (30% افتراضيًا)، إعدادات الضريبة والخدمة، المصروفات الشهرية، التكاليف المشتركة، وورقة المبيعات اليدوية:
 
-> 📄 **`backend/src/Costing.Infrastructure/Reports/CostingTables.cs`** — 240 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Reports/CostingTables.cs`** — 245 سطر
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
@@ -5843,6 +5887,10 @@ public sealed class CostingSettings
     // with nothing recorded of either, and as the simulation's starting figures. None until set.
     public decimal? FallbackMonthlyLaborCost { get; set; }
     public decimal? FallbackMonthlyOverheadCost { get; set; }
+
+    // What a day's staff meals should cost at most (الحد اليومي لتكلفة وجبات العاملين): a day over it
+    // is flagged. None until set.
+    public decimal? DailyStaffMealBudget { get; set; }
 }
 
 // The treasury's tax and service settings (إعدادات الضريبة والخدمة). The tax rate is not here: it is
@@ -5995,6 +6043,7 @@ internal sealed class CostingSettingsConfiguration : IEntityTypeConfiguration<Co
         builder.Property(s => s.TargetNetMarginPercent).HasPrecision(5, 2).HasDefaultValue(CostingSettings.DefaultTargetNetMargin);
         builder.Property(s => s.FallbackMonthlyLaborCost).HasPrecision(18, 2);
         builder.Property(s => s.FallbackMonthlyOverheadCost).HasPrecision(18, 2);
+        builder.Property(s => s.DailyStaffMealBudget).HasPrecision(18, 2);
     }
 }
 
@@ -6757,6 +6806,7 @@ dotnet ef migrations add <Name> \
 | 9 | `20261110175322_AddHrIntegration` | Add Hr Integration |
 | 10 | `20261112143520_AddBlindAndSpotCounts` | Add Blind And Spot Counts |
 | 11 | `20261115215556_AddBurdenedPlateCost` | Add Burdened Plate Cost |
+| 12 | `20261116112941_AddSupplierTermsAndStaffMeals` | Add Supplier Terms And Staff Meals |
 
 
 ### 14.1 `UnifySafeTakings`: migration تحوّل بيانات لا شكلًا فقط

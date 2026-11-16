@@ -369,7 +369,12 @@ export class StockCardDialog {
         this.leaveFor(['/costing/sales'], { day: line.sourceDate ?? line.date, receipt: line.sourceId });
         return;
       default:
-        this.leaveFor(['/costing/waste'], { spoilage: line.sourceId });
+        // A staff meal, hospitality or a tasting is on its own tab; spoilage on Waste's first.
+        if (line.reason === 'StaffMeal' || line.reason === 'Hospitality' || line.reason === 'RecipeTasting') {
+          this.leaveFor(['/costing/waste/staff-meals'], { entry: line.sourceId });
+        } else {
+          this.leaveFor(['/costing/waste/spoilage'], { spoilage: line.sourceId });
+        }
     }
   }
 

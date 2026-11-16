@@ -111,6 +111,8 @@ public static class DependencyInjection
         services.AddScoped<IntelligenceService>();
         services.AddScoped<BurdenedCostService>();
         services.AddScoped<DailyBreakEvenService>();
+        services.AddScoped<StaffMealsService>();
+        services.AddScoped<SupplierAccountsService>();
         services.AddScoped<StockCardService>();
 
         // The system's users.

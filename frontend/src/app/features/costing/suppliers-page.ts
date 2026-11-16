@@ -8,12 +8,14 @@ import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatIconModule } from '@angular/material/icon';
 import { MatInputModule } from '@angular/material/input';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
+import { MatTooltipModule } from '@angular/material/tooltip';
 import { firstValueFrom } from 'rxjs';
 import { CostingApi, Supplier } from '../../core/costing/costing.api';
 import { errorMessage } from '../../core/http/error-message';
 import { MoneyPipe } from '../../core/ui/money.pipe';
 import { NotifyService } from '../../core/ui/notify.service';
 import { SupplierDialog, SupplierDialogData } from './supplier-dialog';
+import { showSupplierStatement } from './supplier-statement-dialog';
 
 // The suppliers: added, changed, and removed. One on an invoice is archived rather than deleted:
 // it leaves the list new invoices choose from and stays on the invoices it is on, and can be
@@ -29,6 +31,7 @@ import { SupplierDialog, SupplierDialogData } from './supplier-dialog';
     MatIconModule,
     MatInputModule,
     MatProgressBarModule,
+    MatTooltipModule,
     MoneyPipe,
   ],
   template: `
@@ -83,6 +86,9 @@ import { SupplierDialog, SupplierDialogData } from './supplier-dialog';
                   @if (s.isArchived) {
                     <button mat-button (click)="restore(s)" [disabled]="saving()"><mat-icon>unarchive</mat-icon> Restore</button>
                   } @else {
+                    <button mat-icon-button (click)="statement(s)" [attr.aria-label]="'Statement of ' + s.name" matTooltip="Statement of account · كشف حساب">
+                      <mat-icon>receipt_long</mat-icon>
+                    </button>
                     <button mat-icon-button (click)="edit(s)" [attr.aria-label]="'Edit ' + s.name"><mat-icon>edit</mat-icon></button>
                     <button mat-icon-button class="danger" (click)="confirming.set(s.id)" [disabled]="confirming() === s.id"
                       [attr.aria-label]="'Delete ' + s.name">
@@ -208,6 +214,11 @@ export class SuppliersPage {
     if (await this.open({})) {
       await this.load();
     }
+  }
+
+  // Its account over a period: invoices, payments and the running balance owed.
+  protected statement(supplier: Supplier): void {
+    showSupplierStatement(this.dialog, supplier.id, supplier.name);
   }
 
   protected async edit(supplier: Supplier): Promise<void> {

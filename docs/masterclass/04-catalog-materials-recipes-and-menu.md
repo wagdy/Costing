@@ -84,7 +84,7 @@ EP$/وحدة = AP$/وحدة ÷ Yield%
 
 والمكان الذي يُستخدم فيه: بطاقات الوصفات، قائمة الوصفات، تكلفة المنيو، التكلفة القياسية للمصنّع، تكلفة استيراد الإكسيل، والتقرير النظري. **أما المخزون والإنتاج والفروقات فبالتكلفة الفعلية دائمًا.**
 
-> 📄 **`backend/src/Costing.Domain/Production/RecipeCosts.cs`** — 81 سطر
+> 📄 **`backend/src/Costing.Domain/Production/RecipeCosts.cs`** — 112 سطر
 
 ```csharp
 using Costing.Domain.RawMaterials;
@@ -116,10 +116,25 @@ public sealed class RecipeCosts
     private readonly Dictionary<Guid, RecipeCost> _known = [];
     private readonly HashSet<Guid> _working = [];
 
+    // A what-if (محاكي التضخم): a bought material's simulated cost a unit (none: as it is), and the
+    // costs as they are, to scale a made prep item's batches by how much its own recipe moved.
+    private readonly Func<RawMaterial, decimal?>? _simulated;
+    private readonly RecipeCosts? _actual;
+
     public RecipeCosts(IReadOnlyDictionary<Guid, RawMaterial> materials, IEnumerable<PrepRecipe> recipes)
     {
         _materials = materials;
         _recipes = recipes.ToDictionary(r => r.PrepItemId);
+    }
+
+    // The costs as they would be at other prices: each bought material at simulated(material) a unit
+    // (null: its average), a prep item never made by its recipe at those prices, and one made at its
+    // average × (its batch at those prices ÷ its batch now). Nothing is saved: a simulation.
+    public RecipeCosts(IReadOnlyDictionary<Guid, RawMaterial> materials, IEnumerable<PrepRecipe> recipes, Func<RawMaterial, decimal?> simulated)
+        : this(materials, recipes)
+    {
+        _simulated = simulated;
+        _actual = new RecipeCosts(materials, _recipes.Values);
     }
 
     public RecipeCost Of(Guid materialId)
@@ -130,8 +145,24 @@ public sealed class RecipeCosts
             return RecipeCost.None;
 
         RecipeCost cost;
-        if (!material.IsPrepItem || material.AverageCost > 0)
-            cost = new RecipeCost(material.AverageCost, false, material.AverageCost is null ? [material.Name] : []);
+        if (!material.IsPrepItem)
+        {
+            var perUnit = _simulated?.Invoke(material) ?? material.AverageCost;
+            cost = new RecipeCost(perUnit, false, perUnit is null ? [material.Name] : []);
+        }
+        else if (material.AverageCost > 0)
+        {
+            var perUnit = material.AverageCost.Value;
+            if (_actual is not null && _recipes.GetValueOrDefault(material.Id) is { BatchQuantity: > 0, Ingredients.Count: > 0 } made && _working.Add(material.Id))
+            {
+                var simulatedBatch = Batch(made).Cost;
+                var actualBatch = _actual.Batch(made).Cost;
+                _working.Remove(material.Id);
+                if (actualBatch > 0)
+                    perUnit = perUnit * simulatedBatch / actualBatch;
+            }
+            cost = new RecipeCost(perUnit, false, []);
+        }
         else if (_recipes.GetValueOrDefault(material.Id) is not { BatchQuantity: > 0, Ingredients.Count: > 0 } recipe || !_working.Add(material.Id))
             cost = new RecipeCost(material.AverageCost, false, material.AverageCost is null ? [material.Name] : []);
         else
@@ -3447,7 +3478,7 @@ internal sealed class ImportMenuHandler(IMenuRepository menu, IUnitOfWork unitOf
 - **التقرير النظري (`TheoreticalCostReport`):** لكل صنف مُباع في الفترة: الكمية × تكلفة وصفته = تكلفة المبيعات النظرية، مقابل إيراده. (يُستخدم في الـ KPIs والفروقات، الفصل 06.)
 - **ورقة المبيعات اليدوية** والإعدادات (الهدف، التكاليف المشتركة).
 
-> 📄 **`backend/src/Costing.Infrastructure/Reports/CostingService.cs`** — 795 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Reports/CostingService.cs`** — 806 سطر
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
@@ -3642,7 +3673,10 @@ public sealed record ManualSalesLineDto(ManualSalesItemKind Kind, Guid ItemId, d
 // VarianceTolerancePercent, BeverageCategories and PlateCost: left out of a save, they stay as they are.
 public sealed record CostingSettingsDto(
     decimal FoodCostTargetPercent, decimal? VarianceTolerancePercent = null, IReadOnlyList<string>? BeverageCategories = null,
-    PlateCostSettingsDto? PlateCost = null);
+    PlateCostSettingsDto? PlateCost = null, StaffMealSettingsDto? StaffMeals = null);
+
+// The staff meals' daily budget, saved on its own: none clears it.
+public sealed record StaffMealSettingsDto(decimal? DailyBudget);
 
 // The fully burdened plate cost's settings, saved together: how labor and overheads are shared
 // unless asked otherwise, the net margin a plate should leave, and the months' stand-in figures
@@ -3702,7 +3736,8 @@ public sealed partial class CostingService(CostingDbContext db, IBusinessCalenda
     public async Task<CostingSettingsDto> GetSettingsAsync(CancellationToken cancellationToken)
     {
         var settings = await SettingsAsync(cancellationToken);
-        return new(settings.FoodCostTargetPercent, settings.VarianceTolerancePercent, settings.BeverageCategories, PlateCostSettingsDto.Of(settings));
+        return new(settings.FoodCostTargetPercent, settings.VarianceTolerancePercent, settings.BeverageCategories, PlateCostSettingsDto.Of(settings),
+            new StaffMealSettingsDto(settings.DailyStaffMealBudget));
     }
 
     public async Task<CostingSettingsDto> SaveSettingsAsync(CostingSettingsDto settings, CancellationToken cancellationToken)
@@ -3731,8 +3766,15 @@ public sealed partial class CostingService(CostingDbContext db, IBusinessCalenda
             row.FallbackMonthlyLaborCost = plate.FallbackMonthlyLaborCost;
             row.FallbackMonthlyOverheadCost = plate.FallbackMonthlyOverheadCost;
         }
+        if (settings.StaffMeals is { } staffMeals)
+        {
+            if (staffMeals.DailyBudget < 0)
+                throw new DomainException("A daily staff meal budget cannot be negative. · لا يكون الحد اليومي سالبًا.");
+            row.DailyStaffMealBudget = staffMeals.DailyBudget;
+        }
         await db.SaveChangesAsync(cancellationToken);
-        return new(row.FoodCostTargetPercent, row.VarianceTolerancePercent, row.BeverageCategories, PlateCostSettingsDto.Of(row));
+        return new(row.FoodCostTargetPercent, row.VarianceTolerancePercent, row.BeverageCategories, PlateCostSettingsDto.Of(row),
+            new StaffMealSettingsDto(row.DailyStaffMealBudget));
     }
 
     public async Task<IReadOnlyList<SharedCostDto>> GetSharedCostsAsync(CancellationToken cancellationToken)
@@ -4252,7 +4294,7 @@ public sealed partial class CostingService(CostingDbContext db, IBusinessCalenda
 
 `CostingController` (`api/costing`): التكاليف والتقارير الغذائية (المواد، البطاقات، النظري، الإعدادات، التكاليف المشتركة).
 
-> 📄 **`backend/src/Costing.Api/Controllers/CostingController.cs`** — 230 سطر
+> 📄 **`backend/src/Costing.Api/Controllers/CostingController.cs`** — 251 سطر
 
 ```csharp
 using Microsoft.AspNetCore.Authorization;
@@ -4274,7 +4316,7 @@ namespace Costing.Api.Controllers;
 public sealed class CostingController(
     CostingService costing, VarianceService variance, KpiService kpis, BreakEvenService breakEven, PurchaseSpendingService spending,
     TreasuryService treasury, StockCardService stockCard, IntelligenceService intelligence, BurdenedCostService burdened, DailyBreakEvenService dailyBreakEven,
-    MediatR.ISender sender,
+    StaffMealsService staffMeals, MediatR.ISender sender,
     Costing.Application.Common.IBusinessCalendar calendar) : ControllerBase
 {
     // Raw materials with their costs: what each costs per purchase unit, the last price paid, and
@@ -4343,6 +4385,20 @@ public sealed class CostingController(
     public Task<RecipeCostCard> GetRecipeCardById(Guid recipeId, CancellationToken cancellationToken) =>
         costing.GetRecipeCardAsync(recipeId, cancellationToken);
 
+    // The vendor price matrix (مقارنة أسعار الموردين): each material bought in the period and every
+    // supplier who sold it, net of every discount, the cheapest marked. Here, not on the intelligence
+    // controller, so Purchases may read it too.
+    [HttpGet("intelligence/vendor-prices")]
+    [CostingTab(CostingTabs.Intelligence | CostingTabs.Purchases)]
+    public Task<VendorPriceReport> GetVendorPrices([FromQuery] DateOnly from, [FromQuery] DateOnly to, CancellationToken cancellationToken) =>
+        intelligence.GetVendorPricesAsync(from, to, cancellationToken);
+
+    [HttpGet("intelligence/vendor-prices/sheet")]
+    [CostingTab(CostingTabs.Intelligence | CostingTabs.Purchases)]
+    public async Task<IActionResult> GetVendorPricesSheet([FromQuery] DateOnly from, [FromQuery] DateOnly to, CancellationToken cancellationToken) =>
+        File(VendorPriceWorkbook.Build(await intelligence.GetVendorPricesAsync(from, to, cancellationToken)), ReportWorkbook.ContentType,
+            $"vendor-prices-{from:yyyy-MM-dd}-to-{to:yyyy-MM-dd}.xlsx");
+
     // The recipe's fully burdened plate (التكلفة الكلية شاملة التشغيل), for its card: its food, its
     // share of this month's labor and overheads so far, as the cost settings share them.
     [HttpGet("recipes/{recipeId:guid}/burdened")]
@@ -4376,6 +4432,13 @@ public sealed class CostingController(
     [CostingTab(CostingTabs.Reports | CostingTabs.Counts)]
     public Task<VarianceReport> GetVariance([FromQuery] Guid? fromCountId, [FromQuery] Guid? toCountId, CancellationToken cancellationToken) =>
         variance.GetVarianceAsync(fromCountId, toCountId, cancellationToken);
+
+    // Staff meals, hospitality and recipe tastings over the days: each entry, each day against the
+    // daily staff meal budget, and the period's totals.
+    [HttpGet("staff-meals")]
+    [CostingTab(CostingTabs.Waste | CostingTabs.Reports)]
+    public Task<StaffMealReport> GetStaffMeals([FromQuery] DateOnly from, [FromQuery] DateOnly to, CancellationToken cancellationToken) =>
+        staffMeals.GetAsync(from, to, cancellationToken);
 
     // Spoilage recorded in the last so many days, with what it cost.
     [HttpGet("spoilage")]

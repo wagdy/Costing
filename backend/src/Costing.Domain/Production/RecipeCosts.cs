@@ -27,10 +27,25 @@ public sealed class RecipeCosts
     private readonly Dictionary<Guid, RecipeCost> _known = [];
     private readonly HashSet<Guid> _working = [];
 
+    // A what-if (محاكي التضخم): a bought material's simulated cost a unit (none: as it is), and the
+    // costs as they are, to scale a made prep item's batches by how much its own recipe moved.
+    private readonly Func<RawMaterial, decimal?>? _simulated;
+    private readonly RecipeCosts? _actual;
+
     public RecipeCosts(IReadOnlyDictionary<Guid, RawMaterial> materials, IEnumerable<PrepRecipe> recipes)
     {
         _materials = materials;
         _recipes = recipes.ToDictionary(r => r.PrepItemId);
+    }
+
+    // The costs as they would be at other prices: each bought material at simulated(material) a unit
+    // (null: its average), a prep item never made by its recipe at those prices, and one made at its
+    // average × (its batch at those prices ÷ its batch now). Nothing is saved: a simulation.
+    public RecipeCosts(IReadOnlyDictionary<Guid, RawMaterial> materials, IEnumerable<PrepRecipe> recipes, Func<RawMaterial, decimal?> simulated)
+        : this(materials, recipes)
+    {
+        _simulated = simulated;
+        _actual = new RecipeCosts(materials, _recipes.Values);
     }
 
     public RecipeCost Of(Guid materialId)
@@ -41,8 +56,24 @@ public sealed class RecipeCosts
             return RecipeCost.None;
 
         RecipeCost cost;
-        if (!material.IsPrepItem || material.AverageCost > 0)
-            cost = new RecipeCost(material.AverageCost, false, material.AverageCost is null ? [material.Name] : []);
+        if (!material.IsPrepItem)
+        {
+            var perUnit = _simulated?.Invoke(material) ?? material.AverageCost;
+            cost = new RecipeCost(perUnit, false, perUnit is null ? [material.Name] : []);
+        }
+        else if (material.AverageCost > 0)
+        {
+            var perUnit = material.AverageCost.Value;
+            if (_actual is not null && _recipes.GetValueOrDefault(material.Id) is { BatchQuantity: > 0, Ingredients.Count: > 0 } made && _working.Add(material.Id))
+            {
+                var simulatedBatch = Batch(made).Cost;
+                var actualBatch = _actual.Batch(made).Cost;
+                _working.Remove(material.Id);
+                if (actualBatch > 0)
+                    perUnit = perUnit * simulatedBatch / actualBatch;
+            }
+            cost = new RecipeCost(perUnit, false, []);
+        }
         else if (_recipes.GetValueOrDefault(material.Id) is not { BatchQuantity: > 0, Ingredients.Count: > 0 } recipe || !_working.Add(material.Id))
             cost = new RecipeCost(material.AverageCost, false, material.AverageCost is null ? [material.Name] : []);
         else
