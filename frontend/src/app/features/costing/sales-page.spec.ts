@@ -86,7 +86,8 @@ describe('the sales', () => {
       ['At menu prices · بأسعار المنيو', 'L.E 1,220.00'],
     ]);
     expect([...el.querySelectorAll('.toolbar button')].map(text)).toEqual([
-      'upload_file Import a day استيراد يوم',
+      'upload_file Import sales استيراد المبيعات',
+      '',
       'add Daily sales summary ملخص المبيعات اليومية',
     ]);
     expect(text(el.querySelector('p.note')!)).toContain('Sales are for stock and food cost only');

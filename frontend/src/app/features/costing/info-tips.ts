@@ -1103,6 +1103,17 @@ export const infoTips = {
     { en: 'A short delivery: keep what did not come open on the order for the next delivery, or close the order with what came.', ar: 'عند الاستلام الجزئي: إبقاء المتبقي مفتوحًا على أمر الشراء للتوريد القادم، أو إغلاق الأمر بالكمية المستلمة.' },
     { en: 'Kept open: Remaining = ordered − received, status Partially received. Closed: status Completed, nothing more expected.', ar: 'مفتوح: المتبقي = المطلوب − المستلم، والحالة استلام جزئي. مغلق: الحالة مكتمل ولا يُنتظر المزيد.' },
   ),
+  bulkSalesImport: tip(
+    { en: 'Multi-day upload', ar: 'استيراد عدة أيام' },
+    {
+      en: "You can now upload multiple days at once. Make sure to add the 'Date' column in the template and ensure no days are skipped!",
+      ar: 'يمكنك رفع عدة أيام معاً، تأكد من تعبئة عمود التاريخ وعدم تخطي أي أيام.',
+    },
+    {
+      en: 'The rows are grouped by their Date and imported oldest first. The file starts on the day after the last closed day whose sales are not in yet, its days follow one another (a closed day is marked on End of the day first), and none is still to come. Previewed first; then every day is recorded, with its end of day as a draft, or none is.',
+      ar: 'تُجمع الصفوف حسب التاريخ وتُستورد من الأقدم. يبدأ الملف من أول يوم بعد آخر يوم مُقفل لم تُسجل مبيعاته، والأيام متتالية (يوم الإغلاق يُسجل أولاً من تقفيل اليوم)، ولا يوم في المستقبل. تُعرض معاينة أولاً، ثم تُسجل كل الأيام مع مسودة تقفيل لكل يوم، أو لا يُسجل شيء.',
+    },
+  ),
 } satisfies Record<string, InfoTipContent>;
 
 export type InfoTipKey = keyof typeof infoTips;

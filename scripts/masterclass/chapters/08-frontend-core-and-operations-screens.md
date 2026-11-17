@@ -372,7 +372,7 @@
 
 ## 12. المبيعات
 
-`SalesPage`: ملخصات الأيام وأصنافها. و `DailySalesDialog`: إدخال ملخص اليوم بأكواد المنيو (`"6101-2 · Margherita (Large)"`) بأسعاره، و `DailySalesImportDialog` من شيت العمودين.
+`SalesPage`: ملخصات الأيام وأصنافها. و `DailySalesDialog`: إدخال ملخص اليوم بأكواد المنيو (`"6101-2 · Margherita (Large)"`) بأسعاره، و `DailySalesImportDialog`: "يوم واحد" (يُختار التاريخ) أو "عدة أيام" (بلا تاريخ): الملف يُعاين أولًا (`previewBulkSales`) بجدول الأيام وجملة "Found 3 days in file… Proceed?" أو المشاكل بالأحمر، ثم **Proceed** (`bulkImportSales`). وبجانب زر الاستيراد في صفحة المبيعات (ⓘ) `bulkSalesImport`.
 
 @@file frontend/src/app/features/costing/sales-page.ts
 

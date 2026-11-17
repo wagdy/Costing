@@ -18,6 +18,7 @@ import { MoneyPipe } from '../../core/ui/money.pipe';
 import { NotifyService } from '../../core/ui/notify.service';
 import { Approvals } from './approvals';
 import { DailySalesDialog, DailySalesDialogData, DailySalesImportDialog } from './daily-sales-dialogs';
+import { InfoTip } from './info-tip';
 import { BusinessDay } from './financials';
 
 // How many of a day's items show before "more".
@@ -30,7 +31,7 @@ const shownLines = 6;
 // by a manager or on their approval, its stock all put back, and entered again.
 @Component({
   selector: 'app-sales-page',
-  imports: [DatePipe, FormsModule, MatButtonModule, MatFormFieldModule, MatIconModule, MatInputModule, MatProgressBarModule, MatTooltipModule, MoneyPipe],
+  imports: [DatePipe, FormsModule, InfoTip, MatButtonModule, MatFormFieldModule, MatIconModule, MatInputModule, MatProgressBarModule, MatTooltipModule, MoneyPipe],
   template: `
     <div class="toolbar no-print">
       <mat-form-field subscriptSizing="dynamic" class="day">
@@ -43,7 +44,8 @@ const shownLines = 6;
       </mat-form-field>
       <span class="spacer"></span>
       @if (canChange) {
-        <button mat-stroked-button (click)="importDay()"><mat-icon>upload_file</mat-icon> Import a day <span class="inline-ar">استيراد يوم</span></button>
+        <button mat-stroked-button (click)="importDay()"><mat-icon>upload_file</mat-icon> Import sales <span class="inline-ar">استيراد المبيعات</span></button>
+        <app-info-tip tip="bulkSalesImport" />
         <button mat-flat-button (click)="enterDay()"><mat-icon>add</mat-icon> Daily sales summary <span class="inline-ar">ملخص المبيعات اليومية</span></button>
       }
     </div>

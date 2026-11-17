@@ -697,7 +697,7 @@ internal sealed class ApplicationExceptionHandler(
 
 طبقة التطبيق: MediatR يجد الـ Handlers تلقائيًا، والخدمات الداخلية المشتركة (`TreasuryWriter`, `InvoicePoster`, `HrOutbox`, …) بعمر `Scoped`.
 
-> 📄 **`backend/src/Costing.Application/DependencyInjection.cs`** — 31 سطر
+> 📄 **`backend/src/Costing.Application/DependencyInjection.cs`** — 32 سطر
 
 ```csharp
 using Microsoft.Extensions.DependencyInjection;
@@ -726,6 +726,7 @@ public static class DependencyInjection
         services.AddScoped<RawMaterials.MaterialUnitWriter>();
         services.AddScoped<Categories.CategoryDeleter>();
         services.AddScoped<EndOfDay.EndOfDayDays>();
+        services.AddScoped<Sales.BulkSalesPlanner>();
         services.AddScoped<Integrations.HrOutbox>();
         services.AddScoped<Integrations.StaffDeductionReading>();
         return services;
@@ -1512,6 +1513,7 @@ Costing/
                     RecipesToMenu.cs
                     SaleRecipes.cs
                 Sales/
+                    BulkDailySales.cs
                     DailySales.cs
                     Sales.cs
                 Staff/
@@ -1699,6 +1701,7 @@ Costing/
                 TestApi.cs
             Costing.Application.Tests/
                 BlindAndSpotCountTests.cs
+                BulkSalesImportTests.cs
                 CompanySettingsFlowTests.cs
                 Costing.Application.Tests.csproj
                 EndOfDayPayoutTests.cs

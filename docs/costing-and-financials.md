@@ -593,11 +593,52 @@ item, or each size of one sold by size, found by its code or name as it is typed
 /api/sales/daily`). It is valued at the menu's prices, before tax, for the theoretical cost, the
 variance and the reconciliation. An item on two rows is one line of both.
 
-**The day's sheet** has two columns, the item (chosen from a dropdown of every menu item and size by
-its code, "6101-2 · Margherita (Large)"; its code or name typed alone is found too) and the
-quantity sold. The day is chosen when it is imported (`GET /api/sales/daily/template`, `POST
-/api/sales/daily/import?date=`). A row that cannot be read is left out and said why, in English and
-Arabic; the rest are recorded.
+**The sales sheet** (`GET /api/sales/daily/template`) has a row for each item sold: its **Date ·
+تاريخ المبيعات** (dd/MM/yyyy, or an Excel date), the item (chosen from a dropdown of every menu item
+and size by its code, "6101-2 · Margherita (Large)"; its code or name typed alone is found too) and
+the quantity sold. A day's **discounts** (الخصومات) go on rows of their own (or beside an item): the
+Date, the **Discount Amount**, its **Discount Reason** and the **Discounted Bills**; a day's amounts
+are added up, and its reasons by name (capitals and spaces aside), as the summary's `DiscountAmount`
+and `DiscountReasons`, never more than the day's items come to at the menu's prices. Headings are
+found by name, in English or Arabic, in any order. A row that cannot be read is left out and said
+why, in English and Arabic; the rest are recorded.
+
+On Sales → **Import sales · استيراد المبيعات** (with its (ⓘ): *You can now upload multiple days at
+once. Make sure to add the 'Date' column in the template and ensure no days are skipped!*), two ways:
+
+- **One day · يوم واحد**: the day chosen in the dialog, its sheet's Date left blank or that day
+  (`POST /api/sales/daily/import?date=`). A sheet with rows of other days is refused: it is a
+  multi-day sheet.
+- **Multi-day Excel upload · عدة أيام** (استيراد مبيعات متعدد الأيام): no day to choose; the rows are
+  grouped by their Date and the days taken **oldest first**. Chosen, the sheet is **previewed**
+  (`POST /api/costing/sales/bulk-import-pos/preview`), nothing recorded: each day with its items, how
+  many sold, its value at the menu's prices, its discounts and its rows left out, and either *Found 3
+  days in file: 15/11 (9 items, 45 sold), 16/11 (…), 17/11 (…). This matches your next expected
+  sequence. Proceed? · تم العثور على 3 أيام، وهي مطابقة لتسلسل النظام. هل تود الاستمرار؟* or, in red,
+  what stops it. **Proceed** records it (`POST /api/costing/sales/bulk-import-pos`).
+
+The multi-day sheet keeps the end of day's order ([Strict sequentiality](#strict-sequentiality-and-the-managers-undo-التسلسل-الزمني-وإلغاء-التقفيل)):
+
+1. **Every row has its day**: a row without a Date refuses the sheet, naming the rows.
+2. **It starts on the next day to import**: the day after the last closed day, past any day whose
+   sales are in already (`expectedFirstDate`). Starting later is *Missing day 15/11/2026 in the
+   sequence: the file starts on 16/11/2026…*. With no day closed yet, any day up to today starts it.
+3. **No day skipped**: between two of its days, a day whose sales are not in is *Missing day
+   16/11/2026 in the sequence. Please include it in the file or mark it as a Closed Day first. · يوم
+   16/11/2026 مفقود من التسلسل، يرجى إضافته أو إغلاقه كيوم إجازة أولاً.*
+4. **None to come, none closed, none entered already**: a day after today, on or before the last
+   closed day, or whose sales are in already, is named.
+5. Each day must have an item that can be read, and its discounts no more than its items' value;
+   at most 31 days and 20,000 rows a sheet.
+
+Recorded, it is **every day or none**, in one unit of work: oldest first, each day's sales summary
+(`SalesSource.DailySummary`, its stock taken by its recipes, a combo by its dishes' recipes, as any
+sale: at the materials' moving average when recorded, which sales never move), and, for each day
+whose end of day is not started, an **empty end-of-day draft**, to be handed in in turn (its sales
+report, invoices and payments entered there). Such an empty draft dated after the day to close next
+is waiting its turn, not stranded: only a draft with something on it is offered to be moved
+(`strandedDrafts`). The answer gives each day's `saleId` and `draftsCreated`; a refused sheet is a
+422 naming the first three problems.
 
 **One summary a day.** A second for a day already entered, by hand or by sheet, is refused, naming
 it. To change a day, void it (`ApprovalModule.Sale`, a manager's or on their approval), which puts
@@ -902,8 +943,9 @@ closed, by a manager), becoming an ordinary draft again.
 **A draft entered under the wrong date** (ترحيل المسودة العالقة): the day's invoices typed on the
 17th while the 16th is still to close. Such a draft (from before the order rules, or made before
 any day was closed) can never be handed in where it is. `GET sequence` lists them
-(`strandedDrafts`: each draft dated after the day to close next, with its invoices, payments and
-whether it has sales); the page of the day to close next points to each (*A draft dated Tue 17 Nov
+(`strandedDrafts`: each draft dated after the day to close next with something on it, with its
+invoices, payments and whether it has sales; an empty one, as a multi-day sales import makes them,
+waits its turn); the page of the day to close next points to each (*A draft dated Tue 17 Nov
 holds 3 invoices…: Open it*), and the draft itself shows a warning banner with **Migrate Data to
 Mon 16 Nov · نقل البيانات وإصلاح التاريخ** for a manager (anyone else is told a manager moves it).
 It asks the **reason for the change (required)** (سبب التعديل الإجباري), then, in one unit:

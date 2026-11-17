@@ -48,40 +48,59 @@ public static class MenuWorkbook
     }
 }
 
-// The day's sales sheet (ملخص المبيعات اليومية): two columns, the item and how many sold, for the
-// day chosen on import. The item is chosen from a dropdown of every menu item and size by its code
-// ("6101-2 · Margherita (Large)"); its code or name typed alone is found as well.
+// The sales sheet (ملخص المبيعات اليومية): a row an item sold, with its day (Date, dd/MM/yyyy), the
+// item and how many sold; a day's discounts on rows of their own (how much, why, on how many bills).
+// One day's sheet is imported for the day chosen; a sheet of several days is a multi-day upload, its
+// days imported oldest first in the end of day's order. The item is chosen from a dropdown of every
+// menu item and size by its code ("6101-2 · Margherita (Large)"); its code or name typed alone is
+// found as well.
 public static class DailySalesWorkbook
 {
     public const string FileName = "daily-sales-template.xlsx";
     public const string DataSheetName = "Daily Sales";
 
+    public const string DateHeader = "Date · تاريخ المبيعات";
     public const string ItemHeader = "Item · الصنف";
     public const string QuantityHeader = "Quantity Sold · الكمية المباعة";
+    public const string DiscountHeader = "Discount Amount · قيمة الخصم";
+    public const string DiscountReasonHeader = "Discount Reason · سبب الخصم";
+    public const string DiscountCountHeader = "Discounted Bills · عدد الفواتير";
 
     private static readonly Column[] Columns =
     [
+        new("Date", DateHeader, ["date", "sales date", "day", "business date", "التاريخ", "تاريخ المبيعات", "اليوم"],
+            "The day sold, dd/MM/yyyy: required on every row of a multi-day sheet.", "dd/mm/yyyy"),
         new("Item", ItemHeader, ["item", "item name", "item code", "menu item", "product", "name", "code", "الصنف", "اسم الصنف", "كود الصنف", "المنتج"],
             "Choose it from the list: each item, and each size of one sold by size, by its code. Its code or name typed alone is found too."),
         new("Quantity", QuantityHeader, ["quantity sold", "quantity", "qty", "sold", "count", "الكمية المباعة", "الكمية", "العدد", "المباع"],
             "How many sold that day: a whole number, 1 or more.", "0"),
+        new("DiscountAmount", DiscountHeader, ["discount amount", "discount", "discounts", "قيمة الخصم", "الخصم", "الخصومات"],
+            "Optional: a discount or promo given that day, on a row of its own (or beside an item).", "#,##0.00"),
+        new("DiscountReason", DiscountReasonHeader, ["discount reason", "reason", "سبب الخصم", "السبب"],
+            "Optional: why (loyalty, staff, manager promo...)."),
+        new("DiscountCount", DiscountCountHeader, ["discounted bills", "bills", "discount count", "عدد الفواتير", "الفواتير"],
+            "Optional: on how many bills.", "0"),
     ];
 
     private static readonly string[] Help =
     [
-        "One item a row: the item chosen from its list, and how many sold. · صنف في كل صف: اختر الصنف من القائمة واكتب الكمية المباعة.",
+        "One item a row: its day, the item chosen from its list, and how many sold. · صنف في كل صف: التاريخ والصنف من القائمة والكمية المباعة.",
         "",
-        "The day is chosen when the sheet is imported: one sheet a day. · يُختار التاريخ عند الاستيراد: ملف لكل يوم.",
-        "An item on two rows is counted once, both added up. · الصنف المكرر تُجمع كمياته.",
+        "Several days in one sheet: the Date on every row (dd/MM/yyyy), the days one after another with none skipped, starting on the next day to close. " +
+            "· عدة أيام في ملف واحد: التاريخ في كل صف، والأيام متتالية بدون تخطي، تبدأ من اليوم التالي للتقفيل.",
+        "One day's sheet can be imported for the day chosen instead. · أو ملف ليوم واحد يُختار تاريخه عند الاستيراد.",
+        "A day's discounts: a row with the Date, the Discount Amount, its Reason and the bills. · خصومات اليوم: صف بالتاريخ وقيمة الخصم وسببه.",
+        "An item on two rows of a day is counted once, both added up. · الصنف المكرر في اليوم تُجمع كمياته.",
         "Each item sold takes its stock by its recipe. · كل صنف مباع يخصم المخزون بوصفته.",
         "No prices or money: the day's takings are entered on Financials. · لا أسعار: الإيراد يُسجل في الماليات.",
     ];
 
     private static readonly object[][] Examples =
     [
-        ["6101 · Margherita", 24],
-        ["6101-2 · Margherita (Large)", 9],
-        ["6201 · Alfredo pasta", 17],
+        ["15/11/2026", "6101 · Margherita", 24, "", "", ""],
+        ["15/11/2026", "6101-2 · Margherita (Large)", 9, "", "", ""],
+        ["15/11/2026", "", "", 120, "Loyalty", 4],
+        ["16/11/2026", "6201 · Alfredo pasta", 17, "", "", ""],
     ];
 
     public static Stream Build(DailySalesSheet sheet) =>
@@ -94,6 +113,7 @@ public static class DailySalesWorkbook
 
     public static IReadOnlyList<DailySaleRow> Read(Stream stream) =>
         SheetBook.Read(stream, Columns, "Item", "Item")
-            .Select(r => new DailySaleRow(r.Row, r.Text("Item"), r.Number("Quantity")))
+            .Select(r => new DailySaleRow(
+                r.Row, r.Text("Item"), r.Number("Quantity"), r.Date("Date"), r.Number("DiscountAmount"), r.Text("DiscountReason"), r.Number("DiscountCount")))
             .ToList();
 }

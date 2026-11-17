@@ -2,7 +2,7 @@ import { HttpErrorResponse } from '@angular/common/http';
 import { TestBed } from '@angular/core/testing';
 import { MAT_DIALOG_DATA, MatDialogRef } from '@angular/material/dialog';
 import { of, throwError } from 'rxjs';
-import { DailySalesImportResult, Menu, MenuItem, MenuSalesApi } from '../../core/costing/menu-sales.api';
+import { BulkSalesImport, DailySalesImportResult, Menu, MenuItem, MenuSalesApi } from '../../core/costing/menu-sales.api';
 import { NotifyService } from '../../core/ui/notify.service';
 import { DailySalesDialog, DailySalesImportDialog, findOption, saleOptions } from './daily-sales-dialogs';
 
@@ -156,6 +156,8 @@ describe('a day’s sales entered', () => {
 describe('a day’s sheet imported', () => {
   const importDailySales = vi.fn();
   const dailySalesTemplate = vi.fn();
+  const previewBulkSales = vi.fn();
+  const bulkImportSales = vi.fn();
   const close = vi.fn();
 
   async function render() {
@@ -163,7 +165,7 @@ describe('a day’s sheet imported', () => {
       providers: [
         { provide: MAT_DIALOG_DATA, useValue: { today: '2026-10-13' } },
         { provide: MatDialogRef, useValue: { close } },
-        { provide: MenuSalesApi, useValue: { importDailySales, dailySalesTemplate } },
+        { provide: MenuSalesApi, useValue: { importDailySales, dailySalesTemplate, previewBulkSales, bulkImportSales } },
         { provide: NotifyService, useValue: { info: vi.fn(), error: vi.fn() } },
       ],
     });
@@ -180,7 +182,73 @@ describe('a day’s sheet imported', () => {
 
   beforeEach(() => {
     importDailySales.mockReset().mockReturnValue(of(result));
+    previewBulkSales.mockReset();
+    bulkImportSales.mockReset();
     close.mockReset();
+  });
+
+  const week: BulkSalesImport = {
+    days: [
+      { date: '2026-11-15', rows: 12, items: 9, quantity: 45, value: 5_400, discounts: 120, skipped: 0, saleId: null },
+      { date: '2026-11-16', rows: 14, items: 11, quantity: 50, value: 6_000, discounts: 0, skipped: 1, saleId: null },
+      { date: '2026-11-17', rows: 10, items: 8, quantity: 42, value: 5_040, discounts: 0, skipped: 0, saleId: null },
+    ],
+    skipped: [{ row: 20, name: 'Pizza', reason: 'There is no Pizza on the menu.', reasonAr: 'لا يوجد Pizza في المنيو.' }],
+    problems: [], lastClosedDate: '2026-11-14', expectedFirstDate: '2026-11-15', ok: true, recorded: false, draftsCreated: 0,
+  };
+
+  it('checks a multi-day sheet first, says the days it found against the days’ order, and records them only once asked', async () => {
+    previewBulkSales.mockReturnValue(of(week));
+    const { fixture, el, page } = await render();
+    expect(el.querySelector('app-info-tip')).not.toBeNull();
+    page['setMode']('days');
+    fixture.detectChanges();
+    expect(el.querySelector('input[aria-label="Date"]')).toBeNull();
+
+    const file = new File(['xlsx'], 'week.xlsx');
+    await page['check'](file);
+    fixture.detectChanges();
+    expect(previewBulkSales).toHaveBeenCalledWith(file);
+    expect(text(el.querySelector('.ok-line')!)).toBe(
+      'Found 3 days in file: 15/11 (9 items, 45 sold), 16/11 (11 items, 50 sold), 17/11 (8 items, 42 sold). This matches your next expected sequence. Proceed? ' +
+        'تم العثور على 3 أيام، وهي مطابقة لتسلسل النظام. هل تود الاستمرار؟',
+    );
+    expect([...el.querySelectorAll('table.days tbody tr')].map((r) => text(r))).toEqual([
+      '15/11945L.E 5,400.00L.E 120.000', '16/111150L.E 6,000.00L.E 0.001', '17/11842L.E 5,040.00L.E 0.000',
+    ]);
+    expect(text(el.querySelector('.skipped li')!)).toContain('Row 20 · Pizza');
+    expect(bulkImportSales).not.toHaveBeenCalled();
+
+    const proceed = [...el.querySelectorAll<HTMLButtonElement>('mat-dialog-actions button')].find((b) => text(b).includes('Proceed'))!;
+    expect(text(proceed)).toBe('playlist_add_check Proceed · استمرار (3)');
+    bulkImportSales.mockReturnValue(of({ ...week, recorded: true, draftsCreated: 3, days: week.days.map((d) => ({ ...d, saleId: 's-' + d.date })) }));
+    proceed.click();
+    await new Promise((r) => setTimeout(r));
+    fixture.detectChanges();
+    expect(bulkImportSales).toHaveBeenCalledWith(file);
+    expect(text(el.querySelector('.note')!)).toContain('3 days recorded, oldest first (15/11 to 17/11)');
+    expect(text(el.querySelector('.note')!)).toContain('3 days wait on End of the day as a draft, to be closed in turn.');
+    page['close']();
+    expect(close).toHaveBeenCalledWith(true);
+  });
+
+  it('blocks a multi-day sheet with a day missing, in red, with nothing to proceed with', async () => {
+    previewBulkSales.mockReturnValue(of({
+      ...week, ok: false, days: [week.days[0], week.days[2]],
+      problems: ['Missing day 16/11/2026 in the sequence. Please include it in the file or mark it as a Closed Day first. · يوم 16/11/2026 مفقود من التسلسل، يرجى إضافته أو إغلاقه كيوم إجازة أولاً.'],
+    }));
+    const { fixture, el, page } = await render();
+    page['setMode']('days');
+    await page['check'](new File(['xlsx'], 'week.xlsx'));
+    fixture.detectChanges();
+
+    expect([...el.querySelectorAll('.problems li')].map(text)).toEqual([
+      'Missing day 16/11/2026 in the sequence. Please include it in the file or mark it as a Closed Day first. · يوم 16/11/2026 مفقود من التسلسل، يرجى إضافته أو إغلاقه كيوم إجازة أولاً.',
+    ]);
+    expect(el.querySelector('.ok-line')).toBeNull();
+    expect([...el.querySelectorAll('mat-dialog-actions button')].map(text)).toEqual(['Cancel إلغاء']);
+    await page['proceed']();
+    expect(bulkImportSales).not.toHaveBeenCalled();
   });
 
   it('imports the sheet for the day chosen, and says what was recorded and each row left out, in both languages', async () => {

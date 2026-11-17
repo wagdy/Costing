@@ -2643,7 +2643,7 @@ EndOfDaySequence.Check(date, lastClosed, today, lockedUntil):
 
 **لماذا `MoveTo` قبل الفواتير؟** في الاختبار ظهر أن محاولة مرفوضة (بلا سبب) غيّرت تاريخ الفاتورة قبل أن يُفحص السبب: EF لا يحفظها، لكن التحقق يجب أن يسبق أي تغيير. **ولماذا `AuditTrail` منفصل؟** الملاحظات يكتب فيها المستخدم ويمكنه مسح السطر؛ السجل لا يغيره أحد. وُسّعت الملاحظات (2000 لليوم، 1000 للفاتورة) لتتسع لأسطر التدقيق، وبقيت ملاحظة الدفعة 200. حذف اليوم الفارغ وتغيير تاريخ المسودة إلى نفس التاريخ (فهرس فريد على `Date`) في `SaveChanges` واحد: EF يرتب الحذف قبل التحديث، واختُبر على قاعدة حقيقية.
 
-> 📄 **`backend/src/Costing.Application/EndOfDay/EndOfDays.cs`** — 967 سطر
+> 📄 **`backend/src/Costing.Application/EndOfDay/EndOfDays.cs`** — 969 سطر
 
 ```csharp
 using System.Globalization;
@@ -3354,9 +3354,11 @@ internal sealed class GetEndOfDaySequenceHandler(
                 locked is { } l && lastDate <= l, (await zReports.GetByDateAsync(lastDate, cancellationToken)).Count);
         }
         var closing = next ?? today;
-        // Drafts past the day to close next, which can never be handed in where they are.
+        // Drafts past the day to close next with something on them, which cannot be handed in where they
+        // are; an empty one (made by a multi-day sales import) waits for its turn.
         var stranded = next is { } expected
             ? (await days.GetDraftsAfterAsync(expected, cancellationToken))
+                .Where(d => d.HasEntries || d.Notes is not null)
                 .Select(d => new EndOfDayStranded(d.Id, d.Date, d.Invoices.Count, d.Payouts.Count, d.NetSales > 0))
                 .ToList()
             : [];
@@ -3930,9 +3932,9 @@ public sealed class EndOfDayInvoiceForm
 
 ### 3.2 الملخص اليومي (`DailySales.cs`)
 
-ملخص واحد لكل يوم (`SalesSource.DailySummary`) كما يعطيه تقرير Z: الصنف (أو حجمه بكوده `6101-2`) والكمية. يُدخل يدويًا أو من شيت عمودين (الفصل 07) أو يأتي من الـ POS (الفصل 07). ملخص ثانٍ لنفس اليوم يُرفض (ألغِ الأول ثم أدخل). الأسطر تُقيَّم بأسعار المنيو للمطابقة (الفصل 06).
+ملخص واحد لكل يوم (`SalesSource.DailySummary`) كما يعطيه تقرير Z: الصنف (أو حجمه بكوده `6101-2`) والكمية. يُدخل يدويًا أو من شيت المبيعات (الفصل 07؛ وعدة أيام بملف واحد في 3.3) أو يأتي من الـ POS (الفصل 07). ملخص ثانٍ لنفس اليوم يُرفض (ألغِ الأول ثم أدخل). الأسطر تُقيَّم بأسعار المنيو للمطابقة (الفصل 06).
 
-> 📄 **`backend/src/Costing.Application/Sales/DailySales.cs`** — 152 سطر
+> 📄 **`backend/src/Costing.Application/Sales/DailySales.cs`** — 216 سطر
 
 ```csharp
 using System.Globalization;
@@ -3961,12 +3963,20 @@ public sealed record DailySaleLine(int MenuItemId, int? VariantId, int Quantity)
 public sealed record RecordDailySalesCommand(Guid Id, DateOnly Date, IReadOnlyList<DailySaleLine> Lines, string StaffName)
     : IRequest<SalesReceiptDto>, IRetryOnConflict;
 
-// A row of the day's sheet: the item, by its code or name (or chosen from the list), and how many sold.
-public sealed record DailySaleRow(int Row, string? Item, decimal? Quantity);
+// A row of the sales sheet: its day (the Date column; the day chosen on a one-day import), the item,
+// by its code or name (or chosen from the list), and how many sold; or a discount given that day
+// (الخصومات): how much, why, and on how many bills. A row may carry both.
+public sealed record DailySaleRow(
+    int Row, string? Item, decimal? Quantity, DateOnly? Date = null, decimal? DiscountAmount = null, string? DiscountReason = null,
+    decimal? DiscountCount = null)
+{
+    public bool HasItem => !string.IsNullOrWhiteSpace(Item) || Quantity is not null;
+    public bool HasDiscount => DiscountAmount is not null || !string.IsNullOrWhiteSpace(DiscountReason);
+}
 
 // SaleId: the day's summary recorded, or none when no row could be read.
 public sealed record DailySalesImportResult(
-    DateOnly Date, Guid? SaleId, int Items, int Quantity, decimal Value, IReadOnlyList<SkippedSheetRow> Skipped);
+    DateOnly Date, Guid? SaleId, int Items, int Quantity, decimal Value, IReadOnlyList<SkippedSheetRow> Skipped, decimal Discounts = 0);
 
 public sealed record ImportDailySalesCommand(DateOnly Date, IReadOnlyList<DailySaleRow> Rows, string StaffName)
     : IRequest<DailySalesImportResult>, IRetryOnConflict;
@@ -3979,7 +3989,8 @@ public sealed record GetDailySalesSheetQuery : IRequest<DailySalesSheet>;
 internal sealed class DailySalesWriter(ISalesReceiptRepository sales, SaleWriter writer, IBusinessCalendar calendar)
 {
     public async Task<SalesReceipt> RecordAsync(
-        Guid id, DateOnly date, IReadOnlyList<DailySaleLine> lines, string by, SaleWriter.Menu? menu, CancellationToken cancellationToken)
+        Guid id, DateOnly date, IReadOnlyList<DailySaleLine> lines, string by, SaleWriter.Menu? menu, CancellationToken cancellationToken,
+        decimal discounts = 0, IReadOnlyList<DiscountReason>? discountReasons = null)
     {
         var now = DateTime.UtcNow;
         var latest = new[] { calendar.BusinessDateOf(now), calendar.LocalDateOf(now) }.Max();
@@ -4001,7 +4012,8 @@ internal sealed class DailySalesWriter(ISalesReceiptRepository sales, SaleWriter
             .Select(g => new SaleLineInput(g.Key.MenuItemId, g.Key.VariantId, g.Sum(l => l.Quantity)))
             .ToList();
         return await writer.RecordAsync(
-            new SaleInput(id, null, date, null, SalesChannel.DineIn, PaymentMethod.Cash, merged, Notes: "Daily sales summary"),
+            new SaleInput(id, null, date, null, SalesChannel.DineIn, PaymentMethod.Cash, merged, DiscountAmount: discounts,
+                Notes: "Daily sales summary", DiscountReasons: discountReasons),
             SalesSource.DailySummary, by, menu, cancellationToken);
     }
 }
@@ -4044,29 +4056,83 @@ internal sealed class ImportDailySalesHandler(IMenuRepository menu, DailySalesWr
         if (request.Rows.Count > MaxRows)
             throw new DomainException($"Import {MaxRows:N0} rows at most at a time. · {MaxRows:N0} صف على الأكثر.");
 
+        // A sheet of several days is a multi-day upload, kept in their order: never one day of all of them.
+        var others = request.Rows.Select(r => r.Date).OfType<DateOnly>().Where(d => d != request.Date).Distinct().Order().ToList();
+        if (others.Count > 0)
+            throw new DomainException(
+                $"The sheet has sales of other days ({string.Join(", ", others.Take(5).Select(DailySheet.Day))}{(others.Count > 5 ? ", …" : "")}): " +
+                "upload it as a multi-day sheet, or keep only this day's rows. · الملف يحتوي على أيام أخرى: ارفعه كملف متعدد الأيام.");
+
         var known = await SaleWriter.Menu.LoadAsync(menu, cancellationToken);
-        var items = known.Items.Values.ToList();
-        var targets = DailySalesItems.Of(items);
-        var skipped = new List<SkippedSheetRow>();
-        var lines = new List<DailySaleLine>();
-        foreach (var row in request.Rows)
-        {
-            var (line, reason, reasonAr) = Parse(row, targets, known);
-            if (line is not null)
-                lines.Add(line);
-            else
-                skipped.Add(new SkippedSheetRow(row.Row, row.Item, reason!, reasonAr));
-        }
+        var sheet = DailySheet.Read(request.Rows, DailySalesItems.Of(known.Items.Values.ToList()), known);
+        if (sheet.Lines.Count == 0)
+            return new DailySalesImportResult(request.Date, null, 0, 0, 0, sheet.Skipped);
+        if (sheet.Problem(request.Date) is { } problem)
+            throw new DomainException(problem);
 
-        if (lines.Count == 0)
-            return new DailySalesImportResult(request.Date, null, 0, 0, 0, skipped);
-
-        var receipt = await writer.RecordAsync(Guid.NewGuid(), request.Date, lines, request.StaffName, known, cancellationToken);
+        var receipt = await writer.RecordAsync(
+            Guid.NewGuid(), request.Date, sheet.Lines, request.StaffName, known, cancellationToken, sheet.Discounts, sheet.Reasons);
         await unitOfWork.SaveChangesAsync(cancellationToken);
         return new DailySalesImportResult(
-            request.Date, receipt.Id, receipt.Lines.Count, receipt.Lines.Sum(l => l.Quantity), receipt.BilledSubtotal, skipped);
+            request.Date, receipt.Id, receipt.Lines.Count, receipt.Lines.Sum(l => l.Quantity), receipt.BilledSubtotal, sheet.Skipped, receipt.DiscountAmount);
+    }
+}
+
+// A day's rows of the sales sheet read: its items sold (each row an item and how many), what was left
+// out and why, and its discounts (each reason's amount and bills, added up), valued at the menu's prices.
+internal sealed record DailySheet(
+    IReadOnlyList<DailySaleLine> Lines, IReadOnlyList<SkippedSheetRow> Skipped, decimal Discounts, IReadOnlyList<DiscountReason> Reasons, decimal Value)
+{
+    public int Quantity => Lines.Sum(l => l.Quantity);
+
+    public int Items => Lines.Select(l => (l.MenuItemId, l.VariantId)).Distinct().Count();
+
+    public static string Day(DateOnly day) => day.ToString("dd/MM/yyyy", CultureInfo.InvariantCulture);
+
+    // What stops the day being recorded: discounts more than its items come to at the menu's prices.
+    public string? Problem(DateOnly date) =>
+        Discounts > Value
+            ? $"The discounts of {Day(date)} ({Discounts.ToString("N2", CultureInfo.InvariantCulture)}) are more than its items come to at the menu's prices " +
+              $"({Value.ToString("N2", CultureInfo.InvariantCulture)}): check them. · الخصومات أكبر من قيمة المبيعات بأسعار المنيو."
+            : null;
+
+    public static DailySheet Read(IEnumerable<DailySaleRow> rows, MenuTargets targets, SaleWriter.Menu known)
+    {
+        var skipped = new List<SkippedSheetRow>();
+        var lines = new List<DailySaleLine>();
+        var given = new List<DiscountReason>();
+        foreach (var row in rows)
+        {
+            if (row.HasItem || !row.HasDiscount)
+            {
+                var (line, reason, reasonAr) = Parse(row, targets, known);
+                if (line is not null)
+                    lines.Add(line);
+                else
+                    skipped.Add(new SkippedSheetRow(row.Row, row.Item, reason!, reasonAr));
+            }
+            if (!row.HasDiscount)
+                continue;
+            if (row.DiscountAmount is not { } amount || amount < 0)
+                skipped.Add(new SkippedSheetRow(row.Row, row.DiscountReason, "A discount is an amount, 0 or more.", "الخصم مبلغ صفر أو أكثر."));
+            else if (row.DiscountCount is { } count && (count < 0 || count != decimal.Truncate(count)))
+                skipped.Add(new SkippedSheetRow(row.Row, row.DiscountReason, "The bills discounted are a whole number.", "عدد الفواتير رقم صحيح."));
+            else
+                given.Add(new DiscountReason(SheetText.Clean(row.DiscountReason) ?? "Not given", amount, (int)(row.DiscountCount ?? 0)));
+        }
+        var discounts = Math.Round(given.Sum(r => r.Amount), 2, MidpointRounding.AwayFromZero);
+        var reasons = given
+            .GroupBy(r => r.Reason, StringComparer.OrdinalIgnoreCase)
+            .Select(g => new DiscountReason(g.First().Reason, g.Sum(r => r.Amount), g.Sum(r => r.Count)))
+            .Where(r => r.Amount > 0)
+            .ToList();
+        var value = lines.Count == 0
+            ? 0
+            : SaleWriter.ValueOf(lines.Select(l => new SaleLineInput(l.MenuItemId, l.VariantId, l.Quantity)), known);
+        return new DailySheet(lines, skipped, discounts, reasons, value);
     }
 
+    // A row's item and how many sold: the item on the menu (a size of one sold by size), a whole number.
     private static (DailySaleLine? Line, string? Reason, string? ReasonAr) Parse(DailySaleRow row, MenuTargets targets, SaleWriter.Menu known)
     {
         var text = SheetText.Clean(row.Item);
@@ -4085,6 +4151,202 @@ internal sealed class ImportDailySalesHandler(IMenuRepository menu, DailySalesWr
         if (found.VariantId is null && item.Variants.Count > 0)
             return (null, $"{item.Name} is sold by size: choose its size from the list.", $"{item.Name} يُباع بالحجم: اختر الحجم من القائمة.");
         return (new DailySaleLine(found.CatalogItemId, found.VariantId, (int)quantity), null, null);
+    }
+}
+```
+
+
+### 3.3 استيراد عدة أيام بملف واحد (`BulkDailySales.cs`)
+
+الشيت صار بعمود **تاريخ** في أوله، وأعمدة اختيارية للخصومات (المبلغ، السبب، عدد الفواتير) في صفوف خاصة. `DailySheet.Read` يقرأ صفوف يوم واحد: الأصناف (والمرفوض بسببه) والخصومات مجمّعة بالسبب، وقيمتها بأسعار المنيو. استيراد اليوم الواحد يرفض شيتًا فيه أيام أخرى.
+
+`BulkSalesPlanner.PlanAsync` (للمعاينة وللتسجيل معًا):
+
+```text
+1. كل صف له تاريخ          ⇐ وإلا يُرفض الملف بأرقام الصفوف
+2. تجميع بالتاريخ تصاعديًا   ⇐ 31 يومًا و 20,000 صف على الأكثر
+3. كل يوم: صنف مقروء واحد على الأقل، والخصومات ≤ القيمة
+4. التسلسل:
+   تاريخ > اليوم              ⇐ "has not come yet"
+   تاريخ ≤ آخر يوم مُقفل       ⇐ "is closed already"
+   له ملخص مبيعات بالفعل      ⇐ "entered already"
+   أول يوم متوقع = آخر مُقفل + 1، متخطيًا الأيام التي سُجلت مبيعاتها   ⇐ لو بدأ الملف بعده: "Missing day …"
+   فجوة بين يومين في الملف بلا ملخص مبيعات ⇐ "Missing day … Please include it in the file or mark it as a Closed Day first."
+```
+
+التسجيل (`BulkImportSalesHandler`): يعيد الخطة، يرفض بـ 422 لو فيها مشاكل، ثم لكل يوم من الأقدم: `DailySalesWriter.RecordAsync` (المخزون بالوصفات والكومبو، بالمتوسط المتحرك وقت التسجيل: المبيعات لا تحرّكه) ومسودة تقفيل فارغة لليوم لو لم يبدأ. **`SaveChangesAsync` واحد** في النهاية: كل الأيام أو لا شيء. ولأن هذه المسودات الفارغة بعد اليوم التالي المتوقع مقصودة، صار تعريف "المسودة العالقة" (`StrandedDrafts`) = مسودة بعد اليوم التالي **وعليها بيانات** (`HasEntries` أو ملاحظات).
+
+> 📄 **`backend/src/Costing.Application/Sales/BulkDailySales.cs`** — 170 سطر
+
+```csharp
+using MediatR;
+using Costing.Application.Common;
+using Costing.Application.RawMaterials;
+using Costing.Domain.Common;
+using Costing.Domain.EndOfDay;
+using Costing.Domain.Menu;
+using Costing.Domain.Sales;
+
+namespace Costing.Application.Sales;
+
+// Several days' sales in one sheet (استيراد مبيعات متعدد الأيام): each row with its day in the Date
+// column, the days imported oldest first and in the order the end of day keeps (EndOfDaySequence).
+// The file starts on the first day after the last closed one whose sales are not in yet, its days
+// follow one another (a day between them only when its sales are in already), and none is still to
+// come. Previewed first, then recorded all together or not at all: each day's sales summary (its
+// stock taken by its recipes and combos, its discounts and why) and, for each day not started yet,
+// its end of day as an empty draft, to be closed in turn.
+
+// One day of the sheet: its rows, the items and how many sold, at the menu's prices, its discounts,
+// the rows left out, and once recorded its sales summary.
+public sealed record BulkSalesDay(DateOnly Date, int Rows, int Items, int Quantity, decimal Value, decimal Discounts, int Skipped, Guid? SaleId = null);
+
+// The sheet read and checked against the days' order: its days oldest first, every row left out and
+// why, what stops it (Problems, each in English and Arabic), the last closed day and the day the
+// file should start on; recorded, how many end-of-day drafts were made.
+public sealed record BulkSalesImport(
+    IReadOnlyList<BulkSalesDay> Days,
+    IReadOnlyList<SkippedSheetRow> Skipped,
+    IReadOnlyList<string> Problems,
+    DateOnly? LastClosedDate,
+    DateOnly? ExpectedFirstDate,
+    bool Ok,
+    bool Recorded = false,
+    int DraftsCreated = 0);
+
+public sealed record PreviewBulkSalesImportQuery(IReadOnlyList<DailySaleRow> Rows) : IRequest<BulkSalesImport>;
+
+public sealed record BulkImportSalesCommand(IReadOnlyList<DailySaleRow> Rows, string StaffName) : IRequest<BulkSalesImport>, IRetryOnConflict;
+
+internal sealed class BulkSalesPlanner(IMenuRepository menu, ISalesReceiptRepository sales, IEndOfDayRepository days, IBusinessCalendar calendar)
+{
+    public const int MaxRows = 20_000;
+    public const int MaxDays = 31;
+
+    public sealed record Day(DateOnly Date, int Rows, DailySheet Sheet);
+
+    public sealed record Plan(
+        IReadOnlyList<Day> Days, IReadOnlyList<SkippedSheetRow> Skipped, IReadOnlyList<string> Problems, DateOnly? LastClosed, DateOnly? ExpectedFirst,
+        SaleWriter.Menu Known)
+    {
+        public BulkSalesImport Result(IReadOnlyDictionary<DateOnly, Guid>? recorded = null, int drafts = 0) => new(
+            Days.Select(d => new BulkSalesDay(
+                    d.Date, d.Rows, d.Sheet.Items, d.Sheet.Quantity, d.Sheet.Value, d.Sheet.Discounts, d.Sheet.Skipped.Count,
+                    recorded?.GetValueOrDefault(d.Date)))
+                .ToList(),
+            Skipped, Problems, LastClosed, ExpectedFirst, Problems.Count == 0, recorded is not null, drafts);
+    }
+
+    public async Task<Plan> PlanAsync(IReadOnlyList<DailySaleRow> rows, CancellationToken cancellationToken)
+    {
+        if (rows.Count == 0)
+            throw new DomainException("The sheet has no rows on it. · الملف لا يحتوي على صفوف.");
+        if (rows.Count > MaxRows)
+            throw new DomainException($"Import {MaxRows:N0} rows at most at a time. · {MaxRows:N0} صف على الأكثر.");
+        var undated = rows.Where(r => r.Date is null).Select(r => r.Row).ToList();
+        if (undated.Count > 0)
+            throw new DomainException(
+                $"Every row needs its day in the Date column (dd/MM/yyyy): {(undated.Count == 1 ? "row" : "rows")} " +
+                $"{string.Join(", ", undated.Take(10))}{(undated.Count > 10 ? ", …" : "")} {(undated.Count == 1 ? "has" : "have")} none. " +
+                "· كل صف يحتاج تاريخ المبيعات في عمود التاريخ.");
+        var groups = rows.GroupBy(r => r.Date!.Value).OrderBy(g => g.Key).ToList();
+        if (groups.Count > MaxDays)
+            throw new DomainException($"Import {MaxDays} days at most at a time: the sheet has {groups.Count}. · {MaxDays} يومًا على الأكثر في الملف.");
+
+        var known = await SaleWriter.Menu.LoadAsync(menu, cancellationToken);
+        var targets = DailySalesItems.Of(known.Items.Values.ToList());
+        var problems = new List<string>();
+        var planned = new List<Day>();
+        foreach (var group in groups)
+        {
+            var sheet = DailySheet.Read(group, targets, known);
+            planned.Add(new Day(group.Key, group.Count(), sheet));
+            if (sheet.Lines.Count == 0)
+                problems.Add($"No item could be read for {DailySheet.Day(group.Key)}: see the rows left out. · لم يُقرأ أي صنف لهذا اليوم.");
+            else if (sheet.Problem(group.Key) is { } problem)
+                problems.Add(problem);
+        }
+
+        // The days' order (EndOfDaySequence): after the last closed day, never ahead of today.
+        var now = DateTime.UtcNow;
+        var today = new[] { calendar.BusinessDateOf(now), calendar.LocalDateOf(now) }.Max();
+        var lastClosed = await days.LastSubmittedDateAsync(cancellationToken);
+        var dates = planned.Select(d => d.Date).ToList();
+        foreach (var date in dates)
+        {
+            if (date > today)
+                problems.Add($"{DailySheet.Day(date)} has not come yet: import a day once it is over. · هذا اليوم لم يأتِ بعد.");
+            else if (lastClosed is { } last && date <= last)
+                problems.Add(
+                    $"{DailySheet.Day(date)} is closed already (the last closed day is {DailySheet.Day(last)}): leave it out of the file. " +
+                    "· هذا اليوم مُقفل بالفعل.");
+            else if (await sales.GetDailySummaryAsync(date, cancellationToken) is not null)
+                problems.Add(
+                    $"The sales of {DailySheet.Day(date)} are entered already: leave the day out of the file, or void them on Sales first. " +
+                    "· مبيعات هذا اليوم مسجلة بالفعل.");
+        }
+
+        // The day the file starts on: the first after the last closed day whose sales are not in yet.
+        DateOnly? expected = null;
+        if (lastClosed is { } closed)
+        {
+            var day = closed.AddDays(1);
+            while (day < today && await sales.GetDailySummaryAsync(day, cancellationToken) is not null)
+                day = day.AddDays(1);
+            expected = day;
+            if (dates[0] > day)
+                problems.Add(
+                    $"Missing day {DailySheet.Day(day)} in the sequence: the file starts on {DailySheet.Day(dates[0])}. " +
+                    "Please include it in the file or mark it as a Closed Day first. " +
+                    $"· يوم {DailySheet.Day(day)} مفقود من التسلسل، يرجى إضافته أو إغلاقه كيوم إجازة أولاً.");
+        }
+
+        // No day missing between them, unless its sales are in already.
+        for (var i = 1; i < dates.Count; i++)
+            for (var missing = dates[i - 1].AddDays(1); missing < dates[i]; missing = missing.AddDays(1))
+                if (await sales.GetDailySummaryAsync(missing, cancellationToken) is null)
+                    problems.Add(
+                        $"Missing day {DailySheet.Day(missing)} in the sequence. Please include it in the file or mark it as a Closed Day first. " +
+                        $"· يوم {DailySheet.Day(missing)} مفقود من التسلسل، يرجى إضافته أو إغلاقه كيوم إجازة أولاً.");
+
+        return new Plan(planned, planned.SelectMany(d => d.Sheet.Skipped).ToList(), problems, lastClosed, expected, known);
+    }
+}
+
+internal sealed class PreviewBulkSalesImportHandler(BulkSalesPlanner planner) : IRequestHandler<PreviewBulkSalesImportQuery, BulkSalesImport>
+{
+    public async Task<BulkSalesImport> Handle(PreviewBulkSalesImportQuery request, CancellationToken cancellationToken) =>
+        (await planner.PlanAsync(request.Rows, cancellationToken)).Result();
+}
+
+// Recorded all together or not at all, oldest day first: refused whole, naming what stops it, when
+// any day is out of order or cannot be read.
+internal sealed class BulkImportSalesHandler(BulkSalesPlanner planner, DailySalesWriter writer, IEndOfDayRepository days, IUnitOfWork unitOfWork)
+    : IRequestHandler<BulkImportSalesCommand, BulkSalesImport>
+{
+    public async Task<BulkSalesImport> Handle(BulkImportSalesCommand request, CancellationToken cancellationToken)
+    {
+        var plan = await planner.PlanAsync(request.Rows, cancellationToken);
+        if (plan.Problems.Count > 0)
+            throw new DomainException(
+                string.Join(" ", plan.Problems.Take(3)) + (plan.Problems.Count > 3 ? $" (and {plan.Problems.Count - 3} more)" : ""));
+
+        var recorded = new Dictionary<DateOnly, Guid>();
+        var drafts = 0;
+        foreach (var day in plan.Days)
+        {
+            var receipt = await writer.RecordAsync(
+                Guid.NewGuid(), day.Date, day.Sheet.Lines, request.StaffName, plan.Known, cancellationToken, day.Sheet.Discounts, day.Sheet.Reasons);
+            recorded[day.Date] = receipt.Id;
+            // Its end of day, to be closed in turn: an empty draft, unless one is started already.
+            if (await days.GetByDateAsync(day.Date, cancellationToken) is null)
+            {
+                days.Add(new EndOfDayReport(Guid.NewGuid(), day.Date, request.StaffName));
+                drafts++;
+            }
+        }
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+        return plan.Result(recorded, drafts);
     }
 }
 ```

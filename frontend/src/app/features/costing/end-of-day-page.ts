@@ -1547,7 +1547,10 @@ export class EndOfDayPage {
   protected readonly stranded = computed(() => {
     const s = this.sequence();
     const d = this.day();
-    return s && !s.allClosed && s.nextExpectedDate && d?.status === 'Draft' && d.date > s.nextExpectedDate ? s.nextExpectedDate : null;
+    // An empty one (a multi-day sales import makes them) waits for its turn: nothing to move.
+    const entries = !!d && (d.invoices.length > 0 || d.payouts.length > 0 || !!d.salesPhoto || !!d.notes
+      || [d.cashAmount, d.cardAmount, d.taxAmount, d.voidsAmount, d.openingFloat, d.discountsAmount].some((n) => (n ?? 0) > 0));
+    return s && !s.allClosed && s.nextExpectedDate && d?.status === 'Draft' && entries && d.date > s.nextExpectedDate ? s.nextExpectedDate : null;
   });
   protected readonly canMigrate = computed(() => this.approvals.canApprove());
   // A day the restaurant did not trade is closed as such from its blank page, in its turn.

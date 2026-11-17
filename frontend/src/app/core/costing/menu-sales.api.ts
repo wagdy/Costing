@@ -176,6 +176,34 @@ export interface DailySalesImportResult {
   quantity: number;
   value: number;
   skipped: SkippedRow[];
+  // The day's discounts read from the sheet.
+  discounts?: number;
+}
+
+// One day of a multi-day sheet: its rows, the items and how many sold, at the menu's prices, its
+// discounts, the rows left out, and once recorded its sales summary.
+export interface BulkSalesDay {
+  date: string;
+  rows: number;
+  items: number;
+  quantity: number;
+  value: number;
+  discounts: number;
+  skipped: number;
+  saleId: string | null;
+}
+
+// A multi-day sheet read and checked against the end of day's order (problems: what stops it, in
+// English and Arabic), and once recorded how many end-of-day drafts were made.
+export interface BulkSalesImport {
+  days: BulkSalesDay[];
+  skipped: SkippedRow[];
+  problems: string[];
+  lastClosedDate: string | null;
+  expectedFirstDate: string | null;
+  ok: boolean;
+  recorded: boolean;
+  draftsCreated: number;
 }
 
 // Breakage (كسر) entered on Waste.
@@ -300,6 +328,20 @@ export class MenuSalesApi {
     const form = new FormData();
     form.append('file', file);
     return this.http.post<DailySalesImportResult>('/api/sales/daily/import', form, { params: { date } });
+  }
+
+  // A sheet of several days, each row with its Date: checked against the days' order, nothing recorded.
+  previewBulkSales(file: File): Observable<BulkSalesImport> {
+    const form = new FormData();
+    form.append('file', file);
+    return this.http.post<BulkSalesImport>('/api/costing/sales/bulk-import-pos/preview', form);
+  }
+
+  // Recorded oldest day first, every day or none.
+  bulkImportSales(file: File): Observable<BulkSalesImport> {
+    const form = new FormData();
+    form.append('file', file);
+    return this.http.post<BulkSalesImport>('/api/costing/sales/bulk-import-pos', form);
   }
 
   staff(): Observable<Employee[]> {

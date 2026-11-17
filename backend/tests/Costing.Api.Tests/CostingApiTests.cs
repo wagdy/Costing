@@ -228,13 +228,14 @@ public class CostingApiTests
         using (var sales = new XLWorkbook(await dailyTemplate.Content.ReadAsStreamAsync(Cancel)))
         {
             var sheet = sales.Worksheet("Daily Sales");
+            // One day's sheet: its Date left blank, the day chosen on import.
             object[][] rows =
             [
-                ["6201 · Cheese crepe", 12],
-                ["6301-" + items[6301].GetProperty("sizes").EnumerateArray().Single(z => z.GetProperty("name").GetString() == "Kilo").GetProperty("id").GetInt32()
+                ["", "6201 · Cheese crepe", 12],
+                ["", "6301-" + items[6301].GetProperty("sizes").EnumerateArray().Single(z => z.GetProperty("name").GetString() == "Kilo").GetProperty("id").GetInt32()
                     + " · Mixed grill (Kilo)", 2],
-                ["Cheese crepe", 3],
-                ["Shawarma", 1],
+                ["", "Cheese crepe", 3],
+                ["", "Shawarma", 1],
             ];
             for (var r = 0; r < rows.Length; r++)
                 for (var c = 0; c < rows[r].Length; c++)
@@ -721,6 +722,70 @@ public class CostingApiTests
         Assert.Equal(HttpStatusCode.UnprocessableEntity,
             (await manager.GetAsync($"/api/costing/materials/{flour}/stock-card?from={Iso(today)}&to={Iso(today.AddDays(-1))}", Cancel)).StatusCode);
         Assert.Equal(HttpStatusCode.NotFound, (await manager.GetAsync($"/api/costing/materials/{Guid.NewGuid()}/stock-card", Cancel)).StatusCode);
+    }
+
+    // A week's sales in one sheet, the template's Date column filled in: previewed against the days'
+    // order, then recorded oldest day first with each day's end of day as a draft; a sheet with a day
+    // skipped refused whole, nothing recorded.
+    [Fact]
+    public async Task Several_days_of_sales_come_in_from_one_sheet_in_the_days_order_or_not_at_all()
+    {
+        await using var api = await TestApi.StartAsync();
+        var manager = await api.ManagerAsync();
+        var (mozzarella, large, _) = await PizzaAsync(manager);
+        var today = await TodayAsync(manager);
+        var (d4, d3, d2, d1) = (today.AddDays(-4), today.AddDays(-3), today.AddDays(-2), today.AddDays(-1));
+        await Json(await manager.PutAsJsonAsync($"/api/end-of-day/{Iso(d4)}/sales", new { cashAmount = 400 }, Cancel));
+        await Json(await manager.PostAsync($"/api/end-of-day/{Iso(d4)}/submit", null, Cancel));
+        var stocked = await OnHandAsync(manager, mozzarella);
+
+        XLWorkbook Filled(params object[][] rows)
+        {
+            var book = new XLWorkbook(manager.GetAsync("/api/sales/daily/template", Cancel).Result.Content.ReadAsStream(Cancel));
+            var sheet = book.Worksheet("Daily Sales");
+            for (var r = 0; r < rows.Length; r++)
+                for (var c = 0; c < rows[r].Length; c++)
+                    sheet.Cell(r + 2, c + 1).Value = XLCellValue.FromObject(rows[r][c]);
+            return book;
+        }
+        var pizza = $"6101-{large} · Margherita pizza (Large)";
+        DateTime On(DateOnly day) => day.ToDateTime(TimeOnly.MinValue);
+
+        // A day skipped: previewed with what stops it, and refused whole.
+        using (var gap = Filled([On(d3), pizza, 2], [On(d1), pizza, 1]))
+        {
+            var preview = await Json(await manager.PostAsync("/api/costing/sales/bulk-import-pos/preview", Sheet(gap, "week.xlsx"), Cancel));
+            Assert.False(preview.GetProperty("ok").GetBoolean());
+            Assert.StartsWith($"Missing day {d2:dd/MM/yyyy} in the sequence.", preview.GetProperty("problems")[0].GetString());
+            var refused = await manager.PostAsync("/api/costing/sales/bulk-import-pos", Sheet(gap, "week.xlsx"), Cancel);
+            Assert.Equal(HttpStatusCode.UnprocessableEntity, refused.StatusCode);
+            Assert.Equal(stocked, await OnHandAsync(manager, mozzarella));
+        }
+
+        // Three days, dates typed or Excel dates, a discount row: previewed, then recorded.
+        using var week = Filled(
+            [On(d2), pizza, 3], [d3.ToString("dd/MM/yyyy", CultureInfo.InvariantCulture), pizza, 4], [On(d3), "", "", 50, "Loyalty", 2], [On(d1), pizza, 1]);
+        var seen = await Json(await manager.PostAsync("/api/costing/sales/bulk-import-pos/preview", Sheet(week, "week.xlsx"), Cancel));
+        Assert.True(seen.GetProperty("ok").GetBoolean());
+        Assert.Equal([(Iso(d3), 4, 50m), (Iso(d2), 3, 0m), (Iso(d1), 1, 0m)], seen.GetProperty("days").EnumerateArray()
+            .Select(d => (d.GetProperty("date").GetString(), d.GetProperty("quantity").GetInt32(), d.GetProperty("discounts").GetDecimal())));
+        Assert.Equal(stocked, await OnHandAsync(manager, mozzarella));
+
+        var storekeeper = await api.UserAsync(manager, "Samir", UserRole.Storekeeper);
+        Assert.Equal(HttpStatusCode.Forbidden, (await storekeeper.PostAsync("/api/costing/sales/bulk-import-pos", Sheet(week, "week.xlsx"), Cancel)).StatusCode);
+        var imported = await Json(await manager.PostAsync("/api/costing/sales/bulk-import-pos", Sheet(week, "week.xlsx"), Cancel));
+        Assert.Equal((true, 3), (imported.GetProperty("recorded").GetBoolean(), imported.GetProperty("draftsCreated").GetInt32()));
+        // The eight pizzas' mozzarella taken by the recipe.
+        Assert.True(await OnHandAsync(manager, mozzarella) < stocked);
+        var sales = await Json(await manager.GetAsync($"/api/sales?from={Iso(d3)}&to={Iso(d1)}", Cancel));
+        Assert.Equal(3, sales.GetProperty("receipts").GetArrayLength());
+        Assert.Equal(50m, sales.GetProperty("receipts").EnumerateArray().Single(r => r.GetProperty("businessDate").GetString() == Iso(d3))
+            .GetProperty("discountAmount").GetDecimal());
+        // Each day's end of day a draft, closed in turn; none of them said to be stranded.
+        var listed = await Json(await manager.GetAsync($"/api/end-of-day?from={Iso(d3)}&to={Iso(d1)}", Cancel));
+        Assert.Equal(["Draft", "Draft", "Draft"], listed.EnumerateArray().Select(d => d.GetProperty("status").GetString()));
+        var sequence = await Json(await manager.GetAsync("/api/end-of-day/sequence", Cancel));
+        Assert.Equal((Iso(d3), 0), (sequence.GetProperty("nextExpectedDate").GetString(), sequence.GetProperty("strandedDrafts").GetArrayLength()));
     }
 
     // The end of the day handed in by a branch that works that page alone: its invoices with their

@@ -48,13 +48,28 @@ public class WorkbookTests
         using (var template = new XLWorkbook(DailySalesWorkbook.Build(new DailySalesSheet(["1 · Burger", "10-101 · Shawarma (Kilo tray)"]))))
         {
             var data = template.Worksheet(DailySalesWorkbook.DataSheetName);
-            Assert.Equal([DailySalesWorkbook.ItemHeader, DailySalesWorkbook.QuantityHeader], data.Row(1).CellsUsed().Select(c => c.GetString()));
-            Assert.Contains(data.DataValidations, v => v.Ranges.Any(r => r.FirstCell().Address.ColumnNumber == 1));
+            Assert.Equal(
+                [DailySalesWorkbook.DateHeader, DailySalesWorkbook.ItemHeader, DailySalesWorkbook.QuantityHeader, DailySalesWorkbook.DiscountHeader,
+                 DailySalesWorkbook.DiscountReasonHeader, DailySalesWorkbook.DiscountCountHeader],
+                data.Row(1).CellsUsed().Select(c => c.GetString()));
+            Assert.Contains(data.DataValidations, v => v.Ranges.Any(r => r.FirstCell().Address.ColumnNumber == 2));
+            Assert.Equal("dd/mm/yyyy", data.Cell(2, 1).Style.NumberFormat.Format);
         }
 
-        // A sheet of its own, headed in Arabic, the quantity first: read as written.
+        // A sheet of its own, headed in Arabic, the quantity first, no date: read as written.
         var row = Assert.Single(DailySalesWorkbook.Read(Sheet(["الكمية المباعة", "الصنف"], [12, "10-101 · Shawarma (Kilo tray)"])));
-        Assert.Equal((2, "10-101 · Shawarma (Kilo tray)", (decimal?)12), (row.Row, row.Item, row.Quantity));
+        Assert.Equal((2, "10-101 · Shawarma (Kilo tray)", (decimal?)12, (DateOnly?)null), (row.Row, row.Item, row.Quantity, row.Date));
+
+        // Several days: the date as dd/MM/yyyy text or an Excel date; a day's discount on a row of its own.
+        var rows = DailySalesWorkbook.Read(Sheet(["Date", "Item", "Quantity", "Discount", "Reason", "Bills"],
+            ["15/11/2026", "1 · Burger", 3, "", "", ""],
+            [new DateTime(2026, 11, 16), "1 · Burger", 2, "", "", ""],
+            ["16/11/2026", "", "", 40, "Loyalty", 2]));
+        Assert.Equal(
+            [(new DateOnly(2026, 11, 15), "1 · Burger", (decimal?)3, (decimal?)null), (new DateOnly(2026, 11, 16), "1 · Burger", 2, null),
+             (new DateOnly(2026, 11, 16), null, null, 40)],
+            rows.Select(r => (r.Date!.Value, r.Item, r.Quantity, r.DiscountAmount)));
+        Assert.Equal(("Loyalty", (decimal?)2, true, false), (rows[2].DiscountReason, rows[2].DiscountCount, rows[2].HasDiscount, rows[2].HasItem));
     }
 
     // A sheet of the headings given, in that order, and its rows.

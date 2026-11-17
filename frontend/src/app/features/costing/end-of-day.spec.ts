@@ -508,6 +508,17 @@ describe('the end of the day', () => {
     ]);
   });
 
+  it('takes an empty draft after the day to close next, as a multi-day sales import makes them, for one waiting its turn', async () => {
+    api.day.mockImplementation((date: string) => of(date === '2026-11-04' ? day({ id: 'day-17', date: '2026-11-04' }) : null));
+    api.sequence.mockReturnValue(of(sequence({ lastClosedDate: '2026-11-02', nextExpectedDate: '2026-11-03' })));
+    manager = true;
+    const { fixture, el, page } = await render();
+    await page['choose']('2026-11-04');
+    fixture.detectChanges();
+    expect(el.querySelector('.sequence-banner.stranded')).toBeNull();
+    expect(text(el.querySelector('.sequence-banner')!)).toContain('You are currently closing Tue 3 Nov 2026');
+  });
+
   it('asks the reason for a closed day and for a move, and gives nothing back without one', () => {
     const close = vi.fn();
     TestBed.configureTestingModule({ providers: [{ provide: MAT_DIALOG_DATA, useValue: { date: '2026-11-03' } }, { provide: MatDialogRef, useValue: { close } }] });

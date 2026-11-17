@@ -706,9 +706,11 @@ internal sealed class GetEndOfDaySequenceHandler(
                 locked is { } l && lastDate <= l, (await zReports.GetByDateAsync(lastDate, cancellationToken)).Count);
         }
         var closing = next ?? today;
-        // Drafts past the day to close next, which can never be handed in where they are.
+        // Drafts past the day to close next with something on them, which cannot be handed in where they
+        // are; an empty one (made by a multi-day sales import) waits for its turn.
         var stranded = next is { } expected
             ? (await days.GetDraftsAfterAsync(expected, cancellationToken))
+                .Where(d => d.HasEntries || d.Notes is not null)
                 .Select(d => new EndOfDayStranded(d.Id, d.Date, d.Invoices.Count, d.Payouts.Count, d.NetSales > 0))
                 .ToList()
             : [];

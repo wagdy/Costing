@@ -4897,7 +4897,7 @@ public sealed record SaveManualSalesRequest(IReadOnlyList<ManualSalesLineDto> Li
 
 `MenuSalesController.cs` يحمل خمسة Controllers صغيرة: `MenuController` (`api/menu`)، `SalesController` (`api/sales`)، `StaffController` (`api/staff`)، `AccessController` (`api/access`: توزيع الأقسام، الفصل 03)، و `BreakageController` (`api/costing/breakage`).
 
-> 📄 **`backend/src/Costing.Api/Controllers/MenuSalesController.cs`** — 260 سطر
+> 📄 **`backend/src/Costing.Api/Controllers/MenuSalesController.cs`** — 281 سطر
 
 ```csharp
 using MediatR;
@@ -5082,12 +5082,33 @@ public sealed class SalesController(ISender sender, IBusinessCalendar calendar) 
     [HttpPost("daily/import")]
     [Authorize(Policy = Permissions.InventoryManage)]
     [RequestSizeLimit(MaxImportBytes + 64 * 1024)]
-    public async Task<DailySalesImportResult> ImportDaily([FromQuery] DateOnly date, IFormFile file, CancellationToken cancellationToken)
+    public async Task<DailySalesImportResult> ImportDaily([FromQuery] DateOnly date, IFormFile file, CancellationToken cancellationToken) =>
+        await sender.Send(new ImportDailySalesCommand(date, await ReadAsync(file), UserClaims.NameOf(User)), cancellationToken);
+
+    // Several days in one sheet (استيراد مبيعات متعدد الأيام), each row with its Date: read and checked
+    // against the days' order, nothing recorded.
+    [HttpPost("daily/bulk-import/preview")]
+    [HttpPost("/api/costing/sales/bulk-import-pos/preview")]
+    [Authorize(Policy = Permissions.InventoryManage)]
+    [RequestSizeLimit(MaxImportBytes + 64 * 1024)]
+    public async Task<BulkSalesImport> PreviewBulk(IFormFile file, CancellationToken cancellationToken) =>
+        await sender.Send(new PreviewBulkSalesImportQuery(await ReadAsync(file)), cancellationToken);
+
+    // Recorded oldest day first, all of them or none (422 naming what stops it): each day's sales
+    // summary and, for a day not started, its end of day as an empty draft.
+    [HttpPost("daily/bulk-import")]
+    [HttpPost("/api/costing/sales/bulk-import-pos")]
+    [Authorize(Policy = Permissions.InventoryManage)]
+    [RequestSizeLimit(MaxImportBytes + 64 * 1024)]
+    public async Task<BulkSalesImport> ImportBulk(IFormFile file, CancellationToken cancellationToken) =>
+        await sender.Send(new BulkImportSalesCommand(await ReadAsync(file), UserClaims.NameOf(User)), cancellationToken);
+
+    private static async Task<IReadOnlyList<DailySaleRow>> ReadAsync(IFormFile file)
     {
         if (file.Length > MaxImportBytes)
             throw new DomainException("The file is larger than 10 MB. · الملف أكبر من 10 ميجابايت.");
         await using var stream = file.OpenReadStream();
-        return await sender.Send(new ImportDailySalesCommand(date, DailySalesWorkbook.Read(stream), UserClaims.NameOf(User)), cancellationToken);
+        return DailySalesWorkbook.Read(stream);
     }
 }
 
