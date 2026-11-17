@@ -113,23 +113,26 @@ public class EndOfDayPayoutTests
         Assert.Equal(EndOfDayVoucherState.InSafe, day.Payouts.Single().Voucher);
         Assert.Equal(900m, await _pos.Inventory.SupplierLedger.BalanceAsync(_nile));
 
-        // Reopened: what went to the safe is corrected there; a new advance is asked of a manager
-        // when the day is handed in again.
-        await _pos.Send(new ReopenEndOfDayCommand(_today, "Omar"));
-        var locked = await Assert.ThrowsAsync<DomainException>(() => _pos.Send(new ChangeEndOfDayPayoutCommand(_today, paid, _nile, 50, null, "Ali")));
-        Assert.StartsWith("It went to the safe when the day was handed in", locked.Message);
+        // Undone by a manager: its safe entry voided (owed again), the payment the day's to change,
+        // and made a safe entry again, under a new id, when the day is handed in again.
+        var undone = await _pos.Send(new UndoLastEndOfDayCommand(_today, null, "Omar"));
+        Assert.Equal((1, EndOfDayVoucherState.None), (undone.PayoutsVoided, undone.Day.Payouts.Single().Voucher));
+        Assert.Equal(1_000m, await _pos.Inventory.SupplierLedger.BalanceAsync(_nile));
+        await _pos.Send(new ChangeEndOfDayPayoutCommand(_today, paid, _nile, 50, null, "Ali"));
         var advanced = Guid.NewGuid();
         await Advance(advanced, _mona, 75);
-        await _pos.Send(new SubmitEndOfDayCommand(_today, "Ali", "staff-ali", CanApprove: false));
-        Assert.Equal(EndOfDayVoucherState.Requested, await StateOf(advanced));
+        day = await _pos.Send(new SubmitEndOfDayCommand(_today, "Ali", "staff-ali", CanApprove: false));
+        Assert.Equal([EndOfDayVoucherState.Requested, EndOfDayVoucherState.Requested], day.Payouts.Select(p => p.Voucher));
 
-        // Refused: nothing entered, so it can be taken off (once the day is reopened).
-        await _pos.Send(new RejectRequestCommand(advanced, "No signature on the receipt", "Omar"));
-        Assert.Equal(EndOfDayVoucherState.Refused, await StateOf(advanced));
-        await _pos.Send(new ReopenEndOfDayCommand(_today, "Omar"));
+        // Undone while they wait: both requests refused; the advance taken off.
+        undone = await _pos.Send(new UndoLastEndOfDayCommand(_today, null, "Omar"));
+        Assert.Equal((0, 2), (undone.PayoutsVoided, undone.RequestsRefused));
         day = await _pos.Send(new RemoveEndOfDayPayoutCommand(_today, advanced, "Ali"));
         Assert.Equal([paid], day.Payouts.Select(p => p.Id));
         Assert.Null(await _pos.EndOfDays.GetAsync(advanced));
+        // Handed in by a manager again: the payment of 50 in the safe, 950 owed.
+        await _pos.Send(new SubmitEndOfDayCommand(_today, "Omar", "staff-omar", CanApprove: true));
+        Assert.Equal(950m, await _pos.Inventory.SupplierLedger.BalanceAsync(_nile));
     }
 
     [Fact]

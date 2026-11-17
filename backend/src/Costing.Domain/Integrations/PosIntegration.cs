@@ -72,6 +72,14 @@ public sealed class PosZReport : AggregateRoot
         Revision += 1;
     }
 
+    // Its day undone (the end of day reversed): the same report sent again is recorded again, not
+    // taken for a resend.
+    public void Forgotten()
+    {
+        PayloadHash = string.Empty;
+        UpdatedAtUtc = DateTime.UtcNow;
+    }
+
     private void Set(DateOnly businessDate, int? shiftNumber, string source, string payloadHash, string payload)
     {
         BusinessDate = businessDate;
@@ -106,6 +114,9 @@ public sealed class PosDay : AggregateRoot
     // The day's discounts and why, every shift's together, as the reports gave them.
     public decimal DiscountsAmount { get; private set; }
     public IReadOnlyList<DiscountReason> DiscountReasons => _discountReasons.AsReadOnly();
+
+    // Its end of day undone: what it made voided, nothing recorded until a report comes again.
+    public void Undone() => Recorded(null, null);
 
     public void Recorded(Guid? saleId, Guid? takingsId, decimal discounts = 0, IReadOnlyList<DiscountReason>? discountReasons = null)
     {

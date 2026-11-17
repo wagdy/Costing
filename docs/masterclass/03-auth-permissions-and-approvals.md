@@ -1568,7 +1568,7 @@ internal sealed class GetApprovalPreviewHandler(IApprovalRequestRepository reque
 
 **في الدفاتر لا يُحذف شيء مُرحّل؛ يُلغى (Void).** حذف فاتورة مرحّلة = حركات مخزون عكسية بنفس تكلفتها + عكس قيد الخزنة أو حساب المورد. حذف قيد خزنة = قيد عكسي بتاريخ اليوم. `DeletionTargets` يعرف لكل وحدة كيف "يلغي" سجلها، و `RequestDeletionCommand`: من يملك القرار يلغي فورًا (ويُسجل كموافَق منه)، وغيره يطلب. نقطة النهاية `POST api/inventory/deletion-requests` في `InventoryController` (الفصل 05).
 
-> 📄 **`backend/src/Costing.Application/Approvals/Deletions.cs`** — 389 سطر
+> 📄 **`backend/src/Costing.Application/Approvals/Deletions.cs`** — 390 سطر
 
 ```csharp
 using System.Globalization;
@@ -1889,10 +1889,11 @@ internal sealed class DeletionTargets(
     // The reversing entries for what a source put in or took out, each material moved back.
     // A posted invoice voided: its goods back out of stock, its cash back where it came from, and
     // what it put on its supplier's account off it. replacedBy, the invoice correcting it.
-    public async Task<IReadOnlyList<StockMovement>> VoidInvoiceAsync(PurchaseInvoice invoice, string by, Guid? replacedBy, CancellationToken cancellationToken)
+    public async Task<IReadOnlyList<StockMovement>> VoidInvoiceAsync(
+        PurchaseInvoice invoice, string by, Guid? replacedBy, CancellationToken cancellationToken, bool? takingsInSafe = null)
     {
         var reversals = await ReverseAsync(invoice.Id, StockMovementReason.Purchase, by, cancellationToken);
-        await treasury.UndoInvoiceAsync(invoice, by, cancellationToken);
+        await treasury.UndoInvoiceAsync(invoice, by, cancellationToken, takingsInSafe);
         invoice.Void(by, replacedBy);
         // Against a purchase order: what it brought comes off it again.
         await receiver.VoidedAsync(invoice, cancellationToken);
@@ -2215,7 +2216,7 @@ export class CanDirective {
 
 > **Guards الواجهة ليست أمانًا.** هي تجربة مستخدم (إخفاء ما لا يملكه). الأمان الحقيقي في الـ API: `[CostingTab]` و `[Authorize]`.
 
-> 📄 **`frontend/src/app/core/costing/costing-tabs.ts`** — 102 سطر
+> 📄 **`frontend/src/app/core/costing/costing-tabs.ts`** — 103 سطر
 
 ```ts
 import { Injectable, computed, inject } from '@angular/core';
@@ -2310,12 +2311,13 @@ export class CostingAccess {
   }
 }
 
-// A section opened by its address only for whoever works it: the first one they do otherwise.
+// A section opened by its address only for whoever works it (any of the tabs given): the first one
+// they do otherwise.
 export const costingTabGuard =
-  (tab: CostingTab): CanActivateFn =>
+  (...tabs: CostingTab[]): CanActivateFn =>
   () => {
     const access = inject(CostingAccess);
-    if (access.has(tab))
+    if (tabs.some((tab) => access.has(tab)))
       return true;
     const first = access.first();
     return inject(Router).createUrlTree(first ? ['/costing', first] : ['/account']);

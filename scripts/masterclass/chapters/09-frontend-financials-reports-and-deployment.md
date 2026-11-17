@@ -119,8 +119,11 @@
 - `KpisPage`: المؤشرات بالمدى الصحي وسبب النقص، وقائمة الدخل، وإدخال المصروفات الشهرية.
 - `DailyBreakEvenPage`: نقطة التعادل اليومية: جملة حية بالعربية والإنجليزية (ما يجب بيعه، وما بِيع، والربح بالأخضر أو الخسارة بالأحمر)، ومقياس أفقي من الصفر بخط عند نقطة التعادل وتعبئة بالكهرماني حتى تجاوزه ثم بالأخضر (`role="meter"`)، وأربع بطاقات بشرح (ⓘ)، والرجوع ليوم سابق. `gaugeScale` دالة نقية لمدى المقياس.
 - `BreakEvenPage`: ورقة نقطة التعادل وسيناريوهاتها الأربعة.
+- `DailySummariesPage` (`/costing/reports/daily-summaries`): لوحة تصحيح المدير: كل تقفيل في فترة (حتى 92 يومًا)، وآخر مقفول والتالي وإقفال الدفاتر فوقها، وزر **Undo & Reopen Day** على صف آخر يوم مقفول فقط للمدير. التبويب يظهر فقط لمن يقرأ تقفيل اليوم (`EndOfDay` أو `Purchases` أو `Financials`)، والمسار محمي بـ `costingTabGuard` الذي صار يقبل أكثر من قسم.
 
 @@file frontend/src/app/features/costing/costing-reports-shell.ts
+
+@@file frontend/src/app/features/costing/daily-summaries-page.ts
 
 @@file frontend/src/app/features/costing/spending-page.ts
 

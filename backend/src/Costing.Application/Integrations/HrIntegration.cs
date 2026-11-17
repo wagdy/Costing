@@ -361,7 +361,7 @@ internal sealed class HrOutbox(IHrLinkStore links, ISyncedEmployeeRepository syn
         if (await synced.GetByStaffMemberAsync(staffId, cancellationToken) is not { } employee)
             return;
         // From the end of the day: its own note and signed receipt, the day being said as the source.
-        var payout = (await days.GetByPayoutAsync(entry.Id, cancellationToken))?.Payouts.FirstOrDefault(p => p.Id == entry.Id);
+        var payout = (await days.GetByPayoutAsync(entry.Id, cancellationToken))?.Payouts.FirstOrDefault(p => p.Id == entry.Id || p.VoucherId == entry.Id);
         var receipt = voided ? null : payout?.Receipt;
         var payload = new
         {
@@ -374,7 +374,7 @@ internal sealed class HrOutbox(IHrLinkStore links, ISyncedEmployeeRepository syn
             amount = -entry.Amount,
             notes = payout is null ? entry.Notes : payout.Note,
             source = entry.RevenueDate is { } day ? $"End of day {day.ToString("yyyy-MM-dd", Invariant)}" : "Safe",
-            receipt = receipt is null ? null : new { photoId = entry.Id, receipt.FileName, receipt.ContentType },
+            receipt = receipt is null ? null : new { photoId = payout?.Id ?? entry.Id, receipt.FileName, receipt.ContentType },
         };
         Queue(Advance, voided, entry.Id, payload,
             $"{(voided ? "Void advance" : "Advance")} · {employee.FullName} · {CompanyMoney.Text(-entry.Amount)} · {entry.BusinessDate.ToString("d MMM", Invariant)}");

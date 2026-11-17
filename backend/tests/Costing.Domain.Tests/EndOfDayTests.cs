@@ -23,7 +23,7 @@ public class EndOfDayTests
     }
 
     [Fact]
-    public void Submitted_it_is_kept_as_it_is_until_reopened_and_what_is_posted_stays_posted()
+    public void Submitted_it_is_kept_as_it_is_until_undone_and_then_unposted()
     {
         var day = new EndOfDayReport(Guid.NewGuid(), Day, "Ali");
         var invoice = day.AddInvoice(Guid.NewGuid(), EndOfDayInvoiceKind.Cash, Guid.NewGuid(), 50, null, Photo, "Ali");
@@ -41,10 +41,12 @@ public class EndOfDayTests
         day.Posted(invoice.Id, purchase);
         Assert.Throws<DomainException>(() => day.Posted(invoice.Id, Guid.NewGuid()));
 
-        day.Reopen("Boss");
-        Assert.Equal((EndOfDayStatus.Draft, "Boss"), (day.Status, day.ReopenedBy));
-        Assert.Throws<DomainException>(() => day.ChangeInvoice(invoice.Id, EndOfDayInvoiceKind.Credit, Guid.NewGuid(), 50, null, "Ali"));
-        Assert.Throws<DomainException>(() => day.Reopen("Boss"));
+        // Undone by a manager: a draft again, its invoice no longer posted (its purchase invoice is
+        // voided by the caller), so it is corrected and posted again.
+        day.Undo("Boss", " Closed on the wrong day ");
+        Assert.Equal((EndOfDayStatus.Draft, "Boss", "Closed on the wrong day", (Guid?)null), (day.Status, day.ReopenedBy, day.ReopenReason, invoice.PurchaseInvoiceId));
+        day.ChangeInvoice(invoice.Id, EndOfDayInvoiceKind.Credit, Guid.NewGuid(), 50, null, "Ali");
+        Assert.Throws<DomainException>(() => day.Undo("Boss"));
     }
 
     [Fact]
@@ -97,14 +99,17 @@ public class EndOfDayTests
         day.Submit("Ali");
         day.Vouchered(paid.Id);
 
-        day.Reopen("Boss");
-        Assert.StartsWith("It went to the safe", Assert.Throws<DomainException>(() => day.ChangePayout(paid.Id, supplier, 50, null, "Ali")).Message);
+        // Handed in and in the safe: not changed here until a manager undoes the day.
+        Assert.Contains("a manager undoes it", Assert.Throws<DomainException>(() => day.ChangePayout(paid.Id, supplier, 50, null, "Ali")).Message);
         Assert.Throws<DomainException>(() => day.RemovePayout(paid.Id, "Ali"));
-        // A clearer photo of its receipt: the money is as it was.
+
+        // The day undone: its safe entry voided by the caller, the payment is the day's again.
+        day.Undo("Boss");
+        Assert.Null(paid.VoucheredAtUtc);
+        day.ChangePayout(paid.Id, supplier, 50, null, "Ali");
         day.ReplacePayoutReceipt(paid.Id, EndOfDayPhoto.Of("clear.jpg", "image/jpeg", 10), "Ali");
-        Assert.Equal("clear.jpg", paid.Receipt.FileName);
-        // Refused by a manager: nothing was entered for it, so it can go.
-        day.RemovePayout(paid.Id, "Ali", voucherRefused: true);
+        Assert.Equal(("clear.jpg", 50m), (paid.Receipt.FileName, paid.Amount));
+        day.RemovePayout(paid.Id, "Ali");
         Assert.Empty(day.Payouts);
     }
 
@@ -114,5 +119,31 @@ public class EndOfDayTests
         Assert.Throws<DomainException>(() => EndOfDayPhoto.Of("notes.txt", "text/plain", 10));
         Assert.Throws<DomainException>(() => EndOfDayPhoto.Of("huge.jpg", "image/jpeg", 11 * 1024 * 1024));
         Assert.Equal(("scan.pdf", "application/pdf"), (EndOfDayPhoto.Of("C:/x/scan.pdf", "Application/PDF", 10).FileName, EndOfDayPhoto.Of("scan.pdf", "Application/PDF", 10).ContentType));
+    }
+
+    [Fact]
+    public void Days_are_closed_in_exact_order_never_ahead_nor_in_the_locked_books()
+    {
+        var today = new DateOnly(2026, 11, 17);
+        // Before any day is closed, any day up to today starts the sequence.
+        EndOfDaySequence.Check(new DateOnly(2026, 11, 1), null, today, null);
+        Assert.Throws<DomainException>(() => EndOfDaySequence.Check(today.AddDays(1), null, today, null));
+
+        // The 15th closed: the 16th only.
+        var last = new DateOnly(2026, 11, 15);
+        EndOfDaySequence.Check(new DateOnly(2026, 11, 16), last, today, null);
+        Assert.Contains("Close Mon 16 Nov 2026 first", Assert.Throws<DomainException>(() => EndOfDaySequence.Check(today, last, today, null)).Message);
+        Assert.Contains("closed already", Assert.Throws<DomainException>(() => EndOfDaySequence.Check(last, last, today, null)).Message);
+        Assert.Contains("locked", Assert.Throws<DomainException>(() => EndOfDaySequence.Check(new DateOnly(2026, 11, 16), last, today, new DateOnly(2026, 11, 16))).Message);
+        Assert.Equal(new DateOnly(2026, 11, 16), EndOfDaySequence.NextAfter(last));
+    }
+
+    [Fact]
+    public void A_day_that_sold_nothing_is_closed_only_when_said_so()
+    {
+        var day = new EndOfDayReport(Guid.NewGuid(), new DateOnly(2026, 11, 16), "Ali");
+        Assert.Contains("close it as a day with no sales", Assert.Throws<DomainException>(() => day.Submit("Ali")).Message);
+        day.Submit("Ali", zeroSales: true);
+        Assert.Equal((EndOfDayStatus.Submitted, 0m), (day.Status, day.NetSales));
     }
 }

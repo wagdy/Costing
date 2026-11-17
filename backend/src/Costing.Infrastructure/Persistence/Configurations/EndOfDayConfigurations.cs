@@ -27,6 +27,7 @@ internal sealed class EndOfDayReportConfiguration : IEntityTypeConfiguration<End
         builder.Property(d => d.UpdatedBy).HasMaxLength(200);
         builder.Property(d => d.SubmittedBy).HasMaxLength(200);
         builder.Property(d => d.ReopenedBy).HasMaxLength(200);
+        builder.Property(d => d.ReopenReason).HasMaxLength(EndOfDayReport.MaxNotes);
         builder.Ignore(d => d.SalesPhoto);
         builder.Ignore(d => d.IsSubmitted);
         builder.Ignore(d => d.NetSales);
@@ -78,6 +79,8 @@ internal sealed class EndOfDayPayoutConfiguration : IEntityTypeConfiguration<End
         builder.Property(p => p.ReceiptContentType).HasMaxLength(64);
         builder.Ignore(p => p.Receipt);
         builder.Ignore(p => p.PayeeId);
+        // The safe entry it is made: found by it, as the HR link and a voided day find their payment.
+        builder.HasIndex(p => p.VoucherId).IsUnique();
         builder.HasOne<Supplier>().WithMany().HasForeignKey(p => p.SupplierId).OnDelete(DeleteBehavior.Restrict);
         builder.HasOne<StaffMember>().WithMany().HasForeignKey(p => p.EmployeeId).OnDelete(DeleteBehavior.Restrict);
     }

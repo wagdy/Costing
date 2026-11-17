@@ -217,7 +217,7 @@ public sealed record AdvanceRow(
 
 // Tax and service (إعدادات الضريبة والخدمة): the till's tax rate, as the delivery system set it (null
 // until it has synced, when the till cannot price a bill either), and the service charge.
-public sealed record FinancialSettingsDto(decimal? TaxPercent, decimal ServicePercent, string? UpdatedBy, DateTime? UpdatedAtUtc);
+public sealed record FinancialSettingsDto(decimal? TaxPercent, decimal ServicePercent, string? UpdatedBy, DateTime? UpdatedAtUtc, DateOnly? BooksLockedUntil = null);
 
 // The tax rate left out of a save stays as it is.
 public sealed record SaveFinancialSettingsRequest(decimal ServicePercent, decimal? TaxPercent = null);
@@ -707,7 +707,27 @@ public sealed class TreasuryService(CostingDbContext db, IBusinessCalendar clock
     public async Task<FinancialSettingsDto> GetSettingsAsync(CancellationToken cancellationToken)
     {
         var row = await db.FinancialSettings.AsNoTracking().SingleOrDefaultAsync(cancellationToken);
-        return new FinancialSettingsDto(await TaxPercentAsync(cancellationToken), row?.ServicePercent ?? 0, row?.UpdatedBy, row?.UpdatedAtUtc);
+        return new FinancialSettingsDto(await TaxPercentAsync(cancellationToken), row?.ServicePercent ?? 0, row?.UpdatedBy, row?.UpdatedAtUtc, row?.BooksLockedUntil);
+    }
+
+    // The books locked until a day, or unlocked (null): a manager's. Never a day still to come, and
+    // never past the last day closed, which would leave the next day closed out.
+    public async Task<FinancialSettingsDto> LockBooksAsync(DateOnly? until, string by, CancellationToken cancellationToken)
+    {
+        if (until > Today)
+            throw new DomainException("The books are locked up to today at the latest. · الإقفال حتى اليوم على الأكثر.");
+        var lastClosed = await db.EndOfDayReports.Where(d => d.Status == Domain.EndOfDay.EndOfDayStatus.Submitted).MaxAsync(d => (DateOnly?)d.Date, cancellationToken);
+        if (until is { } day && lastClosed is { } last && day > last)
+            throw new DomainException(
+                $"The last day closed is {last.ToString("d MMM yyyy", Invariant)}: lock the books up to it at the latest, the days after it are still to be closed. · لا تقفل بعد آخر يوم مغلق.");
+        var row = await db.FinancialSettings.SingleOrDefaultAsync(cancellationToken);
+        if (row is null)
+            db.FinancialSettings.Add(row = new FinancialSettings());
+        row.BooksLockedUntil = until;
+        row.UpdatedBy = by;
+        row.UpdatedAtUtc = DateTime.UtcNow;
+        await db.SaveChangesAsync(cancellationToken);
+        return await GetSettingsAsync(cancellationToken);
     }
 
     public async Task<FinancialSettingsDto> SaveSettingsAsync(SaveFinancialSettingsRequest request, string by, CancellationToken cancellationToken)

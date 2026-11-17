@@ -16,8 +16,8 @@ namespace Costing.Api.Controllers;
 // section (a branch can work it alone) and submitted. Whoever works Purchases or Financials reads it
 // too: the daily batch makes an invoice of each, the takings come from its sales. Submitted, each
 // payment and advance becomes the safe's entry out of the day's takings: at once for a manager,
-// asked of one for anyone else. A day is reopened by a manager. Dates are the business day's,
-// yyyy-MM-dd.
+// asked of one for anyone else. Days are closed in exact order (GET sequence says which is next); a
+// manager undoes the last closed one (POST void-last). Dates are the business day's, yyyy-MM-dd.
 [ApiController]
 [Route("api/end-of-day")]
 [Authorize(Policy = Permissions.InventoryManage)]
@@ -31,6 +31,13 @@ public sealed class EndOfDayController(ISender sender) : ControllerBase
     [CostingTab(Readers)]
     public Task<IReadOnlyList<EndOfDayDto>> GetDays([FromQuery] DateOnly from, [FromQuery] DateOnly to, CancellationToken cancellationToken) =>
         sender.Send(new GetEndOfDaysQuery(from, to), cancellationToken);
+
+    // The days in their order: the last closed, the next to close, what to look at before closing it,
+    // and what undoing the last would reverse.
+    [HttpGet("sequence")]
+    [CostingTab(Readers)]
+    public Task<EndOfDaySequenceDto> GetSequence(CancellationToken cancellationToken) =>
+        sender.Send(new GetEndOfDaySequenceQuery(), cancellationToken);
 
     // The day, or nothing (204) before anything is handed in for it.
     [HttpGet("{date}")]
@@ -157,16 +164,29 @@ public sealed class EndOfDayController(ISender sender) : ControllerBase
     public Task<EndOfDayDto> RemoveSalesPhoto(DateOnly date, CancellationToken cancellationToken) =>
         sender.Send(new RemoveEndOfDaySalesPhotoCommand(date, StaffName), cancellationToken);
 
+    // Only the next day in order (422 otherwise); with no sales, only as a day that sold nothing
+    // (zeroSales). The answer says what to look at before the next day (warnings).
     [HttpPost("{date}/submit")]
     [CostingTab(CostingTabs.EndOfDay)]
-    public Task<EndOfDayDto> Submit(DateOnly date, CancellationToken cancellationToken) =>
-        sender.Send(new SubmitEndOfDayCommand(date, StaffName, StaffId, CanApprove), cancellationToken);
+    public Task<EndOfDayDto> Submit(DateOnly date, [FromBody(EmptyBodyBehavior = Microsoft.AspNetCore.Mvc.ModelBinding.EmptyBodyBehavior.Allow)] SubmitEndOfDayRequest? request, CancellationToken cancellationToken) =>
+        sender.Send(new SubmitEndOfDayCommand(date, StaffName, StaffId, CanApprove, request?.ZeroSales ?? false), cancellationToken);
 
+    // The last closed day undone (إلغاء تقفيل آخر يوم), a manager's: its takings, sales summary, the
+    // purchase invoices posted from it and its payments' safe entries reversed, the day a draft to
+    // hand in again. Date: the one the manager saw (refused if another was closed since).
+    [HttpPost("void-last")]
+    [HttpPost("/api/costing/end-of-day/void-last")]
+    [CostingTab(Readers)]
+    [Authorize(Policy = Permissions.ApprovalDecide)]
+    public Task<EndOfDayUndone> VoidLast(VoidLastEndOfDayRequest request, CancellationToken cancellationToken) =>
+        sender.Send(new UndoLastEndOfDayCommand(request.Date, request.Reason, StaffName, StaffId), cancellationToken);
+
+    // Reopening a day is undoing it: only the last closed one.
     [HttpPost("{date}/reopen")]
     [CostingTab(Readers)]
     [Authorize(Policy = Permissions.ApprovalDecide)]
-    public Task<EndOfDayDto> Reopen(DateOnly date, CancellationToken cancellationToken) =>
-        sender.Send(new ReopenEndOfDayCommand(date, StaffName), cancellationToken);
+    public async Task<EndOfDayDto> Reopen(DateOnly date, CancellationToken cancellationToken) =>
+        (await sender.Send(new UndoLastEndOfDayCommand(date, null, StaffName, StaffId), cancellationToken)).Day;
 
     // An invoice's photo or a payment's receipt by its id, the Z report's by the day's.
     [HttpGet("{date}/photos/{photoId:guid}")]
@@ -233,6 +253,10 @@ public sealed class EndOfDayPayoutForm
     public string? Note { get; set; }
     public IFormFile? File { get; set; }
 }
+
+public sealed record SubmitEndOfDayRequest(bool ZeroSales = false);
+
+public sealed record VoidLastEndOfDayRequest(DateOnly? Date = null, string? Reason = null);
 
 public sealed record EndOfDayInvoiceRequest(EndOfDayInvoiceKind Kind, Guid SupplierId, decimal ReportedTotal, string? Note, Guid? PurchaseOrderId = null);
 

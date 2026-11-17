@@ -316,10 +316,11 @@ internal sealed class DeletionTargets(
     // The reversing entries for what a source put in or took out, each material moved back.
     // A posted invoice voided: its goods back out of stock, its cash back where it came from, and
     // what it put on its supplier's account off it. replacedBy, the invoice correcting it.
-    public async Task<IReadOnlyList<StockMovement>> VoidInvoiceAsync(PurchaseInvoice invoice, string by, Guid? replacedBy, CancellationToken cancellationToken)
+    public async Task<IReadOnlyList<StockMovement>> VoidInvoiceAsync(
+        PurchaseInvoice invoice, string by, Guid? replacedBy, CancellationToken cancellationToken, bool? takingsInSafe = null)
     {
         var reversals = await ReverseAsync(invoice.Id, StockMovementReason.Purchase, by, cancellationToken);
-        await treasury.UndoInvoiceAsync(invoice, by, cancellationToken);
+        await treasury.UndoInvoiceAsync(invoice, by, cancellationToken, takingsInSafe);
         invoice.Void(by, replacedBy);
         // Against a purchase order: what it brought comes off it again.
         await receiver.VoidedAsync(invoice, cancellationToken);

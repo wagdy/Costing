@@ -222,6 +222,8 @@ NetCashInTill      = العُهدة + CashSalesCollected − CashPaidOut      (�
 ExpectedIntoSafe   = إجمالي الإيراد − CashPaidOut                    (ما يجب أن يصل الخزنة)
 ```
 
+**التسلسل:** `EndOfDaySequence` دالة نقية تفحص ترتيب الأيام (الفصل 05)، و `Undo` يعيد اليوم مسودة بسببه (`ReopenReason`) ويفك ربط الفواتير (`Unposted`) والمدفوعات (`Unvouchered`، بـ `VoucherId` جديد عليه فهرس فريد).
+
 @@file backend/src/Costing.Domain/EndOfDay/EndOfDayReport.cs
 
 **الخصومات والعروض (`Discounts`):** ما خُصم من أسعار المنيو قبل التحصيل، وأسبابه (`DiscountReason`: السبب والمبلغ وعدد الفواتير) مخزنة JSON (`HasDiscountReasons`). تُحفظ في تقفيل اليوم والتوريد (`SafeTransaction`) وملخص المبيعات ويوم نقطة البيع. لا تدخل الدرج ولا الخزنة: `NetCashInTill` لا يقرأها أصلًا، والإلغاء يعكسها بأسبابها (`Negated`). `Clean` يوحد السبب المكرر ويرفض أسبابًا أكبر من الخصومات أو بلا خصم.

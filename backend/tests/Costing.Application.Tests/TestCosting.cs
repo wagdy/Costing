@@ -40,6 +40,7 @@ public sealed class TestCosting
     public MenuStore Menu { get; } = new();
     public ComboStore Combos { get; } = new();
     public FixedAssetStore FixedAssets { get; } = new();
+    public BooksLockStore BooksLock { get; } = new();
     public PurchaseOrderStore PurchaseOrders { get; } = new();
     public SalesStore Sales { get; } = new();
     public StaffStore Staff { get; } = new();
@@ -65,6 +66,7 @@ public sealed class TestCosting
         services.AddSingleton<IUnitOfWork>(new NoUnitOfWork());
         services.AddSingleton<IBusinessCalendar>(new TestCalendar());
         services.AddSingleton<Costing.Application.Treasury.ITaxRate>(TaxRate);
+        services.AddSingleton<Costing.Application.EndOfDay.IBooksLock>(BooksLock);
         services.AddSingleton<IRawMaterialRepository>(Inventory);
         services.AddSingleton<IRecipeRepository>(Inventory.Recipes);
         services.AddSingleton<IRecipeCategoryRepository>(Inventory.RecipeCategories);
@@ -152,6 +154,13 @@ public sealed class TestCalendar : IBusinessCalendar
 }
 
 // The bills' tax, 14% unless a test changes it.
+public sealed class BooksLockStore : Costing.Application.EndOfDay.IBooksLock
+{
+    public DateOnly? LockedUntil { get; set; }
+
+    public Task<DateOnly?> LockedUntilAsync(CancellationToken cancellationToken) => Task.FromResult(LockedUntil);
+}
+
 public sealed class FixedTaxRate(decimal percent) : Costing.Application.Treasury.ITaxRate
 {
     public decimal Percent { get; set; } = percent;
@@ -371,12 +380,14 @@ public sealed class EndOfDayStore : ListStore<EndOfDayReport>, IEndOfDayReposito
     private readonly Dictionary<Guid, byte[]> _photos = new();
 
     public Task<EndOfDayReport?> GetByDateAsync(DateOnly date, CancellationToken cancellationToken = default) => Task.FromResult(All.SingleOrDefault(d => d.Date == date));
+    public Task<DateOnly?> LastSubmittedDateAsync(CancellationToken cancellationToken = default) =>
+        Task.FromResult(All.Where(d => d.IsSubmitted).Select(d => (DateOnly?)d.Date).Max());
     public Task<IReadOnlyList<EndOfDayReport>> GetBetweenAsync(DateOnly from, DateOnly to, CancellationToken cancellationToken = default) =>
         Task.FromResult<IReadOnlyList<EndOfDayReport>>(All.Where(d => d.Date >= from && d.Date <= to).ToList());
     public Task<EndOfDayReport?> GetByInvoiceAsync(Guid invoiceId, CancellationToken cancellationToken = default) =>
         Task.FromResult(All.SingleOrDefault(d => d.Invoices.Any(i => i.Id == invoiceId)));
     public Task<EndOfDayReport?> GetByPayoutAsync(Guid payoutId, CancellationToken cancellationToken = default) =>
-        Task.FromResult(All.SingleOrDefault(d => d.Payouts.Any(p => p.Id == payoutId)));
+        Task.FromResult(All.SingleOrDefault(d => d.Payouts.Any(p => p.Id == payoutId || p.VoucherId == payoutId)));
     public void Put(Guid id, byte[] content) => _photos[id] = content;
     public Task<byte[]?> GetAsync(Guid id, CancellationToken cancellationToken = default) => Task.FromResult(_photos.GetValueOrDefault(id));
     public void Remove(Guid id) => _photos.Remove(id);

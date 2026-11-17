@@ -4175,7 +4175,7 @@ export const recipeSheetRules: { en: string; ar: string }[] = [
 6. **يوم أُدخل يدويًا يُترك:** إن كان ملخص اليوم أو توريده مُدخلًا يدويًا (أو بالشيت)، يُرفض التقرير 422 مع تسمية ما يمنعه. ألغِ اليدوي لتسمح بالتقرير.
 7. تصادم مع تعديل آخر في نفس اللحظة ⇐ يُعاد تلقائيًا؛ إن استمر ⇐ 503 فيعيد الـ POS الإرسال لاحقًا.
 
-> 📄 **`backend/src/Costing.Domain/Integrations/PosIntegration.cs`** — 198 سطر
+> 📄 **`backend/src/Costing.Domain/Integrations/PosIntegration.cs`** — 209 سطر
 
 ```csharp
 using Costing.Domain.Common;
@@ -4252,6 +4252,14 @@ public sealed class PosZReport : AggregateRoot
         Revision += 1;
     }
 
+    // Its day undone (the end of day reversed): the same report sent again is recorded again, not
+    // taken for a resend.
+    public void Forgotten()
+    {
+        PayloadHash = string.Empty;
+        UpdatedAtUtc = DateTime.UtcNow;
+    }
+
     private void Set(DateOnly businessDate, int? shiftNumber, string source, string payloadHash, string payload)
     {
         BusinessDate = businessDate;
@@ -4286,6 +4294,9 @@ public sealed class PosDay : AggregateRoot
     // The day's discounts and why, every shift's together, as the reports gave them.
     public decimal DiscountsAmount { get; private set; }
     public IReadOnlyList<DiscountReason> DiscountReasons => _discountReasons.AsReadOnly();
+
+    // Its end of day undone: what it made voided, nothing recorded until a report comes again.
+    public void Undone() => Recorded(null, null);
 
     public void Recorded(Guid? saleId, Guid? takingsId, decimal discounts = 0, IReadOnlyList<DiscountReason>? discountReasons = null)
     {
@@ -5978,7 +5989,7 @@ internal sealed class HrOutbox(IHrLinkStore links, ISyncedEmployeeRepository syn
         if (await synced.GetByStaffMemberAsync(staffId, cancellationToken) is not { } employee)
             return;
         // From the end of the day: its own note and signed receipt, the day being said as the source.
-        var payout = (await days.GetByPayoutAsync(entry.Id, cancellationToken))?.Payouts.FirstOrDefault(p => p.Id == entry.Id);
+        var payout = (await days.GetByPayoutAsync(entry.Id, cancellationToken))?.Payouts.FirstOrDefault(p => p.Id == entry.Id || p.VoucherId == entry.Id);
         var receipt = voided ? null : payout?.Receipt;
         var payload = new
         {
@@ -5991,7 +6002,7 @@ internal sealed class HrOutbox(IHrLinkStore links, ISyncedEmployeeRepository syn
             amount = -entry.Amount,
             notes = payout is null ? entry.Notes : payout.Note,
             source = entry.RevenueDate is { } day ? $"End of day {day.ToString("yyyy-MM-dd", Invariant)}" : "Safe",
-            receipt = receipt is null ? null : new { photoId = entry.Id, receipt.FileName, receipt.ContentType },
+            receipt = receipt is null ? null : new { photoId = payout?.Id ?? entry.Id, receipt.FileName, receipt.ContentType },
         };
         Queue(Advance, voided, entry.Id, payload,
             $"{(voided ? "Void advance" : "Advance")} · {employee.FullName} · {CompanyMoney.Text(-entry.Amount)} · {entry.BusinessDate.ToString("d MMM", Invariant)}");

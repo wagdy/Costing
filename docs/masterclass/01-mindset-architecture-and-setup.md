@@ -736,7 +736,7 @@ public static class DependencyInjection
 
 البنية التحتية: كل "منفذ" يُربط بتطبيقه. `Singleton` للساعة وملف الشركة والتشفير؛ `Scoped` لكل ما يلمس `CostingDbContext`؛ `RetryOnConflictBehavior` يلف كل أمر؛ و `AddHttpClient` + `AddHostedService<HrSyncWorker>` للربط مع HR.
 
-> 📄 **`backend/src/Costing.Infrastructure/DependencyInjection.cs`** — 127 سطر
+> 📄 **`backend/src/Costing.Infrastructure/DependencyInjection.cs`** — 128 سطر
 
 ```csharp
 using MediatR;
@@ -839,6 +839,7 @@ public static class DependencyInjection
         services.AddScoped<ISupplierLedgerRepository, SupplierLedgerRepository>();
         services.AddScoped<Costing.Application.Approvals.IRecordDescriptions, RecordDescriptions>();
         services.AddScoped<Costing.Application.Treasury.ITaxRate, FinancialTaxRate>();
+        services.AddScoped<Costing.Application.EndOfDay.IBooksLock, FinancialBooksLock>();
         services.AddScoped<IExpenseItemRepository, ExpenseItemRepository>();
         services.AddScoped<IPrepRecipeRepository, PrepRecipeRepository>();
         services.AddScoped<IProductionOrderRepository, ProductionOrderRepository>();
@@ -1651,6 +1652,7 @@ Costing/
                         20261116193324_AddCombosAndDiscounts.cs
                         20261116223159_AddFixedAssets.cs
                         20261116233433_AddPurchaseOrders.cs
+                        20261117092011_AddEndOfDaySequence.cs
                         CostingDbContextModelSnapshot.cs
                     PosIntegrationPersistence.cs
                     PurchaseOrderPersistence.cs
@@ -1864,9 +1866,13 @@ Costing/
                         daily-cash-page.ts
                         daily-sales-dialogs.spec.ts
                         daily-sales-dialogs.ts
+                        daily-summaries-page.ts
+                        daily-summaries.spec.ts
                         end-of-day-page.ts
                         end-of-day-payouts.ts
                         end-of-day-photo.ts
+                        end-of-day-undo.spec.ts
+                        end-of-day-undo.ts
                         end-of-day.spec.ts
                         expense-item-dialog.ts
                         expense-items-page.spec.ts

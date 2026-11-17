@@ -20,8 +20,10 @@ namespace Costing.Application.EndOfDay;
 // time so a phone sends one photo at a time; submitted, it is kept as it is for the daily batch,
 // where each invoice is transcribed from its photo, and for the day's takings, and each payment and
 // advance becomes the safe's entry out of the day's takings (a manager's at once, anyone else's
-// asked of a manager), its id the payment's own. A manager reopens one to correct it. The day is
-// made by its first entry; an entry's id is made by the till, so one sent again is not added twice.
+// asked of a manager), under the payment's voucher id. Days are closed in exact order, one after the
+// last closed day and never ahead of today; a manager undoes the last closed day, and only it, to
+// correct it: what it made voided and the day a draft again (Strict sequentiality and the manager's
+// undo, in the docs). The day is made by its first entry; an entry's id is made by the till, so one sent again is not added twice.
 //
 // An advance is deducted from the employee's pay in the payroll month it is paid in, as every
 // advance out of the safe is.
@@ -119,7 +121,52 @@ public sealed record EndOfDayDto(
     decimal NetCashInTill,
     // The discounts and promos the Z report gives, and why: never collected, never in the till.
     decimal? DiscountsAmount = null,
-    IReadOnlyList<DiscountReason>? DiscountReasons = null);
+    IReadOnlyList<DiscountReason>? DiscountReasons = null,
+    // Why a manager undid it, when one did.
+    string? ReopenReason = null,
+    // As it was handed in: what to look at before the next day (EndOfDayChecks), never refusing it.
+    IReadOnlyList<string>? Warnings = null);
+
+// The days in their order (التسلسل الزمني): the last one closed and the one to close next (none
+// before the first is ever closed: any day up to today starts the sequence), today as the till
+// keeps it, whether every day up to today is closed, the books' lock, what to look at before
+// closing the next (Warnings), and what undoing the last one would reverse (LastClosed).
+public sealed record EndOfDaySequenceDto(
+    DateOnly? LastClosedDate,
+    DateOnly? NextExpectedDate,
+    DateOnly Today,
+    bool AllClosed,
+    DateOnly? BooksLockedUntil,
+    IReadOnlyList<string> Warnings,
+    EndOfDayUndoPreview? LastClosed);
+
+// What undoing the last closed day reverses: its takings in the safe, its sales summary (by hand
+// or from the POS), the purchase invoices posted from the invoices handed in, and its payments'
+// safe entries (and requests waiting for a manager). Locked: the books are closed over it.
+public sealed record EndOfDayUndoPreview(
+    DateOnly Date,
+    string? SubmittedBy,
+    DateTime? SubmittedAtUtc,
+    decimal? Takings,
+    int SalesItems,
+    int PostedInvoices,
+    decimal PostedInvoicesTotal,
+    int Payouts,
+    decimal PayoutsTotal,
+    bool Locked,
+    int ZReports = 0);
+
+// Undone: the day back to a draft, and what was reversed to get there (ZReports: the POS's reports
+// of the day, each recorded again when the POS sends it again).
+public sealed record EndOfDayUndone(
+    EndOfDayDto Day, bool TakingsVoided, bool SalesVoided, int InvoicesVoided, int PayoutsVoided, int RequestsRefused, int ZReports = 0);
+
+// The date the books are locked until (إقفال الدفاتر), set on Financials → Tax & service: no day on
+// or before it is closed or undone.
+public interface IBooksLock
+{
+    Task<DateOnly?> LockedUntilAsync(CancellationToken cancellationToken);
+}
 
 public sealed record EndOfDayPhotoFile(string FileName, string ContentType, byte[] Content);
 
@@ -162,9 +209,17 @@ public sealed record AttachEndOfDaySalesPhotoCommand(DateOnly Date, string FileN
 public sealed record RemoveEndOfDaySalesPhotoCommand(DateOnly Date, string StaffName = "") : IRequest<EndOfDayDto>;
 
 // Handed in: its payments and advances made the safe's entries (CanApprove, a manager), or asked of
-// a manager (StaffId, who asks).
-public sealed record SubmitEndOfDayCommand(DateOnly Date, string StaffName = "", string StaffId = "", bool CanApprove = false)
+// a manager (StaffId, who asks). Only the next day in the sequence; with no sales, only once
+// confirmed as a day that sold nothing (ZeroSales) and when nothing was sold on it.
+public sealed record SubmitEndOfDayCommand(DateOnly Date, string StaffName = "", string StaffId = "", bool CanApprove = false, bool ZeroSales = false)
     : IRequest<EndOfDayDto>, IRetryOnConflict;
+
+public sealed record GetEndOfDaySequenceQuery : IRequest<EndOfDaySequenceDto>;
+
+// A manager's: the last day closed, undone and back to a draft (Date: the one the manager saw, so
+// a day closed since is never undone by mistake).
+public sealed record UndoLastEndOfDayCommand(DateOnly? Date, string? Reason, string StaffName = "", string StaffId = "")
+    : IRequest<EndOfDayUndone>, IRetryOnConflict;
 
 // Cash paid out of the till: PayeeId the supplier paid or the employee advanced; PayoutId made by the
 // till, so one sent again is not added twice.
@@ -188,7 +243,6 @@ public sealed record ReplaceEndOfDayPayoutReceiptCommand(DateOnly Date, Guid Pay
 
 public sealed record RemoveEndOfDayPayoutCommand(DateOnly Date, Guid PayoutId, string StaffName = "") : IRequest<EndOfDayDto>;
 
-public sealed record ReopenEndOfDayCommand(DateOnly Date, string StaffName = "") : IRequest<EndOfDayDto>;
 
 // A photo of the day: an invoice's or a payment's receipt by its id, the sales report's by the day's.
 public sealed record GetEndOfDayPhotoQuery(DateOnly Date, Guid PhotoId) : IRequest<EndOfDayPhotoFile?>;
@@ -203,20 +257,72 @@ internal sealed class EndOfDayDays(
     ISupplierLedgerRepository ledger,
     IStaffMemberRepository employees,
     IApprovalRequestRepository requests,
-    TreasuryWriter treasury)
+    TreasuryWriter treasury,
+    IBooksLock books,
+    Costing.Domain.Purchases.IPurchaseInvoiceRepository invoices)
 {
+    private static readonly CultureInfo Invariant = CultureInfo.InvariantCulture;
+
+    // Cash handed out with no one named, older than this, is said before a day is closed.
+    public static readonly TimeSpan CustodyAge = TimeSpan.FromHours(48);
+
     public IEndOfDayPhotoStore Photos => photos;
 
+    // Today as the till keeps it: between midnight and the hour the business day starts, the
+    // calendar's day is taken too, never one later.
+    public DateOnly Today
+    {
+        get
+        {
+            var now = DateTime.UtcNow;
+            return new[] { calendar.BusinessDateOf(now), calendar.LocalDateOf(now) }.Max();
+        }
+    }
+
+    // A new day only for the next in the sequence: entries for any other date would make a day that
+    // can never be handed in.
     public async Task<EndOfDayReport> OpenAsync(DateOnly date, string by, CancellationToken cancellationToken)
     {
         if (await days.GetByDateAsync(date, cancellationToken) is { } day)
             return day;
-        var now = DateTime.UtcNow;
-        if (date > new[] { calendar.BusinessDateOf(now), calendar.LocalDateOf(now) }.Max())
-            throw new DomainException("That day has not come yet: close a day once it is over. · هذا اليوم لم يأتِ بعد.");
+        await CheckSequenceAsync(date, cancellationToken);
         days.Add(day = new EndOfDayReport(Guid.NewGuid(), date, by));
         return day;
     }
+
+    public async Task CheckSequenceAsync(DateOnly date, CancellationToken cancellationToken) =>
+        EndOfDaySequence.Check(date, await days.LastSubmittedDateAsync(cancellationToken), Today, await books.LockedUntilAsync(cancellationToken));
+
+    // What to look at before closing a day, never refusing it: purchase invoices left as drafts
+    // dated on or before it (post them first, or the stock and costs are short), and cash handed out
+    // with no one named (a custody, سلفة معلقة) more than 48 hours ago in the last 30 days, which
+    // should have been given out to the staff on HR → Advances or voided.
+    public async Task<IReadOnlyList<string>> WarningsAsync(DateOnly date, CancellationToken cancellationToken)
+    {
+        var warnings = new List<string>();
+        var names = (await suppliers.GetAllAsync(cancellationToken)).ToDictionary(s => s.Id, s => s.Name);
+        var drafts = (await invoices.GetByStatusAsync(Costing.Domain.Purchases.PurchaseInvoiceStatus.Draft, cancellationToken))
+            .Where(i => i.InvoiceDate is { } on && on <= date && i.Lines.Count > 0)
+            .OrderBy(i => i.InvoiceDate)
+            .ToList();
+        if (drafts.Count > 0)
+            warnings.Add(
+                $"There are draft invoices: {drafts.Count} draft purchase {(drafts.Count == 1 ? "invoice is" : "invoices are")} dated on or before {Day(date)} " +
+                $"({string.Join(", ", drafts.Take(3).Select(i => (i.SupplierId is { } s ? names.GetValueOrDefault(s) : null) ?? "no supplier"))}" +
+                $"{(drafts.Count > 3 ? ", …" : "")}). Consider posting them before closing the day. · توجد فواتير مسودة: يفضل ترحيلها قبل تقفيل اليوم.");
+        var cutoff = DateTime.UtcNow - CustodyAge;
+        var custodies = (await safe.GetPendingAdvancesAsync(cancellationToken))
+            .Where(a => !a.IsReversal && !a.IsVoided && a.RecordedAtUtc < cutoff && a.BusinessDate >= date.AddDays(-30))
+            .ToList();
+        if (custodies.Count > 0)
+            warnings.Add(
+                $"{custodies.Count} cash {(custodies.Count == 1 ? "custody" : "custodies")} handed out with no one named more than 48 hours ago, " +
+                $"{CompanyMoney.Text(-custodies.Sum(a => a.Amount))} in all (the oldest {Day(custodies.Min(a => a.BusinessDate))}): " +
+                "settle them by giving them out on HR → Advances, or void them. · عُهد نقدية لم تُسوَّ منذ أكثر من 48 ساعة.");
+        return warnings;
+    }
+
+    private static string Day(DateOnly day) => day.ToString("d MMM yyyy", Invariant);
 
     public async Task<EndOfDayReport> GetAsync(DateOnly date, CancellationToken cancellationToken) =>
         await days.GetByDateAsync(date, cancellationToken)
@@ -269,9 +375,9 @@ internal sealed class EndOfDayDays(
     {
         if (payout.VoucheredAtUtc is null)
             return EndOfDayVoucherState.None;
-        if (await safe.GetByIdAsync(payout.Id, cancellationToken) is not null)
+        if (await safe.GetByIdAsync(payout.VoucherId, cancellationToken) is not null)
             return EndOfDayVoucherState.InSafe;
-        return (await requests.GetByIdAsync(payout.Id, cancellationToken))?.Status switch
+        return (await requests.GetByIdAsync(payout.VoucherId, cancellationToken))?.Status switch
         {
             ApprovalStatus.Rejected => EndOfDayVoucherState.Refused,
             ApprovalStatus.Pending => EndOfDayVoucherState.Requested,
@@ -297,7 +403,7 @@ internal sealed class EndOfDayDays(
             try
             {
                 // Sent again after an answer was lost: entered, or asked, already.
-                if (await safe.GetByIdAsync(payout.Id, cancellationToken) is not null || await requests.GetByIdAsync(payout.Id, cancellationToken) is not null)
+                if (await safe.GetByIdAsync(payout.VoucherId, cancellationToken) is not null || await requests.GetByIdAsync(payout.VoucherId, cancellationToken) is not null)
                 {
                     day.Vouchered(payout.Id);
                     continue;
@@ -314,7 +420,7 @@ internal sealed class EndOfDayDays(
                 }
 
                 var voucher = new SafeVoucher(
-                    payout.Id, toSupplier ? SafeTransactionKind.SupplierPayment : SafeTransactionKind.EmployeeAdvance, payout.Amount, day.Date,
+                    payout.VoucherId, toSupplier ? SafeTransactionKind.SupplierPayment : SafeTransactionKind.EmployeeAdvance, payout.Amount, day.Date,
                     RevenueDate: day.Date, SupplierId: toSupplier ? payout.PayeeId : null, EmployeeId: toSupplier ? null : payout.PayeeId,
                     Notes: payout.Note is { } note ? $"End of day: {note}" : "End of day · تقفيل اليوم");
                 if (canApprove)
@@ -326,7 +432,7 @@ internal sealed class EndOfDayDays(
                     await treasury.CheckAsync(voucher, cancellationToken);
                     var (summary, changes) = await treasury.DescribeAsync(voucher, cancellationToken);
                     requests.Add(ApprovalRequest.AskToChange(
-                        payout.Id, ApprovalModule.Treasury, ApprovalAction.Create, payout.Id, summary, changes, ApprovalPayload.Write(voucher),
+                        payout.VoucherId, ApprovalModule.Treasury, ApprovalAction.Create, payout.VoucherId, summary, changes, ApprovalPayload.Write(voucher),
                         $"End of day of {day.Date.ToString("d MMM yyyy", CultureInfo.InvariantCulture)}", staffId, staffName));
                 }
                 day.Vouchered(payout.Id);
@@ -394,7 +500,8 @@ internal sealed class EndOfDayDays(
                 day.OpeningFloat, payouts,
                 day.CountOf(EndOfDayPayoutKind.SupplierPayment), day.TotalOf(EndOfDayPayoutKind.SupplierPayment),
                 day.CountOf(EndOfDayPayoutKind.EmployeeAdvance), day.TotalOf(EndOfDayPayoutKind.EmployeeAdvance),
-                day.CashTax, day.CashSalesCollected, day.CashPaidOut, day.NetCashInTill, day.DiscountsAmount, day.DiscountReasons.ToList()));
+                day.CashTax, day.CashSalesCollected, day.CashPaidOut, day.NetCashInTill, day.DiscountsAmount, day.DiscountReasons.ToList(),
+                day.ReopenReason));
         }
         return dtos;
     }
@@ -518,19 +625,163 @@ internal sealed class RemoveEndOfDaySalesPhotoCommandHandler(EndOfDayDays shared
     }
 }
 
-internal sealed class SubmitEndOfDayCommandHandler(EndOfDayDays shared, IUnitOfWork unitOfWork) : IRequestHandler<SubmitEndOfDayCommand, EndOfDayDto>
+internal sealed class SubmitEndOfDayCommandHandler(
+    EndOfDayDays shared, ISalesReceiptRepository sales, ISafeTransactionRepository safe, IUnitOfWork unitOfWork)
+    : IRequestHandler<SubmitEndOfDayCommand, EndOfDayDto>
 {
     public async Task<EndOfDayDto> Handle(SubmitEndOfDayCommand request, CancellationToken cancellationToken)
     {
-        var day = await shared.GetAsync(request.Date, cancellationToken);
+        // A day that sold nothing may have nothing handed in at all: made here to be closed.
+        var day = await shared.OpenAsync(request.Date, request.StaffName, cancellationToken);
         // Sent again after an answer was lost: submitted already.
-        if (!day.IsSubmitted)
+        if (day.IsSubmitted)
+            return await shared.DtoAsync(day, cancellationToken);
+
+        // Only the next day in the sequence, never one to come or in the books locked.
+        await shared.CheckSequenceAsync(day.Date, cancellationToken);
+        if (day.NetSales <= 0 && request.ZeroSales)
         {
-            day.Submit(request.StaffName);
-            await shared.VoucherPayoutsAsync(day, request.StaffId, request.StaffName, request.CanApprove, cancellationToken);
-            await unitOfWork.SaveChangesAsync(cancellationToken);
+            // Closed as a day that sold nothing only when nothing was: neither a sales summary nor takings.
+            if (await sales.GetDailySummaryAsync(day.Date, cancellationToken) is { } summary)
+                throw new DomainException(
+                    $"The day's sales summary has {summary.Lines.Count} items sold on it: enter the day's sales report instead of closing it with none. " +
+                    "· توجد مبيعات مسجلة لهذا اليوم: أدخل ريبورت المبيعات.");
+            if (await safe.GetTakingsAsync(day.Date, cancellationToken) is not null)
+                throw new DomainException("The day's takings are in the safe: enter the day's sales report instead of closing it with none. · توجد إيرادات مسجلة لهذا اليوم.");
         }
-        return await shared.DtoAsync(day, cancellationToken);
+        var warnings = await shared.WarningsAsync(day.Date, cancellationToken);
+        day.Submit(request.StaffName, request.ZeroSales);
+        await shared.VoucherPayoutsAsync(day, request.StaffId, request.StaffName, request.CanApprove, cancellationToken);
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+        return await shared.DtoAsync(day, cancellationToken) with { Warnings = warnings };
+    }
+}
+
+internal sealed class GetEndOfDaySequenceHandler(
+    EndOfDayDays shared, IEndOfDayRepository days, IBooksLock books, ISafeTransactionRepository safe, ISalesReceiptRepository sales,
+    Costing.Domain.Integrations.IPosZReportRepository zReports)
+    : IRequestHandler<GetEndOfDaySequenceQuery, EndOfDaySequenceDto>
+{
+    public async Task<EndOfDaySequenceDto> Handle(GetEndOfDaySequenceQuery request, CancellationToken cancellationToken)
+    {
+        var last = await days.LastSubmittedDateAsync(cancellationToken);
+        var next = EndOfDaySequence.NextAfter(last);
+        var today = shared.Today;
+        var locked = await books.LockedUntilAsync(cancellationToken);
+        EndOfDayUndoPreview? preview = null;
+        if (last is { } lastDate && await days.GetByDateAsync(lastDate, cancellationToken) is { } day)
+        {
+            var summary = await sales.GetDailySummaryAsync(lastDate, cancellationToken);
+            var vouchered = day.Payouts.Where(p => p.VoucheredAtUtc is not null).ToList();
+            preview = new EndOfDayUndoPreview(
+                lastDate, day.SubmittedBy, day.SubmittedAtUtc, (await safe.GetTakingsAsync(lastDate, cancellationToken))?.TakingsTotal,
+                summary?.Lines.Count ?? 0, day.Invoices.Count(i => i.PurchaseInvoiceId is not null),
+                day.Invoices.Where(i => i.PurchaseInvoiceId is not null).Sum(i => i.ReportedTotal), vouchered.Count, vouchered.Sum(p => p.Amount),
+                locked is { } l && lastDate <= l, (await zReports.GetByDateAsync(lastDate, cancellationToken)).Count);
+        }
+        var closing = next ?? today;
+        return new EndOfDaySequenceDto(
+            last, next, today, next > today, locked, next > today ? [] : await shared.WarningsAsync(closing, cancellationToken), preview);
+    }
+}
+
+// The last closed day undone (إلغاء تقفيل آخر يوم), a manager's: everything it put in the books
+// reversed, dated today, so it is handed in again as it should have been. Its takings voided in the
+// safe; its sales summary (entered by hand, or made by the POS's Z report: sent again, it is made
+// again) voided, its stock put back; the purchase invoices posted from the invoices handed in
+// voided (their stock, costs, cash and supplier's account undone) and unlinked, to be posted again;
+// its payments' safe entries voided and those still waiting for a manager refused. Only the last
+// day, so the days before it stay as they were; never one in the books locked.
+internal sealed class UndoLastEndOfDayHandler(
+    EndOfDayDays shared,
+    IEndOfDayRepository days,
+    IBooksLock books,
+    ISafeTransactionRepository safe,
+    ISalesReceiptRepository sales,
+    Costing.Domain.Purchases.IPurchaseInvoiceRepository invoices,
+    IApprovalRequestRepository requests,
+    Costing.Domain.StockMovements.IStockMovementRepository movements,
+    DeletionTargets deletions,
+    TreasuryWriter treasury,
+    Costing.Domain.Integrations.IPosZReportRepository zReports,
+    Costing.Domain.Integrations.IPosDayRepository posDays,
+    IUnitOfWork unitOfWork) : IRequestHandler<UndoLastEndOfDayCommand, EndOfDayUndone>
+{
+    public async Task<EndOfDayUndone> Handle(UndoLastEndOfDayCommand request, CancellationToken cancellationToken)
+    {
+        var last = await days.LastSubmittedDateAsync(cancellationToken)
+            ?? throw new DomainException("No day is closed: there is nothing to undo. · لا يوجد يوم مُقفل.");
+        if (request.Date is { } asked && asked != last)
+            throw new DomainException(
+                $"Only the last closed day, {last.ToString("d MMM yyyy", CultureInfo.InvariantCulture)}, is undone: the days before it stay as they are. " +
+                "· يُلغى تقفيل آخر يوم فقط.");
+        if (await books.LockedUntilAsync(cancellationToken) is { } locked && last <= locked)
+            throw new DomainException(
+                $"The books are locked until {locked.ToString("d MMM yyyy", CultureInfo.InvariantCulture)}: that day is not undone. · الدفاتر مقفلة.");
+        var day = await shared.GetAsync(last, cancellationToken);
+        var by = request.StaffName;
+
+        // Its takings in the safe, and its sales summary with the stock it took. What was paid out of
+        // the day's takings before they went in goes back to the day's drawer, not the safe: the
+        // takings leave the safe less it.
+        var takings = await safe.GetTakingsAsync(last, cancellationToken);
+        bool? inSafe = takings is null ? null : false;
+        if (takings is not null)
+        {
+            await requests.EnsureNotPendingAsync(takings.Id, cancellationToken);
+            await treasury.VoidAsync(takings, by, cancellationToken);
+        }
+        var summary = await sales.GetDailySummaryAsync(last, cancellationToken);
+        if (summary is not null)
+        {
+            await requests.EnsureNotPendingAsync(summary.Id, cancellationToken);
+            foreach (var reversal in await deletions.DeleteAsync(Costing.Domain.Approvals.ApprovalModule.Sale, summary.Id, by, cancellationToken))
+                movements.Add(reversal);
+        }
+
+        // The POS's mapping of the day: nothing of it recorded now, and each of its Z reports taken
+        // again when the POS sends it again (the same report is not a resend any more).
+        var reports = await zReports.GetByDateAsync(last, cancellationToken);
+        foreach (var report in reports)
+            report.Forgotten();
+        (await posDays.GetByDateAsync(last, cancellationToken))?.Undone();
+
+        // The purchase invoices posted from its invoices: the one standing now, a correction's if
+        // one was corrected since, voided.
+        var invoicesVoided = 0;
+        foreach (var handedIn in day.Invoices.Where(i => i.PurchaseInvoiceId is not null))
+        {
+            var invoice = await invoices.GetByIdAsync(handedIn.PurchaseInvoiceId!.Value, cancellationToken);
+            while (invoice is { Status: Costing.Domain.Purchases.PurchaseInvoiceStatus.Voided, ReplacedBy: { } next })
+                invoice = await invoices.GetByIdAsync(next, cancellationToken);
+            if (invoice is not { Status: Costing.Domain.Purchases.PurchaseInvoiceStatus.Posted })
+                continue;
+            await requests.EnsureNotPendingAsync(invoice.Id, cancellationToken);
+            foreach (var reversal in await deletions.VoidInvoiceAsync(invoice, by, null, cancellationToken, inSafe))
+                movements.Add(reversal);
+            invoicesVoided++;
+        }
+
+        // Its payments: those in the safe voided, those waiting for a manager refused.
+        var (payoutsVoided, refused) = (0, 0);
+        foreach (var payout in day.Payouts.Where(p => p.VoucheredAtUtc is not null))
+        {
+            if (await safe.GetByIdAsync(payout.VoucherId, cancellationToken) is { IsVoided: false, IsReversal: false } entry)
+            {
+                await treasury.VoidAsync(entry, by, cancellationToken, inSafe);
+                payoutsVoided++;
+            }
+            else if (await requests.GetByIdAsync(payout.VoucherId, cancellationToken) is { IsPending: true } waiting)
+            {
+                waiting.Reject(by, "The end of day was undone · أُلغي تقفيل اليوم");
+                refused++;
+            }
+        }
+
+        day.Undo(by, request.Reason);
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+        return new EndOfDayUndone(
+            await shared.DtoAsync(day, cancellationToken), takings is not null, summary is not null, invoicesVoided, payoutsVoided, refused, reports.Count);
     }
 }
 
@@ -594,16 +845,6 @@ internal sealed class RemoveEndOfDayPayoutCommandHandler(EndOfDayDays shared, IU
     }
 }
 
-internal sealed class ReopenEndOfDayCommandHandler(EndOfDayDays shared, IUnitOfWork unitOfWork) : IRequestHandler<ReopenEndOfDayCommand, EndOfDayDto>
-{
-    public async Task<EndOfDayDto> Handle(ReopenEndOfDayCommand request, CancellationToken cancellationToken)
-    {
-        var day = await shared.GetAsync(request.Date, cancellationToken);
-        day.Reopen(request.StaffName);
-        await unitOfWork.SaveChangesAsync(cancellationToken);
-        return await shared.DtoAsync(day, cancellationToken);
-    }
-}
 
 internal sealed class GetEndOfDayPhotoQueryHandler(IEndOfDayRepository days, IEndOfDayPhotoStore photos)
     : IRequestHandler<GetEndOfDayPhotoQuery, EndOfDayPhotoFile?>

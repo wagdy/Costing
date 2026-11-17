@@ -90,12 +90,13 @@ export class CostingAccess {
   }
 }
 
-// A section opened by its address only for whoever works it: the first one they do otherwise.
+// A section opened by its address only for whoever works it (any of the tabs given): the first one
+// they do otherwise.
 export const costingTabGuard =
-  (tab: CostingTab): CanActivateFn =>
+  (...tabs: CostingTab[]): CanActivateFn =>
   () => {
     const access = inject(CostingAccess);
-    if (access.has(tab))
+    if (tabs.some((tab) => access.has(tab)))
       return true;
     const first = access.first();
     return inject(Router).createUrlTree(first ? ['/costing', first] : ['/account']);

@@ -48,6 +48,7 @@ describe('the costing navigation', () => {
       ['daily-break-even', 'page'],
       ['kpis', 'page'],
       ['break-even', 'page'],
+      ['daily-summaries', 'page'],
     ]);
 
     for (const old of ['theoretical', 'variance', 'kpis', 'break-even']) {

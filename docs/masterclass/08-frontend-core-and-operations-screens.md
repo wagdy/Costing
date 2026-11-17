@@ -443,7 +443,7 @@ export const appConfig: ApplicationConfig = {
 
 كل قسم بـ `canActivate: [costingTabGuard('Materials')]` و `loadComponent` كسول، والأقسام الفرعية (الوصفات، المشتريات، الماليات، التقارير، التحليلات) كأبناء لـ Shell خاص بها، والمسار الفارغ يفتح أول قسم يملكه المستخدم.
 
-> 📄 **`frontend/src/app/app.routes.ts`** — 311 سطر
+> 📄 **`frontend/src/app/app.routes.ts`** — 318 سطر
 
 ```ts
 import { Routes } from '@angular/router';
@@ -680,6 +680,13 @@ const costingChildren: Routes = [
       },
       { path: 'kpis', loadComponent: () => import('./features/costing/kpis-page').then((m) => m.KpisPage) },
       { path: 'break-even', loadComponent: () => import('./features/costing/break-even-page').then((m) => m.BreakEvenPage) },
+      {
+        // Each end of day handed in, and the manager's undo of the last one closed: for whoever reads
+        // the end of day too.
+        path: 'daily-summaries',
+        canActivate: [costingTabGuard('EndOfDay', 'Purchases', 'Financials')],
+        loadComponent: () => import('./features/costing/daily-summaries-page').then((m) => m.DailySummariesPage),
+      },
     ],
   },
   { path: 'theoretical', redirectTo: 'reports/theoretical' },
@@ -1406,7 +1413,7 @@ function insert(field: HTMLInputElement, text: string): void {
 
 `costing.api.ts`: أكبر ملف: كل الأنواع والنداءات لـ `api/costing` و `api/inventory` و `api/financials` (الخامات، التكاليف، الوصفات، المصنعات، الإنتاج، المشتريات، الجرد، الهالك، الخزنة، التقارير، الموافقات…). الأنواع تطابق DTOs الـ API، والـ enums كـ union types، وقواميس التسميات ثنائية اللغة (`Record<Kind, { en; ar }>`) تجبر TypeScript على تسمية كل حالة.
 
-> 📄 **`frontend/src/app/core/costing/costing.api.ts`** — 3455 سطر
+> 📄 **`frontend/src/app/core/costing/costing.api.ts`** — 3462 سطر
 
 ```ts
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
@@ -3477,6 +3484,11 @@ export class CostingApi {
     return this.http.put<FinancialSettings>('/api/financials/settings', taxPercent === undefined ? { servicePercent } : { servicePercent, taxPercent });
   }
 
+  // A manager's: the books locked until a day (up to the last closed day), or unlocked (null).
+  lockBooks(lockedUntil: string | null): Observable<FinancialSettings> {
+    return this.http.put<FinancialSettings>('/api/financials/books-lock', { lockedUntil });
+  }
+
   expenseVouchers(from: string, to: string): Observable<ExpenseVoucherReport> {
     return this.http.get<ExpenseVoucherReport>('/api/financials/expense-vouchers', { params: { from, to } });
   }
@@ -4537,6 +4549,8 @@ export interface FinancialSettings {
   servicePercent: number;
   updatedBy: string | null;
   updatedAtUtc: string | null;
+  // The books locked until this day (إقفال الدفاتر): no day on or before it is closed or undone.
+  booksLockedUntil?: string | null;
 }
 
 // One business day of the reconciliation (مطابقة الإيرادات), or the period's total (date null). Its
@@ -4867,7 +4881,7 @@ export interface StaffMealReport {
 ```
 
 
-> 📄 **`frontend/src/app/core/costing/end-of-day.api.ts`** — 308 سطر
+> 📄 **`frontend/src/app/core/costing/end-of-day.api.ts`** — 360 سطر
 
 ```ts
 import { HttpClient } from '@angular/common/http';
@@ -4973,6 +4987,51 @@ export interface EndOfDay {
   // The Z report's discounts and promos, and why: never collected, never in the till.
   discountsAmount?: number | null;
   discountReasons?: DiscountReason[] | null;
+  // Why a manager undid it, when one did.
+  reopenReason?: string | null;
+  // As it was handed in: what to look at before the next day, never refusing it.
+  warnings?: string[] | null;
+}
+
+// The days in their order (التسلسل الزمني): the last closed and the one to close next (none before
+// the first is ever closed: any day up to today starts it), today as the till keeps it, whether every
+// day up to today is closed, the books' lock, what to look at before closing the next, and what
+// undoing the last closed day would reverse.
+export interface EndOfDaySequence {
+  lastClosedDate: string | null;
+  nextExpectedDate: string | null;
+  today: string;
+  allClosed: boolean;
+  booksLockedUntil: string | null;
+  warnings: string[];
+  lastClosed: EndOfDayUndoPreview | null;
+}
+
+export interface EndOfDayUndoPreview {
+  date: string;
+  submittedBy: string | null;
+  submittedAtUtc: string | null;
+  takings: number | null;
+  salesItems: number;
+  postedInvoices: number;
+  postedInvoicesTotal: number;
+  payouts: number;
+  payoutsTotal: number;
+  // The books are locked over it: it is not undone.
+  locked: boolean;
+  // The POS's Z reports of the day: each recorded again when the POS sends it again.
+  zReports?: number;
+}
+
+// The last closed day undone: back to a draft, and what was reversed to get there.
+export interface EndOfDayUndone {
+  day: EndOfDay;
+  takingsVoided: boolean;
+  salesVoided: boolean;
+  invoicesVoided: number;
+  payoutsVoided: number;
+  requestsRefused: number;
+  zReports?: number;
 }
 
 export interface EndOfDaySales {
@@ -5096,12 +5155,19 @@ export class EndOfDayApi {
     return this.http.delete<EndOfDay>(`/api/end-of-day/${date}/sales-photo`);
   }
 
-  submit(date: string): Observable<EndOfDay> {
-    return this.http.post<EndOfDay>(`/api/end-of-day/${date}/submit`, null);
+  // The days in their order: the next to close, and what undoing the last would reverse.
+  sequence(): Observable<EndOfDaySequence> {
+    return this.http.get<EndOfDaySequence>('/api/end-of-day/sequence');
   }
 
-  reopen(date: string): Observable<EndOfDay> {
-    return this.http.post<EndOfDay>(`/api/end-of-day/${date}/reopen`, null);
+  // Only the next day in order; with no sales, only once said to be a day that sold nothing.
+  submit(date: string, zeroSales = false): Observable<EndOfDay> {
+    return this.http.post<EndOfDay>(`/api/end-of-day/${date}/submit`, zeroSales ? { zeroSales: true } : null);
+  }
+
+  // A manager's: the last closed day undone (date, the one the manager saw), with why.
+  voidLast(date: string, reason: string | null): Observable<EndOfDayUndone> {
+    return this.http.post<EndOfDayUndone>('/api/costing/end-of-day/void-last', { date, reason });
   }
 
   // Cash paid out of the till, with its receipt; the id made here once, so it is not added twice.
@@ -27003,13 +27069,15 @@ export class ExpenseItemDialog {
 
 ### 11.1 `EndOfDayPage`
 
-- **اليوم:** من `?date=` أو اليوم التجاري من الخادم، ولا يتجاوز اليوم.
+- **اليوم:** من `?date=`، وإلا **اليوم التالي في التسلسل** (`api.sequence()`)، وإن أُقفلت كل الأيام حتى اليوم فآخر يوم مقفول. بعد أول تقفيل يُقفل حقل التاريخ (`dateLocked`) ويظهر شريط: "The last closed day was X. You are currently closing Y…" بالعربية أيضًا، وزر **Go to** للعودة لليوم المطلوب إن فُتح يوم آخر من "Recent days".
+- **خارج الدور** (`outOfOrder`): زر المراجعة معطل برسالة "Close … first"، أو "All days are closed up to today. Come back tomorrow." حين `allClosed`.
+- **التحذيرات** (`warnings`): فوق شريط التسليم وفي تقرير الملخص، ولا تمنع.
 - **الأقسام الستة** (الفصل 05): لكل نوع فاتورة نموذج `EodInvoiceForm` (الصورة من الكاميرا أو ملف، المورد، الإجمالي، ملاحظة) بمعرّف يُصنع مرة؛ ونماذج المدفوعات `EodPayoutForm`؛ وتقرير المبيعات (العُهدة، الكاش، الفيزا، الضريبة، الإلغاءات، صورة Z).
 - **بطاقة صافي الكاش في الدرج** تتحدث مع الكتابة: `العُهدة + الكاش + ضريبة الكاش − (نقدي + سداد + سلف)`، والفيزا خارجها.
-- **المراجعة** (`EndOfDaySummaryDialog`): تقرير ملخص قبل التسليم؛ لا تسليم بفاتورة أو دفعة مكتوبة لم تُضف، أو بلا مبيعات.
-- **بعد التسليم:** القسم مقفول، وما تحوّل لفواتير وقيود يظهر بحالته، وإعادة الفتح للمدير.
+- **المراجعة** (`EndOfDaySummaryDialog`): تقرير ملخص قبل التسليم؛ لا تسليم بفاتورة أو دفعة مكتوبة لم تُضف. بلا مبيعات ⇐ `EndOfDayZeroSalesDialog` يسأل "No POS sales found for this date…" ثم `submit(date, true)` (ولا ملخص لو لم يُسلّم شيء أصلًا).
+- **بعد التسليم:** القسم مقفول، وما تحوّل لفواتير وقيود يظهر بحالته، و **Undo & reopen day** للمدير على آخر يوم مقفول فقط وخارج الدفاتر المقفلة (`canUndo`).
 
-> 📄 **`frontend/src/app/features/costing/end-of-day-page.ts`** — 1638 سطر
+> 📄 **`frontend/src/app/features/costing/end-of-day-page.ts`** — 1845 سطر
 
 ```ts
 import { DatePipe } from '@angular/common';
@@ -27036,6 +27104,7 @@ import {
   EndOfDayPayoutKind,
   EndOfDayPhoto,
   EndOfDaySales,
+  EndOfDaySequence,
   endOfDayStatusLabels,
   netCash,
   photoProblem,
@@ -27052,6 +27121,7 @@ import { Company } from '../../core/settings/company';
 import { ItemPicker, PickItem } from '../shared/item-picker';
 import { Approvals } from './approvals';
 import { EodPayoutForm } from './end-of-day-payouts';
+import { EndOfDayUndo } from './end-of-day-undo';
 import { PhotoSource, PhotoThumb, viewPhoto } from './end-of-day-photo';
 import { BusinessDay, Treasury } from './financials';
 
@@ -27387,6 +27457,38 @@ export interface EndOfDaySummaryData {
   day: EndOfDay;
   // Whether the one handing it in enters the safe's entries at once (a manager).
   canApprove?: boolean;
+  // What to look at before it is closed, never stopping it; and whether it is closed with no sales.
+  warnings?: string[];
+  zeroSales?: boolean;
+}
+
+// A day with no sales entered, closed only once that is meant (يوم بدون مبيعات): so the days stay in
+// order when the branch sold nothing. True once confirmed.
+@Component({
+  selector: 'app-end-of-day-zero-sales',
+  imports: [DatePipe, MatButtonModule, MatDialogModule, MatIconModule],
+  template: `
+    <h2 mat-dialog-title>Close as a zero-sales day? <span class="inline-ar">تقفيل يوم بدون مبيعات</span></h2>
+    <mat-dialog-content>
+      <p class="muted">{{ data.date | date: 'EEEE d MMMM y' }}</p>
+      <p>No POS sales found for this date. Are you sure you want to close this as a Zero-Sales day to maintain the sequence?</p>
+      <p class="note-ar" lang="ar" dir="rtl">لا توجد مبيعات لهذا التاريخ. هل أنت متأكد من تقفيله كيوم بدون مبيعات للحفاظ على تسلسل الأيام؟</p>
+      <p class="muted small">If the branch did sell that day, go back and enter its sales report instead.</p>
+    </mat-dialog-content>
+    <mat-dialog-actions align="end">
+      <button mat-button [mat-dialog-close]="false">Back · رجوع</button>
+      <button mat-flat-button [mat-dialog-close]="true"><mat-icon>event_busy</mat-icon> Close with no sales · تقفيل بدون مبيعات</button>
+    </mat-dialog-actions>
+  `,
+  styleUrl: './costing.scss',
+  styles: `
+    .small {
+      font-size: 0.85em;
+    }
+  `,
+})
+export class EndOfDayZeroSalesDialog {
+  protected readonly data = inject<{ date: string }>(MAT_DIALOG_DATA);
 }
 
 // The end of day summary report (تقرير ملخص تقفيل اليوم), before it is handed in: the cash purchases
@@ -27457,10 +27559,17 @@ export interface EndOfDaySummaryData {
         <p class="muted small">Submitted, each payment and advance goes to the safe out of the day's takings{{ canApprove ? '' : ', once a manager approves it' }}.
           · عند الإرسال تُسجل المدفوعات والسلفيات في الخزنة{{ canApprove ? '' : ' بعد موافقة المدير' }}.</p>
       }
-      @if (!d.salesPhoto) {
+      @if (!d.salesPhoto && !data.zeroSales) {
         <p class="muted small">No photo of the Z report: it is optional. · لا توجد صورة لتقرير Z.</p>
       }
-      <p class="note">Once submitted it is locked; a manager reopens it to change it. <span class="note-ar" lang="ar" dir="rtl">بعد الإرسال يُقفل اليوم، ويعيد المدير فتحه للتعديل.</span></p>
+      @if (data.zeroSales) {
+        <p class="warn small">Closed as a day with no sales, to keep the days in order. · يُقفل كيوم بدون مبيعات.</p>
+      }
+      @for (w of data.warnings ?? []; track w) {
+        <p class="warn small" role="note"><mat-icon inline>info</mat-icon> {{ w }}</p>
+      }
+      <p class="note">Once submitted it is locked; to change it, a manager undoes it while it is the last day closed.
+        <span class="note-ar" lang="ar" dir="rtl">بعد الإرسال يُقفل اليوم، ويلغي المدير تقفيله للتعديل ما دام آخر يوم تم إغلاقه.</span></p>
     </mat-dialog-content>
     <mat-dialog-actions align="end">
       <button mat-button [mat-dialog-close]="false">Back · رجوع</button>
@@ -27599,7 +27708,10 @@ export class EndOfDaySummaryDialog {
       <span class="step-no">1</span>
       <mat-form-field subscriptSizing="dynamic">
         <mat-label>Date · تاريخ اليوم</mat-label>
-        <input matInput type="date" [ngModel]="date()" (ngModelChange)="choose($event)" [max]="today()" aria-label="Date" />
+        <input matInput type="date" [ngModel]="date()" (ngModelChange)="choose($event)" [max]="today()" [disabled]="dateLocked()" aria-label="Date" />
+        @if (dateLocked()) {
+          <mat-icon matSuffix aria-hidden="true">lock</mat-icon>
+        }
       </mat-form-field>
       @if (day(); as d) {
         <span class="tag" [class.ok]="d.status === 'Submitted'" [class.warn]="d.status === 'Draft'">
@@ -27608,7 +27720,7 @@ export class EndOfDaySummaryDialog {
         @if (d.status === 'Submitted') {
           <span class="muted small">by {{ d.submittedBy }}, {{ d.submittedAtUtc | date: 'd MMM, HH:mm' }}</span>
         } @else if (d.reopenedBy) {
-          <span class="muted small">reopened by {{ d.reopenedBy }}</span>
+          <span class="muted small">undone by {{ d.reopenedBy }}{{ d.reopenReason ? ': ' + d.reopenReason : '' }}</span>
         }
       } @else if (!loading()) {
         <span class="tag">Not started<span class="ar">لم يبدأ</span></span>
@@ -27627,11 +27739,38 @@ export class EndOfDaySummaryDialog {
             <span class="tag ok">Takings in {{ day()!.takingsEntered! | money }}<span class="ar">تم التوريد</span></span>
           }
         }
-        @if (canReopen()) {
-          <button mat-button (click)="reopen()" [disabled]="busy()"><mat-icon>lock_open</mat-icon> Reopen · إعادة فتح</button>
+        @if (canUndo()) {
+          <button mat-button class="undo" (click)="undo()" [disabled]="busy()"><mat-icon>undo</mat-icon> Undo &amp; reopen day · إلغاء وفتح اليوم</button>
         }
       }
     </section>
+
+    @if (sequence(); as s) {
+      @if (s.allClosed) {
+        <p class="sequence-banner done" role="status">
+          <mat-icon>event_available</mat-icon>
+          <span>All days are closed up to today. Come back tomorrow. <span class="inline-ar">(تم تقفيل جميع الأيام حتى تاريخ اليوم)</span></span>
+        </p>
+      } @else if (s.lastClosedDate && s.nextExpectedDate) {
+        <p class="sequence-banner" role="status">
+          <mat-icon>format_list_numbered</mat-icon>
+          <span>
+            The last closed day was <strong>{{ s.lastClosedDate | date: 'EEE d MMM y' }}</strong>. You are currently closing
+            <strong>{{ s.nextExpectedDate | date: 'EEE d MMM y' }}</strong>. You must close days in exact order.
+            <span class="line-ar" lang="ar" dir="rtl">(آخر يوم تم إغلاقه هو {{ s.lastClosedDate | date: 'd/M/y' }}، يجب إغلاق يوم {{ s.nextExpectedDate | date: 'd/M/y' }} أولاً)</span>
+          </span>
+          @if (date() !== s.nextExpectedDate) {
+            <button mat-stroked-button (click)="choose(s.nextExpectedDate)">Go to {{ s.nextExpectedDate | date: 'd MMM' }} · الذهاب لليوم</button>
+          }
+        </p>
+      } @else if (!s.lastClosedDate) {
+        <p class="sequence-banner" role="status">
+          <mat-icon>format_list_numbered</mat-icon>
+          <span>No day is closed yet: the first day closed starts the sequence, and every day after it is closed in exact order.
+            <span class="line-ar" lang="ar" dir="rtl">لم يُقفل أي يوم بعد: أول يوم يُقفل يبدأ التسلسل.</span></span>
+        </p>
+      }
+    }
 
     @if (loading()) {
       <mat-progress-bar mode="indeterminate" />
@@ -27874,18 +28013,40 @@ export class EndOfDaySummaryDialog {
         }
       </section>
 
-      @if (!locked()) {
+      @if (!locked() && warnings().length) {
+        <div class="warnings" role="note" aria-label="Before closing the day">
+          <mat-icon>info</mat-icon>
+          <ul>
+            @for (w of warnings(); track w) {
+              <li>{{ w }}</li>
+            }
+          </ul>
+        </div>
+      }
+      @if (locked() && handedInWarnings().length) {
+        <div class="warnings" role="note" aria-label="Handed in with">
+          <mat-icon>info</mat-icon>
+          <ul>
+            @for (w of handedInWarnings(); track w) {
+              <li>{{ w }}</li>
+            }
+          </ul>
+        </div>
+      }
+      @if (!locked() || sequence()?.allClosed) {
         <div class="submit-bar">
           <span class="muted small">
             {{ countOf('Cash') }} cash · {{ countOf('Credit') }} on credit · {{ payoutCount('SupplierPayment') }} paid · {{ payoutCount('EmployeeAdvance') }} advanced ·
             revenue {{ totalRevenue() | money }} · in till {{ netCashInTill().net | money }}
           </span>
           <span class="spacer"></span>
-          <button mat-flat-button (click)="review()" [disabled]="busy()">
+          <button mat-flat-button (click)="review()" [disabled]="busy() || !!outOfOrder()">
             <mat-icon>fact_check</mat-icon> Review &amp; confirm <span class="inline-ar">مراجعة وتأكيد</span>
           </button>
         </div>
-        @if (reviewProblem(); as p) {
+        @if (outOfOrder(); as o) {
+          <p class="error" role="alert">{{ o }}</p>
+        } @else if (reviewProblem(); as p) {
           <p class="error" role="alert">{{ p }}</p>
         }
       }
@@ -28212,6 +28373,47 @@ export class EndOfDaySummaryDialog {
         flex: 1;
       }
     }
+    .sequence-banner {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px 12px;
+      margin: 0 0 14px;
+      padding: 10px 14px;
+      border-radius: 14px;
+      background: color-mix(in srgb, var(--mat-sys-primary) 9%, transparent);
+      border: 1px solid color-mix(in srgb, var(--mat-sys-primary) 25%, transparent);
+
+      > span {
+        flex: 1;
+        min-width: 220px;
+      }
+      .line-ar {
+        display: block;
+        margin-top: 2px;
+      }
+      &.done {
+        background: color-mix(in srgb, var(--app-ok, #2e7d32) 12%, transparent);
+        border-color: color-mix(in srgb, var(--app-ok, #2e7d32) 30%, transparent);
+      }
+    }
+    .warnings {
+      display: flex;
+      gap: 8px;
+      margin: 0 0 12px;
+      padding: 10px 14px;
+      border-radius: 14px;
+      background: var(--tag-warn-bg);
+      color: var(--tag-warn-fg);
+
+      ul {
+        margin: 0;
+        padding-inline-start: 16px;
+      }
+    }
+    button.undo {
+      color: var(--mat-sys-error);
+    }
     .history tr.pick {
       cursor: pointer;
     }
@@ -28247,6 +28449,7 @@ export class EndOfDayPage {
   private readonly route = inject(ActivatedRoute);
   private readonly menuSales = inject(MenuSalesApi);
   private readonly hrStaff = inject(HrStaffApi);
+  private readonly undoer = inject(EndOfDayUndo);
 
   protected readonly kinds: EndOfDayInvoiceKind[] = ['Cash', 'Credit'];
   protected readonly sections = sectionLabels;
@@ -28269,6 +28472,10 @@ export class EndOfDayPage {
   // The staff come from HR while it is linked: chosen from HR's, none added here.
   protected readonly hrLinked = signal(false);
   protected readonly history = signal<EndOfDay[]>([]);
+  // The days in their order: the next to close, and what undoing the last one would reverse.
+  protected readonly sequence = signal<EndOfDaySequence | null>(null);
+  // What the day was handed in with to look at, as the answer to handing it in said.
+  protected readonly handedInWarnings = signal<string[]>([]);
   protected readonly editing = signal<string | null>(null);
   protected readonly reviewProblem = signal<string | null>(null);
   // New invoices and payments typed or chosen and not added yet, by section.
@@ -28287,7 +28494,31 @@ export class EndOfDayPage {
   protected readonly locked = computed(() => this.day()?.status === 'Submitted');
   protected readonly canBatch = computed(() => this.access.has('Purchases'));
   protected readonly canTakings = computed(() => this.access.has('Financials'));
-  protected readonly canReopen = computed(() => this.approvals.canApprove());
+  // Locked to the next day in order once a day is closed (the days before it are opened from Recent days).
+  protected readonly dateLocked = computed(() => !!this.sequence()?.lastClosedDate);
+  // Only the next day in order is handed in: why this one is not, or null.
+  protected readonly outOfOrder = computed(() => {
+    const s = this.sequence();
+    if (!s) {
+      return null;
+    }
+    if (s.allClosed) {
+      return 'All days are closed up to today. Come back tomorrow. (تم تقفيل جميع الأيام حتى تاريخ اليوم)';
+    }
+    return s.nextExpectedDate && this.date() !== s.nextExpectedDate
+      ? `Close ${s.nextExpectedDate} first: days are closed in exact order. · يجب إغلاق يوم ${s.nextExpectedDate} أولاً.`
+      : null;
+  });
+  // What to look at before closing the day shown, when it is the one to close next.
+  protected readonly warnings = computed(() => {
+    const s = this.sequence();
+    return s && !s.allClosed && this.date() === (s.nextExpectedDate ?? s.today) ? s.warnings : [];
+  });
+  // A manager's, on the last closed day only, outside the books locked.
+  protected readonly canUndo = computed(() => {
+    const s = this.sequence();
+    return this.approvals.canApprove() && this.locked() && !!s?.lastClosed && s.lastClosedDate === this.date() && !s.lastClosed.locked;
+  });
   protected readonly salesDirty = computed(() => !sameSales(this.sales(), this.savedSales()));
   protected readonly totalRevenue = computed(() => {
     const s = this.sales();
@@ -28362,6 +28593,7 @@ export class EndOfDayPage {
     this.date.set(date);
     this.editing.set(null);
     this.reviewProblem.set(null);
+    this.handedInWarnings.set([]);
     await this.load();
   }
 
@@ -28435,10 +28667,11 @@ export class EndOfDayPage {
     await this.run(() => this.api.removeSalesPhoto(this.date()), 'The photo could not be taken off.');
   }
 
-  // The summary first; confirmed there, handed in and locked.
+  // The summary first; confirmed there, handed in and locked. Only the next day in order; with no
+  // sales entered, only once confirmed as a day that sold nothing.
   protected async review(): Promise<void> {
     this.reviewProblem.set(null);
-    if (!(await this.flushSales())) {
+    if (this.outOfOrder() || !(await this.flushSales())) {
       return;
     }
     const day = this.day();
@@ -28450,38 +28683,66 @@ export class EndOfDayPage {
           ? `${pending.SupplierPayment ? 'A supplier payment' : 'An advance'} is filled in but not added: add it, or clear it. · يوجد مبلغ لم يُضف بعد.`
         : this.editing()
           ? 'Save or cancel the entry being changed. · احفظ التعديل أو ألغِه.'
-          : !day || day.netSales <= 0
-            ? "Enter the day's sales report: its cash or Visa takings. · أدخل ريبورت المبيعات: إيراد الكاش أو الفيزا."
-            : (day.taxAmount ?? 0) > day.netSales
-              ? "The tax collected cannot be more than the day's sales. · الضريبة لا تزيد عن إجمالي المبيعات."
-              : null;
+          : day && day.netSales > 0 && (day.taxAmount ?? 0) > day.netSales
+            ? "The tax collected cannot be more than the day's sales. · الضريبة لا تزيد عن إجمالي المبيعات."
+            : null;
     if (problem) {
       this.reviewProblem.set(problem);
       return;
     }
-    const confirmed = await firstValueFrom(
-      this.dialog
-        .open<EndOfDaySummaryDialog, EndOfDaySummaryData, boolean>(EndOfDaySummaryDialog, {
-          data: { day: day!, canApprove: this.approvals.canApprove() },
-          width: '680px',
-          maxWidth: '96vw',
-        })
-        .afterClosed(),
-    );
-    if (!confirmed) {
+    const date = this.date();
+    const zeroSales = !day || day.netSales <= 0;
+    if (
+      zeroSales &&
+      !(await firstValueFrom(
+        this.dialog.open<EndOfDayZeroSalesDialog, { date: string }, boolean>(EndOfDayZeroSalesDialog, { data: { date }, width: '480px', maxWidth: '96vw' }).afterClosed(),
+      ))
+    ) {
       return;
     }
-    if (await this.run(() => this.api.submit(this.date()), 'The end of day could not be submitted.')) {
-      const asked = (this.day()?.payouts ?? []).filter((p) => p.voucher === 'Requested').length;
-      this.notify.info(
-        `The end of day of ${this.date()} is submitted${asked ? `: ${asked} ${asked === 1 ? 'payment waits' : 'payments wait'} for a manager's approval` : ''}. · تم إرسال التقفيل.`,
+    // Nothing handed in at all: the confirmation is the review.
+    if (day) {
+      const confirmed = await firstValueFrom(
+        this.dialog
+          .open<EndOfDaySummaryDialog, EndOfDaySummaryData, boolean>(EndOfDaySummaryDialog, {
+            data: { day, canApprove: this.approvals.canApprove(), warnings: this.warnings(), zeroSales },
+            width: '680px',
+            maxWidth: '96vw',
+          })
+          .afterClosed(),
       );
+      if (!confirmed) {
+        return;
+      }
+    }
+    if (await this.run(() => this.api.submit(date, zeroSales), 'The end of day could not be submitted.')) {
+      const asked = (this.day()?.payouts ?? []).filter((p) => p.voucher === 'Requested').length;
+      this.handedInWarnings.set(this.day()?.warnings ?? []);
+      this.notify.info(
+        `The end of day of ${date} is submitted${zeroSales ? ' with no sales' : ''}${asked ? `: ${asked} ${asked === 1 ? 'payment waits' : 'payments wait'} for a manager's approval` : ''}. · تم إرسال التقفيل.`,
+      );
+      await this.fetchSequence();
     }
   }
 
-  protected async reopen(): Promise<void> {
-    if (await this.run(() => this.api.reopen(this.date()), 'The end of day could not be reopened.')) {
-      this.notify.info('Reopened: it can be changed and submitted again. · تم إعادة الفتح.');
+  // A manager's: the last closed day undone (its takings, the POS's sales, the invoices posted from
+  // it and its payments reversed), a draft again to hand in again.
+  protected async undo(): Promise<void> {
+    const preview = this.sequence()?.lastClosed;
+    if (!preview) {
+      return;
+    }
+    this.busy.set(true);
+    try {
+      const undone = await this.undoer.undo(preview);
+      if (undone) {
+        this.show(undone.day);
+        this.handedInWarnings.set([]);
+        void this.loadHistory();
+        await this.fetchSequence();
+      }
+    } finally {
+      this.busy.set(false);
     }
   }
 
@@ -28557,9 +28818,12 @@ export class EndOfDayPage {
 
   private async start(): Promise<void> {
     const asked = this.route.snapshot.queryParamMap.get('date');
-    const today = await this.businessDay.today();
+    const [businessToday, sequence] = await Promise.all([this.businessDay.today(), this.fetchSequence()]);
+    const today = sequence?.today ?? businessToday;
     this.today.set(today);
-    this.date.set(asked && /^\d{4}-\d{2}-\d{2}$/.test(asked) && asked <= today ? asked : today);
+    // The day to close next; every day closed up to today, the last one closed, to look at.
+    const next = sequence ? (sequence.allClosed ? sequence.lastClosedDate : sequence.nextExpectedDate) : null;
+    this.date.set(asked && /^\d{4}-\d{2}-\d{2}$/.test(asked) && asked <= today ? asked : (next ?? today));
     try {
       const suppliers = await firstValueFrom(this.costing.suppliers());
       this.suppliers.set(
@@ -28608,6 +28872,17 @@ export class EndOfDayPage {
     void this.loadHistory();
   }
 
+  private async fetchSequence(): Promise<EndOfDaySequence | null> {
+    try {
+      const sequence = await firstValueFrom(this.api.sequence());
+      this.sequence.set(sequence);
+      return sequence;
+    } catch {
+      // Not known: the server still refuses a day out of order.
+      return null;
+    }
+  }
+
   private async loadHistory(): Promise<void> {
     const to = this.today();
     try {
@@ -28649,6 +28924,187 @@ function addDays(iso: string, days: number): string {
 // The photo of a day handed in, over the page.
 export function viewEndOfDayPhoto(dialog: MatDialog, api: EndOfDayApi, date: string, photoId: string, fileName: string): void {
   viewPhoto(dialog, () => api.photo(date, photoId), fileName);
+}
+```
+
+
+`EndOfDayUndo` خدمة مشتركة بين الصفحة وملخصات الأيام: نافذة خطر (`EndOfDayUndoDialog`) تعرض ما سيُلغى من المعاينة (التوريد، ملخص المبيعات وتقارير Z، الفواتير المرحلة، المدفوعات) وتأخذ السبب، ثم `voidLast(date, reason)`، و `undoneSummary` تلخص ما أُلغي في سطر.
+
+> 📄 **`frontend/src/app/features/costing/end-of-day-undo.ts`** — 173 سطر
+
+```ts
+import { DatePipe } from '@angular/common';
+import { Component, Injectable, inject } from '@angular/core';
+import { FormsModule } from '@angular/forms';
+import { MatButtonModule } from '@angular/material/button';
+import { MAT_DIALOG_DATA, MatDialog, MatDialogModule, MatDialogRef } from '@angular/material/dialog';
+import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatIconModule } from '@angular/material/icon';
+import { MatInputModule } from '@angular/material/input';
+import { firstValueFrom } from 'rxjs';
+import { EndOfDayApi, EndOfDayUndone, EndOfDayUndoPreview } from '../../core/costing/end-of-day.api';
+import { MoneyPipe } from '../../core/ui/money.pipe';
+import { NotifyService } from '../../core/ui/notify.service';
+
+// The manager's undo of the last closed day (إلغاء وفتح اليوم), asked as a danger: what it reverses
+// (its takings in the safe, the POS's sales of the day or those entered by hand, the purchase
+// invoices posted from it, its payments in the safe) and why, kept on the day. Only the last closed
+// day: the days before it stay as they are.
+@Component({
+  selector: 'app-end-of-day-undo-dialog',
+  imports: [DatePipe, FormsModule, MatButtonModule, MatDialogModule, MatFormFieldModule, MatIconModule, MatInputModule, MoneyPipe],
+  template: `
+    @let p = data;
+    <h2 mat-dialog-title class="danger-title">
+      <mat-icon>warning</mat-icon> Undo &amp; reopen {{ p.date | date: 'EEE d MMM y' }}? <span class="inline-ar">إلغاء وفتح اليوم</span>
+    </h2>
+    <mat-dialog-content>
+      <p class="danger-text" role="alert">
+        <strong>Are you sure?</strong> This will reverse the cash taking and POS integration for this day so it can be recorded again correctly.
+        <span class="line-ar" lang="ar" dir="rtl">هل أنت متأكد؟ سيتم عكس توريد النقدية وربط نقاط البيع لهذا اليوم ليُسجَّل من جديد بشكل صحيح.</span>
+      </p>
+      <ul class="reverses" aria-label="What is reversed">
+        <li>
+          <mat-icon>savings</mat-icon>
+          <span>Takings in the safe <span class="inline-ar">توريد الإيراد</span></span>
+          <strong>{{ p.takings === null ? 'None entered' : (p.takings | money) + ' voided' }}</strong>
+        </li>
+        <li>
+          <mat-icon>point_of_sale</mat-icon>
+          <span>Sales summary{{ p.zReports ? ', from the POS' : '' }} <span class="inline-ar">ملخص المبيعات</span></span>
+          <strong>{{ p.salesItems ? p.salesItems + (p.salesItems === 1 ? ' item' : ' items') + ' voided, stock put back' : 'None' }}</strong>
+        </li>
+        <li>
+          <mat-icon>receipt_long</mat-icon>
+          <span>Purchase invoices posted from it <span class="inline-ar">الفواتير المرحلة</span></span>
+          <strong>{{ p.postedInvoices ? p.postedInvoices + ' · ' + (p.postedInvoicesTotal | money) + ' voided, to post again' : 'None' }}</strong>
+        </li>
+        <li>
+          <mat-icon>payments</mat-icon>
+          <span>Payments &amp; advances in the safe <span class="inline-ar">المدفوعات والسلف</span></span>
+          <strong>{{ p.payouts ? p.payouts + ' · ' + (p.payoutsTotal | money) + ' voided' : 'None' }}</strong>
+        </li>
+      </ul>
+      <p class="muted small">
+        It becomes a draft again, to correct and submit; any payment still waiting for a manager is refused.
+        @if (p.zReports) {
+          The POS’s {{ p.zReports === 1 ? 'Z report is' : p.zReports + ' Z reports are' }} recorded again when the POS sends {{ p.zReports === 1 ? 'it' : 'them' }} again.
+        }
+        Only the last closed day is undone: the days before it stay as they are.
+      </p>
+      <mat-form-field class="full" subscriptSizing="dynamic">
+        <mat-label>Why · السبب</mat-label>
+        <textarea matInput rows="2" maxlength="500" [(ngModel)]="reason" aria-label="Why it is undone"></textarea>
+      </mat-form-field>
+    </mat-dialog-content>
+    <mat-dialog-actions align="end">
+      <button mat-button [mat-dialog-close]="null">Cancel · إلغاء</button>
+      <button mat-flat-button class="danger" (click)="done()"><mat-icon>undo</mat-icon> Undo &amp; reopen day · إلغاء وفتح اليوم</button>
+    </mat-dialog-actions>
+  `,
+  styleUrl: './costing.scss',
+  styles: `
+    .danger-title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--mat-sys-error);
+    }
+    .danger-text {
+      margin: 0 0 12px;
+      padding: 10px 12px;
+      border-radius: 10px;
+      background: color-mix(in srgb, var(--mat-sys-error) 10%, transparent);
+      color: var(--mat-sys-on-surface);
+
+      .line-ar {
+        display: block;
+        margin-top: 4px;
+      }
+    }
+    .reverses {
+      display: grid;
+      gap: 6px;
+      margin: 0 0 12px;
+      padding: 0;
+      list-style: none;
+
+      li {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 10px;
+        padding: 8px 10px;
+        border: 1px solid var(--app-line);
+        border-radius: 10px;
+      }
+      mat-icon {
+        color: var(--mat-sys-on-surface-variant);
+      }
+      strong {
+        font-variant-numeric: tabular-nums;
+        text-align: end;
+      }
+    }
+    .full {
+      width: 100%;
+    }
+    .small {
+      font-size: 0.85em;
+    }
+    button.danger {
+      --mat-button-filled-container-color: var(--mat-sys-error);
+      --mat-button-filled-label-text-color: var(--mat-sys-on-error);
+    }
+  `,
+})
+export class EndOfDayUndoDialog {
+  protected readonly data = inject<EndOfDayUndoPreview>(MAT_DIALOG_DATA);
+  private readonly ref = inject<MatDialogRef<EndOfDayUndoDialog, { reason: string | null }>>(MatDialogRef);
+  protected reason = '';
+
+  protected done(): void {
+    this.ref.close({ reason: this.reason.trim() || null });
+  }
+}
+
+// Asked, then undone: the answer, or null when it was not (cancelled, or refused: said here).
+@Injectable({ providedIn: 'root' })
+export class EndOfDayUndo {
+  private readonly dialog = inject(MatDialog);
+  private readonly api = inject(EndOfDayApi);
+  private readonly notify = inject(NotifyService);
+
+  async undo(preview: EndOfDayUndoPreview): Promise<EndOfDayUndone | null> {
+    const asked = await firstValueFrom(
+      this.dialog
+        .open<EndOfDayUndoDialog, EndOfDayUndoPreview, { reason: string | null }>(EndOfDayUndoDialog, { data: preview, width: '560px', maxWidth: '96vw' })
+        .afterClosed(),
+    );
+    if (!asked) {
+      return null;
+    }
+    try {
+      const undone = await firstValueFrom(this.api.voidLast(preview.date, asked.reason));
+      this.notify.info(`${undoneSummary(undone)} · تم إلغاء تقفيل اليوم وإعادة فتحه.`);
+      return undone;
+    } catch (error) {
+      this.notify.error(error, 'The day could not be undone.');
+      return null;
+    }
+  }
+}
+
+// What an undo reversed, said in a line.
+export function undoneSummary(u: EndOfDayUndone): string {
+  const done = [
+    u.takingsVoided ? 'takings voided' : null,
+    u.salesVoided ? 'sales summary voided' : null,
+    u.invoicesVoided ? `${u.invoicesVoided} purchase ${u.invoicesVoided === 1 ? 'invoice' : 'invoices'} voided` : null,
+    u.payoutsVoided ? `${u.payoutsVoided} ${u.payoutsVoided === 1 ? 'payment' : 'payments'} voided` : null,
+    u.requestsRefused ? `${u.requestsRefused} ${u.requestsRefused === 1 ? 'request' : 'requests'} refused` : null,
+  ].filter(Boolean);
+  return `Reopened ${u.day.date}${done.length ? `: ${done.join(', ')}` : ''}.`;
 }
 ```
 

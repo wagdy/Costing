@@ -4330,7 +4330,9 @@ NetCashInTill      = العُهدة + CashSalesCollected − CashPaidOut      (�
 ExpectedIntoSafe   = إجمالي الإيراد − CashPaidOut                    (ما يجب أن يصل الخزنة)
 ```
 
-> 📄 **`backend/src/Costing.Domain/EndOfDay/EndOfDayReport.cs`** — 506 سطر
+**التسلسل:** `EndOfDaySequence` دالة نقية تفحص ترتيب الأيام (الفصل 05)، و `Undo` يعيد اليوم مسودة بسببه (`ReopenReason`) ويفك ربط الفواتير (`Unposted`) والمدفوعات (`Unvouchered`، بـ `VoucherId` جديد عليه فهرس فريد).
+
+> 📄 **`backend/src/Costing.Domain/EndOfDay/EndOfDayReport.cs`** — 572 سطر
 
 ```csharp
 using System.Globalization;
@@ -4345,8 +4347,8 @@ public enum EndOfDayStatus
     // Being filled in: invoices added, changed or taken off, the sales typed.
     Draft = 1,
 
-    // Handed in (تأكيد وإرسال التقفيل): kept as it is, for the daily batch and the takings, until a
-    // manager reopens it.
+    // Handed in (تأكيد وإرسال التقفيل), a closed day: kept as it is, for the daily batch and the
+    // takings, until a manager undoes it while it is the last day closed.
     Submitted = 2,
 }
 
@@ -4449,6 +4451,9 @@ public sealed class EndOfDayReport : AggregateRoot
     public string? SubmittedBy { get; private set; }
     public DateTime? ReopenedAtUtc { get; private set; }
     public string? ReopenedBy { get; private set; }
+
+    // Why a manager undid it (إلغاء تقفيل اليوم), to be handed in again.
+    public string? ReopenReason { get; private set; }
 
     public IReadOnlyList<EndOfDayInvoice> Invoices => _invoices.OrderBy(i => i.AddedAtUtc).ToList().AsReadOnly();
 
@@ -4620,13 +4625,15 @@ public sealed class EndOfDayReport : AggregateRoot
         Touch(by);
     }
 
-    // Handed in: kept as it is from now. It needs the day's sales; a day with no invoice is one
-    // nothing was bought on.
-    public void Submit(string by)
+    // Handed in: kept as it is from now. It needs the day's sales, unless it is closed as a day that
+    // sold nothing (zeroSales: the restaurant shut), to keep the days in order; a day with no invoice
+    // is one nothing was bought on.
+    public void Submit(string by, bool zeroSales = false)
     {
         EnsureDraft();
-        if (NetSales <= 0)
-            throw new DomainException("Enter the day's sales report: its cash or Visa takings. · أدخل ريبورت المبيعات: إيراد الكاش أو الفيزا.");
+        if (NetSales <= 0 && !zeroSales)
+            throw new DomainException(
+                "Enter the day's sales report: its cash or Visa takings, or close it as a day with no sales. · أدخل ريبورت المبيعات، أو أقفل اليوم بدون مبيعات.");
         if ((TaxAmount ?? 0) > NetSales)
             throw new DomainException("The tax collected cannot be more than the day's sales. · الضريبة لا تزيد عن إجمالي المبيعات.");
         Status = EndOfDayStatus.Submitted;
@@ -4635,15 +4642,25 @@ public sealed class EndOfDayReport : AggregateRoot
         Touch(by);
     }
 
-    // A manager's: back to a draft, to be corrected and handed in again. What is posted already
-    // stays posted, and is corrected on its own invoice.
-    public void Reopen(string by)
+    // A manager's undo (إلغاء تقفيل اليوم): back to a draft, to be corrected and handed in again. The
+    // caller reverses what it put in the books (its payments' safe entries, the purchase invoices
+    // posted from its invoices, its takings and its sales); here its payments are not in the safe any
+    // more and its invoices not posted, so handing it in again does both afresh.
+    public void Undo(string by, string? reason = null)
     {
         if (!IsSubmitted)
             throw new DomainException("This end of day is not submitted: it can be changed as it is. · التقفيل لم يُرسل بعد.");
+        var why = Clean(reason);
+        if (why?.Length > MaxNotes)
+            throw new DomainException($"Keep the reason under {MaxNotes} characters.");
+        foreach (var payout in _payouts)
+            payout.Unvouchered();
+        foreach (var invoice in _invoices)
+            invoice.Unposted();
         Status = EndOfDayStatus.Draft;
         ReopenedAtUtc = DateTime.UtcNow;
         ReopenedBy = by;
+        ReopenReason = why;
         Touch(by);
     }
 
@@ -4678,8 +4695,8 @@ public sealed class EndOfDayReport : AggregateRoot
     {
         if (IsSubmitted)
             throw new DomainException(
-                $"The end of day of {Date.ToString("d MMM yyyy", CultureInfo.InvariantCulture)} is submitted{(SubmittedBy is null ? "" : $" by {SubmittedBy}")}: a manager reopens it to change it. " +
-                "· تم إرسال تقفيل هذا اليوم: يعيد المدير فتحه للتعديل.");
+                $"The end of day of {Date.ToString("d MMM yyyy", CultureInfo.InvariantCulture)} is submitted{(SubmittedBy is null ? "" : $" by {SubmittedBy}")}: to change it, a manager undoes it while it is the last day closed (Reports → Daily summaries). " +
+                "· تم إرسال تقفيل هذا اليوم: يلغيه المدير ويفتحه للتعديل ما دام آخر يوم تم إغلاقه.");
     }
 
     private void Touch(string by)
@@ -4748,6 +4765,13 @@ public sealed class EndOfDayInvoice : Entity
     internal void Photographed(EndOfDayPhoto photo) =>
         (PhotoFileName, PhotoContentType, PhotoBytes) = (photo.FileName, photo.ContentType, photo.Bytes);
 
+    // Its day undone: its purchase invoice voided, to be posted again.
+    internal void Unposted()
+    {
+        PurchaseInvoiceId = null;
+        PostedAtUtc = null;
+    }
+
     internal void PostedAs(Guid purchaseInvoiceId)
     {
         PurchaseInvoiceId = purchaseInvoiceId;
@@ -4767,6 +4791,7 @@ public sealed class EndOfDayPayout : Entity
         if (!Enum.IsDefined(kind))
             throw new DomainException("Say whether a supplier was paid or an employee advanced. · مورد أم سلفة.");
         Id = id;
+        VoucherId = id;
         ReportId = reportId;
         Kind = kind;
         AddedAtUtc = DateTime.UtcNow;
@@ -4775,6 +4800,10 @@ public sealed class EndOfDayPayout : Entity
     }
 
     public Guid ReportId { get; private set; }
+
+    // The id of the safe entry (or the request to a manager) it is made when its day is handed in:
+    // its own to begin with, a new one each time its day is undone, as the voided entry keeps the old.
+    public Guid VoucherId { get; private set; }
     public EndOfDayPayoutKind Kind { get; private set; }
     public Guid? SupplierId { get; private set; }
     public Guid? EmployeeId { get; private set; }
@@ -4812,12 +4841,22 @@ public sealed class EndOfDayPayout : Entity
         (ReceiptFileName, ReceiptContentType, ReceiptBytes) = (receipt.FileName, receipt.ContentType, receipt.Bytes);
 
     internal void VoucheredOn() => VoucheredAtUtc ??= DateTime.UtcNow;
+
+    // Its day undone: its safe entry voided, to be made again when the day is handed in.
+    internal void Unvouchered()
+    {
+        VoucheredAtUtc = null;
+        VoucherId = Guid.NewGuid();
+    }
 }
 
 // Returns each day with its Invoices and Payouts loaded.
 public interface IEndOfDayRepository : IRepository<EndOfDayReport>
 {
     Task<EndOfDayReport?> GetByDateAsync(DateOnly date, CancellationToken cancellationToken = default);
+
+    // The last day handed in (آخر يوم تم تقفيله), if any: the sequence goes on from it.
+    Task<DateOnly?> LastSubmittedDateAsync(CancellationToken cancellationToken = default);
 
     Task<IReadOnlyList<EndOfDayReport>> GetBetweenAsync(DateOnly from, DateOnly to, CancellationToken cancellationToken = default);
 
@@ -4838,6 +4877,35 @@ public interface IEndOfDayPhotoStore
     Task<byte[]?> GetAsync(Guid id, CancellationToken cancellationToken = default);
 
     void Remove(Guid id);
+}
+
+// Days are closed in exact order (التسلسل الزمني الإلزامي): the moving average costs and the profit
+// and loss follow the days as they go, so a day closed on the wrong date breaks both. Once any day
+// is closed, the next is the day after the last one closed, and only that one; never a day still to
+// come; never one in the books locked by a manager. The first day ever closed starts the sequence.
+public static class EndOfDaySequence
+{
+    public static DateOnly? NextAfter(DateOnly? lastClosed) => lastClosed?.AddDays(1);
+
+    public static void Check(DateOnly date, DateOnly? lastClosed, DateOnly today, DateOnly? lockedUntil)
+    {
+        if (date > today)
+            throw new DomainException("That day has not come yet: close a day once it is over. · هذا اليوم لم يأتِ بعد.");
+        if (lockedUntil is { } locked && date <= locked)
+            throw new DomainException($"The books are locked until {Day(locked)}: that day is not closed or changed any more. · الدفاتر مقفلة حتى {Day(locked)}.");
+        if (lastClosed is not { } last)
+            return;
+        var next = last.AddDays(1);
+        if (date == next)
+            return;
+        throw new DomainException(date <= last
+            ? $"{Day(date)} is closed already, or before the last closed day ({Day(last)}): days are closed in exact order, the next is {Day(next)}. " +
+              $"· آخر يوم تم إغلاقه هو {Day(last)}، واليوم التالي هو {Day(next)}."
+            : $"Close {Day(next)} first: days are closed in exact order, the last closed was {Day(last)}. " +
+              $"· يجب إغلاق يوم {Day(next)} أولاً، آخر يوم تم إغلاقه هو {Day(last)}.");
+    }
+
+    private static string Day(DateOnly day) => day.ToString("ddd d MMM yyyy", CultureInfo.InvariantCulture);
 }
 ```
 
@@ -6155,7 +6223,7 @@ internal sealed class UserTabAccessConfiguration : IEntityTypeConfiguration<User
 
 `EndOfDayConfigurations.cs`: تقرير واحد لكل يوم تجاري (فهرس فريد على التاريخ)، والصور في جدول منفصل.
 
-> 📄 **`backend/src/Costing.Infrastructure/Persistence/Configurations/EndOfDayConfigurations.cs`** — 94 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Persistence/Configurations/EndOfDayConfigurations.cs`** — 97 سطر
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
@@ -6187,6 +6255,7 @@ internal sealed class EndOfDayReportConfiguration : IEntityTypeConfiguration<End
         builder.Property(d => d.UpdatedBy).HasMaxLength(200);
         builder.Property(d => d.SubmittedBy).HasMaxLength(200);
         builder.Property(d => d.ReopenedBy).HasMaxLength(200);
+        builder.Property(d => d.ReopenReason).HasMaxLength(EndOfDayReport.MaxNotes);
         builder.Ignore(d => d.SalesPhoto);
         builder.Ignore(d => d.IsSubmitted);
         builder.Ignore(d => d.NetSales);
@@ -6238,6 +6307,8 @@ internal sealed class EndOfDayPayoutConfiguration : IEntityTypeConfiguration<End
         builder.Property(p => p.ReceiptContentType).HasMaxLength(64);
         builder.Ignore(p => p.Receipt);
         builder.Ignore(p => p.PayeeId);
+        // The safe entry it is made: found by it, as the HR link and a voided day find their payment.
+        builder.HasIndex(p => p.VoucherId).IsUnique();
         builder.HasOne<Supplier>().WithMany().HasForeignKey(p => p.SupplierId).OnDelete(DeleteBehavior.Restrict);
         builder.HasOne<StaffMember>().WithMany().HasForeignKey(p => p.EmployeeId).OnDelete(DeleteBehavior.Restrict);
     }
@@ -6340,7 +6411,7 @@ internal sealed class CompanyLogoConfiguration : IEntityTypeConfiguration<Compan
 
 جداول التقارير والإعدادات: نسبة تكلفة الطعام المستهدفة (30% افتراضيًا)، إعدادات الضريبة والخدمة، المصروفات الشهرية، التكاليف المشتركة، وورقة المبيعات اليدوية:
 
-> 📄 **`backend/src/Costing.Infrastructure/Reports/CostingTables.cs`** — 245 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Reports/CostingTables.cs`** — 249 سطر
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
@@ -6407,6 +6478,10 @@ public sealed class FinancialSettings
     // The bills' tax (VAT) rate: what a day's takings entered with tax have taken off them. Null
     // until it is set.
     public decimal? TaxPercent { get; set; }
+
+    // The books locked until this day (إقفال الدفاتر), a manager's: no end of day on or before it is
+    // closed or undone. Null: none locked.
+    public DateOnly? BooksLockedUntil { get; set; }
 
     public string? UpdatedBy { get; set; }
     public DateTime? UpdatedAtUtc { get; set; }
@@ -7075,7 +7150,7 @@ internal sealed class BreakageEntryRepository(CostingDbContext db) : IBreakageEn
 ```
 
 
-> 📄 **`backend/src/Costing.Infrastructure/Persistence/MenuSalesRepositories.cs`** — 133 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Persistence/MenuSalesRepositories.cs`** — 139 سطر
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
@@ -7186,6 +7261,12 @@ internal sealed class UserTabAccessRepository(CostingDbContext db) : IUserTabAcc
 
 // The rate the treasury takes off a day's takings entered with the tax in them: the bills' own, as
 // set on Tax & service.
+internal sealed class FinancialBooksLock(CostingDbContext db) : Costing.Application.EndOfDay.IBooksLock
+{
+    public async Task<DateOnly?> LockedUntilAsync(CancellationToken cancellationToken) =>
+        (await db.FinancialSettings.AsNoTracking().SingleOrDefaultAsync(cancellationToken))?.BooksLockedUntil;
+}
+
 internal sealed class FinancialTaxRate(CostingDbContext db) : Costing.Application.Treasury.ITaxRate
 {
     public async Task<decimal> PercentAsync(CancellationToken cancellationToken) =>
@@ -7214,7 +7295,7 @@ internal sealed class ComboOfferRepository(CostingDbContext db) : IComboOfferRep
 ```
 
 
-> 📄 **`backend/src/Costing.Infrastructure/Persistence/EndOfDayRepositories.cs`** — 55 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Persistence/EndOfDayRepositories.cs`** — 58 سطر
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
@@ -7234,6 +7315,9 @@ internal sealed class EndOfDayRepository(CostingDbContext db) : IEndOfDayReposit
     public Task<EndOfDayReport?> GetByDateAsync(DateOnly date, CancellationToken cancellationToken = default) =>
         WithInvoices.SingleOrDefaultAsync(d => d.Date == date, cancellationToken);
 
+    public Task<DateOnly?> LastSubmittedDateAsync(CancellationToken cancellationToken = default) =>
+        db.EndOfDayReports.Where(d => d.Status == EndOfDayStatus.Submitted).MaxAsync(d => (DateOnly?)d.Date, cancellationToken);
+
     public async Task<IReadOnlyList<EndOfDayReport>> GetBetweenAsync(DateOnly from, DateOnly to, CancellationToken cancellationToken = default) =>
         await WithInvoices.Where(d => d.Date >= from && d.Date <= to).ToListAsync(cancellationToken);
 
@@ -7241,7 +7325,7 @@ internal sealed class EndOfDayRepository(CostingDbContext db) : IEndOfDayReposit
         WithInvoices.SingleOrDefaultAsync(d => d.Invoices.Any(i => i.Id == invoiceId), cancellationToken);
 
     public Task<EndOfDayReport?> GetByPayoutAsync(Guid payoutId, CancellationToken cancellationToken = default) =>
-        WithInvoices.SingleOrDefaultAsync(d => d.Payouts.Any(p => p.Id == payoutId), cancellationToken);
+        WithInvoices.SingleOrDefaultAsync(d => d.Payouts.Any(p => p.Id == payoutId || p.VoucherId == payoutId), cancellationToken);
 }
 
 // A photo handed in at the end of the day: one row each, its bytes alone.
@@ -7344,6 +7428,7 @@ dotnet ef migrations add <Name> \
 | 13 | `20261116193324_AddCombosAndDiscounts` | Add Combos And Discounts |
 | 14 | `20261116223159_AddFixedAssets` | Add Fixed Assets |
 | 15 | `20261116233433_AddPurchaseOrders` | Add Purchase Orders |
+| 16 | `20261117092011_AddEndOfDaySequence` | Add End Of Day Sequence |
 
 
 ### 14.1 `UnifySafeTakings`: migration تحوّل بيانات لا شكلًا فقط

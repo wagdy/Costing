@@ -15,6 +15,9 @@ internal sealed class EndOfDayRepository(CostingDbContext db) : IEndOfDayReposit
     public Task<EndOfDayReport?> GetByDateAsync(DateOnly date, CancellationToken cancellationToken = default) =>
         WithInvoices.SingleOrDefaultAsync(d => d.Date == date, cancellationToken);
 
+    public Task<DateOnly?> LastSubmittedDateAsync(CancellationToken cancellationToken = default) =>
+        db.EndOfDayReports.Where(d => d.Status == EndOfDayStatus.Submitted).MaxAsync(d => (DateOnly?)d.Date, cancellationToken);
+
     public async Task<IReadOnlyList<EndOfDayReport>> GetBetweenAsync(DateOnly from, DateOnly to, CancellationToken cancellationToken = default) =>
         await WithInvoices.Where(d => d.Date >= from && d.Date <= to).ToListAsync(cancellationToken);
 
@@ -22,7 +25,7 @@ internal sealed class EndOfDayRepository(CostingDbContext db) : IEndOfDayReposit
         WithInvoices.SingleOrDefaultAsync(d => d.Invoices.Any(i => i.Id == invoiceId), cancellationToken);
 
     public Task<EndOfDayReport?> GetByPayoutAsync(Guid payoutId, CancellationToken cancellationToken = default) =>
-        WithInvoices.SingleOrDefaultAsync(d => d.Payouts.Any(p => p.Id == payoutId), cancellationToken);
+        WithInvoices.SingleOrDefaultAsync(d => d.Payouts.Any(p => p.Id == payoutId || p.VoucherId == payoutId), cancellationToken);
 }
 
 // A photo handed in at the end of the day: one row each, its bytes alone.

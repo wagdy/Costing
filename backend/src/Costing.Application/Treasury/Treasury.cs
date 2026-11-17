@@ -405,10 +405,12 @@ internal sealed class TreasuryWriter(
     // Voids it, today: the opposite amount in the safe's ledger, and on the supplier's account too
     // for a supplier payment. A payment out of a day's takings goes back into the safe when they
     // are in it.
-    public async Task VoidAsync(SafeTransaction entry, string by, CancellationToken cancellationToken)
+    // takingsInSafe: whether its day's takings are in the safe, given when they are being voided with it
+    // (an end of day undone), so what came out of the drawer goes back to the drawer.
+    public async Task VoidAsync(SafeTransaction entry, string by, CancellationToken cancellationToken, bool? takingsInSafe = null)
     {
         await CheckVoidAsync(entry, cancellationToken);
-        safe.Add(entry.Void(Guid.NewGuid(), Today, by, await TakingsInSafeAsync(entry.RevenueDate, cancellationToken)));
+        safe.Add(entry.Void(Guid.NewGuid(), Today, by, takingsInSafe ?? await TakingsInSafeAsync(entry.RevenueDate, cancellationToken)));
         // A fixed asset's purchase voided: off the register. Its sale voided: back in use.
         if (entry.FixedAssetId is { } assetId && await assets.GetByIdAsync(assetId, cancellationToken) is { IsVoided: false } asset)
         {
@@ -471,10 +473,10 @@ internal sealed class TreasuryWriter(
     }
 
     // An invoice's cash payment and credit lines undone, for a voided invoice.
-    public async Task UndoInvoiceAsync(PurchaseInvoice invoice, string by, CancellationToken cancellationToken)
+    public async Task UndoInvoiceAsync(PurchaseInvoice invoice, string by, CancellationToken cancellationToken, bool? takingsInSafe = null)
     {
         if (await safe.GetPaymentOfInvoiceAsync(invoice.Id, cancellationToken) is { } payment)
-            await VoidAsync(payment, by, cancellationToken);
+            await VoidAsync(payment, by, cancellationToken, takingsInSafe);
         foreach (var line in (await suppliersLedger.GetBySourceAsync(invoice.Id, cancellationToken)).Where(l => !l.IsReversal))
             suppliersLedger.Add(line.Reverse(Today, by));
     }

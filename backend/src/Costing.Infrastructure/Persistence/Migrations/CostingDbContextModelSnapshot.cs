@@ -357,6 +357,9 @@ namespace Costing.Infrastructure.Persistence.Migrations
                     b.Property<Guid?>("SupplierId")
                         .HasColumnType("uuid");
 
+                    b.Property<Guid>("VoucherId")
+                        .HasColumnType("uuid");
+
                     b.Property<DateTime?>("VoucheredAtUtc")
                         .HasColumnType("timestamp with time zone");
 
@@ -367,6 +370,9 @@ namespace Costing.Infrastructure.Persistence.Migrations
                     b.HasIndex("ReportId");
 
                     b.HasIndex("SupplierId");
+
+                    b.HasIndex("VoucherId")
+                        .IsUnique();
 
                     b.ToTable("EndOfDayPayouts", "costing");
                 });
@@ -406,6 +412,10 @@ namespace Costing.Infrastructure.Persistence.Migrations
                     b.Property<decimal?>("OpeningFloat")
                         .HasPrecision(18, 2)
                         .HasColumnType("numeric(18,2)");
+
+                    b.Property<string>("ReopenReason")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
 
                     b.Property<DateTime?>("ReopenedAtUtc")
                         .HasColumnType("timestamp with time zone");
@@ -2918,6 +2928,9 @@ namespace Costing.Infrastructure.Persistence.Migrations
                 {
                     b.Property<int>("Id")
                         .HasColumnType("integer");
+
+                    b.Property<DateOnly?>("BooksLockedUntil")
+                        .HasColumnType("date");
 
                     b.Property<decimal>("ServicePercent")
                         .HasPrecision(5, 2)

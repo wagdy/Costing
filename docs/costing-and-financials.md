@@ -748,20 +748,23 @@ those on credit, the suppliers paid and the advances, each counted and added up;
 expected net cash after the cash invoices (cash − cash invoices); what should reach the safe (total
 revenue − the cash invoices, the supplier payments and the advances, as the takings will show it
 once all of them are out of them); and the net cash expected in the till. **Confirm & submit**
-(تأكيد وإرسال التقفيل) locks the day: it needs its sales (cash or Visa), the tax no more than them.
-A manager reopens a day to correct it; what is posted from it stays posted.
+(تأكيد وإرسال التقفيل) locks the day: it needs its sales (cash or Visa), the tax no more than them,
+or to be confirmed as a day that sold nothing. Days are closed one after another, and a manager
+corrects the last one closed by undoing it (see [Strict sequentiality and the manager's
+undo](#strict-sequentiality-and-the-managers-undo-التسلسل-الزمني-وإلغاء-التقفيل)).
 
 **Submitted, each supplier payment and advance becomes the safe's entry** (صرف من الخزنة) out of the
-day's takings (out of the safe itself if they are entered already), dated the day, its id the
-payment's own: a **supplier payment** (سداد مورد), off the supplier's account, or an **employee
+day's takings (out of the safe itself if they are entered already), dated the day, under the
+payment's voucher id (the payment's own id at first, a new one each time the day is undone, so it
+is entered again when the day is handed in again): a **supplier payment** (سداد مورد), off the supplier's account, or an **employee
 advance** (سلفة) in the employee's payroll month. Handed in by a manager, they are entered at once;
 by anyone else, each is a request for a manager on Approvals, and nothing moves until it is
 approved. All of them or none: one that cannot be entered (a supplier owed less by then, an
 employee who has left) refuses the day, naming it. Each shows where it is: **Waiting for a
-manager**, **In the safe**, or **Refused by a manager**. One in the safe or waiting is kept as it is
-when the day is reopened (corrected on Financials → Safe); one refused can be taken off and entered
-again; one added after reopening goes to the safe when the day is submitted again. They are not
-entered again on the daily batch.
+manager**, **In the safe**, or **Refused by a manager**. When a manager undoes the day, one in the
+safe is voided and one waiting is refused: each is the day's again, to change or take off, and
+goes to the safe again when the day is handed in again. They are not entered again on the daily
+batch.
 
 An advance to someone on the staff who comes from HR, while the HR link is switched on, goes to
 HR once it is entered in the safe (when the day is handed in, or once a manager approves it): it
@@ -790,12 +793,86 @@ supplierId, reportedTotal, note, file), `PUT|DELETE {date}/invoices/{id}`, `PUT
 {date}/invoices/{id}/photo`, `POST {date}/supplier-payments` (a form: id, supplierId, amount, note,
 file), `POST {date}/advances` (a form: id, employeeId, amount, note, file), `PUT|DELETE
 {date}/supplier-payments/{id}` and `{date}/advances/{id}`, `PUT {date}/supplier-payments/{id}/receipt`
-and `{date}/advances/{id}/receipt`, `PUT|DELETE {date}/sales-photo`, `POST {date}/submit`, `POST
-{date}/reopen` (a manager's), `GET {date}/photos/{id}` (an invoice's or a receipt's by its id, the
-sales report's by the day's). Written with End of the day; read with it, Purchases or Financials;
-`GET /api/staff` is read with End of the day too. A batch invoice names `endOfDayInvoiceId` and
-`onCredit`. Kept in `costing.EndOfDayReports` (with `OpeningFloat`), `EndOfDayInvoices`,
-`EndOfDayPayouts` (migration `AddEndOfDayPayouts`) and `EndOfDayPhotos`.
+and `{date}/advances/{id}/receipt`, `PUT|DELETE {date}/sales-photo`, `POST {date}/submit` (body
+`{ "zeroSales": true }` for a day that sold nothing; the answer's `warnings` say what to look at),
+`GET sequence`, `POST void-last` (also `POST /api/costing/end-of-day/void-last`; a manager's), `POST
+{date}/reopen` (the same undo, of that day only when it is the last closed), `GET {date}/photos/{id}`
+(an invoice's or a receipt's by its id, the sales report's by the day's). Written with End of the
+day; read with it, Purchases or Financials; `GET /api/staff` is read with End of the day too. A
+batch invoice names `endOfDayInvoiceId` and `onCredit`. Kept in `costing.EndOfDayReports` (with
+`OpeningFloat`, `ReopenReason`), `EndOfDayInvoices`, `EndOfDayPayouts` (with `VoucherId`; migrations
+`AddEndOfDayPayouts`, `AddEndOfDaySequence`) and `EndOfDayPhotos`; the books' lock in
+`costing.FinancialSettings.BooksLockedUntil`.
+
+### Strict sequentiality and the manager's undo (التسلسل الزمني وإلغاء التقفيل)
+
+Days are closed in exact order, so the safe, the stock and the reports never have a day missing
+between two closed ones. A day is **closed** once its end of day is submitted; the **last closed
+day** (`LastClosedDate`) is the latest submitted, and the **next expected day**
+(`NextExpectedDate`) the day after it.
+
+- **Rule 1, in order:** a day is handed in only when it is the day after the last closed day. One
+  before it, or the last closed day again, is refused (*closed already, or before the last closed
+  day*); one after it is refused naming the day to close first (*Close Tue 3 Nov 2026 first*).
+  Before any day is closed, any day up to today starts the sequence.
+- **Rule 2, never ahead:** no day after today (the business day, as the till keeps it) is opened
+  or handed in (*That day has not come yet*).
+- **The books' lock:** no day on or before the date the books are locked until
+  (`BooksLockedUntil`, إقفال الدفاتر) is closed or undone. A manager locks them up to the last
+  closed day at the latest, and never past today, or unlocks them (`PUT
+  /api/financials/books-lock` with `lockedUntil`, or null), on Reports → Daily summaries.
+- **No entries out of order:** an invoice, payment, sales report or photo makes a new day only for
+  the next expected day; a draft made before the rules came in can still be changed, but is handed
+  in only in its turn.
+- **A day that sold nothing** (يوم بدون مبيعات) is still closed, to keep the order: Review &
+  confirm asks *No POS sales found for this date. Are you sure you want to close this as a
+  Zero-Sales day to maintain the sequence?*, and only once confirmed is it handed in with
+  `zeroSales`. Refused when the day does have sales: a sales summary (from the POS or entered by
+  hand) or takings in the safe for it.
+- **Before closing, never stopping it** (`warnings`, on `GET sequence` for the next day and on the
+  submit's answer): purchase invoices left as drafts dated on or before the day (*There are draft
+  invoices … Consider posting them before closing the day*), and cash handed out with no one
+  named (a pending advance, an open cash custody) more than 48 hours ago, in the last 30 days
+  (*settle them by giving them out on HR → Advances, or void them*). This system sees the
+  advance itself, not HR's allocations of it, so one given out on HR but not voided here is still
+  said.
+
+**On End of the day**, the date is locked to the next expected day once a day is closed (a lock
+on the date field), with the banner *The last closed day was Mon 2 Nov 2026. You are currently
+closing Tue 3 Nov 2026. You must close days in exact order.* and its Arabic (آخر يوم تم إغلاقه هو
+…، يجب إغلاق يوم … أولاً). A day opened from Recent days is read as it is; one out of order cannot
+be reviewed (*Close … first*) and **Go to** returns to the day to close. With every day closed up
+to today the page shows the last one, and Review & confirm is disabled with *All days are closed
+up to today. Come back tomorrow.* (تم تقفيل جميع الأيام حتى تاريخ اليوم). The warnings are shown
+above the submit bar and in the summary report.
+
+**The manager's undo** (إلغاء وفتح اليوم), only of the last closed day, so the days before it stay
+as they are, and never of one in the books locked: **Undo & Reopen Day** on Reports → **Daily
+summaries** (`/costing/reports/daily-summaries`: every day handed in over a period, latest first,
+the button on the last closed row alone, for a manager) or on the submitted day on End of the
+day. It asks, as a danger, *Are you sure? This will reverse the cash taking and POS integration
+for this day so it can be recorded again correctly.*, listing what it reverses, and takes a reason
+(kept on the day, shown as *undone by …: why*). Then, in one unit, dated today:
+
+1. **The takings** in the safe for the day are voided. What was paid out of the day's takings
+   before they went in goes back to the day's drawer, not the safe.
+2. **The sales summary** of the day, entered by hand or made from the POS's Z reports, is voided,
+   its stock put back. The POS's mapping of the day is cleared, and each of its Z reports is taken
+   again when the POS sends it again (the same report is no longer a resend).
+3. **The purchase invoices posted from the invoices handed in** (a correction's, if one was
+   corrected since) are voided, their stock, costs, cash and supplier's account undone, and
+   unlinked from the day, to be posted again on the daily batch.
+4. **Its payments and advances** in the safe are voided (owed again to the supplier, off the
+   employee's pay again); those still waiting for a manager are refused (*The end of day was
+   undone*).
+5. **The day** becomes a draft, the next expected day again.
+
+Refused while one of them waits for a manager on Approvals. `POST void-last` takes `date` (the day
+the manager saw: refused if another was closed since) and `reason`; the answer is the day and what
+was reversed (`takingsVoided`, `salesVoided`, `invoicesVoided`, `payoutsVoided`, `requestsRefused`,
+`zReports`). `GET sequence` gives `lastClosedDate`, `nextExpectedDate`, `today`, `allClosed`,
+`booksLockedUntil`, `warnings` and `lastClosed`, what undoing it would reverse (its takings, sales
+items, posted invoices, payments in the safe, Z reports, and whether the books are locked over it).
 
 ## Purchases: discounts and the paper
 

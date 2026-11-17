@@ -808,7 +808,139 @@ public class CostingApiTests
         Assert.Equal(2, after.GetProperty("posted").GetInt32());
         var listed = await Json(await manager.GetAsync($"/api/end-of-day?from={Iso(today.AddDays(-6))}&to={Iso(today)}", Cancel));
         Assert.Equal(1, listed.GetArrayLength());
-        Assert.Equal("Draft", (await Json(await manager.PostAsync($"{day}/reopen", null, Cancel))).GetProperty("status").GetString());
+        // Undone by a manager (the reopen route is the undo of the last day): its posted invoices voided, unlinked.
+        var undone = await Json(await manager.PostAsync($"{day}/reopen", null, Cancel));
+        Assert.Equal(("Draft", 0), (undone.GetProperty("status").GetString(), undone.GetProperty("posted").GetInt32()));
+    }
+
+    // Days closed in exact order: the first close starts the sequence; then only the day after the
+    // last closed, never one ahead of today, never one in the books locked; a day that sold nothing
+    // only when said so and nothing was sold on it. The last closed day undone by a manager alone:
+    // its takings, sales summary (its stock put back) and posted invoices voided, a draft again.
+    [Fact]
+    public async Task Days_are_closed_in_exact_order_and_a_manager_undoes_the_last_one_reversing_what_it_made()
+    {
+        await using var api = await TestApi.StartAsync();
+        var manager = await api.ManagerAsync();
+        var (mozzarella, large, _) = await PizzaAsync(manager);
+        var today = await TodayAsync(manager);
+        var nile = Guid.NewGuid();
+        await Json(await manager.PutAsJsonAsync($"/api/inventory/suppliers/{nile}", new { name = "Nile Mills" }, Cancel));
+        var branch = await api.UserAsync(manager, "Hany", UserRole.Storekeeper);
+        await Json(await manager.PutAsJsonAsync($"/api/access/{api.UserIds["hany@example.com"]}", new { tabs = new[] { "EndOfDay" } }, Cancel));
+        string Day(DateOnly d) => $"/api/end-of-day/{Iso(d)}";
+        async Task<JsonElement> Sequence() => await Json(await branch.GetAsync("/api/end-of-day/sequence", Cancel));
+        async Task<string> Refused(HttpResponseMessage response)
+        {
+            Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
+            return await response.Content.ReadAsStringAsync(Cancel);
+        }
+
+        // Nothing closed yet: any day up to today starts it.
+        var none = await Sequence();
+        Assert.Equal((JsonValueKind.Null, false), (none.GetProperty("nextExpectedDate").ValueKind, none.GetProperty("allClosed").GetBoolean()));
+        Assert.Contains("has not come yet", await Refused(await branch.PutAsJsonAsync($"{Day(today.AddDays(1))}/sales", new { cashAmount = 10 }, Cancel)));
+        await Json(await branch.PutAsJsonAsync($"{Day(today.AddDays(-2))}/sales", new { cashAmount = 500, cardAmount = 0, taxAmount = 0, voidsAmount = 0 }, Cancel));
+        await Json(await branch.PostAsync($"{Day(today.AddDays(-2))}/submit", null, Cancel));
+
+        // Then only the next: today waits for yesterday.
+        var next = await Sequence();
+        Assert.Equal((Iso(today.AddDays(-2)), Iso(today.AddDays(-1)), Iso(today.AddDays(-2))),
+            (next.GetProperty("lastClosedDate").GetString(), next.GetProperty("nextExpectedDate").GetString(),
+             next.GetProperty("lastClosed").GetProperty("date").GetString()));
+        Assert.Contains($"Close {today.AddDays(-1).ToString("ddd d MMM yyyy", CultureInfo.InvariantCulture)} first",
+            await Refused(await branch.PutAsJsonAsync($"{Day(today)}/sales", new { cashAmount = 10 }, Cancel)));
+        Assert.Contains("closed already", await Refused(await branch.PutAsJsonAsync($"{Day(today.AddDays(-3))}/sales", new { cashAmount = 10 }, Cancel)));
+
+        // Yesterday sold nothing: closed only once said so.
+        Assert.Contains("close it as a day with no sales", await Refused(await branch.PostAsync($"{Day(today.AddDays(-1))}/submit", null, Cancel)));
+        var zero = await Json(await branch.PostAsJsonAsync($"{Day(today.AddDays(-1))}/submit", new { zeroSales = true }, Cancel));
+        Assert.Equal(("Submitted", 0m), (zero.GetProperty("status").GetString(), zero.GetProperty("netSales").GetDecimal()));
+
+        // Today: a draft invoice dated today is said before it is closed, never refusing it.
+        var flour = (await Json(await manager.PostAsJsonAsync("/api/inventory/raw-materials", new
+        {
+            name = "Flour", unit = "Gram", purchaseUnit = "kg", purchaseUnitSize = 1000,
+        }, Cancel))).GetProperty("id").GetGuid();
+        var draft = Guid.NewGuid();
+        await Json(await manager.PutAsJsonAsync($"/api/inventory/purchase-invoices/{draft}", new
+        {
+            supplierId = nile, invoiceDate = Iso(today), paymentMethod = "Credit",
+            lines = new[] { new { rawMaterialId = flour, enteredQuantity = 1, unitLabel = "kg", unitSize = 1000, cost = 30, itemType = "Inventory" } },
+        }, Cancel));
+        Assert.Contains("draft purchase invoice is dated on or before", (await Sequence()).GetProperty("warnings")[0].GetString());
+
+        // Sold on the POS: never closed as a day with no sales.
+        var stocked = await OnHandAsync(manager, mozzarella);
+        await Json(await manager.PostAsJsonAsync("/api/sales/daily", new
+        {
+            id = Guid.NewGuid(), date = Iso(today), lines = new[] { new { menuItemId = 6101, variantId = large, quantity = 4 } },
+        }, Cancel));
+        Assert.NotEqual(stocked, await OnHandAsync(manager, mozzarella));
+        Assert.Contains("sales summary has 1 items", await Refused(await branch.PostAsJsonAsync($"{Day(today)}/submit", new { zeroSales = true }, Cancel)));
+
+        // Closed with its sales, an invoice paid out of its takings posted, and its takings in the safe.
+        var handed = Guid.NewGuid();
+        var jpeg = new ByteArrayContent([0xFF, 0xD8, 0xFF, 0xE0, 0, 0x10, 0x4A, 0x46, 0x49, 0x46]);
+        jpeg.Headers.ContentType = new MediaTypeHeaderValue("image/jpeg");
+        await Json(await branch.PostAsync($"{Day(today)}/invoices", new MultipartFormDataContent
+        {
+            { new StringContent(handed.ToString()), "invoiceId" }, { new StringContent("Cash"), "kind" }, { new StringContent(nile.ToString()), "supplierId" },
+            { new StringContent("60"), "reportedTotal" }, { jpeg, "file", "cash.jpg" },
+        }, Cancel));
+        await Json(await branch.PutAsJsonAsync($"{Day(today)}/sales", new { cashAmount = 720, cardAmount = 0, taxAmount = 0, voidsAmount = 0 }, Cancel));
+        var closed = await Json(await branch.PostAsync($"{Day(today)}/submit", null, Cancel));
+        Assert.Contains("draft purchase invoice", closed.GetProperty("warnings")[0].GetString());
+        var posted = (await Json(await manager.PostAsJsonAsync("/api/inventory/purchase-invoices/batch", new
+        {
+            invoiceDate = Iso(today), paymentMethod = "DayRevenue", revenueDate = Iso(today),
+            invoices = new[]
+            {
+                new
+                {
+                    invoiceId = Guid.NewGuid(), supplierId = nile, endOfDayInvoiceId = handed,
+                    lines = new[] { new { rawMaterialId = flour, enteredQuantity = 2, unitLabel = "kg", unitSize = 1000, cost = 60 } },
+                },
+            },
+        }, Cancel))).GetProperty("invoices")[0].GetProperty("id").GetGuid();
+        await Json(await manager.PostAsJsonAsync("/api/financials/vouchers", new
+        {
+            requestId = Guid.NewGuid(), transactionId = Guid.NewGuid(), kind = "RevenueTransfer", amount = 660, date = Iso(today), revenueDate = Iso(today),
+        }, Cancel));
+        var all = await Sequence();
+        Assert.Equal((true, Iso(today.AddDays(1)), 0), (all.GetProperty("allClosed").GetBoolean(), all.GetProperty("nextExpectedDate").GetString(),
+            all.GetProperty("warnings").GetArrayLength()));
+        var preview = all.GetProperty("lastClosed");
+        Assert.Equal((1, 60m, 1), (preview.GetProperty("postedInvoices").GetInt32(), preview.GetProperty("postedInvoicesTotal").GetDecimal(),
+            preview.GetProperty("salesItems").GetInt32()));
+        Assert.Equal(JsonValueKind.Number, preview.GetProperty("takings").ValueKind);
+
+        // Undone by a manager alone, the last day only, never one in the books locked.
+        Assert.Equal(HttpStatusCode.Forbidden, (await branch.PostAsJsonAsync("/api/costing/end-of-day/void-last", new { date = Iso(today) }, Cancel)).StatusCode);
+        Assert.Contains("Only the last closed day",
+            await Refused(await manager.PostAsJsonAsync("/api/costing/end-of-day/void-last", new { date = Iso(today.AddDays(-1)) }, Cancel)));
+        var locked = await Json(await manager.PutAsJsonAsync("/api/financials/books-lock", new { lockedUntil = Iso(today) }, Cancel));
+        Assert.Equal(Iso(today), locked.GetProperty("booksLockedUntil").GetString());
+        Assert.Contains("The books are locked until",
+            await Refused(await manager.PostAsJsonAsync("/api/costing/end-of-day/void-last", new { date = Iso(today) }, Cancel)));
+        Assert.True((await Sequence()).GetProperty("lastClosed").GetProperty("locked").GetBoolean());
+        Assert.Contains("up to today at the latest",
+            await Refused(await manager.PutAsJsonAsync("/api/financials/books-lock", new { lockedUntil = Iso(today.AddDays(1)) }, Cancel)));
+        await Json(await manager.PutAsJsonAsync("/api/financials/books-lock", new { lockedUntil = Iso(today.AddDays(-1)) }, Cancel));
+
+        var voided = await Json(await manager.PostAsJsonAsync("/api/costing/end-of-day/void-last", new { date = Iso(today), reason = "Cash counted twice" }, Cancel));
+        Assert.Equal((true, true, 1), (voided.GetProperty("takingsVoided").GetBoolean(), voided.GetProperty("salesVoided").GetBoolean(),
+            voided.GetProperty("invoicesVoided").GetInt32()));
+        var reopened = voided.GetProperty("day");
+        Assert.Equal(("Draft", "Cash counted twice"), (reopened.GetProperty("status").GetString(), reopened.GetProperty("reopenReason").GetString()));
+        Assert.Equal("Voided", (await Json(await manager.GetAsync($"/api/inventory/purchase-invoices/{posted}", Cancel))).GetProperty("status").GetString());
+        Assert.Equal(stocked, await OnHandAsync(manager, mozzarella));
+        var after = await Sequence();
+        Assert.Equal((Iso(today.AddDays(-1)), Iso(today), false), (after.GetProperty("lastClosedDate").GetString(),
+            after.GetProperty("nextExpectedDate").GetString(), after.GetProperty("allClosed").GetBoolean()));
+        // Yesterday is in the books locked: not undone, and today is handed in again.
+        Assert.Contains("The books are locked until", await Refused(await manager.PostAsJsonAsync("/api/end-of-day/void-last", new { }, Cancel)));
+        Assert.Equal("Submitted", (await Json(await branch.PostAsync($"{Day(today)}/submit", null, Cancel))).GetProperty("status").GetString());
     }
 
     // The cash a branch paid out of the till, each with its receipt sent as a file: a supplier paid,

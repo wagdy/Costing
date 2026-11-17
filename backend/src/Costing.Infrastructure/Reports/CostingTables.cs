@@ -63,6 +63,10 @@ public sealed class FinancialSettings
     // until it is set.
     public decimal? TaxPercent { get; set; }
 
+    // The books locked until this day (إقفال الدفاتر), a manager's: no end of day on or before it is
+    // closed or undone. Null: none locked.
+    public DateOnly? BooksLockedUntil { get; set; }
+
     public string? UpdatedBy { get; set; }
     public DateTime? UpdatedAtUtc { get; set; }
 }

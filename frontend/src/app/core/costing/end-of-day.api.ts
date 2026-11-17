@@ -101,6 +101,51 @@ export interface EndOfDay {
   // The Z report's discounts and promos, and why: never collected, never in the till.
   discountsAmount?: number | null;
   discountReasons?: DiscountReason[] | null;
+  // Why a manager undid it, when one did.
+  reopenReason?: string | null;
+  // As it was handed in: what to look at before the next day, never refusing it.
+  warnings?: string[] | null;
+}
+
+// The days in their order (التسلسل الزمني): the last closed and the one to close next (none before
+// the first is ever closed: any day up to today starts it), today as the till keeps it, whether every
+// day up to today is closed, the books' lock, what to look at before closing the next, and what
+// undoing the last closed day would reverse.
+export interface EndOfDaySequence {
+  lastClosedDate: string | null;
+  nextExpectedDate: string | null;
+  today: string;
+  allClosed: boolean;
+  booksLockedUntil: string | null;
+  warnings: string[];
+  lastClosed: EndOfDayUndoPreview | null;
+}
+
+export interface EndOfDayUndoPreview {
+  date: string;
+  submittedBy: string | null;
+  submittedAtUtc: string | null;
+  takings: number | null;
+  salesItems: number;
+  postedInvoices: number;
+  postedInvoicesTotal: number;
+  payouts: number;
+  payoutsTotal: number;
+  // The books are locked over it: it is not undone.
+  locked: boolean;
+  // The POS's Z reports of the day: each recorded again when the POS sends it again.
+  zReports?: number;
+}
+
+// The last closed day undone: back to a draft, and what was reversed to get there.
+export interface EndOfDayUndone {
+  day: EndOfDay;
+  takingsVoided: boolean;
+  salesVoided: boolean;
+  invoicesVoided: number;
+  payoutsVoided: number;
+  requestsRefused: number;
+  zReports?: number;
 }
 
 export interface EndOfDaySales {
@@ -224,12 +269,19 @@ export class EndOfDayApi {
     return this.http.delete<EndOfDay>(`/api/end-of-day/${date}/sales-photo`);
   }
 
-  submit(date: string): Observable<EndOfDay> {
-    return this.http.post<EndOfDay>(`/api/end-of-day/${date}/submit`, null);
+  // The days in their order: the next to close, and what undoing the last would reverse.
+  sequence(): Observable<EndOfDaySequence> {
+    return this.http.get<EndOfDaySequence>('/api/end-of-day/sequence');
   }
 
-  reopen(date: string): Observable<EndOfDay> {
-    return this.http.post<EndOfDay>(`/api/end-of-day/${date}/reopen`, null);
+  // Only the next day in order; with no sales, only once said to be a day that sold nothing.
+  submit(date: string, zeroSales = false): Observable<EndOfDay> {
+    return this.http.post<EndOfDay>(`/api/end-of-day/${date}/submit`, zeroSales ? { zeroSales: true } : null);
+  }
+
+  // A manager's: the last closed day undone (date, the one the manager saw), with why.
+  voidLast(date: string, reason: string | null): Observable<EndOfDayUndone> {
+    return this.http.post<EndOfDayUndone>('/api/costing/end-of-day/void-last', { date, reason });
   }
 
   // Cash paid out of the till, with its receipt; the id made here once, so it is not added twice.

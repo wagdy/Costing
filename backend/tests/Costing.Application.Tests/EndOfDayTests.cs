@@ -7,6 +7,7 @@ using Costing.Domain.Common;
 using Costing.Domain.EndOfDay;
 using Costing.Domain.Purchases;
 using Costing.Domain.RawMaterials;
+using Costing.Domain.Treasury;
 
 namespace Costing.Application.Tests;
 
@@ -28,6 +29,36 @@ public class EndOfDayTests
 
     private static BatchInvoice Transcribed(Guid handedIn, Guid supplier, Guid flour, decimal kilos, decimal cost, bool onCredit = false) =>
         new(Guid.NewGuid(), supplier, null, [new PurchaseInvoiceLineEntry(flour, kilos, "kg", 1000, cost)], OnCredit: onCredit, EndOfDayInvoiceId: handedIn);
+
+    // Before a day is closed: purchase invoices left as drafts dated on or before it, and cash handed
+    // out with no one named more than 48 hours ago, said; neither stops it.
+    [Fact]
+    public async Task Draft_invoices_and_old_custodies_are_said_before_the_day_is_closed_never_stopping_it()
+    {
+        var nile = Guid.NewGuid();
+        await _pos.Send(new SaveSupplierCommand(nile, "Nile Mills"));
+        var flour = (await _pos.Send(new CreateRawMaterialCommand("Flour", UnitOfMeasure.Gram, CostPerPurchaseUnit: 30))).Id;
+        Assert.Empty((await _pos.Send(new GetEndOfDaySequenceQuery())).Warnings);
+
+        await _pos.Send(new SavePurchaseInvoiceCommand(Guid.NewGuid(), nile, "F-1", _today, [new PurchaseInvoiceLineEntry(flour, 1, "kg", 1000, 30)], "Omar"));
+        // Dated after the day: not said yet.
+        await _pos.Send(new SavePurchaseInvoiceCommand(Guid.NewGuid(), nile, "F-2", _today.AddDays(1), [new PurchaseInvoiceLineEntry(flour, 1, "kg", 1000, 30)], "Omar"));
+        var custody = SafeTransaction.PendingAdvance(Guid.NewGuid(), 300, _today.AddDays(-3), "For the market run", "Omar");
+        typeof(SafeTransaction).GetProperty(nameof(SafeTransaction.RecordedAtUtc))!.SetValue(custody, DateTime.UtcNow.AddHours(-50));
+        _pos.Inventory.Safe.Add(custody);
+        _pos.Inventory.Safe.Add(SafeTransaction.PendingAdvance(Guid.NewGuid(), 100, _today, "Just now", "Omar"));
+
+        var warnings = (await _pos.Send(new GetEndOfDaySequenceQuery())).Warnings;
+        Assert.Equal(2, warnings.Count);
+        Assert.StartsWith("There are draft invoices: 1 draft purchase invoice is dated on or before", warnings[0]);
+        Assert.Contains("(Nile Mills). Consider posting them before closing the day.", warnings[0]);
+        Assert.StartsWith("1 cash custody handed out with no one named more than 48 hours ago", warnings[1]);
+
+        // Closed all the same, as a day that sold nothing; the answer says them too.
+        var closed = await _pos.Send(new SubmitEndOfDayCommand(_today, "Ali", ZeroSales: true));
+        Assert.Equal((EndOfDayStatus.Submitted, 2), (closed.Status, closed.Warnings!.Count));
+        Assert.True((await _pos.Send(new GetEndOfDaySequenceQuery())).AllClosed);
+    }
 
     [Fact]
     public async Task A_day_handed_in_becomes_its_purchase_invoices_with_their_photos_and_ways_of_paying()
@@ -59,7 +90,7 @@ public class EndOfDayTests
         // Net sales 1,500; with the tax 1,710; the cash less the cash invoice; into the safe, all less the cash invoice.
         Assert.Equal((1_500m, 1_710m, 850m, 1_560m), (day.NetSales, day.TotalRevenue, day.CashAfterInvoices, day.ExpectedIntoSafe));
         var locked = await Assert.ThrowsAsync<DomainException>(() => HandIn(Guid.NewGuid(), EndOfDayInvoiceKind.Cash, nile, 10, Jpeg));
-        Assert.Contains("is submitted by Ali: a manager reopens it to change it", locked.Message);
+        Assert.Contains("is submitted by Ali: to change it, a manager undoes it", locked.Message);
 
         // Posted with another date: refused.
         var otherDay = await Assert.ThrowsAsync<DomainException>(() => Batch(_today.AddDays(-1), Transcribed(cash, nile, flour, 5, 150)));
@@ -84,12 +115,18 @@ public class EndOfDayTests
         var twice = await Assert.ThrowsAsync<DomainException>(() => Batch(_today, Transcribed(cash, nile, flour, 5, 150)));
         Assert.Contains("It is posted already, as another purchase invoice", twice.Message);
 
-        // Reopened by a manager: what is posted stays posted.
-        await _pos.Send(new ReopenEndOfDayCommand(_today, "Boss"));
-        var removed = await Assert.ThrowsAsync<DomainException>(() => _pos.Send(new RemoveEndOfDayInvoiceCommand(_today, cash, "Ali")));
-        Assert.StartsWith("It is posted already as a purchase invoice", removed.Message);
+        // Undone by a manager, the last closed day: the purchase invoices posted from it voided (their
+        // stock and what is owed undone) and unlinked, to be posted again; a draft, to be handed in again.
+        var undone = await _pos.Send(new UndoLastEndOfDayCommand(_today, "Closed on the wrong day", "Boss"));
+        Assert.Equal((2, EndOfDayStatus.Draft, "Boss", "Closed on the wrong day"), (undone.InvoicesVoided, undone.Day.Status, undone.Day.ReopenedBy, undone.Day.ReopenReason));
+        Assert.All(undone.Day.Invoices, i => Assert.Null(i.PurchaseInvoiceId));
+        Assert.Equal(0m, await _pos.Inventory.SupplierLedger.BalanceAsync(delta));
+        Assert.Equal(PurchaseInvoiceStatus.Voided, (await _pos.Inventory.Invoices.GetByIdAsync(paid.Id))!.Status);
+        await _pos.Send(new RemoveEndOfDayInvoiceCommand(_today, cash, "Ali"));
         var added = await HandIn(Guid.NewGuid(), EndOfDayInvoiceKind.Cash, nile, 40, Jpeg);
-        Assert.Equal((EndOfDayStatus.Draft, 3, "Boss"), (added.Status, added.Invoices.Count, added.ReopenedBy));
+        Assert.Equal((EndOfDayStatus.Draft, 2, "Boss"), (added.Status, added.Invoices.Count, added.ReopenedBy));
+        // Only the last closed day, and only by naming the one meant.
+        await Assert.ThrowsAsync<DomainException>(() => _pos.Send(new UndoLastEndOfDayCommand(_today, null, "Boss")));
     }
 
     [Fact]

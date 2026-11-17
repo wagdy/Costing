@@ -232,6 +232,13 @@ const costingChildren: Routes = [
       },
       { path: 'kpis', loadComponent: () => import('./features/costing/kpis-page').then((m) => m.KpisPage) },
       { path: 'break-even', loadComponent: () => import('./features/costing/break-even-page').then((m) => m.BreakEvenPage) },
+      {
+        // Each end of day handed in, and the manager's undo of the last one closed: for whoever reads
+        // the end of day too.
+        path: 'daily-summaries',
+        canActivate: [costingTabGuard('EndOfDay', 'Purchases', 'Financials')],
+        loadComponent: () => import('./features/costing/daily-summaries-page').then((m) => m.DailySummariesPage),
+      },
     ],
   },
   { path: 'theoretical', redirectTo: 'reports/theoretical' },

@@ -1,10 +1,12 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Costing.Application.EndOfDay;
 using Costing.Application.Integrations;
 using Costing.Application.RawMaterials;
 using Costing.Application.Recipes;
 using Costing.Application.Sales;
 using Costing.Domain.Common;
+using Costing.Domain.EndOfDay;
 using Costing.Domain.Integrations;
 using Costing.Domain.RawMaterials;
 using Costing.Domain.Recipes;
@@ -97,6 +99,34 @@ public sealed class PosIntegrationTests
 
         var logs = await node.Db(db => db.PosSyncLogs.OrderBy(l => l.AtUtc).Select(l => l.Outcome).ToListAsync());
         Assert.Equal([PosSyncOutcome.Recorded, PosSyncOutcome.Unchanged, PosSyncOutcome.Updated, PosSyncOutcome.Recorded], logs);
+    }
+
+    // Its end of day closed and then undone by a manager: what the POS made of the day voided (its
+    // stock put back, its takings reversed); the same Z report sent again records the day again.
+    [Fact]
+    public async Task A_day_undone_takes_the_same_z_report_again_when_the_pos_resends_it()
+    {
+        var (node, patty, _) = await StartAsync();
+        await using var _ = node;
+        var report = Report(Guid.NewGuid(), 500, [new("1", 3)]);
+        var recorded = await node.Send(new ReceiveZReportCommand(report, "z-report"));
+        Assert.Equal(-3m, await OnHand(node, patty));
+        await node.Send(new SaveEndOfDaySalesCommand(Yesterday, 500, 100, 84, 30, null, "Ali"));
+        await node.Send(new SubmitEndOfDayCommand(Yesterday, "Ali", "staff-ali", CanApprove: true));
+        Assert.Equal(1, (await node.Send(new GetEndOfDaySequenceQuery())).LastClosed!.ZReports);
+
+        var undone = await node.Send(new UndoLastEndOfDayCommand(Yesterday, "Z report on the wrong day", "Boss"));
+        Assert.Equal((true, true, 1, EndOfDayStatus.Draft), (undone.TakingsVoided, undone.SalesVoided, undone.ZReports, undone.Day.Status));
+        Assert.Equal(0m, await OnHand(node, patty));
+        Assert.DoesNotContain(await Takings(node), t => t.ReversalOf == null && t.VoidedAtUtc == null);
+
+        // Sent again as it was: recorded again, not taken for a resend.
+        var again = await node.Send(new ReceiveZReportCommand(report, "z-report"));
+        Assert.NotEqual(PosSyncOutcome.Unchanged, again.Outcome);
+        Assert.NotEqual(recorded.SaleId, again.SaleId);
+        Assert.Equal(-3m, await OnHand(node, patty));
+        Assert.Equal(684m, Assert.Single(await Takings(node), t => t.ReversalOf == null && t.VoidedAtUtc == null).Amount);
+        Assert.Equal(PosSyncOutcome.Unchanged, (await node.Send(new ReceiveZReportCommand(report, "events"))).Outcome);
     }
 
     [Fact]

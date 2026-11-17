@@ -57,7 +57,7 @@
 - `PayPurchaseInvoiceCommand`، `SetSupplierOpeningBalanceCommand`.
 - `ITaxRate`: نسبة الضريبة الحالية من إعدادات الضريبة والخدمة.
 
-> 📄 **`backend/src/Costing.Application/Treasury/Treasury.cs`** — 910 سطر
+> 📄 **`backend/src/Costing.Application/Treasury/Treasury.cs`** — 912 سطر
 
 ```csharp
 using System.Globalization;
@@ -467,10 +467,12 @@ internal sealed class TreasuryWriter(
     // Voids it, today: the opposite amount in the safe's ledger, and on the supplier's account too
     // for a supplier payment. A payment out of a day's takings goes back into the safe when they
     // are in it.
-    public async Task VoidAsync(SafeTransaction entry, string by, CancellationToken cancellationToken)
+    // takingsInSafe: whether its day's takings are in the safe, given when they are being voided with it
+    // (an end of day undone), so what came out of the drawer goes back to the drawer.
+    public async Task VoidAsync(SafeTransaction entry, string by, CancellationToken cancellationToken, bool? takingsInSafe = null)
     {
         await CheckVoidAsync(entry, cancellationToken);
-        safe.Add(entry.Void(Guid.NewGuid(), Today, by, await TakingsInSafeAsync(entry.RevenueDate, cancellationToken)));
+        safe.Add(entry.Void(Guid.NewGuid(), Today, by, takingsInSafe ?? await TakingsInSafeAsync(entry.RevenueDate, cancellationToken)));
         // A fixed asset's purchase voided: off the register. Its sale voided: back in use.
         if (entry.FixedAssetId is { } assetId && await assets.GetByIdAsync(assetId, cancellationToken) is { IsVoided: false } asset)
         {
@@ -533,10 +535,10 @@ internal sealed class TreasuryWriter(
     }
 
     // An invoice's cash payment and credit lines undone, for a voided invoice.
-    public async Task UndoInvoiceAsync(PurchaseInvoice invoice, string by, CancellationToken cancellationToken)
+    public async Task UndoInvoiceAsync(PurchaseInvoice invoice, string by, CancellationToken cancellationToken, bool? takingsInSafe = null)
     {
         if (await safe.GetPaymentOfInvoiceAsync(invoice.Id, cancellationToken) is { } payment)
-            await VoidAsync(payment, by, cancellationToken);
+            await VoidAsync(payment, by, cancellationToken, takingsInSafe);
         foreach (var line in (await suppliersLedger.GetBySourceAsync(invoice.Id, cancellationToken)).Where(l => !l.IsReversal))
             suppliersLedger.Add(line.Reverse(Today, by));
     }
@@ -977,7 +979,7 @@ internal sealed class PayPurchaseInvoiceHandler(
 
 الدفتر بشهر (`SafeMonth`: الكاش، الفيزا، الضريبة، الصافي، التمويل، إجمالي الداخل والخارج، **الضريبة المستحقة الآن**)، مصادر التمويل، **المطابقة** (`DayRevenue`: صافي مبيعات اليوم A مقابل قيمة مبيعاته بأسعار المنيو B؛ الفرق خصومات أو وجبات موظفين أو كاش ناقص، أو أصناف لم تُدخل)، **يومية الإيراد** (إجمالي اليوم ناقص ما دُفع من درجه مباشرة = ما وصل الخزنة)، وتحليلات الخزنة لأي فترة (من أين جاء المال وأين ذهب، ونسب المدفوع من الدرج لكل نوع).
 
-> 📄 **`backend/src/Costing.Infrastructure/Reports/TreasuryService.cs`** — 962 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Reports/TreasuryService.cs`** — 982 سطر
 
 ```csharp
 using System.Globalization;
@@ -1199,7 +1201,7 @@ public sealed record AdvanceRow(
 
 // Tax and service (إعدادات الضريبة والخدمة): the till's tax rate, as the delivery system set it (null
 // until it has synced, when the till cannot price a bill either), and the service charge.
-public sealed record FinancialSettingsDto(decimal? TaxPercent, decimal ServicePercent, string? UpdatedBy, DateTime? UpdatedAtUtc);
+public sealed record FinancialSettingsDto(decimal? TaxPercent, decimal ServicePercent, string? UpdatedBy, DateTime? UpdatedAtUtc, DateOnly? BooksLockedUntil = null);
 
 // The tax rate left out of a save stays as it is.
 public sealed record SaveFinancialSettingsRequest(decimal ServicePercent, decimal? TaxPercent = null);
@@ -1689,7 +1691,27 @@ public sealed class TreasuryService(CostingDbContext db, IBusinessCalendar clock
     public async Task<FinancialSettingsDto> GetSettingsAsync(CancellationToken cancellationToken)
     {
         var row = await db.FinancialSettings.AsNoTracking().SingleOrDefaultAsync(cancellationToken);
-        return new FinancialSettingsDto(await TaxPercentAsync(cancellationToken), row?.ServicePercent ?? 0, row?.UpdatedBy, row?.UpdatedAtUtc);
+        return new FinancialSettingsDto(await TaxPercentAsync(cancellationToken), row?.ServicePercent ?? 0, row?.UpdatedBy, row?.UpdatedAtUtc, row?.BooksLockedUntil);
+    }
+
+    // The books locked until a day, or unlocked (null): a manager's. Never a day still to come, and
+    // never past the last day closed, which would leave the next day closed out.
+    public async Task<FinancialSettingsDto> LockBooksAsync(DateOnly? until, string by, CancellationToken cancellationToken)
+    {
+        if (until > Today)
+            throw new DomainException("The books are locked up to today at the latest. · الإقفال حتى اليوم على الأكثر.");
+        var lastClosed = await db.EndOfDayReports.Where(d => d.Status == Domain.EndOfDay.EndOfDayStatus.Submitted).MaxAsync(d => (DateOnly?)d.Date, cancellationToken);
+        if (until is { } day && lastClosed is { } last && day > last)
+            throw new DomainException(
+                $"The last day closed is {last.ToString("d MMM yyyy", Invariant)}: lock the books up to it at the latest, the days after it are still to be closed. · لا تقفل بعد آخر يوم مغلق.");
+        var row = await db.FinancialSettings.SingleOrDefaultAsync(cancellationToken);
+        if (row is null)
+            db.FinancialSettings.Add(row = new FinancialSettings());
+        row.BooksLockedUntil = until;
+        row.UpdatedBy = by;
+        row.UpdatedAtUtc = DateTime.UtcNow;
+        await db.SaveChangesAsync(cancellationToken);
+        return await GetSettingsAsync(cancellationToken);
     }
 
     public async Task<FinancialSettingsDto> SaveSettingsAsync(SaveFinancialSettingsRequest request, string by, CancellationToken cancellationToken)
@@ -3042,7 +3064,7 @@ internal sealed class AddLocalStaffMemberHandler(IStaffMemberRepository staff, I
 
 `FinancialsController` (`api/financials`): الدفتر، التمويل، المطابقة، يومية الإيراد، المصروفات، ديون الموردين وكشوفهم، السلف، الضريبة، وتسجيل القيود.
 
-> 📄 **`backend/src/Costing.Api/Controllers/FinancialsController.cs`** — 173 سطر
+> 📄 **`backend/src/Costing.Api/Controllers/FinancialsController.cs`** — 182 سطر
 
 ```csharp
 using MediatR;
@@ -3121,6 +3143,13 @@ public sealed class FinancialsController(ISender sender, TreasuryService treasur
     [Authorize(Policy = Permissions.ApprovalDecide)]
     public Task<FinancialSettingsDto> SaveSettings(SaveFinancialSettingsRequest request, CancellationToken cancellationToken) =>
         treasury.SaveSettingsAsync(request, StaffName, cancellationToken);
+
+    // The books locked until a day (إقفال الدفاتر), or unlocked: a manager's.
+    [HttpPut("books-lock")]
+    [CostingTab(CostingTabs.Financials)]
+    [Authorize(Policy = Permissions.ApprovalDecide)]
+    public Task<FinancialSettingsDto> LockBooks(BooksLockRequest request, CancellationToken cancellationToken) =>
+        treasury.LockBooksAsync(request.LockedUntil, StaffName, cancellationToken);
 
     [HttpGet("expense-vouchers")]
     [CostingTab(CostingTabs.Financials)]
@@ -3216,6 +3245,8 @@ public sealed record SafeVoucherRequest(
     // The day's discounts and promos, and why: said, never collected.
     decimal? DiscountsAmount = null,
     IReadOnlyList<Costing.Domain.Sales.DiscountReason>? DiscountReasons = null);
+
+public sealed record BooksLockRequest(DateOnly? LockedUntil);
 
 public sealed record SupplierOpeningBalanceRequest(Guid EntryId, decimal Owed, DateOnly? Date = null);
 ```

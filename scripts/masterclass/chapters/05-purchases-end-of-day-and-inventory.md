@@ -138,7 +138,7 @@
 ### 2.4 دورة الحياة
 
 ```text
-Draft ──(تسليم: Review & confirm)──► Submitted ──(إعادة فتح: مدير)──► Draft
+Draft ──(تسليم: Review & confirm)──► Submitted ──(إلغاء التقفيل: مدير، آخر يوم فقط)──► Draft
    │                                     │
    └─ إضافة/تعديل/حذف بنود بصورها         ├─ الفواتير ⇐ تظهر في يومية المشتريات لتُنسخ وتُرحّل (مرة واحدة)
                                          ├─ المدفوعات ⇐ قيود خزنة من إيراد اليوم (Vouchered)
@@ -148,12 +148,51 @@ Draft ──(تسليم: Review & confirm)──► Submitted ──(إعادة 
 ```
 
 - **كل إضافة بمعرّف يصنعه المتصفح مرة واحدة** ⇐ لا تكرار عند إعادة الإرسال.
-- **المراجعة قبل التسليم:** لا يُسلّم يوم بلا مبيعات، أو بفاتورة/دفعة مكتوبة ولم تُضف.
+- **المراجعة قبل التسليم:** لا يُسلّم يوم بفاتورة/دفعة مكتوبة ولم تُضف، ولا بلا مبيعات إلا بتأكيد أنه "يوم بدون مبيعات" (`ZeroSales`).
 - الصور في `EndOfDayPhotos` بمفتاح الفاتورة/الدفعة (وصورة Z بمفتاح اليوم)، ويُتحقق من نوعها بأول بايتات وحجمها.
+
+### 2.5 التسلسل الزمني الصارم وإلغاء تقفيل آخر يوم
+
+**المشكلة:** لو أُقفل يوم 5 قبل يوم 4، أو أُقفل يوم في المستقبل، تختل الخزنة والمخزون والتقارير: يوم ناقص بين يومين مقفولين لا يلاحظه أحد. فالقاعدة: **الأيام تُقفل بالترتيب بالضبط**.
+
+```text
+LastClosedDate   = أحدث يوم Submitted                  (days.LastSubmittedDateAsync)
+NextExpectedDate = LastClosedDate + 1                   (EndOfDaySequence.NextAfter)
+
+EndOfDaySequence.Check(date, lastClosed, today, lockedUntil):
+  date > today                     ⇐ "That day has not come yet"            (القاعدة 2)
+  date ≤ BooksLockedUntil          ⇐ "The books are locked until …"
+  lastClosed ≠ null و date ≤ last  ⇐ "… is closed already, or before the last closed day"
+  lastClosed ≠ null و date > last+1⇐ "Close {next} first: days are closed in exact order"  (القاعدة 1)
+  lastClosed = null                ⇐ أي يوم حتى اليوم يبدأ التسلسل
+```
+
+- الفحص في **مكانين**: عند فتح يوم جديد (`OpenAsync`: أول بند لا يصنع يومًا خارج الدور) وعند التسليم (`CheckSequenceAsync`). اليوم الموجود سلفًا (مسودة قديمة) يُعدّل، لكن لا يُسلّم إلا في دوره.
+- **يوم بلا مبيعات:** `Submit(by, zeroSales)` يرفض `NetSales ≤ 0` إلا مع `zeroSales`، والمعالج يرفضه لو لليوم ملخص مبيعات (من الـ POS أو يدوي) أو توريد في الخزنة: لا يُخفى بيعٌ حقيقي تحت "بدون مبيعات".
+- **تحذيرات لا تمنع** (`WarningsAsync`): فواتير مشتريات مسودة بتاريخ ≤ اليوم، وعُهد نقدية (سلف معلقة بلا اسم) أقدم من 48 ساعة في آخر 30 يومًا. تظهر في `GET sequence` لليوم التالي وفي رد التسليم.
+- **إقفال الدفاتر** (`FinancialSettings.BooksLockedUntil`): لا تقفيل ولا إلغاء ليوم ≤ تاريخ الإقفال. يضعه المدير حتى آخر يوم مقفول على الأكثر، ولا يتجاوز اليوم.
+
+**إلغاء تقفيل آخر يوم** (`UndoLastEndOfDayCommand`، للمدير): آخر يوم فقط، فتبقى الأيام قبله كما هي، وبالتاريخ الذي رآه المدير (لو أُقفل يوم بعده في الأثناء يُرفض). في وحدة واحدة، بتاريخ اليوم:
+
+```text
+1. التوريد في الخزنة          ⇐ VoidAsync               (ما صُرف من إيراد اليوم قبله يعود لدرج اليوم: takingsInSafe = false)
+2. ملخص المبيعات (POS/يدوي)   ⇐ deletions.DeleteAsync   (المخزون يعود)
+   تقارير Z لليوم             ⇐ Forgotten() + PosDay.Undone()   (نفس التقرير لو أُعيد إرساله يُسجل من جديد، لا يُعامل كتكرار)
+3. فواتير الشراء المرحلة منه  ⇐ VoidInvoiceAsync        (المخزون والتكلفة والنقدية وحساب المورد) ثم Unposted (فك الربط)
+4. المدفوعات في الخزنة        ⇐ VoidAsync؛ والمنتظرة موافقة ⇐ Reject
+   EndOfDayPayout.Unvouchered()⇐ VoucherId جديد، فالتسليم التالي يصنع قيدًا جديدًا
+5. اليوم                      ⇐ Undo(by, reason): Draft، ويصبح هو اليوم التالي المتوقع
+```
+
+**لماذا `VoucherId` وليس معرّف الدفعة؟** قيد الخزنة كان بمعرّف الدفعة نفسه. بعد الإلغاء القيد القديم موجود (ملغى)، فإعادة التسليم كانت ستجده وتظن أنه سُجل ("أُرسل مرتين") فلا تصنع قيدًا. الحل: معرّف قيد منفصل يتجدد مع كل إلغاء، ومُلئ في الـ migration لكل الدفعات القديمة بمعرّفها (`UPDATE … SET "VoucherId" = "Id"`)، فلا يتغير شيء للبيانات السابقة.
+
+**لماذا `takingsInSafe`؟** عكس قيد مدفوع من إيراد اليوم يُرجع المال للخزنة لو كان التوريد فيها. لكننا نلغي التوريد نفسه في نفس الوحدة، فالمال يجب أن يعود لدرج اليوم. لذلك يمرر الإلغاء `takingsInSafe: false` لكل ما يعكسه.
+
+`GET /api/end-of-day/sequence` يعيد التسلسل ومعاينة ما سيُلغى (`EndOfDayUndoPreview`)، و `POST void-last` (وأيضًا `/api/costing/end-of-day/void-last`) ينفذ الإلغاء، و `reopen/{date}` صار نفس الإلغاء لذلك اليوم لو كان الأخير.
 
 @@file backend/src/Costing.Application/EndOfDay/EndOfDays.cs
 
-`EndOfDayController`: `multipart/form-data` لإضافة البنود بصورها، و `GET {date}` يعيد 204 إن لم يوجد يوم، والقراءة لأقسام عدة (`Readers`) والتعديل لقسم تقفيل اليوم، وإعادة الفتح بصلاحية القرار.
+`EndOfDayController`: `multipart/form-data` لإضافة البنود بصورها، و `GET {date}` يعيد 204 إن لم يوجد يوم، والقراءة لأقسام عدة (`Readers`) والتعديل لقسم تقفيل اليوم، و `GET sequence` للقراء، وإلغاء آخر يوم (`void-last`) بصلاحية القرار. وفي `FinancialsController`: `PUT books-lock` للمدير.
 
 @@file backend/src/Costing.Api/Controllers/EndOfDayController.cs
 

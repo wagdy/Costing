@@ -5,12 +5,22 @@ import { provideRouter } from '@angular/router';
 import { of } from 'rxjs';
 import { CostingApi, Supplier } from '../../core/costing/costing.api';
 import { CostingAccess, CostingTab } from '../../core/costing/costing-tabs';
-import { EndOfDay, EndOfDayApi, EndOfDayInvoice, EndOfDayInvoiceKind, EndOfDayPayout, EndOfDayPayoutKind } from '../../core/costing/end-of-day.api';
+import {
+  EndOfDay,
+  EndOfDayApi,
+  EndOfDayInvoice,
+  EndOfDayInvoiceKind,
+  EndOfDayPayout,
+  EndOfDayPayoutKind,
+  EndOfDaySequence,
+  EndOfDayUndoPreview,
+} from '../../core/costing/end-of-day.api';
 import { MenuSalesApi } from '../../core/costing/menu-sales.api';
 import { Employee } from '../../core/costing/staff';
 import { NotifyService } from '../../core/ui/notify.service';
 import { Approvals } from './approvals';
-import { EndOfDayPage, EndOfDaySummaryDialog, EodInvoiceForm } from './end-of-day-page';
+import { EndOfDayPage, EndOfDaySummaryDialog, EndOfDayZeroSalesDialog, EodInvoiceForm } from './end-of-day-page';
+import { EndOfDayUndo } from './end-of-day-undo';
 import { EodPayoutForm } from './end-of-day-payouts';
 import { HrStaffApi } from '../../core/costing/hr-staff.api';
 import { Treasury } from './financials';
@@ -68,6 +78,16 @@ function day(over: Partial<EndOfDay> = {}): EndOfDay {
   };
 }
 
+// The days in their order, as the API gives them: none closed yet unless told.
+function sequence(over: Partial<EndOfDaySequence> = {}): EndOfDaySequence {
+  return { lastClosedDate: null, nextExpectedDate: null, today: '2026-11-04', allClosed: false, booksLockedUntil: null, warnings: [], lastClosed: null, ...over };
+}
+
+const lastClosed: EndOfDayUndoPreview = {
+  date: '2026-11-04', submittedBy: 'Hany', submittedAtUtc: '2026-11-04T21:00:00Z', takings: 900, salesItems: 12, postedInvoices: 2, postedInvoicesTotal: 1_360,
+  payouts: 0, payoutsTotal: 0, locked: false, zReports: 1,
+};
+
 const threeInvoices = [
   handedIn('c1', 'Cash', nile, 400),
   handedIn('c2', 'Cash', delta, 960, { note: 'Cheese' }),
@@ -86,7 +106,8 @@ describe('the end of the day', () => {
     attachSalesPhoto: vi.fn(),
     removeSalesPhoto: vi.fn(),
     submit: vi.fn(),
-    reopen: vi.fn(),
+    sequence: vi.fn(),
+    voidLast: vi.fn(),
     photo: vi.fn(),
     addPayout: vi.fn(),
     changePayout: vi.fn(),
@@ -95,6 +116,7 @@ describe('the end of the day', () => {
   };
   const open = vi.fn();
   const enter = vi.fn();
+  const undo = vi.fn();
   const addLocal = vi.fn();
   let linked = false;
   const notify = { info: vi.fn(), error: vi.fn() };
@@ -114,6 +136,7 @@ describe('the end of the day', () => {
         { provide: Treasury, useValue: { enter } },
         { provide: NotifyService, useValue: notify },
         { provide: MatDialog, useValue: { open } },
+        { provide: EndOfDayUndo, useValue: { undo } },
       ],
     });
     const fixture = TestBed.createComponent(EndOfDayPage);
@@ -130,6 +153,8 @@ describe('the end of the day', () => {
     Object.values(api).forEach((f) => f.mockReset());
     api.day.mockReturnValue(of(null));
     api.days.mockReturnValue(of([]));
+    api.sequence.mockReturnValue(of(sequence()));
+    undo.mockReset();
     api.photo.mockReturnValue(of(new Blob(['x'], { type: 'image/jpeg' })));
     open.mockReset();
     enter.mockReset();
@@ -261,16 +286,18 @@ describe('the end of the day', () => {
     expect(page['salesProblem']()).toBe('The reasons add up to more than the discounts. · مجموع الأسباب أكبر من الخصومات.');
   });
 
-  it('is reviewed before it is submitted: not without its sales or with an invoice left unadded, then locked once confirmed', async () => {
+  it('is reviewed before it is submitted: without its sales only as a zero-sales day, not with an invoice left unadded, then locked once confirmed', async () => {
     api.day.mockReturnValue(of(day({ invoices: threeInvoices })));
     const { fixture, el, page } = await render();
 
+    // No sales: asked whether it is a day that sold nothing; not meant, nothing handed in.
+    open.mockReturnValue({ afterClosed: () => of(false) });
     await page['review']();
     fixture.detectChanges();
-    expect(open).not.toHaveBeenCalled();
-    expect(text(el.querySelector('.submit-bar + .error')!)).toBe(
-      "Enter the day's sales report: its cash or Visa takings. · أدخل ريبورت المبيعات: إيراد الكاش أو الفيزا.",
-    );
+    expect(open.mock.lastCall![0]).toBe(EndOfDayZeroSalesDialog);
+    expect(open.mock.lastCall![1].data).toEqual({ date: '2026-11-04' });
+    expect(api.submit).not.toHaveBeenCalled();
+    open.mockReset();
 
     const withSales = day({ invoices: threeInvoices, cashAmount: 5_000, cardAmount: 2_500, taxAmount: 1_050, voidsAmount: 0 });
     api.saveSales.mockReturnValue(of(withSales));
@@ -290,7 +317,9 @@ describe('the end of the day', () => {
 
     expect(open.mock.lastCall![0]).toBe(EndOfDaySummaryDialog);
     expect(open.mock.lastCall![1].data.day).toEqual(withSales);
-    expect(api.submit).toHaveBeenCalledWith('2026-11-04');
+    expect(open.mock.lastCall![1].data.zeroSales).toBe(false);
+    expect(api.submit).toHaveBeenCalledWith('2026-11-04', false);
+    expect(api.sequence).toHaveBeenCalledTimes(2);
     expect(text(el.querySelector('.date-step .tag')!)).toBe('Submittedتم الإرسال');
     expect(el.querySelectorAll('app-eod-invoice-form').length).toBe(0);
     expect(el.querySelector('.submit-bar')).toBeNull();
@@ -298,12 +327,18 @@ describe('the end of the day', () => {
     expect(el.querySelectorAll('article.invoice .row-actions').length).toBe(0);
   });
 
-  it('offers a submitted day’s batch and takings to whoever works them, and reopening it to a manager', async () => {
+  it('offers a submitted day’s batch and takings to whoever works them, and undoing the last closed day to a manager', async () => {
     const submitted = day({ invoices: threeInvoices, status: 'Submitted', submittedBy: 'Hany', submittedAtUtc: '2026-11-04T21:00:00Z', cashAmount: 100 });
     api.day.mockReturnValue(of(submitted));
+    // Every day closed up to today: the last one is shown, nothing more to hand in.
+    api.sequence.mockReturnValue(of(sequence({ lastClosedDate: '2026-11-04', nextExpectedDate: '2026-11-05', allClosed: true, lastClosed })));
     // The branch: nothing but the day.
     let { el } = await render();
+    expect(api.day).toHaveBeenCalledWith('2026-11-04');
     expect([...el.querySelectorAll('.date-step a, .date-step button')].map(text)).toEqual([]);
+    expect(text(el.querySelector('.sequence-banner')!)).toBe('event_availableAll days are closed up to today. Come back tomorrow. (تم تقفيل جميع الأيام حتى تاريخ اليوم)');
+    expect(el.querySelector<HTMLButtonElement>('.submit-bar button')!.disabled).toBe(true);
+    expect(text(el.querySelector('.submit-bar + .error')!)).toBe('All days are closed up to today. Come back tomorrow. (تم تقفيل جميع الأيام حتى تاريخ اليوم)');
 
     TestBed.resetTestingModule();
     tabs = ['EndOfDay', 'Purchases', 'Financials'];
@@ -316,10 +351,87 @@ describe('the end of the day', () => {
     await Promise.resolve();
     expect(enter).toHaveBeenCalledWith('RevenueTransfer', { revenueDate: '2026-11-04' });
 
-    api.reopen.mockReturnValue(of({ ...submitted, status: 'Draft', reopenedBy: 'Boss' }));
-    [...el.querySelectorAll<HTMLButtonElement>('.date-step button')].find((b) => text(b).includes('Reopen'))!.click();
-    await Promise.resolve();
-    expect(api.reopen).toHaveBeenCalledWith('2026-11-04');
+    const reopened = { ...submitted, status: 'Draft' as const, reopenedBy: 'Boss', reopenReason: 'Cash counted twice' };
+    undo.mockResolvedValue({ day: reopened, takingsVoided: true, salesVoided: true, invoicesVoided: 2, payoutsVoided: 0, requestsRefused: 0 });
+    api.sequence.mockReturnValue(of(sequence({ lastClosedDate: '2026-11-03', nextExpectedDate: '2026-11-04' })));
+    [...el.querySelectorAll<HTMLButtonElement>('.date-step button')].find((b) => text(b).includes('Undo & reopen day'))!.click();
+    await new Promise((r) => setTimeout(r));
+    expect(undo).toHaveBeenCalledWith(lastClosed);
+  });
+
+  it('undoes the day shown only while it is the last closed day and outside the books locked', async () => {
+    const submitted = day({ status: 'Submitted', submittedBy: 'Hany', submittedAtUtc: '2026-11-03T21:00:00Z', cashAmount: 100, date: '2026-11-03' });
+    api.day.mockReturnValue(of(submitted));
+    manager = true;
+    api.sequence.mockReturnValue(of(sequence({ lastClosedDate: '2026-11-04', nextExpectedDate: '2026-11-05', allClosed: true, lastClosed })));
+    const { fixture, el, page } = await render();
+    await page['choose']('2026-11-03');
+    fixture.detectChanges();
+    expect([...el.querySelectorAll('.date-step button')].map(text).some((t) => t.includes('Undo'))).toBe(false);
+
+    TestBed.resetTestingModule();
+    api.sequence.mockReturnValue(of(sequence({ lastClosedDate: '2026-11-04', nextExpectedDate: '2026-11-05', allClosed: true, lastClosed: { ...lastClosed, locked: true } })));
+    api.day.mockReturnValue(of({ ...submitted, date: '2026-11-04' }));
+    const again = await render();
+    expect([...again.el.querySelectorAll('.date-step button')].map(text).some((t) => t.includes('Undo'))).toBe(false);
+  });
+
+  it('locks the date to the next day in order and says so, with what to look at before closing it; a day out of order is not handed in', async () => {
+    api.sequence.mockReturnValue(of(sequence({
+      lastClosedDate: '2026-11-02', nextExpectedDate: '2026-11-03',
+      warnings: ['There are draft invoices: 1 draft purchase invoice is dated on or before 3 Nov 2026 (Nile Farms). Consider posting them before closing the day.'],
+    })));
+    const { fixture, el, page } = await render();
+    // A field's disabled state is set by ngModel a moment later.
+    await fixture.whenStable();
+    fixture.detectChanges();
+
+    expect(api.day).toHaveBeenCalledWith('2026-11-03');
+    expect(el.querySelector<HTMLInputElement>('input[aria-label="Date"]')!.disabled).toBe(true);
+    expect(text(el.querySelector('.sequence-banner')!)).toBe(
+      'format_list_numbered The last closed day was Mon 2 Nov 2026. You are currently closing Tue 3 Nov 2026. You must close days in exact order. ' +
+        '(آخر يوم تم إغلاقه هو 2/11/2026، يجب إغلاق يوم 3/11/2026 أولاً)',
+    );
+    expect([...el.querySelectorAll('.warnings li')].map(text)).toEqual([
+      'There are draft invoices: 1 draft purchase invoice is dated on or before 3 Nov 2026 (Nile Farms). Consider posting them before closing the day.',
+    ]);
+    expect(el.querySelector<HTMLButtonElement>('.submit-bar button')!.disabled).toBe(false);
+
+    // Today opened from Recent days: not handed in before the 3rd; the way back offered.
+    await page['choose']('2026-11-04');
+    fixture.detectChanges();
+    expect(el.querySelector<HTMLButtonElement>('.submit-bar button')!.disabled).toBe(true);
+    expect(text(el.querySelector('.submit-bar + .error')!)).toBe('Close 2026-11-03 first: days are closed in exact order. · يجب إغلاق يوم 2026-11-03 أولاً.');
+    expect(el.querySelectorAll('.warnings li').length).toBe(0);
+    await page['review']();
+    expect(open).not.toHaveBeenCalled();
+    const back = el.querySelector<HTMLButtonElement>('.sequence-banner button')!;
+    expect(text(back)).toBe('Go to 3 Nov · الذهاب لليوم');
+    back.click();
+    await new Promise((r) => setTimeout(r));
+    expect(api.day).toHaveBeenLastCalledWith('2026-11-03');
+  });
+
+  it('closes a day with nothing handed in as a zero-sales day once that is confirmed', async () => {
+    api.sequence.mockReturnValue(of(sequence({ lastClosedDate: '2026-11-03', nextExpectedDate: '2026-11-04' })));
+    const { page } = await render();
+    open.mockReturnValue({ afterClosed: () => of(true) });
+    api.submit.mockReturnValue(of(day({ status: 'Submitted', submittedBy: 'Hany', submittedAtUtc: '2026-11-04T21:00:00Z', warnings: [] })));
+    await page['review']();
+
+    // Asked once; nothing handed in, so no summary to review.
+    expect(open).toHaveBeenCalledTimes(1);
+    expect(open.mock.lastCall![0]).toBe(EndOfDayZeroSalesDialog);
+    expect(api.submit).toHaveBeenCalledWith('2026-11-04', true);
+    expect(notify.info.mock.lastCall![0]).toBe('The end of day of 2026-11-04 is submitted with no sales. · تم إرسال التقفيل.');
+
+    TestBed.resetTestingModule();
+    TestBed.configureTestingModule({ providers: [{ provide: MAT_DIALOG_DATA, useValue: { date: '2026-11-04' } }] });
+    const dialog = TestBed.createComponent(EndOfDayZeroSalesDialog);
+    dialog.detectChanges();
+    expect(text(dialog.nativeElement)).toContain(
+      'No POS sales found for this date. Are you sure you want to close this as a Zero-Sales day to maintain the sequence?',
+    );
   });
 
   it('hands in a supplier payment and an advance, each with its receipt, the advance only to someone still on the staff', async () => {

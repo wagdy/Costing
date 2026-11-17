@@ -106,6 +106,12 @@ internal sealed class UserTabAccessRepository(CostingDbContext db) : IUserTabAcc
 
 // The rate the treasury takes off a day's takings entered with the tax in them: the bills' own, as
 // set on Tax & service.
+internal sealed class FinancialBooksLock(CostingDbContext db) : Costing.Application.EndOfDay.IBooksLock
+{
+    public async Task<DateOnly?> LockedUntilAsync(CancellationToken cancellationToken) =>
+        (await db.FinancialSettings.AsNoTracking().SingleOrDefaultAsync(cancellationToken))?.BooksLockedUntil;
+}
+
 internal sealed class FinancialTaxRate(CostingDbContext db) : Costing.Application.Treasury.ITaxRate
 {
     public async Task<decimal> PercentAsync(CancellationToken cancellationToken) =>
