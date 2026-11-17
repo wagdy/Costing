@@ -152,6 +152,17 @@ internal sealed class PurchaseInvoiceRepository(CostingDbContext db) : IPurchase
 
     public void Remove(PurchaseInvoice draft) => db.PurchaseInvoices.Remove(draft);
 
+    // Tracked: one already loaded in this unit of work is the same one, as it is now.
+    public async Task<IReadOnlyList<PurchaseInvoice>> GetForOrderAsync(Guid purchaseOrderId, CancellationToken cancellationToken = default) =>
+        await WithLines.Where(i => i.PurchaseOrderId == purchaseOrderId).ToListAsync(cancellationToken);
+
+    public async Task<IReadOnlyDictionary<Guid, int>> GetDeliveriesByOrderAsync(CancellationToken cancellationToken = default) =>
+        await db.PurchaseInvoices.AsNoTracking()
+            .Where(i => i.PurchaseOrderId != null && i.Status == PurchaseInvoiceStatus.Posted)
+            .GroupBy(i => i.PurchaseOrderId!.Value)
+            .Select(g => new { Id = g.Key, Count = g.Count() })
+            .ToDictionaryAsync(x => x.Id, x => x.Count, cancellationToken);
+
     public async Task<IReadOnlyList<PurchaseInvoice>> GetByStatusAsync(PurchaseInvoiceStatus status, CancellationToken cancellationToken = default) =>
         await WithLines.AsNoTracking().Where(i => i.Status == status).ToListAsync(cancellationToken);
 

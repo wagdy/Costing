@@ -945,6 +945,10 @@ export interface PurchaseInvoice {
   subtotal?: number;
   lineDiscounts?: number;
   discount?: number;
+  // The purchase order it delivers: a draft's matched against it item by item (3-way match), a posted
+  // one's named. awaitingApproval: its posting waits for a manager to sign off what is over the order.
+  purchaseOrder?: PurchaseOrderMatch | null;
+  awaitingApproval?: boolean;
 }
 
 // A posted invoice as it should have been: a new invoice (newInvoiceId, made here) that replaces
@@ -991,6 +995,7 @@ export interface PurchaseInvoiceSummary {
   paymentMethod: PurchasePaymentMethod | null;
   revenueDate: string | null;
   paymentStatus: InvoicePaymentStatus;
+  purchaseOrderId?: string | null;
 }
 
 // Maker-checker: what a manager decides. Deletions in every costing module; new and changed prep
@@ -1006,7 +1011,9 @@ export type ApprovalModule =
   | 'Treasury'
   | 'PurchaseCategory'
   | 'Sale'
-  | 'Breakage';
+  | 'Breakage'
+  // A purchase order approved; with PurchaseInvoice Create, an invoice over its order posted once signed off.
+  | 'PurchaseOrder';
 export type ApprovalAction = 'Create' | 'Update' | 'Delete';
 export type ApprovalStatus = 'Pending' | 'Approved' | 'Rejected';
 export type ApprovalOutcome = 'Requested' | 'Applied';
@@ -1023,6 +1030,7 @@ export const moduleLabels: Record<ApprovalModule, { en: string; ar: string }> = 
   PurchaseCategory: { en: 'Purchase category', ar: 'أقسام المشتريات' },
   Sale: { en: 'Sale', ar: 'المبيعات' },
   Breakage: { en: 'Breakage', ar: 'الكسر' },
+  PurchaseOrder: { en: 'Purchase order', ar: 'أوامر الشراء' },
 };
 
 export const actionLabels: Record<ApprovalAction, { en: string; ar: string }> = {
@@ -1271,6 +1279,179 @@ export interface SavePurchaseInvoice {
   revenueDate: string | null;
   // The invoice's own discount (خصم الفاتورة), off what the lines come to after theirs.
   discount: number;
+  // The purchase order it delivers, and whether it closes it with what came (no backorder).
+  purchaseOrderId?: string | null;
+  closesPurchaseOrder?: boolean;
+}
+
+// ---- Purchase orders (أوامر الشراء) and the 3-way match ----
+
+export type PurchaseOrderStatus = 'Draft' | 'Approved' | 'PartiallyReceived' | 'Completed' | 'Cancelled';
+export type PurchaseOrderTerms = 'Cash' | 'Credit';
+export type MatchStatus = 'Matched' | 'PriceOvercharge' | 'QtyOver' | 'Short' | 'NotOrdered';
+
+export const purchaseOrderStatusLabels: Record<PurchaseOrderStatus, { en: string; ar: string }> = {
+  Draft: { en: 'Draft', ar: 'مسودة' },
+  Approved: { en: 'Approved / Open', ar: 'معتمد / مفتوح' },
+  PartiallyReceived: { en: 'Partially received', ar: 'استلام جزئي' },
+  Completed: { en: 'Completed', ar: 'مكتمل' },
+  Cancelled: { en: 'Cancelled', ar: 'ملغى' },
+};
+
+export const matchStatusLabels: Record<MatchStatus, { en: string; ar: string }> = {
+  Matched: { en: 'Matched', ar: 'مطابق' },
+  PriceOvercharge: { en: 'Price overcharge', ar: 'زيادة سعر' },
+  QtyOver: { en: 'Qty over', ar: 'كمية زائدة' },
+  Short: { en: 'Partial / short', ar: 'استلام جزئي' },
+  NotOrdered: { en: 'Not ordered', ar: 'غير مطلوب' },
+};
+
+export interface PurchaseOrderLine {
+  id: string;
+  rawMaterialId: string;
+  code: string | null;
+  material: string;
+  purchaseUnit: string;
+  purchaseUnitSize: number;
+  unit: UnitOfMeasure;
+  orderedPurchaseQty: number;
+  receivedPurchaseQty: number;
+  remainingQty: number;
+  expectedUnitCost: number;
+  lineTotal: number;
+  lineNotes: string | null;
+}
+
+// An invoice received against the order, posted (or voided since) or waiting for a manager.
+export interface PurchaseOrderDelivery {
+  invoiceId: string;
+  supplierInvoiceNumber: string | null;
+  invoiceDate: string | null;
+  status: PurchaseInvoiceStatus;
+  total: number;
+  postedAtUtc: string | null;
+  postedBy: string | null;
+  attachmentFileName: string | null;
+  closedTheOrder: boolean;
+  awaitingApproval: boolean;
+}
+
+export interface PurchaseOrder {
+  id: string;
+  poNumber: string;
+  supplierId: string;
+  supplier: string;
+  supplierPhone: string | null;
+  orderDate: string;
+  expectedDeliveryDate: string | null;
+  paymentTerms: PurchaseOrderTerms;
+  notes: string | null;
+  status: PurchaseOrderStatus;
+  createdBy: string;
+  createdAtUtc: string;
+  approvedBy: string | null;
+  approvedAtUtc: string | null;
+  cancelledBy: string | null;
+  cancelledAtUtc: string | null;
+  closedBy: string | null;
+  closedAtUtc: string | null;
+  expectedTotal: number;
+  remainingValue: number;
+  receivedPercent: number;
+  lines: PurchaseOrderLine[];
+  deliveries: PurchaseOrderDelivery[];
+}
+
+export interface PurchaseOrderSummary {
+  id: string;
+  poNumber: string;
+  supplierId: string;
+  supplier: string;
+  orderDate: string;
+  expectedDeliveryDate: string | null;
+  paymentTerms: PurchaseOrderTerms;
+  status: PurchaseOrderStatus;
+  lines: number;
+  expectedTotal: number;
+  remainingValue: number;
+  receivedPercent: number;
+  deliveries: number;
+  createdBy: string;
+  approvedBy: string | null;
+  overdue: boolean;
+}
+
+export interface PurchaseOrderInput {
+  supplierId: string;
+  orderDate: string;
+  expectedDeliveryDate: string | null;
+  paymentTerms: PurchaseOrderTerms;
+  notes: string | null;
+  lines: { rawMaterialId: string; orderedPurchaseQty: number; expectedUnitCost: number; lineNotes?: string | null }[];
+}
+
+export interface PurchaseOrderSaved {
+  id: string;
+  poNumber: string;
+  status: PurchaseOrderStatus;
+  outcome: ApprovalOutcome;
+  request: ApprovalRequest | null;
+}
+
+// One item of a delivery against its order, as the server matched it.
+export interface MatchLine {
+  rawMaterialId: string;
+  material: string;
+  purchaseUnit: string;
+  ordered: number;
+  remaining: number;
+  received: number;
+  expectedUnitCost: number;
+  netUnitPrice: number | null;
+  unitOvercharge: number | null;
+  overcharge: number;
+  qtyOver: number;
+  shortBy: number;
+  priceOver: boolean;
+  status: MatchStatus;
+}
+
+export interface PurchaseOrderMatch {
+  purchaseOrderId: string;
+  poNumber: string;
+  status: PurchaseOrderStatus;
+  closes: boolean;
+  lines: MatchLine[] | null;
+  overcharge: number;
+  hasShort: boolean;
+  needsApproval: boolean;
+}
+
+// The order planner's approved quantities as a purchase order per supplier.
+export interface PlannedOrderLine {
+  rawMaterialId: string;
+  code: string | null;
+  material: string;
+  purchaseUnit: string;
+  quantity: number;
+  unitPrice: number;
+  cost: number;
+  priceKnown: boolean;
+}
+
+export interface PlannedOrder {
+  supplierId: string | null;
+  supplier: string | null;
+  paymentTermsDays: number;
+  lines: PlannedOrderLine[];
+  total: number;
+}
+
+export interface PurchaseOrderPlan {
+  groupBy: 'Category' | 'Supplier' | 'CheapestSupplier';
+  today: string;
+  orders: PlannedOrder[];
+  total: number;
 }
 
 // A stock line names its material; an expense line its expense item, in units of 1, with its cost.
@@ -1292,6 +1473,8 @@ export interface PurchaseBatch {
     discount: number;
     onCredit?: boolean;
     endOfDayInvoiceId?: string | null;
+    purchaseOrderId?: string | null;
+    closesPurchaseOrder?: boolean;
   }[];
   payments: { transactionId: string; supplierId: string; amount: number; notes: string | null }[];
   // No employee: advances handed out with no one named, shared among the staff.
@@ -1756,6 +1939,47 @@ export class CostingApi {
   }
 
   // Posted invoices for the history, newest first, or the drafts.
+  purchaseOrders(filter: { status?: PurchaseOrderStatus; open?: boolean; supplierId?: string } = {}): Observable<PurchaseOrderSummary[]> {
+    const params: Record<string, string | boolean> = {};
+    if (filter.status) params['status'] = filter.status;
+    if (filter.open) params['open'] = true;
+    if (filter.supplierId) params['supplierId'] = filter.supplierId;
+    return this.http.get<PurchaseOrderSummary[]>('/api/inventory/purchase-orders', { params });
+  }
+
+  // The open ones in full, what is left of each line, for a delivery to be received against.
+  openPurchaseOrders(supplierId?: string | null): Observable<PurchaseOrder[]> {
+    return this.http.get<PurchaseOrder[]>('/api/inventory/purchase-orders/open', { params: supplierId ? { supplierId } : {} });
+  }
+
+  purchaseOrder(id: string): Observable<PurchaseOrder | null> {
+    return this.http.get<PurchaseOrder>(`/api/inventory/purchase-orders/${id}`).pipe(
+      catchError((error: HttpErrorResponse) => (error.status === 404 ? of(null) : throwError(() => error))),
+    );
+  }
+
+  savePurchaseOrder(id: string, order: PurchaseOrderInput): Observable<PurchaseOrder> {
+    return this.http.put<PurchaseOrder>(`/api/inventory/purchase-orders/${id}`, order);
+  }
+
+  // Approved at once for a manager; asked of one for anyone else (outcome Requested).
+  approvePurchaseOrder(id: string, requestId: string, reason: string | null = null): Observable<PurchaseOrderSaved> {
+    return this.http.post<PurchaseOrderSaved>(`/api/inventory/purchase-orders/${id}/approve`, { requestId, reason });
+  }
+
+  cancelPurchaseOrder(id: string): Observable<PurchaseOrder> {
+    return this.http.post<PurchaseOrder>(`/api/inventory/purchase-orders/${id}/cancel`, null);
+  }
+
+  closePurchaseOrder(id: string): Observable<PurchaseOrder> {
+    return this.http.post<PurchaseOrder>(`/api/inventory/purchase-orders/${id}/close`, null);
+  }
+
+  // Several at once, a supplier each: all or none.
+  createPurchaseOrders(orders: { id: string; order: PurchaseOrderInput }[]): Observable<PurchaseOrderSaved[]> {
+    return this.http.post<PurchaseOrderSaved[]>('/api/inventory/purchase-orders/batch', { orders });
+  }
+
   purchaseInvoices(status: PurchaseInvoiceStatus): Observable<PurchaseInvoiceSummary[]> {
     return this.http.get<PurchaseInvoiceSummary[]>('/api/inventory/purchase-invoices', { params: { status } });
   }

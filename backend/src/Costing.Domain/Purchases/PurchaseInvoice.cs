@@ -93,6 +93,12 @@ public sealed class PurchaseInvoice : AggregateRoot
     public Guid? RevisionOf { get; private set; }
     public Guid? ReplacedBy { get; private set; }
 
+    // The purchase order it delivers (أمر الشراء), checked against it as it is posted (ThreeWayMatch);
+    // and whether what did not come is not expected any more (ClosesPurchaseOrder: the order closed
+    // with what was received) or stays open as a backorder.
+    public Guid? PurchaseOrderId { get; private set; }
+    public bool ClosesPurchaseOrder { get; private set; }
+
     // The attached photo or scan, described; its bytes are kept apart.
     public string? AttachmentFileName { get; private set; }
     public string? AttachmentContentType { get; private set; }
@@ -127,6 +133,17 @@ public sealed class PurchaseInvoice : AggregateRoot
                 ? "Only a posted invoice is corrected."
                 : "This invoice has already been corrected: correct the invoice that replaced it.");
         RevisionOf = original.Id;
+        PurchaseOrderId = original.PurchaseOrderId;
+        ClosesPurchaseOrder = original.ClosesPurchaseOrder;
+    }
+
+    // The purchase order this draft delivers, or none; closes: the order closed with what came.
+    public void Delivers(Guid? purchaseOrderId, bool closes)
+    {
+        if (Status != PurchaseInvoiceStatus.Draft)
+            throw new DomainException("Only a draft is put against a purchase order.");
+        PurchaseOrderId = purchaseOrderId;
+        ClosesPurchaseOrder = purchaseOrderId is not null && closes;
     }
 
     // Replaces the draft's details and lines. Each line is as written on the invoice: a quantity

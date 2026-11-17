@@ -63,6 +63,30 @@
 
 @@file backend/src/Costing.Application/Purchases/PurchaseBatch.cs
 
+### 1.4.1 أوامر الشراء والمطابقة الثلاثية (`PurchaseOrder`، `ThreeWayMatch`)
+
+أمر الشراء يمر بـ: مسودة ← معتمد (المدير فورًا، وغيره طلب موافقة `ApprovalModule.PurchaseOrder`) ← استلام جزئي ← مكتمل، أو ملغى قبل أن يصل شيء. **الكمية المستلمة لا تُكتب يدويًا أبدًا**: بعد كل ترحيل أو إلغاء لفاتورة تحمل `PurchaseOrderId` يُعاد عدّها من الفواتير المرحلة (`PurchaseOrderReceiver.RecountAsync`)، فالإلغاء والتعديل يصححان الأمر تلقائيًا، وإلغاء الفاتورة التي أغلقته يعيد فتحه.
+
+```text
+المستلم بوحدة الشراء = كمية البند بوحدة الخامة ÷ حجم وحدة الشراء
+صافي سعر الوحدة      = (إجمالي البند − خصمه − نصيبه من خصم الفاتورة) ÷ المستلم
+زيادة سعر            = صافي السعر > السعر المتوقع × (1 + 0.5%) وبقرش على الأقل
+كمية زائدة           = المستلم > المتبقي (والصنف غير المطلوب كله زائد)
+استلام جزئي          = المستلم < المتبقي
+```
+
+**بوابة الموافقة** في `InvoicePoster.PostOrAskAsync`: لغير المدير، فاتورة على أمر شراء فيها زيادة سعر أو كمية لا تُرحَّل؛ تبقى مسودة (لا مخزون ولا متوسط تكلفة) ويُرسل طلب `PurchaseInvoice/Create` بتفاصيل الفرق، وعند الموافقة تُرحَّل كما أُدخلت بـ `PostAsync`. لماذا البوابة خارج `PostAsync`؟ لأن طريق الموافقة نفسه والتعديلات يرحّلان دون سؤال جديد.
+
+@@file backend/src/Costing.Domain/Purchases/PurchaseOrder.cs
+
+@@file backend/src/Costing.Application/Purchases/PurchaseOrders.cs
+
+@@file backend/src/Costing.Infrastructure/Persistence/PurchaseOrderPersistence.cs
+
+`PurchaseOrdersController` (`api/inventory/purchase-orders`)، و `POST api/costing/intelligence/orders/purchase-orders` يحوّل كميات مخطط الطلبيات المعتمدة إلى أمر لكل مورد.
+
+@@file backend/src/Costing.Api/Controllers/PurchaseOrdersController.cs
+
 ### 1.5 الاستلام المباشر والهالك (`StockIntake`)
 
 `ReceivePurchaseCommand` (استلام بإذن) و `RecordSpoilageCommand` (هالك: يخرج المخزون بحركة `Spoilage` بالمتوسط). والمعرّف من المتصفح: الضغط مرتين على شبكة ضعيفة يجد الحركة نفسها ولا يكررها.

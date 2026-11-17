@@ -135,10 +135,17 @@ public class ApprovalTests
     }
 
     [Fact]
-    public void Only_prep_items_and_batches_are_added_or_changed_through_an_approval()
+    public void Only_what_waits_for_a_manager_is_added_or_changed_through_an_approval()
     {
         Assert.Throws<DomainException>(() => ApprovalRequest.AskToChange(
-            Guid.NewGuid(), ApprovalModule.PurchaseInvoice, ApprovalAction.Create, Guid.NewGuid(), "Invoice", [], "{}", null, "staff-1", "Mona"));
+            Guid.NewGuid(), ApprovalModule.RawMaterial, ApprovalAction.Create, Guid.NewGuid(), "Material", [], "{}", null, "staff-1", "Mona"));
+        Assert.Throws<DomainException>(() => ApprovalRequest.AskToChange(
+            Guid.NewGuid(), ApprovalModule.PurchaseOrder, ApprovalAction.Update, Guid.NewGuid(), "PO", [], "{}", null, "staff-1", "Mona"));
+        // An invoice over its purchase order is posted once a manager signs it off; a purchase order approved.
+        Assert.Equal(ApprovalStatus.Pending, ApprovalRequest.AskToChange(
+            Guid.NewGuid(), ApprovalModule.PurchaseInvoice, ApprovalAction.Create, Guid.NewGuid(), "Invoice over its order", [], "{}", null, "staff-1", "Mona").Status);
+        Assert.Equal(ApprovalStatus.Pending, ApprovalRequest.AskToChange(
+            Guid.NewGuid(), ApprovalModule.PurchaseOrder, ApprovalAction.Create, Guid.NewGuid(), "PO-2026-0001", [], "{}", null, "staff-1", "Mona").Status);
         Assert.Throws<DomainException>(() => ApprovalRequest.AskToChange(
             Guid.NewGuid(), ApprovalModule.ProductionOrder, ApprovalAction.Update, Guid.NewGuid(), "Batch", [], " ", null, "staff-1", "Mona"));
 

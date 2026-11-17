@@ -290,6 +290,26 @@
 
 @@file frontend/src/app/features/costing/purchase-batch-page.ts
 
+### 10.2 أوامر الشراء والمطابقة الثلاثية
+
+`purchase-orders.ts` يكرر قواعد `ThreeWayMatch` في المتصفح (`matchAgainst`) لتظهر الشارات أثناء الكتابة، والخادم يعيد الحساب عند الترحيل فهو المرجع. `ThreeWayMatchPanel` يربط شبكة المطابقة بنفس كائنات `InvoiceLine` في محرر الفاتورة: تعديل الكمية المستلمة أو الإجمالي أو الخصم هنا هو تعديل البند نفسه (ثم `touch()`)، فلا مصدرين للحقيقة. ويُستخدم في فاتورة جديدة (حقل أمر الشراء، أو `?po=`) وفي كل فاتورة من يومية المشتريات. وصفحة الأمر تطبع ورقة المورد بلا أسعار (`window.print` مع `.print-only`) وتنسخ رسالة واتساب.
+
+@@file frontend/src/app/features/costing/purchase-orders.ts
+
+@@file frontend/src/app/features/costing/three-way-match.ts
+
+@@file frontend/src/app/features/costing/purchase-order-dialog.ts
+
+@@file frontend/src/app/features/costing/purchase-order-actions.ts
+
+@@file frontend/src/app/features/costing/purchase-orders-page.ts
+
+@@file frontend/src/app/features/costing/purchase-order-page.ts
+
+ومن مخطط الطلبيات: `PoGenerationDialog` يعرض أمرًا لكل مورد، ويطلب موردًا للخامات التي لم تُشترَ من قبل، ثم تُكتب كلها معًا أو لا شيء.
+
+@@file frontend/src/app/features/costing/po-generation-dialog.ts
+
 `InvoicesPage` (القائمة)، `InvoicePage` (فاتورة بصفحة للقراءة؛ "تعديل" = تصحيح بفاتورة جديدة)، `InvoiceView` و `InvoiceViewDialog`، و `InvoicePaper` (صورة الورقة بالتوكن).
 
 @@file frontend/src/app/features/costing/invoices-page.ts

@@ -185,23 +185,25 @@ public sealed class EndOfDayReport : AggregateRoot
         Touch(by);
     }
 
-    public EndOfDayInvoice AddInvoice(Guid id, EndOfDayInvoiceKind kind, Guid supplierId, decimal reportedTotal, string? note, EndOfDayPhoto photo, string by)
+    public EndOfDayInvoice AddInvoice(
+        Guid id, EndOfDayInvoiceKind kind, Guid supplierId, decimal reportedTotal, string? note, EndOfDayPhoto photo, string by, Guid? purchaseOrderId = null)
     {
         EnsureDraft();
         if (_invoices.Any(i => i.Id == id))
             throw new DomainException("This invoice is handed in already.");
         if (_invoices.Count >= MaxInvoices)
             throw new DomainException($"A day holds at most {MaxInvoices} invoices. · {MaxInvoices} فاتورة على الأكثر في اليوم.");
-        var invoice = new EndOfDayInvoice(id, Id, kind, supplierId, reportedTotal, note, photo);
+        var invoice = new EndOfDayInvoice(id, Id, kind, supplierId, reportedTotal, note, photo, purchaseOrderId);
         _invoices.Add(invoice);
         Touch(by);
         return invoice;
     }
 
-    public void ChangeInvoice(Guid invoiceId, EndOfDayInvoiceKind kind, Guid supplierId, decimal reportedTotal, string? note, string by)
+    public void ChangeInvoice(
+        Guid invoiceId, EndOfDayInvoiceKind kind, Guid supplierId, decimal reportedTotal, string? note, string by, Guid? purchaseOrderId = null)
     {
         EnsureDraft();
-        Unposted(invoiceId).Change(kind, supplierId, reportedTotal, note);
+        Unposted(invoiceId).Change(kind, supplierId, reportedTotal, note, purchaseOrderId);
         Touch(by);
     }
 
@@ -362,12 +364,13 @@ public sealed class EndOfDayInvoice : Entity
 {
     private EndOfDayInvoice() { }
 
-    internal EndOfDayInvoice(Guid id, Guid reportId, EndOfDayInvoiceKind kind, Guid supplierId, decimal reportedTotal, string? note, EndOfDayPhoto photo)
+    internal EndOfDayInvoice(
+        Guid id, Guid reportId, EndOfDayInvoiceKind kind, Guid supplierId, decimal reportedTotal, string? note, EndOfDayPhoto photo, Guid? purchaseOrderId = null)
     {
         Id = id;
         ReportId = reportId;
         AddedAtUtc = DateTime.UtcNow;
-        Change(kind, supplierId, reportedTotal, note);
+        Change(kind, supplierId, reportedTotal, note, purchaseOrderId);
         Photographed(photo);
     }
 
@@ -382,11 +385,14 @@ public sealed class EndOfDayInvoice : Entity
     public EndOfDayPhoto Photo => new(PhotoFileName, PhotoContentType, PhotoBytes);
     public DateTime AddedAtUtc { get; private set; }
 
+    // The purchase order it delivers, when it was ordered (أمر شراء): the daily batch receives it against it.
+    public Guid? PurchaseOrderId { get; private set; }
+
     // The purchase invoice it was posted as on the daily batch, and when.
     public Guid? PurchaseInvoiceId { get; private set; }
     public DateTime? PostedAtUtc { get; private set; }
 
-    internal void Change(EndOfDayInvoiceKind kind, Guid supplierId, decimal reportedTotal, string? note)
+    internal void Change(EndOfDayInvoiceKind kind, Guid supplierId, decimal reportedTotal, string? note, Guid? purchaseOrderId = null)
     {
         if (!Enum.IsDefined(kind))
             throw new DomainException("Say whether it was paid in cash or is on credit. · نقدي أم آجل.");
@@ -401,6 +407,7 @@ public sealed class EndOfDayInvoice : Entity
         SupplierId = supplierId;
         ReportedTotal = Math.Round(reportedTotal, 2, MidpointRounding.AwayFromZero);
         Note = cleaned;
+        PurchaseOrderId = purchaseOrderId;
     }
 
     internal void Photographed(EndOfDayPhoto photo) =>

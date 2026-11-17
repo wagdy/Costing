@@ -41,7 +41,8 @@ internal sealed class DeletionTargets(
     IRecordDescriptions descriptions,
     ISalesReceiptRepository sales,
     IBreakageEntryRepository breakage,
-    Costing.Domain.Menu.IComboOfferRepository combos)
+    Costing.Domain.Menu.IComboOfferRepository combos,
+    Purchases.PurchaseOrderReceiver receiver)
 {
     private static readonly CultureInfo Invariant = CultureInfo.InvariantCulture;
 
@@ -320,6 +321,8 @@ internal sealed class DeletionTargets(
         var reversals = await ReverseAsync(invoice.Id, StockMovementReason.Purchase, by, cancellationToken);
         await treasury.UndoInvoiceAsync(invoice, by, cancellationToken);
         invoice.Void(by, replacedBy);
+        // Against a purchase order: what it brought comes off it again.
+        await receiver.VoidedAsync(invoice, cancellationToken);
         return reversals;
     }
 

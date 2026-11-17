@@ -8,7 +8,13 @@ import { MatIconModule } from '@angular/material/icon';
 import { MatTooltipModule } from '@angular/material/tooltip';
 import { MatInputModule } from '@angular/material/input';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
+import { MatDialog } from '@angular/material/dialog';
+import { Router } from '@angular/router';
 import { firstValueFrom } from 'rxjs';
+import { CostingApi } from '../../core/costing/costing.api';
+import { Approvals } from './approvals';
+import { BusinessDay } from './financials';
+import { PoGenerationData, PoGenerationDialog, PoGenerationResult } from './po-generation-dialog';
 import { IntelligenceApi, OrderPlan, OrderPlanLine, OrderSheetGrouping, PlannedDish } from '../../core/costing/intelligence.api';
 import { errorMessage } from '../../core/http/error-message';
 import { Company } from '../../core/settings/company';
@@ -182,7 +188,10 @@ const dishKey = (d: { menuItemId: number; variantId: number | null }) => `${d.me
             Cheapest supplier · الأقل سعراً
           </mat-button-toggle>
         </mat-button-toggle-group>
-        <button mat-flat-button (click)="download()" [disabled]="!approvedLines()"><mat-icon>download</mat-icon> Excel order sheet</button>
+        <button mat-stroked-button (click)="download()" [disabled]="!approvedLines()"><mat-icon>download</mat-icon> Excel order sheet</button>
+        <button mat-flat-button (click)="createOrders()" [disabled]="!approvedLines() || creating()">
+          <mat-icon>assignment_add</mat-icon> Create Purchase Orders · إنشاء أوامر شراء من الطلبية
+        </button>
       </div>
 
       <div class="table-wrap">
@@ -320,8 +329,14 @@ const dishKey = (d: { menuItemId: number; variantId: number | null }) => `${d.me
 })
 export class OrderPlannerPage {
   private readonly api = inject(IntelligenceApi);
+  private readonly costing = inject(CostingApi);
+  private readonly dialog = inject(MatDialog);
+  private readonly router = inject(Router);
+  private readonly approvals = inject(Approvals);
+  private readonly businessDay = inject(BusinessDay);
   private readonly notify = inject(NotifyService);
   private readonly company = inject(Company);
+  protected readonly creating = signal(false);
 
   protected readonly lookback = signal(14);
   protected readonly coverage = signal(7);
@@ -461,6 +476,49 @@ export class OrderPlannerPage {
       this.notify.info(`Order sheet made: ${lines.length} ${lines.length === 1 ? 'material' : 'materials'}, ${this.company.money(this.approvedTotal())}.`);
     } catch (error) {
       this.notify.error(error, 'The order sheet could not be made.');
+    }
+  }
+
+  // The approved quantities as a purchase order per supplier: by who sold each last, or cheapest
+  // when the sheet is grouped so; previewed, then written together.
+  protected async createOrders(): Promise<void> {
+    const plan = this.plan();
+    if (!plan) {
+      return;
+    }
+    const lines = plan.lines.filter((l) => this.approvedOf(l) > 0).map((l) => ({ rawMaterialId: l.rawMaterialId, quantity: this.approvedOf(l) }));
+    this.creating.set(true);
+    try {
+      const [preview, suppliers, today] = await Promise.all([
+        firstValueFrom(this.api.purchaseOrderPlan(lines, this.groupBy() === 'CheapestSupplier' ? 'CheapestSupplier' : 'Supplier')),
+        firstValueFrom(this.costing.suppliers()),
+        this.businessDay.today(),
+      ]);
+      const answer = await firstValueFrom(
+        this.dialog
+          .open<PoGenerationDialog, PoGenerationData, PoGenerationResult>(PoGenerationDialog, {
+            data: { plan: preview, suppliers, canApprove: this.approvals.canApprove(), today },
+            width: '900px',
+            maxWidth: '96vw',
+          })
+          .afterClosed(),
+      );
+      if (!answer?.orders.length) {
+        return;
+      }
+      const saved = await firstValueFrom(this.costing.createPurchaseOrders(answer.orders));
+      const asked = saved.filter((s) => s.outcome === 'Requested').length;
+      this.notify.info(
+        asked
+          ? `${saved.length} purchase ${saved.length === 1 ? 'order' : 'orders'} written (${saved.map((s) => s.poNumber).join(', ')}): sent to a manager for approval.`
+          : `${saved.length} purchase ${saved.length === 1 ? 'order' : 'orders'} approved: ${saved.map((s) => s.poNumber).join(', ')}.`,
+      );
+      void this.approvals.refresh();
+      await this.router.navigate(saved.length === 1 ? ['/costing/purchases/orders', saved[0].id] : ['/costing/purchases/orders']);
+    } catch (error) {
+      this.notify.error(error, 'The purchase orders could not be created.');
+    } finally {
+      this.creating.set(false);
     }
   }
 

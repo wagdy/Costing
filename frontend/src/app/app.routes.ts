@@ -133,6 +133,15 @@ const costingChildren: Routes = [
         loadComponent: () => import('./features/costing/invoice-page').then((m) => m.InvoicePage),
       },
       {
+        // Purchase orders (أوامر الشراء): written, approved, sent, received against invoices.
+        path: 'orders',
+        loadComponent: () => import('./features/costing/purchase-orders-page').then((m) => m.PurchaseOrdersPage),
+      },
+      {
+        path: 'orders/:id',
+        loadComponent: () => import('./features/costing/purchase-order-page').then((m) => m.PurchaseOrderPage),
+      },
+      {
         path: 'suppliers',
         loadComponent: () => import('./features/costing/suppliers-page').then((m) => m.SuppliersPage),
       },

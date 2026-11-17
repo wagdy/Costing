@@ -42,7 +42,9 @@ public sealed record EndOfDayInvoiceDto(
     DateTime AddedAtUtc,
     // The purchase invoice it was posted as on the daily batch.
     Guid? PurchaseInvoiceId,
-    DateTime? PostedAtUtc);
+    DateTime? PostedAtUtc,
+    // The purchase order it delivers, when there was one: the batch receives it against it.
+    Guid? PurchaseOrderId = null);
 
 // Where a payment's safe entry is: none yet (the day not handed in), asked of a manager, in the
 // safe, or refused by a manager (it can then be taken off, and entered again).
@@ -141,10 +143,12 @@ public sealed record AddEndOfDayInvoiceCommand(
     string FileName,
     string ContentType,
     byte[] Content,
-    string StaffName = "") : IRequest<EndOfDayDto>;
+    string StaffName = "",
+    Guid? PurchaseOrderId = null) : IRequest<EndOfDayDto>;
 
 public sealed record ChangeEndOfDayInvoiceCommand(
-    DateOnly Date, Guid InvoiceId, EndOfDayInvoiceKind Kind, Guid SupplierId, decimal ReportedTotal, string? Note, string StaffName = "")
+    DateOnly Date, Guid InvoiceId, EndOfDayInvoiceKind Kind, Guid SupplierId, decimal ReportedTotal, string? Note, string StaffName = "",
+    Guid? PurchaseOrderId = null)
     : IRequest<EndOfDayDto>;
 
 public sealed record ReplaceEndOfDayInvoicePhotoCommand(DateOnly Date, Guid InvoiceId, string FileName, string ContentType, byte[] Content, string StaffName = "")
@@ -381,7 +385,7 @@ internal sealed class EndOfDayDays(
                 EndOfDayPhotoDto.From(day.SalesPhoto),
                 day.Invoices.Select(i => new EndOfDayInvoiceDto(
                     i.Id, i.Kind, i.SupplierId, names.GetValueOrDefault(i.SupplierId, "A removed supplier"), i.ReportedTotal, i.Note,
-                    EndOfDayPhotoDto.From(i.Photo)!, i.AddedAtUtc, i.PurchaseInvoiceId, i.PostedAtUtc)).ToList(),
+                    EndOfDayPhotoDto.From(i.Photo)!, i.AddedAtUtc, i.PurchaseInvoiceId, i.PostedAtUtc, i.PurchaseOrderId)).ToList(),
                 day.CountOf(EndOfDayInvoiceKind.Cash), day.TotalOf(EndOfDayInvoiceKind.Cash),
                 day.CountOf(EndOfDayInvoiceKind.Credit), day.TotalOf(EndOfDayInvoiceKind.Credit),
                 day.NetSales, day.TotalRevenue, day.CashAfterInvoices, day.ExpectedIntoSafe,
@@ -442,7 +446,7 @@ internal sealed class AddEndOfDayInvoiceCommandHandler(EndOfDayDays shared, IEnd
         var photo = EndOfDayDays.Photo(request.FileName, request.ContentType, request.Content);
         await shared.CheckSupplierAsync(request.SupplierId, cancellationToken);
         var day = await shared.OpenAsync(request.Date, request.StaffName, cancellationToken);
-        day.AddInvoice(request.InvoiceId, request.Kind, request.SupplierId, request.ReportedTotal, request.Note, photo, request.StaffName);
+        day.AddInvoice(request.InvoiceId, request.Kind, request.SupplierId, request.ReportedTotal, request.Note, photo, request.StaffName, request.PurchaseOrderId);
         shared.Photos.Put(request.InvoiceId, request.Content);
         await unitOfWork.SaveChangesAsync(cancellationToken);
         return await shared.DtoAsync(day, cancellationToken);
@@ -456,7 +460,7 @@ internal sealed class ChangeEndOfDayInvoiceCommandHandler(EndOfDayDays shared, I
         var day = await shared.GetAsync(request.Date, cancellationToken);
         if (day.Invoice(request.InvoiceId).SupplierId != request.SupplierId)
             await shared.CheckSupplierAsync(request.SupplierId, cancellationToken);
-        day.ChangeInvoice(request.InvoiceId, request.Kind, request.SupplierId, request.ReportedTotal, request.Note, request.StaffName);
+        day.ChangeInvoice(request.InvoiceId, request.Kind, request.SupplierId, request.ReportedTotal, request.Note, request.StaffName, request.PurchaseOrderId);
         await unitOfWork.SaveChangesAsync(cancellationToken);
         return await shared.DtoAsync(day, cancellationToken);
     }

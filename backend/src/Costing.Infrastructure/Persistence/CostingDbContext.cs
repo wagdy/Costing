@@ -56,6 +56,7 @@ public sealed class CostingDbContext(DbContextOptions<CostingDbContext> options)
     public DbSet<StockMovement> StockMovements => Set<StockMovement>();
     public DbSet<StockCount> StockCounts => Set<StockCount>();
     public DbSet<PurchaseInvoice> PurchaseInvoices => Set<PurchaseInvoice>();
+    public DbSet<PurchaseOrder> PurchaseOrders => Set<PurchaseOrder>();
     public DbSet<PurchaseInvoiceAttachment> PurchaseInvoiceAttachments => Set<PurchaseInvoiceAttachment>();
     public DbSet<Supplier> Suppliers => Set<Supplier>();
     public DbSet<PurchaseCategory> PurchaseCategories => Set<PurchaseCategory>();

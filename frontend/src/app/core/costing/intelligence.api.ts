@@ -1,6 +1,7 @@
 import { HttpClient } from '@angular/common/http';
 import { Injectable, inject } from '@angular/core';
 import { Observable } from 'rxjs';
+import { PurchaseOrderPlan } from './costing.api';
 
 // Material & demand intelligence (تحليلات الخامات والطلبيات): every quantity in the material's
 // purchase unit (kg, L, a carton), every price per it.
@@ -524,6 +525,11 @@ export class IntelligenceApi {
   }
 
   // The order as approved: each material's quantity in its purchase unit.
+  // The approved order as a purchase order per supplier, to be written in one go.
+  purchaseOrderPlan(lines: { rawMaterialId: string; quantity: number }[], groupBy: OrderSheetGrouping): Observable<PurchaseOrderPlan> {
+    return this.http.post<PurchaseOrderPlan>('/api/costing/intelligence/orders/purchase-orders', { lines, groupBy });
+  }
+
   orderSheet(lines: { rawMaterialId: string; quantity: number }[], groupBy: OrderSheetGrouping, coverageDays: number): Observable<Blob> {
     return this.http.post('/api/costing/intelligence/orders/sheet', { lines, groupBy, coverageDays }, { responseType: 'blob' });
   }

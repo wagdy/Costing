@@ -20,6 +20,7 @@ import {
   MaterialCost,
   PurchaseInvoice,
   PurchaseInvoiceSummary,
+  PurchaseOrder,
   SavePurchaseInvoice,
   Supplier,
   SupplierBalance,
@@ -38,6 +39,7 @@ import { AddNew, InvoiceLine, InvoiceLines, InvoiceLinesTable, InvoiceSupplier, 
 import { paperIcon, viewInvoicePaper } from './invoice-paper';
 import { InvoiceView } from './invoice-view';
 import { SupplierPaymentEntry, SupplierPaymentFields, newSupplierPayment, paymentProblems } from './supplier-payment-fields';
+import { ThreeWayMatchPanel, fillFromOrder } from './three-way-match';
 import { PickRow } from '../shared/pick-row';
 
 // A supplier's invoice, in two steps. Entered as it is written (who from, their number and date,
@@ -49,6 +51,11 @@ import { PickRow } from '../shared/pick-row';
 //
 // Or, switched at the top, a supplier paid with no invoice (سداد مورد): entered as in the daily
 // batch, against what they are owed, from the safe or a day's takings, and no stock moves.
+//
+// Against a purchase order (أمر الشراء, chosen here or opened with ?po=): its open lines come onto the
+// invoice at what is left of them, at the expected prices, and the 3-way match sets what the paper and
+// the door say against them as it is typed. A short delivery keeps the rest open or closes the order;
+// over the order's price or quantity, anyone but a manager waits for a manager to sign it off.
 //
 // With ?correct=, a posted invoice corrected (تعديل فاتورة): it opens here as entered, and once its
 // changes are reviewed, it is voided and posted again as it should have been, a new invoice in its
@@ -72,6 +79,7 @@ import { PickRow } from '../shared/pick-row';
     MoneyPipe,
     RouterLink,
     SupplierPaymentFields,
+    ThreeWayMatchPanel,
   ],
   template: `
     @if (loading()) {
@@ -83,11 +91,24 @@ import { PickRow } from '../shared/pick-row';
       <section class="review">
         <h2>Review the invoice <span class="inline-ar">مراجعة الفاتورة</span></h2>
         <p class="note">Check it against the paper. Nothing is in stock until you confirm.</p>
+        @if (inv.purchaseOrder; as po) {
+          <p class="note" [class.ask]="po.needsApproval && !approvals.canApprove()">
+            Against {{ po.poNumber }}{{ po.overcharge ? ': ' + (po.overcharge | money) + ' over its prices' : '' }}.
+            @if (po.needsApproval && !approvals.canApprove()) {
+              Confirmed, it waits for a manager to sign off what is over the order before its stock goes in. · بانتظار موافقة المدير.
+            } @else if (po.hasShort) {
+              {{ po.closes ? 'What did not come closes the order.' : 'What did not come stays open on the order.' }}
+            }
+          </p>
+        }
         <app-invoice-view [invoice]="inv" />
         <div class="toolbar actions">
           <button mat-button (click)="backToEdit()" [disabled]="saving()"><mat-icon>edit</mat-icon> Back to edit</button>
           <span class="spacer"></span>
-          <button mat-flat-button (click)="confirm()" [disabled]="saving()"><mat-icon>inventory</mat-icon> Confirm &amp; post</button>
+          <button mat-flat-button (click)="confirm()" [disabled]="saving()">
+            <mat-icon>inventory</mat-icon>
+            {{ inv.purchaseOrder?.needsApproval && !approvals.canApprove() ? 'Confirm & send for sign-off · إرسال للموافقة' : 'Confirm & post' }}
+          </button>
         </div>
       </section>
     } @else if (correctionPreview(); as cp) {
@@ -161,8 +182,12 @@ import { PickRow } from '../shared/pick-row';
               <span>{{ d.supplierName ?? 'No supplier' }} · {{ d.lines }} {{ d.lines === 1 ? 'line' : 'lines' }} · {{ d.total | money }}
                 <span class="muted">· {{ d.createdBy }}, {{ d.createdAtUtc | date: 'd MMM, HH:mm' }}</span></span>
               <span class="spacer"></span>
-              <button mat-button (click)="continueDraft(d.id)">Continue</button>
-              <button mat-button class="danger" (click)="discardDraft(d.id)" [disabled]="saving()">Discard</button>
+              @if (approvals.pendingFor(d.id); as asked) {
+                <span class="pending-badge">Waiting for a manager · بانتظار المدير</span>
+              } @else {
+                <button mat-button (click)="continueDraft(d.id)">Continue</button>
+                <button mat-button class="danger" (click)="discardDraft(d.id)" [disabled]="saving()">Discard</button>
+              }
             </div>
           }
         </div>
@@ -240,10 +265,32 @@ import { PickRow } from '../shared/pick-row';
           }
         </div>
       </div>
+      @if (!correcting()) {
+        <div class="po-row">
+          <mat-form-field subscriptSizing="dynamic" class="po">
+            <mat-label>Purchase order · أمر الشراء</mat-label>
+            <mat-select [ngModel]="orderId()" (ngModelChange)="chooseOrder($event)" aria-label="Purchase order">
+              <mat-option [value]="null">None · بدون أمر شراء</mat-option>
+              @for (o of ordersOffered(); track o.id) {
+                <mat-option [value]="o.id">{{ o.poNumber }} · {{ o.supplier }} · {{ o.remainingValue | money }} left</mat-option>
+              } @empty {
+                <mat-option disabled>{{ supplierId ? 'No open purchase order from this supplier' : 'No open purchase orders' }}</mat-option>
+              }
+            </mat-select>
+            <mat-hint>Received against it: each item matched to the order. · المطابقة مع أمر الشراء</mat-hint>
+          </mat-form-field>
+          @if (order(); as o) {
+            <a mat-button [routerLink]="['/costing/purchases/orders', o.id]"><mat-icon>open_in_new</mat-icon> {{ o.poNumber }}</a>
+          }
+        </div>
+      }
       @if (materials().length === 0 && expenses().length === 0) {
         <p class="note">No raw materials or expense items yet: type one's name on a line to add it.</p>
       }
       <app-invoice-lines [editor]="editor" [checks]="checks" />
+      @if (order(); as o) {
+        <app-three-way-match [order]="o" [editor]="editor" [canApprove]="approvals.canApprove()" [(closes)]="closes" />
+      }
       <div class="toolbar actions">
         <span class="spacer"></span>
         @if (correcting(); as original) {
@@ -323,6 +370,17 @@ import { PickRow } from '../shared/pick-row';
     }
     .actions {
       margin-top: 12px;
+    }
+    .po-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      margin: 4px 0 8px;
+
+      .po {
+        min-width: 320px;
+      }
     }
     .header {
       display: flex;
@@ -508,6 +566,21 @@ export class PurchasesPage {
 
   // ?correct=: the posted invoice to correct.
   readonly correct = input<string>();
+  // ?po=: the purchase order to receive against.
+  readonly po = input<string>();
+
+  // The purchase orders open for a delivery, the one this invoice is received against, and whether
+  // it closes it with what came.
+  private readonly openOrders = signal<PurchaseOrder[]>([]);
+  protected readonly orderId = signal<string | null>(null);
+  protected readonly order = computed(() => this.openOrders().find((o) => o.id === this.orderId()) ?? null);
+  protected readonly closes = signal(false);
+  // The chosen supplier's, or every supplier's while none is.
+  protected readonly ordersOffered = computed(() => {
+    this.supplier.version();
+    const supplierId = this.supplierId;
+    return this.openOrders().filter((o) => !supplierId || o.supplierId === supplierId || o.id === this.orderId());
+  });
   // The posted invoice being corrected, opened here as it was entered; null for a new invoice.
   protected readonly correcting = signal<PurchaseInvoice | null>(null);
   // Its changes, reviewed before they are sent: the same lines the manager sees.
@@ -546,10 +619,48 @@ export class PurchasesPage {
 
   constructor() {
     void this.load();
+    void this.approvals.refresh();
     effect(() => {
       const id = this.correct();
       untracked(() => void this.openCorrection(id));
     });
+    // Opened from a purchase order: received against it once the open ones are in.
+    effect(() => {
+      const id = this.po();
+      const open = this.openOrders();
+      if (id && open.some((o) => o.id === id)) {
+        untracked(() => {
+          if (this.orderId() !== id) {
+            this.chooseOrder(id);
+          }
+        });
+      }
+    });
+  }
+
+  // Received against an order: its supplier, its terms as the payment, its open lines on the invoice
+  // (asked first when lines are typed already). None: the lines stay as they are.
+  protected chooseOrder(id: string | null): void {
+    const order = this.openOrders().find((o) => o.id === id) ?? null;
+    if (!order) {
+      this.orderId.set(null);
+      this.closes.set(false);
+      this.touch();
+      return;
+    }
+    const typed = this.lines().some((l) => l.rawMaterialId || l.expenseItemId || l.quantity);
+    if (typed && !confirm(`Put ${order.poNumber}'s open lines on the invoice, in place of what is typed? · استبدال البنود ببنود أمر الشراء؟`)) {
+      this.orderId.set(order.id);
+      this.supplier.set(order.supplierId, order.supplier);
+      this.touch();
+      return;
+    }
+    this.orderId.set(order.id);
+    this.closes.set(false);
+    this.supplier.set(order.supplierId, order.supplier);
+    this.paymentMethod ??= order.paymentTerms === 'Credit' ? 'Credit' : 'Safe';
+    fillFromOrder(this.editor, order, this.materials());
+    this.touch();
   }
 
   // "Invoice F-1 · Nile Farms of 12 Oct".
@@ -717,6 +828,11 @@ export class PurchasesPage {
 
   protected supplierEntered(value: string | Supplier | AddNew | null): void {
     this.supplier.entered(value);
+    // Another supplier's invoice is not against this one's order.
+    if (this.order() && this.supplierId && this.supplierId !== this.order()!.supplierId) {
+      this.orderId.set(null);
+      this.closes.set(false);
+    }
     this.editor.touch();
   }
 
@@ -789,6 +905,8 @@ export class PurchasesPage {
     this.revenueDate = this.today;
     this.paper.set(null);
     this.review.set(null);
+    this.orderId.set(null);
+    this.closes.set(false);
     this.invoiceId = crypto.randomUUID();
   }
 
@@ -816,6 +934,15 @@ export class PurchasesPage {
     this.saving.set(true);
     try {
       const posted = await firstValueFrom(this.api.postPurchaseInvoice(this.invoiceId));
+      if (posted.awaitingApproval) {
+        this.notify.info(
+          `Sent to a manager: it is over ${posted.purchaseOrder?.poNumber ?? 'its purchase order'}, and its stock goes in once signed off. · أُرسلت للمدير.`,
+        );
+        this.reset();
+        void this.approvals.refresh();
+        await this.load();
+        return;
+      }
       const stock = posted.lines.filter((l) => l.itemType === 'Inventory').length;
       const expenses = posted.lines.length - stock;
       const parts = [
@@ -889,6 +1016,8 @@ export class PurchasesPage {
     this.revenueDate = invoice.revenueDate ?? this.today;
     this.paper.set(invoice.attachment?.fileName ?? null);
     this.review.set(null);
+    this.orderId.set(invoice.purchaseOrder?.purchaseOrderId ?? null);
+    this.closes.set(invoice.purchaseOrder?.closes ?? false);
     this.editor.fill(invoice.lines, invoice.discount ?? 0);
     this.touch();
   }
@@ -920,6 +1049,8 @@ export class PurchasesPage {
       revenueDate: this.paymentMethod === 'DayRevenue' ? this.revenueDate || null : null,
       lines: this.editor.toSave(partial),
       discount: this.editor.discountToSave(partial),
+      // Against a purchase order: which, and whether it closes it with what came.
+      ...(this.orderId() ? { purchaseOrderId: this.orderId(), closesPurchaseOrder: this.closes() } : {}),
     };
   }
 
@@ -936,8 +1067,14 @@ export class PurchasesPage {
       this.today = today;
     });
     try {
-      const [drafts] = await Promise.all([firstValueFrom(this.api.purchaseInvoices('Draft')), this.catalog.load(), this.loadBalances()]);
+      const [drafts, open] = await Promise.all([
+        firstValueFrom(this.api.purchaseInvoices('Draft')),
+        firstValueFrom(this.api.openPurchaseOrders()),
+        this.catalog.load(),
+        this.loadBalances(),
+      ]);
       this.unfinished.set(drafts);
+      this.openOrders.set(open);
     } catch (error) {
       this.error.set(errorMessage(error, 'The purchases could not be loaded.'));
     } finally {

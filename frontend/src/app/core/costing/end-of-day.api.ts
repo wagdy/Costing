@@ -32,6 +32,8 @@ export interface EndOfDayInvoice {
   // The purchase invoice it was posted as on the daily batch.
   purchaseInvoiceId: string | null;
   postedAtUtc: string | null;
+  // The purchase order it delivers, when there was one: the batch receives it against it.
+  purchaseOrderId?: string | null;
 }
 
 // Cash paid out of the till: to a supplier (إذن صرف مورد) or an employee as an advance (سلفة).
@@ -146,6 +148,8 @@ export interface EndOfDayInvoiceEntry {
   supplierId: string;
   reportedTotal: number;
   note: string | null;
+  // The purchase order it delivers, if any.
+  purchaseOrderId?: string | null;
 }
 
 export const invoiceKindLabels: Record<EndOfDayInvoiceKind, { en: string; ar: string }> = {
@@ -188,6 +192,9 @@ export class EndOfDayApi {
     form.append('reportedTotal', String(entry.reportedTotal));
     if (entry.note) {
       form.append('note', entry.note);
+    }
+    if (entry.purchaseOrderId) {
+      form.append('purchaseOrderId', entry.purchaseOrderId);
     }
     form.append('file', file, file.name);
     return this.http.post<EndOfDay>(`/api/end-of-day/${date}/invoices`, form);

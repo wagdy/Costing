@@ -50,6 +50,12 @@ public sealed class IntelligenceController(IntelligenceService intelligence, Cos
         return File(IntelligenceWorkbooks.OrderSheet(sheet), ReportWorkbook.ContentType, $"order-{sheet.Today:yyyy-MM-dd}.xlsx");
     }
 
+    // The approved order as a purchase order per supplier, for them to be written in one go
+    // (POST api/inventory/purchase-orders/batch).
+    [HttpPost("orders/purchase-orders")]
+    public Task<PurchaseOrderPlan> PlanPurchaseOrders(OrderSheetRequest request, CancellationToken cancellationToken) =>
+        intelligence.PurchaseOrderPlanAsync(request, cancellationToken);
+
     [HttpGet("consumption")]
     public Task<ConsumptionReport> GetConsumption([FromQuery] DateOnly from, [FromQuery] DateOnly to, CancellationToken cancellationToken) =>
         intelligence.GetConsumptionAsync(from, to, cancellationToken);

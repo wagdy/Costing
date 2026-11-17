@@ -9,6 +9,7 @@ using Costing.Application.Purchases;
 using Costing.Application.RawMaterials;
 using Costing.Application.Treasury;
 using Costing.Domain.Approvals;
+using Costing.Domain.Purchases;
 using Costing.Domain.RawMaterials;
 using Costing.Domain.Recipes;
 using Costing.Domain.StockMovements;
@@ -89,6 +90,8 @@ public static class ApprovalLocks
         ApprovalAction.Delete => "for this to be deleted",
         ApprovalAction.Update => "to change this",
         _ when pending.Module == ApprovalModule.Treasury => "to pay this",
+        _ when pending.Module == ApprovalModule.PurchaseInvoice => "to post this against its purchase order",
+        _ when pending.Module == ApprovalModule.PurchaseOrder => "to approve this purchase order",
         _ => "for this",
     };
 }
@@ -110,7 +113,7 @@ internal static class ApprovalPayload
 // the request closed, together. Approving again, after a lost answer, changes nothing. When it
 // can no longer be done (a price missing, an ingredient gone), it stays waiting, for the manager
 // to put right or reject.
-public sealed record ApproveRequestCommand(Guid RequestId, string StaffName) : IRequest<ApprovalRequestDto>, IRetryOnConflict;
+public sealed record ApproveRequestCommand(Guid RequestId, string StaffName, string StaffId = "") : IRequest<ApprovalRequestDto>, IRetryOnConflict;
 
 internal sealed class ApproveRequestHandler(
     IApprovalRequestRepository requests,
@@ -123,6 +126,9 @@ internal sealed class ApproveRequestHandler(
     CategoryDeleter categoryDeleter,
     IRawMaterialRepository materials,
     IStockMovementRepository movements,
+    InvoicePoster poster,
+    IPurchaseInvoiceRepository invoices2,
+    IPurchaseOrderRepository purchaseOrders,
     IUnitOfWork unitOfWork) : IRequestHandler<ApproveRequestCommand, ApprovalRequestDto>
 {
     public async Task<ApprovalRequestDto> Handle(ApproveRequestCommand request, CancellationToken cancellationToken)
@@ -159,6 +165,25 @@ internal sealed class ApproveRequestHandler(
             case (ApprovalAction.Create, ApprovalModule.Treasury):
                 await treasury.ApplyAsync(ApprovalPayload.Read<SafeVoucher>(approval), approval.RequestedBy, request.StaffName, cancellationToken);
                 break;
+
+            // A purchase order approved as it was written.
+            case (ApprovalAction.Create, ApprovalModule.PurchaseOrder):
+            {
+                var order = await purchaseOrders.GetRequiredAsync(approval.RecordId, cancellationToken);
+                if (order.Status == PurchaseOrderStatus.Draft)
+                    order.Approve(request.StaffId, request.StaffName);
+                break;
+            }
+
+            // An invoice over its purchase order, signed off: posted as it was entered, its stock in,
+            // its payment settled, and counted on the order.
+            case (ApprovalAction.Create, ApprovalModule.PurchaseInvoice):
+            {
+                var invoice = await invoices2.GetRequiredAsync(approval.RecordId, cancellationToken);
+                if (invoice.Status == PurchaseInvoiceStatus.Draft)
+                    await poster.PostAsync(invoice, approval.RequestedBy, approval.RequestedById, canApprove: true, cancellationToken);
+                break;
+            }
 
             // An invoice corrected: the original voided, the correction posted in its place.
             case (ApprovalAction.Update, ApprovalModule.PurchaseInvoice):

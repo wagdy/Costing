@@ -15,6 +15,7 @@ import { firstValueFrom } from 'rxjs';
 import {
   CostingApi,
   PurchaseBatchResult,
+  PurchaseOrder,
   PurchasePaymentMethod,
   SupplierBalance,
   paymentMethodLabels,
@@ -39,6 +40,7 @@ import { InvoiceLine, InvoiceLines, InvoiceLinesTable, InvoiceSupplier, Purchase
 import { paperIcon, viewInvoicePaper } from './invoice-paper';
 import { SupplierPaymentEntry, SupplierPaymentFields, newSupplierPayment, paymentProblems } from './supplier-payment-fields';
 import { PickRow } from '../shared/pick-row';
+import { ThreeWayMatchPanel, fillFromOrder } from './three-way-match';
 
 // One invoice of the batch: its id, made here; its supplier, number and lines, entered as on the
 // invoice screen; and the photo or scan of its paper, sent once the invoice is posted. On credit
@@ -54,6 +56,9 @@ interface BatchBlock {
   handedIn: HandedIn | null;
   // The photo above the lines, or hidden to give them the room.
   photoShown: boolean;
+  // The purchase order it delivers (3-way match), and whether it closes it with what came.
+  orderId: string | null;
+  closes: boolean;
 }
 
 // An invoice handed in at the end of a day, as its block starts from it.
@@ -91,6 +96,8 @@ interface StoredBatch {
     discount?: number | null;
     credit?: boolean;
     handedIn?: Omit<HandedIn, 'source'> | null;
+    orderId?: string | null;
+    closes?: boolean;
   }[];
   payments?: PaymentBlock[];
   advances?: AdvanceEntry[];
@@ -127,6 +134,7 @@ const storageKey = 'otantik-till.purchase-batch';
     RouterLink,
     SupplierPaymentFields,
     AdvanceFields,
+    ThreeWayMatchPanel,
   ],
   template: `
     @if (loading()) {
@@ -344,6 +352,15 @@ const storageKey = 'otantik-till.purchase-batch';
               <mat-label>Invoice no. · رقم الفاتورة</mat-label>
               <input matInput [(ngModel)]="block.number" (ngModelChange)="changed()" maxlength="64" data-western-digits [attr.aria-label]="'Invoice ' + (i + 1) + ', number'" />
             </mat-form-field>
+            <mat-form-field subscriptSizing="dynamic" class="po">
+              <mat-label>Purchase order · أمر الشراء</mat-label>
+              <mat-select [ngModel]="block.orderId" (ngModelChange)="chooseOrder(block, $event)" [attr.aria-label]="'Invoice ' + (i + 1) + ', purchase order'">
+                <mat-option [value]="null">None · بدون</mat-option>
+                @for (o of ordersFor(block); track o.id) {
+                  <mat-option [value]="o.id">{{ o.poNumber }} · {{ o.supplier }}</mat-option>
+                }
+              </mat-select>
+            </mat-form-field>
             <div class="paid-as">
               <mat-button-toggle-group [value]="paymentMethod === 'Credit' || block.credit ? 'Credit' : 'Cash'" (change)="payAs(block, $event.value)"
                 [disabled]="paymentMethod === 'Credit'" hideSingleSelectionIndicator [attr.aria-label]="'Invoice ' + (i + 1) + ', paid'">
@@ -410,6 +427,10 @@ const storageKey = 'otantik-till.purchase-batch';
             </div>
           } @else {
             <app-invoice-lines [editor]="block.editor" [label]="'Invoice ' + (i + 1) + ', '" [checks]="checks" />
+          }
+          @if (orderOf(block); as o) {
+            <app-three-way-match [order]="o" [editor]="block.editor" [canApprove]="approvals.canApprove()" [label]="'Invoice ' + (i + 1) + ', '"
+              [closes]="block.closes" (closesChange)="block.closes = $event; changed()" />
           }
         </section>
       }
@@ -502,6 +523,9 @@ const storageKey = 'otantik-till.purchase-batch';
     }
     .number {
       width: 190px;
+    }
+    .po {
+      width: 220px;
     }
     .payment-block {
       border-style: dashed;
@@ -969,6 +993,8 @@ export class PurchaseBatchPage {
             discount: b.editor.discount() ?? 0,
             onCredit: b.credit,
             endOfDayInvoiceId: b.handedIn?.invoiceId ?? null,
+            purchaseOrderId: b.orderId,
+            closesPurchaseOrder: b.orderId !== null && b.closes,
           })),
           payments: this.payments().map((p) => ({ transactionId: p.id, supplierId: p.supplierId!, amount: p.amount!, notes: p.notes.trim() || null })),
           advances: this.advances().map((a) => ({ transactionId: a.id, employeeId: a.employeeId, amount: a.amount!, notes: a.notes.trim() || null })),
@@ -985,6 +1011,7 @@ export class PurchaseBatchPage {
       void this.loadHandedIn();
       const sent = await Promise.all(papers.map((p) => this.sendPaper(p.invoiceId, p.file, false)));
       const attached = sent.filter((ok) => ok).length;
+      const held = made.invoices.filter((i) => i.awaitingApproval).length;
       const pending =
         made.invoices.filter((i) => i.paymentStatus === 'Pending').length +
         made.payments.filter((p) => p.outcome === 'Requested').length +
@@ -992,13 +1019,14 @@ export class PurchaseBatchPage {
       const said =
         `${this.sentLabel(made)}.` +
         (attached ? ` ${attached === 1 ? '1 paper' : `${attached} papers`} attached.` : '') +
-        (pending ? ` ${pending === 1 ? '1 payment waits' : `${pending} payments wait`} for a manager's approval.` : '');
+        (pending ? ` ${pending === 1 ? '1 payment waits' : `${pending} payments wait`} for a manager's approval.` : '') +
+        (held ? ` ${held === 1 ? '1 invoice is' : `${held} invoices are`} over its purchase order: its stock goes in once a manager signs it off.` : '');
       if (attached < papers.length) {
         this.notify.error(null, `${said} ${papers.length - attached === 1 ? 'A paper' : 'Some papers'} could not be attached: try again below.`);
       } else {
         this.notify.info(said);
       }
-      await Promise.all([this.catalog.loadMaterials(), this.loadBalances()]);
+      await Promise.all([this.catalog.loadMaterials(), this.loadBalances(), this.loadOrders()]);
     } catch (error) {
       this.problems.set(errorMessage(error, 'The batch could not be posted.'));
     } finally {
@@ -1016,7 +1044,45 @@ export class PurchaseBatchPage {
       credit: false,
       handedIn: null,
       photoShown: true,
+      orderId: null,
+      closes: false,
     };
+  }
+
+  // The purchase orders open for a delivery: a block's supplier's, or every one's while none is chosen.
+  private readonly openOrders = signal<PurchaseOrder[]>([]);
+
+  protected ordersFor(block: BatchBlock): PurchaseOrder[] {
+    block.supplier.version();
+    return this.openOrders().filter((o) => !block.supplier.id || o.supplierId === block.supplier.id || o.id === block.orderId);
+  }
+
+  protected orderOf(block: BatchBlock): PurchaseOrder | null {
+    return this.openOrders().find((o) => o.id === block.orderId) ?? null;
+  }
+
+  // Received against an order: its supplier, and its open lines (asked first over lines typed).
+  protected chooseOrder(block: BatchBlock, id: string | null): void {
+    const order = this.openOrders().find((o) => o.id === id) ?? null;
+    block.orderId = order?.id ?? null;
+    block.closes = false;
+    if (order) {
+      block.supplier.set(order.supplierId, order.supplier);
+      const typed = block.editor.lines().some((l) => l.rawMaterialId || l.expenseItemId || l.quantity);
+      if (!typed || confirm(`Put ${order.poNumber}'s open lines on the invoice, in place of what is typed? · استبدال البنود ببنود أمر الشراء؟`)) {
+        fillFromOrder(block.editor, order, this.catalog.materials());
+      }
+    }
+    block.editor.touch();
+    this.changed();
+  }
+
+  private async loadOrders(): Promise<void> {
+    try {
+      this.openOrders.set(await firstValueFrom(this.api.openPurchaseOrders()));
+    } catch {
+      this.openOrders.set([]);
+    }
   }
 
   // An invoice handed in at the end of the day, as a block: its supplier, paid as it was, its photo.
@@ -1034,6 +1100,12 @@ export class PurchaseBatchPage {
       contentType: invoice.photo.contentType,
       source: this.photoSource(date, invoice.id),
     };
+    // Handed in against a purchase order: received against it, its open lines to type over.
+    const order = this.openOrders().find((o) => o.id === invoice.purchaseOrderId);
+    if (order) {
+      block.orderId = order.id;
+      fillFromOrder(block.editor, order, this.catalog.materials());
+    }
     return block;
   }
 
@@ -1123,6 +1195,8 @@ export class PurchaseBatchPage {
         discount: b.editor.discount(),
         credit: b.credit,
         handedIn: b.handedIn ? (({ source, ...kept }) => kept)(b.handedIn) : null,
+        orderId: b.orderId,
+        closes: b.closes,
       })),
       payments: this.payments().map((p) => ({ ...p })),
       advances: this.advances().map((a) => ({ ...a })),
@@ -1184,6 +1258,8 @@ export class PurchaseBatchPage {
         block.editor.touch();
         block.credit = b.credit ?? false;
         block.handedIn = b.handedIn ? { ...b.handedIn, source: this.photoSource(b.handedIn.date, b.handedIn.invoiceId) } : null;
+        block.orderId = b.orderId ?? null;
+        block.closes = b.closes ?? false;
         return block;
       }),
     );
@@ -1207,7 +1283,7 @@ export class PurchaseBatchPage {
       }
     });
     try {
-      await Promise.all([this.catalog.load(), this.loadBalances(), this.loadEmployees()]);
+      await Promise.all([this.catalog.load(), this.loadBalances(), this.loadEmployees(), this.loadOrders()]);
       this.restore();
       // Opened on a day (from the end of the day): that day's batch.
       const asked = this.route.snapshot.queryParamMap.get('date');

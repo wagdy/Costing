@@ -17,6 +17,9 @@ public static class DependencyInjection
         services.AddScoped<Treasury.TreasuryWriter>();
         services.AddScoped<Purchases.InvoiceRecorder>();
         services.AddScoped<Purchases.InvoicePoster>();
+        services.AddScoped<Purchases.PurchaseOrderReceiver>();
+        services.AddScoped<Purchases.PurchaseOrderWriter>();
+        services.AddScoped<Purchases.PurchaseOrderReading>();
         services.AddScoped<Purchases.InvoiceCorrector>();
         services.AddScoped<RawMaterials.MaterialUnitWriter>();
         services.AddScoped<Categories.CategoryDeleter>();

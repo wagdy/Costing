@@ -1060,6 +1060,49 @@ export const infoTips = {
     { en: 'What is left after everything: the running costs, the interest, the assets’ depreciation and what disposing of them made or lost.', ar: 'ما يتبقى بعد كل شيء: مصاريف التشغيل والفوائد وإهلاك الأصول وأرباح أو خسائر استبعادها.' },
     { en: 'EBITDA − interest − depreciation expense ± gain / (loss) on asset disposals.', ar: 'EBITDA − الفوائد − إهلاك الأصول ± أرباح / (خسائر) استبعاد الأصول.' },
   ),
+
+  // ---- Purchase orders and the 3-way match ----
+  poExpectedPrice: tip(
+    { en: 'Expected price', ar: 'السعر المتوقع' },
+    { en: 'What one purchase unit should cost on this order, net of discounts: the delivery’s invoice is checked against it.', ar: 'سعر وحدة الشراء المتفق عليه في أمر الشراء صافيًا من الخصومات: تُطابق عليه فاتورة التوريد.' },
+    { en: 'The latest net price paid for the item (or the cheapest supplier’s, from the order planner); its average when nothing was bought yet.', ar: 'آخر سعر شراء صافٍ للصنف (أو أرخص مورد من مخطط الطلبيات)، أو متوسط تكلفته إن لم يُشترَ بعد.' },
+  ),
+  poReceived: tip(
+    { en: 'Received', ar: 'نسبة الاستلام' },
+    { en: 'How much of the order has come, on the invoices posted against it.', ar: 'ما وصل من أمر الشراء على الفواتير المرحلة عليه.' },
+    { en: '(Expected total − what is left to come × its expected price) ÷ expected total × 100.', ar: '(الإجمالي المتوقع − المتبقي × سعره المتوقع) ÷ الإجمالي المتوقع × 100.' },
+  ),
+  poRemaining: tip(
+    { en: 'Left to come', ar: 'المتبقي' },
+    { en: 'What is still to be delivered: the backorder, at the prices ordered.', ar: 'ما لم يُورد بعد (الطلبية المتأخرة) بأسعار أمر الشراء.' },
+    { en: 'Σ (ordered − received) × expected unit price, over each line.', ar: 'مجموع (المطلوب − المستلم) × السعر المتوقع لكل بند.' },
+  ),
+  poMatch: tip(
+    { en: '3-way match', ar: 'المطابقة الثلاثية' },
+    {
+      en: 'Each item checked three ways: the purchase order (what was ordered, at what price), what came through the door (the quantity received) and the supplier’s invoice (what it is billed).',
+      ar: 'كل صنف يُراجع من ثلاث جهات: أمر الشراء (الكمية والسعر)، والاستلام الفعلي (الكمية المستلمة)، وفاتورة المورد (المبلغ المطالب به).',
+    },
+    {
+      en: 'Matched; Price overcharge: net unit price above the expected by more than 0.5%; Qty over: more than was left to come; Partial / short: less. Over the price or the quantity, anyone but a manager waits for a manager’s sign-off.',
+      ar: 'مطابق؛ زيادة سعر: صافي سعر الوحدة أعلى من المتوقع بأكثر من 0.5%؛ كمية زائدة: أكثر من المتبقي؛ استلام جزئي: أقل. زيادة السعر أو الكمية تنتظر موافقة المدير لغير المدير.',
+    },
+  ),
+  poNetUnitPrice: tip(
+    { en: 'Actual net unit price', ar: 'صافي سعر الوحدة الفعلي' },
+    { en: 'What one purchase unit really cost on this invoice, after its discounts: what goes into the average cost.', ar: 'تكلفة وحدة الشراء الفعلية في هذه الفاتورة بعد الخصومات: ما يدخل متوسط التكلفة.' },
+    { en: '(Line total − line discount − its share of the invoice discount) ÷ quantity received.', ar: '(إجمالي البند − خصم البند − نصيبه من خصم الفاتورة) ÷ الكمية المستلمة.' },
+  ),
+  poOvercharge: tip(
+    { en: 'Overcharge', ar: 'قيمة الزيادة' },
+    { en: 'What the invoice bills above the order’s prices, on the lines over the tolerance.', ar: 'ما تطالب به الفاتورة فوق أسعار أمر الشراء في البنود التي تتجاوز الحد المسموح.' },
+    { en: 'Σ (net unit price − expected unit price) × quantity received, over each line priced above the order by more than 0.5%.', ar: 'مجموع (صافي سعر الوحدة − السعر المتوقع) × الكمية المستلمة للبنود التي تزيد بأكثر من 0.5%.' },
+  ),
+  poBackorder: tip(
+    { en: 'Backorder or close', ar: 'إبقاء المتبقي أو الإغلاق' },
+    { en: 'A short delivery: keep what did not come open on the order for the next delivery, or close the order with what came.', ar: 'عند الاستلام الجزئي: إبقاء المتبقي مفتوحًا على أمر الشراء للتوريد القادم، أو إغلاق الأمر بالكمية المستلمة.' },
+    { en: 'Kept open: Remaining = ordered − received, status Partially received. Closed: status Completed, nothing more expected.', ar: 'مفتوح: المتبقي = المطلوب − المستلم، والحالة استلام جزئي. مغلق: الحالة مكتمل ولا يُنتظر المزيد.' },
+  ),
 } satisfies Record<string, InfoTipContent>;
 
 export type InfoTipKey = keyof typeof infoTips;

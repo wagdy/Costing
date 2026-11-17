@@ -8,7 +8,8 @@ import { CostingAccess } from '../../core/costing/costing-tabs';
 import { Permissions } from '../../core/auth/permissions';
 import { Treasury } from './financials';
 
-// Purchases: entering a supplier's invoice, the invoices entered, the suppliers they are from, and
+// Purchases: entering a supplier's invoice, the purchase orders it is received against, the invoices
+// entered, the suppliers they are from, and
 // the categories everything is filed under. What was spent is under Reports. An employee's advance
 // is paid from here too, as in Financials: out of the safe or a day's takings, and off their pay
 // (or, naming no one, a lump sum shared among the staff).
@@ -39,6 +40,7 @@ export class PurchasesShell {
   protected readonly tabs: SubNavTab[] = [
     { path: 'new', icon: 'add_shopping_cart', en: 'New invoice', ar: 'فاتورة جديدة' },
     { path: 'batch', icon: 'library_add', en: 'Daily batch', ar: 'يومية المشتريات' },
+    { path: 'orders', icon: 'assignment', en: 'Purchase orders', ar: 'أوامر الشراء' },
     { path: 'invoices', icon: 'history', en: 'Invoices', ar: 'أرشيف الفواتير' },
     { path: 'suppliers', icon: 'local_shipping', en: 'Suppliers', ar: 'إدارة الموردين' },
     { path: 'vendor-prices', icon: 'compare', en: 'Vendor prices', ar: 'مقارنة أسعار الموردين' },

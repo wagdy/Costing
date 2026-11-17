@@ -19,7 +19,7 @@ works it.
 | Material & demand intelligence (تحليلات الخامات والطلبيات) | `/costing/intelligence` | Purchase price variance and what it does to the recipes, the order planner, theoretical against actual usage, ABC and days on hand, menu engineering, the fully burdened plate cost, the vendor price comparison and the inflation what-if simulator; each to Excel |
 | Sales (المبيعات) | `/costing/sales` | Each day's sales summary, entered or imported from its sheet, for stock and food cost |
 | End of the day (تقفيل اليوم) | `/costing/end-of-day` | Each day's invoices photographed, cash and on credit, and its sales report, handed in for the daily batch and the takings |
-| Purchases (المشتريات) | `/costing/purchases` | Invoices, the day's batch, suppliers (their payment terms and statements of account), categories, the vendor price comparison |
+| Purchases (المشتريات) | `/costing/purchases` | Invoices, the day's batch, purchase orders (received with the 3-way match), suppliers (their payment terms and statements of account), categories, the vendor price comparison |
 | Expense items (المصروفات العمومية) | `/costing/expense-items` | General expenses, never stock |
 | Stock counts (الجرد) | `/costing/counts` | Full and spot counts drafted, blind for who counts, reconciled, then posted |
 | Waste (الهالك) | `/costing/waste` | Spoilage and breakage; staff meals, hospitality and recipe tastings |
@@ -352,6 +352,9 @@ coverageDays (1–60), growthPercent (−90 to +500), dishes: [{ menuItemId, var
   the **cheapest supplier** (`groupBy: CheapestSupplier`): the one with the lowest last net price in
   the last 180 days, at that price, as the vendor price comparison finds it. Each group has its
   subtotal, and the sheet its total.
+- **Create Purchase Orders · إنشاء أوامر شراء من الطلبية**, beside the Excel sheet, turns the approved
+  quantities into a purchase order per supplier (`POST orders/purchase-orders`, then
+  `POST api/inventory/purchase-orders/batch`): see Purchase orders below.
 
 **Theoretical vs actual consumption (الاستهلاك النظري مقابل الفعلي)** (`GET consumption?from&to`),
 each bought material over the period, from the book's stock either side:
@@ -819,6 +822,106 @@ attached as the invoice is entered; on a Daily batch each invoice has its own **
 and the papers are sent once the batch is posted, each to its invoice, kept in the Invoices
 archive as one entered alone. One that could not be sent is offered again in the posted batch
 (Try again); a paper chosen is not kept by the browser if the page is reloaded before sending.
+
+## Purchase orders and the 3-way match (أوامر الشراء ومطابقة الاستلام الثلاثية)
+
+A purchase order (`PurchaseOrders`, `PurchaseOrderLines`) is what is ordered from one supplier: its
+**PO number** (`PO-year-sequence`, `PO-2026-0001`, by the year it is ordered in), the supplier, the
+**order date** and the **expected delivery date** (not before it), the **payment terms** (Cash or
+Credit: a delivery is paid so unless its invoice says otherwise; Credit to begin with for a supplier
+that gives days to pay), notes for the supplier, and its lines: each material (bought, never a
+prep item) once, the **ordered quantity** in the material's purchase unit, the **expected unit cost**
+(net, per purchase unit: the latest net price paid, or the cheapest supplier's from the planner, or
+the material's average when it was never bought) and line notes. What each line has **received**
+(`ReceivedPurchaseQty`) is counted from the posted invoices that name the order, never typed.
+
+**Its life** (الحالة):
+
+| Status | What it means | How it gets there |
+| --- | --- | --- |
+| Draft (مسودة) | Being written; changed freely | Written by hand, or from the planner by anyone who may not approve |
+| Approved / Open (معتمد / مفتوح) | Ready to send, open for deliveries | Approved by a manager: at once for a manager, or a manager approving the request (Approvals, module Purchase order) |
+| Partially received (استلام جزئي) | Part has come, the rest is a backorder | A delivery short of the order, kept open |
+| Completed (مكتمل) | Nothing more is expected | Every line received in full, or closed with what came (by the invoice that closed it, or by a manager by hand) |
+| Cancelled (ملغى) | Called off | A draft by whoever writes orders; an approved one with nothing received by a manager |
+
+A draft waiting for approval is locked until a manager decides; rejected, it stays a draft. Once
+anything has come, an order is not cancelled: what is left is closed instead.
+
+**From the order planner**: the approved quantities, a purchase order per supplier, each material
+under who sold it last, or the cheapest supplier when the sheet is grouped so, at that price. The
+**preview** lists each supplier's order (its delivery day, tomorrow to begin with, and its terms
+chosen there) and, apart, the materials no one has sold yet, each given a supplier there or left
+out. Sent, all are written or none (each refusal said by its supplier): approved at once for a
+manager, drafts each asked of a manager for anyone else.
+
+**Purchases → Purchase orders (أوامر الشراء)** (`/costing/purchases/orders`): every order newest
+first, searched by number, supplier or who wrote it, with status pills (All, Draft, Approved / Open,
+Partially received, Completed, Cancelled, each with its count), a supplier filter, the received %
+and what is left to come (each with its (ⓘ)), and a late mark on an open order past its expected
+day. **New purchase order** writes one in the same grid as New invoice (Enter moves along a line and
+adds the next). An order's page (`/costing/purchases/orders/{id}`) shows its lines (ordered, received,
+left to come, expected price, line total), who wrote and approved it, and:
+
+- **Print PO · طباعة أمر الشراء**: the company's logo and name, the PO number and date, the supplier
+  (and phone), the expected delivery, the payment terms and the items with their quantities (what
+  is left of a part-delivered order), never what they are expected to cost the kitchen.
+- **Copy for WhatsApp · نسخ لإرسال واتساب**: the same as a message in Arabic and English, ready to paste.
+- **Receive & match invoice · استلام ومطابقة فاتورة** (open orders): New invoice with the order chosen.
+- **Close with what came** (a manager's, partly received) and **Cancel**.
+- **Deliveries & invoices history (سجل التوريدات والفواتير)**: every invoice posted against it (and
+  any voided since, struck out, or waiting for a manager), each opening the invoice and its paper.
+
+**Receiving against an order**: on **New invoice** (the Purchase order field, or `?po=`), on each
+invoice of a **Daily batch**, and from an invoice handed in at the **end of the day** that names
+its order (its purchase order field, offered from the supplier's open orders). The order's open
+lines come onto the invoice at what is left of each and at the expected price, to be typed over as
+the paper and the door say; the supplier is the order's (another supplier's invoice is refused).
+The **3-way match** (المطابقة الثلاثية) sets the order (what was ordered, at what price), the goods
+received (the quantity on the invoice) and the supplier's invoice (what each line is billed) side by
+side, worked out as it is typed and again by the server (`ThreeWayMatch`) as it is posted:
+
+```
+Received (purchase units) = the line's quantity in the material's own unit ÷ its purchase unit size
+Net unit price            = (line total − line discount − its share of the invoice discount) ÷ received
+Left to come              = ordered − what earlier posted invoices brought
+Price overcharge          = net unit price > expected unit cost × (1 + 0.5%), and at least a piastre more
+                            Overcharge = (net unit price − expected) × received
+Qty over                  = received > left to come      (an item not on the order: all of it)
+Partial / short           = received < left to come
+Matched                   = none of these
+```
+
+Each row shows the material and its purchase unit, ordered / left to come, the received quantity,
+line total and line discount (typed there or on the invoice's own lines), the expected price, the
+net unit price, and its badge: **Matched · مطابق** (green), **Price overcharge · زيادة سعر** (red, with
+the jump per unit and the overcharge), **Qty over · كمية زائدة** (red, with the excess), **Partial / short
+· استلام جزئي** (amber), **Not ordered · غير مطلوب**. Expense lines (a delivery charge) are not matched.
+
+- **Short**: **Keep remaining balance open (Backorder) · إبقاء المتبقي كأمر شراء مفتوح** (the order
+  Partially received, Remaining = ordered − received) or **Close PO with received qty · إغلاق أمر
+  الشراء بالكمية المستلمة** (`ClosesPurchaseOrder`: the order Completed once the invoice is posted).
+- **Over the order's price or quantity, anyone but a manager** does not post: the invoice is kept as
+  a draft, its stock out and the average costs as they were, and a request goes to Approvals
+  (module Purchases, New) saying the order, each price jump (expected against billed, each and in
+  all) and each excess (left to come against what came), and the invoice's total. Approved, it is
+  posted as it was entered: its stock in at its own prices, its payment settled, and it counts on
+  the order. Rejected, it stays a draft to be put right. A manager's posts at once, the panel saying
+  what is over. A short delivery alone never waits.
+
+**What is received is counted from the invoices**: after any invoice against an order is posted or
+voided (or corrected: a correction keeps its order), each line's received quantity is counted again
+from the posted ones; voiding the invoice that closed an order opens it again. The invoice names
+its order (`PurchaseInvoices.PurchaseOrderId`), shown on the invoice with a link; an invoice handed in
+at the end of the day carries its order to the batch (`EndOfDayInvoices.PurchaseOrderId`). Migration
+`AddPurchaseOrders`.
+
+The API, on `/api/inventory/purchase-orders` (Purchases; the list for the planner and the end of the
+day too): `GET` (`?status=&open=&supplierId=`), `GET open` (in full, for receiving), `GET {id}`,
+`PUT {id}` (a draft), `POST {id}/approve` (200 approved, 202 asked), `POST {id}/cancel`,
+`POST {id}/close` (a manager's), `POST batch`. An invoice is received against an order with
+`purchaseOrderId` and `closesPurchaseOrder` on `PUT purchase-invoices/{id}` (or a daily batch's
+invoice); its DTO carries `purchaseOrder` (the match, on a draft) and `awaitingApproval`.
 
 ## Suppliers: payment terms, aging and the statement of account
 

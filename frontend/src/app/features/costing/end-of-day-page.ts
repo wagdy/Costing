@@ -10,7 +10,8 @@ import { MatInputModule } from '@angular/material/input';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { ActivatedRoute, RouterLink } from '@angular/router';
 import { firstValueFrom } from 'rxjs';
-import { CostingApi, DiscountReason } from '../../core/costing/costing.api';
+import { CostingApi, DiscountReason, PurchaseOrderSummary } from '../../core/costing/costing.api';
+import { MatSelectModule } from '@angular/material/select';
 import { CostingAccess } from '../../core/costing/costing-tabs';
 import {
   EndOfDay,
@@ -88,7 +89,10 @@ const payoutSectionLabels: Record<
 // so it is never added twice; then the form is empty for the next.
 @Component({
   selector: 'app-eod-invoice-form',
-  imports: [FormsModule, ItemPicker, MatButtonModule, MatButtonToggleModule, MatFormFieldModule, MatIconModule, MatInputModule, MatProgressBarModule, PhotoThumb],
+  imports: [
+    FormsModule, ItemPicker, MatButtonModule, MatButtonToggleModule, MatFormFieldModule, MatIconModule, MatInputModule, MatProgressBarModule, MatSelectModule,
+    PhotoThumb,
+  ],
   template: `
     <div class="form" [class.editing]="!!invoice()">
       <div class="photo">
@@ -124,6 +128,17 @@ const payoutSectionLabels: Record<
             data-western-digits [attr.aria-label]="label() + ', total'" />
           <span matTextSuffix>&nbsp;{{ company.currency() }}</span>
         </mat-form-field>
+        @if (ordersOf().length || orderId()) {
+          <mat-form-field subscriptSizing="dynamic">
+            <mat-label>Purchase order (optional) · أمر الشراء</mat-label>
+            <mat-select [ngModel]="orderId()" (ngModelChange)="orderId.set($event); touch()" [attr.aria-label]="label() + ', purchase order'">
+              <mat-option [value]="null">None · بدون</mat-option>
+              @for (o of ordersOf(); track o.id) {
+                <mat-option [value]="o.id">{{ o.poNumber }}</mat-option>
+              }
+            </mat-select>
+          </mat-form-field>
+        }
         <mat-form-field subscriptSizing="dynamic">
           <mat-label>Note (optional) · ملاحظة</mat-label>
           <input matInput [(ngModel)]="note" (ngModelChange)="touch()" maxlength="200" [attr.aria-label]="label() + ', note'" />
@@ -219,6 +234,8 @@ export class EodInvoiceForm {
   readonly date = input.required<string>();
   readonly section = input.required<EndOfDayInvoiceKind>();
   readonly suppliers = input.required<readonly PickItem[]>();
+  // The purchase orders open for a delivery: the chosen supplier's are offered.
+  readonly orders = input<readonly PurchaseOrderSummary[]>([]);
   // The invoice being changed; none for a new one.
   readonly invoice = input<EndOfDayInvoice | null>(null);
   readonly saved = output<EndOfDay>();
@@ -229,6 +246,9 @@ export class EodInvoiceForm {
   protected readonly kind = signal<EndOfDayInvoiceKind>('Cash');
   protected readonly file = signal<File | null>(null);
   protected readonly supplierId = signal<string | null>(null);
+  // The purchase order it delivers, for the batch to receive it against.
+  protected readonly orderId = signal<string | null>(null);
+  protected readonly ordersOf = computed(() => this.orders().filter((o) => o.supplierId === this.supplierId()));
   protected total: number | null = null;
   protected note = '';
   protected readonly saving = signal(false);
@@ -260,6 +280,7 @@ export class EodInvoiceForm {
         const invoice = this.invoice();
         this.kind.set(invoice?.kind ?? section);
         this.supplierId.set(invoice?.supplierId ?? null);
+        this.orderId.set(invoice?.purchaseOrderId ?? null);
         this.total = invoice?.reportedTotal ?? null;
         this.note = invoice?.note ?? '';
         this.file.set(null);
@@ -299,6 +320,7 @@ export class EodInvoiceForm {
   protected clear(): void {
     this.file.set(null);
     this.supplierId.set(null);
+    this.orderId.set(null);
     this.total = null;
     this.note = '';
     this.touch();
@@ -320,7 +342,11 @@ export class EodInvoiceForm {
     }
     this.saving.set(true);
     this.problem.set(null);
-    const entry = { kind: this.kind(), supplierId: this.supplierId()!, reportedTotal: round(total), note: this.note.trim() || null };
+    // Another supplier's order is not this invoice's.
+    const orderId = this.ordersOf().some((o) => o.id === this.orderId()) ? this.orderId() : null;
+    const entry = {
+      kind: this.kind(), supplierId: this.supplierId()!, reportedTotal: round(total), note: this.note.trim() || null, ...(orderId ? { purchaseOrderId: orderId } : {}),
+    };
     try {
       let day: EndOfDay;
       if (!invoice) {
@@ -604,7 +630,7 @@ export class EndOfDaySummaryDialog {
           <div class="invoices">
             @for (inv of invoicesOf(kind); track inv.id; let i = $index) {
               @if (editing() === inv.id && !locked()) {
-                <app-eod-invoice-form [date]="date()" [section]="kind" [suppliers]="suppliers()" [invoice]="inv" (saved)="saved($event)"
+                <app-eod-invoice-form [date]="date()" [section]="kind" [suppliers]="suppliers()" [orders]="openOrders()" [invoice]="inv" (saved)="saved($event)"
                   (cancelled)="editing.set(null)" />
               } @else {
                 <article class="invoice" [attr.aria-label]="sections[kind].en + ' ' + (i + 1)">
@@ -638,7 +664,7 @@ export class EndOfDaySummaryDialog {
             }
           </div>
           @if (!locked()) {
-            <app-eod-invoice-form [date]="date()" [section]="kind" [suppliers]="suppliers()" (saved)="saved($event)" (pendingChange)="pendingIn(kind, $event)" />
+            <app-eod-invoice-form [date]="date()" [section]="kind" [suppliers]="suppliers()" [orders]="openOrders()" (saved)="saved($event)" (pendingChange)="pendingIn(kind, $event)" />
           }
           <footer class="counter" aria-live="polite">
             <span>{{ sections[kind].count.en }} <span class="inline-ar">{{ sections[kind].count.ar }}</span>: <strong>{{ countOf(kind) }}</strong></span>
@@ -1222,6 +1248,8 @@ export class EndOfDayPage {
   protected readonly error = signal<string | null>(null);
   protected readonly busy = signal(false);
   protected readonly suppliers = signal<PickItem[]>([]);
+  // The purchase orders open for a delivery, for an invoice handed in to name the one it delivers.
+  protected readonly openOrders = signal<PurchaseOrderSummary[]>([]);
   // The staff, those who left too (the day's advances name them); the form offers those still here.
   protected readonly employees = signal<Employee[]>([]);
   // The staff come from HR while it is linked: chosen from HR's, none added here.
@@ -1525,6 +1553,11 @@ export class EndOfDayPage {
       );
     } catch (error) {
       this.error.set(errorMessage(error, 'The suppliers could not be loaded.'));
+    }
+    try {
+      this.openOrders.set(await firstValueFrom(this.costing.purchaseOrders({ open: true })));
+    } catch {
+      // Not offered: invoices are handed in without an order.
     }
     try {
       const [staff, hr] = await Promise.all([

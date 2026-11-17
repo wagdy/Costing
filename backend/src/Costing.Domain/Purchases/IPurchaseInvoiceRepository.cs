@@ -17,6 +17,12 @@ public interface IPurchaseInvoiceRepository : IRepository<PurchaseInvoice>
 
     Task<bool> AnyForExpenseItemAsync(Guid expenseItemId, CancellationToken cancellationToken = default);
 
+    // The invoices that name a purchase order, drafts, posted and voided, with their lines.
+    Task<IReadOnlyList<PurchaseInvoice>> GetForOrderAsync(Guid purchaseOrderId, CancellationToken cancellationToken = default);
+
+    // For each purchase order, how many posted invoices delivered it.
+    Task<IReadOnlyDictionary<Guid, int>> GetDeliveriesByOrderAsync(CancellationToken cancellationToken = default);
+
     // Only a draft is ever removed. A posted invoice is the record of what came in.
     void Remove(PurchaseInvoice draft);
 }

@@ -175,6 +175,17 @@ public sealed record OrderSheetRow(string Group, string? Code, string Material, 
 
 public sealed record OrderSheet(OrderSheetGrouping GroupBy, int? CoverageDays, DateOnly Today, IReadOnlyList<OrderSheetRow> Rows, decimal Total);
 
+// The approved order as purchase orders (أوامر شراء), a supplier each: who sold each material last, or
+// who sold it cheapest in the last 180 days (CheapestSupplier), at that price per purchase unit, or
+// its average when nothing was bought yet (PriceKnown false). Materials no one has sold yet are under
+// none (SupplierId null), for a supplier to be chosen. PaymentTermsDays: the supplier's, to suggest
+// cash or credit.
+public sealed record PlannedOrderLine(Guid RawMaterialId, string? Code, string Material, string PurchaseUnit, decimal Quantity, decimal UnitPrice, decimal Cost, bool PriceKnown);
+
+public sealed record PlannedOrder(Guid? SupplierId, string? Supplier, int PaymentTermsDays, IReadOnlyList<PlannedOrderLine> Lines, decimal Total);
+
+public sealed record PurchaseOrderPlan(OrderSheetGrouping GroupBy, DateOnly Today, IReadOnlyList<PlannedOrder> Orders, decimal Total);
+
 // ---- Theoretical against actual consumption ----
 
 // One bought material over the period. Actual usage: opening + purchases − logged waste − staff
@@ -615,6 +626,48 @@ public sealed class IntelligenceService(CostingDbContext db, IBusinessCalendar c
             .OrderBy(r => r.Group).ThenBy(r => r.Material)
             .ToList();
         return new OrderSheet(request.GroupBy, request.CoverageDays, Today, rows, Money(rows.Sum(r => r.Cost ?? 0)));
+    }
+
+    // The approved order as a purchase order per supplier (PurchaseOrderPlan), to be written in one go.
+    public async Task<PurchaseOrderPlan> PurchaseOrderPlanAsync(OrderSheetRequest request, CancellationToken cancellationToken)
+    {
+        if (request.Lines.Any(l => l.Quantity < 0))
+            throw new DomainException("Order zero or more of each. · الكمية صفر أو أكثر.");
+        var ids = request.Lines.Where(l => l.Quantity > 0).Select(l => l.RawMaterialId).Distinct().ToList();
+        if (ids.Count == 0)
+            throw new DomainException("Approve something to order first. · اعتمد كمية لصنف واحد على الأقل.");
+        // Bought ones only: a prep item is made, never ordered.
+        var materials = (await db.RawMaterials.AsNoTracking().Where(m => ids.Contains(m.Id)).ToListAsync(cancellationToken))
+            .Where(m => !m.IsPrepItem).ToDictionary(m => m.Id);
+        var suppliers = await db.Suppliers.AsNoTracking().Where(s => !s.IsArchived).ToDictionaryAsync(s => s.Id, cancellationToken);
+        var prices = await LatestPricesAsync(cancellationToken);
+        var cheapest = request.GroupBy == OrderSheetGrouping.CheapestSupplier
+            ? await CheapestPricesAsync(Today.AddDays(-CheapestLookbackDays), Today, cancellationToken)
+            : new Dictionary<Guid, Bought>();
+
+        var lines = request.Lines.Where(l => l.Quantity > 0 && materials.ContainsKey(l.RawMaterialId))
+            .GroupBy(l => l.RawMaterialId)
+            .Select(g =>
+            {
+                var material = materials[g.Key];
+                var last = (request.GroupBy == OrderSheetGrouping.CheapestSupplier ? cheapest.GetValueOrDefault(material.Id) : null)
+                    ?? prices.GetValueOrDefault(material.Id);
+                var known = last?.UnitCost is not null;
+                var price = Money(last?.UnitCost * material.PurchaseUnitSize ?? material.CostPerPurchaseUnit ?? 0);
+                var quantity = g.Sum(l => l.Quantity);
+                // A supplier archived since is no one to order from: chosen again.
+                var supplier = last?.SupplierId is { } s && suppliers.ContainsKey(s) ? s : (Guid?)null;
+                return (Supplier: supplier, Line: new PlannedOrderLine(
+                    material.Id, material.Code, material.Name, material.PurchaseUnit, quantity, price, Money(quantity * price), known));
+            })
+            .ToList();
+        var orders = lines.GroupBy(l => l.Supplier)
+            .Select(g => new PlannedOrder(
+                g.Key, g.Key is { } id ? suppliers[id].Name : null, g.Key is { } terms ? suppliers[terms].PaymentTermsDays : 0,
+                g.Select(x => x.Line).OrderBy(l => l.Material).ToList(), Money(g.Sum(x => x.Line.Cost))))
+            .OrderBy(o => o.SupplierId is null).ThenBy(o => o.Supplier)
+            .ToList();
+        return new PurchaseOrderPlan(request.GroupBy, Today, orders, Money(orders.Sum(o => o.Total)));
     }
 
     // ---- Theoretical against actual consumption ----

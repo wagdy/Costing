@@ -160,7 +160,7 @@ public sealed class InventoryController(ISender sender) : ControllerBase
     public Task<PurchaseInvoiceDto> SavePurchaseInvoice(Guid invoiceId, SavePurchaseInvoiceRequest request, CancellationToken cancellationToken) =>
         sender.Send(new SavePurchaseInvoiceCommand(
             invoiceId, request.SupplierId, request.SupplierInvoiceNumber, request.InvoiceDate, request.Lines, StaffName,
-            request.PaymentMethod, request.RevenueDate, request.Discount), cancellationToken);
+            request.PaymentMethod, request.RevenueDate, request.Discount, request.PurchaseOrderId, request.ClosesPurchaseOrder), cancellationToken);
 
     // Step two, after the review: the stock goes in, and it is paid as chosen: on credit, owed to
     // the supplier; in cash, paid for a manager and waiting for one's approval for anyone else
@@ -761,7 +761,7 @@ public sealed class InventoryController(ISender sender) : ControllerBase
     [CostingTab(CostingTabs.All)]
     [Authorize(Policy = Permissions.ApprovalDecide)]
     public Task<ApprovalRequestDto> ApproveRequest(Guid requestId, CancellationToken cancellationToken) =>
-        sender.Send(new ApproveRequestCommand(requestId, StaffName), cancellationToken);
+        sender.Send(new ApproveRequestCommand(requestId, StaffName, StaffId), cancellationToken);
 
     [HttpPost("approval-requests/{requestId:guid}/reject")]
     [CostingTab(CostingTabs.All)]
@@ -824,7 +824,10 @@ public sealed record SavePurchaseInvoiceRequest(
     IReadOnlyList<PurchaseInvoiceLineEntry> Lines,
     PurchasePaymentMethod? PaymentMethod = null,
     DateOnly? RevenueDate = null,
-    decimal Discount = 0);
+    decimal Discount = 0,
+    // The purchase order it delivers, and whether it closes it with what came.
+    Guid? PurchaseOrderId = null,
+    bool ClosesPurchaseOrder = false);
 
 public sealed record PayPurchaseInvoiceRequest(Guid RequestId, PurchasePaymentMethod Method, DateOnly? RevenueDate = null);
 

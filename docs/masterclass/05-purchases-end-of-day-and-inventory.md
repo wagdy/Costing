@@ -46,7 +46,7 @@
 
 `PurchaseInvoices.cs`: `InvoiceRecorder` (حفظ المسودة: التحقق من البنود، الوحدات، المورد، الخصم)، و `InvoicePoster` (الترحيل: يُدخل المخزون بحركات `Purchase` ويحرك المتوسط، ويسجل الدفع: نقدي من الخزنة، أو من إيراد يوم، أو آجل على المورد)، والقراءة. المعرّف يصنعه "الـ till" (المتصفح).
 
-> 📄 **`backend/src/Costing.Application/Purchases/PurchaseInvoices.cs`** — 440 سطر
+> 📄 **`backend/src/Costing.Application/Purchases/PurchaseInvoices.cs`** — 516 سطر
 
 ```csharp
 using MediatR;
@@ -123,16 +123,22 @@ public sealed record PurchaseInvoiceDto(
     // (LineDiscounts) and the invoice's (Discount).
     decimal Subtotal = 0,
     decimal LineDiscounts = 0,
-    decimal Discount = 0);
+    decimal Discount = 0,
+    // The purchase order it delivers: a draft's set against it item by item (the 3-way match), a
+    // posted one's named. AwaitingApproval: its posting waits for a manager to sign off what is over the order.
+    PurchaseOrderMatchDto? PurchaseOrder = null,
+    bool AwaitingApproval = false);
 
-// What an invoice's lines are named and filed under, read together for a DTO.
+// What an invoice's lines are named and filed under, read together for a DTO; with Receiver, the
+// purchase order it delivers too.
 internal sealed record InvoiceReading(
     IRawMaterialRepository Materials,
     IExpenseItemRepository Expenses,
     IPurchaseCategoryRepository Categories,
     ISupplierRepository Suppliers,
     ISafeTransactionRepository Safe,
-    IApprovalRequestRepository Requests)
+    IApprovalRequestRepository Requests,
+    PurchaseOrderReceiver? Receiver = null)
 {
     public async Task<PurchaseInvoiceDto> DtoAsync(PurchaseInvoice invoice, CancellationToken cancellationToken)
     {
@@ -148,9 +154,28 @@ internal sealed record InvoiceReading(
             ? new Dictionary<Guid, PurchaseCategory>()
             : (await Categories.GetAllAsync(cancellationToken)).ToDictionary(c => c.Id);
         var supplier = invoice.SupplierId is { } id ? await Suppliers.GetByIdAsync(id, cancellationToken) : null;
+        var awaiting = invoice.Status == PurchaseInvoiceStatus.Draft
+            && await Requests.GetPendingForAsync(invoice.Id, cancellationToken) is { Module: ApprovalModule.PurchaseInvoice, Action: ApprovalAction.Create };
+        PurchaseOrderMatchDto? order = null;
+        if (Receiver is not null && invoice.PurchaseOrderId is not null)
+        {
+            try
+            {
+                if (await Receiver.OrderOfAsync(invoice, cancellationToken) is { } po)
+                    order = await Receiver.MatchDtoAsync(
+                        po, invoice, invoice.Status == PurchaseInvoiceStatus.Draft ? await Receiver.MatchAsync(po, invoice, cancellationToken) : null,
+                        cancellationToken);
+            }
+            catch (Exception error) when (error is DomainException or NotFoundException)
+            {
+                // Its supplier changed since: shown without the order, which posting refuses.
+            }
+        }
         return Dto(invoice, materials, expenses, categories, supplier) with
         {
             PaymentStatus = await InvoicePayments.StatusAsync(invoice, Safe, Requests, cancellationToken),
+            PurchaseOrder = order,
+            AwaitingApproval = awaiting,
         };
     }
 
@@ -222,7 +247,8 @@ public sealed record PurchaseInvoiceSummaryDto(
     string? VoidedBy = null,
     PurchasePaymentMethod? PaymentMethod = null,
     DateOnly? RevenueDate = null,
-    InvoicePaymentStatus PaymentStatus = InvoicePaymentStatus.NotPosted);
+    InvoicePaymentStatus PaymentStatus = InvoicePaymentStatus.NotPosted,
+    Guid? PurchaseOrderId = null);
 
 // Posted invoices newest first, or the drafts.
 public sealed record GetPurchaseInvoicesQuery(PurchaseInvoiceStatus Status) : IRequest<IReadOnlyList<PurchaseInvoiceSummaryDto>>;
@@ -244,7 +270,7 @@ internal sealed class GetPurchaseInvoicesQueryHandler(
                 i.Id, i.Status, i.SupplierId, i.SupplierId is { } id ? names.GetValueOrDefault(id) : null,
                 i.SupplierInvoiceNumber, i.InvoiceDate, i.CreatedAtUtc, i.CreatedBy,
                 i.PostedAtUtc, i.PostedBy, i.Total, i.Lines.Count, i.AttachmentFileName, i.InventoryTotal, i.ExpenseTotal, i.VoidedAtUtc, i.VoidedBy,
-                i.PaymentMethod, i.RevenueDate, InvoicePayments.StatusOf(i, paid.Contains(i.Id), pending.Contains(i.Id))))
+                i.PaymentMethod, i.RevenueDate, InvoicePayments.StatusOf(i, paid.Contains(i.Id), pending.Contains(i.Id)), i.PurchaseOrderId))
             .ToList();
     }
 }
@@ -258,11 +284,12 @@ internal sealed class GetPurchaseInvoiceQueryHandler(
     IPurchaseCategoryRepository categories,
     ISupplierRepository suppliers,
     ISafeTransactionRepository safe,
-    IApprovalRequestRepository requests) : IRequestHandler<GetPurchaseInvoiceQuery, PurchaseInvoiceDto?>
+    IApprovalRequestRepository requests,
+    PurchaseOrderReceiver receiver) : IRequestHandler<GetPurchaseInvoiceQuery, PurchaseInvoiceDto?>
 {
     public async Task<PurchaseInvoiceDto?> Handle(GetPurchaseInvoiceQuery request, CancellationToken cancellationToken) =>
         await invoices.GetByIdAsync(request.InvoiceId, cancellationToken) is { } invoice
-            ? await new InvoiceReading(materials, expenses, categories, suppliers, safe, requests).DtoAsync(invoice, cancellationToken)
+            ? await new InvoiceReading(materials, expenses, categories, suppliers, safe, requests, receiver).DtoAsync(invoice, cancellationToken)
             : null;
 }
 
@@ -277,7 +304,10 @@ public sealed record SavePurchaseInvoiceCommand(
     string StaffName = "",
     PurchasePaymentMethod? PaymentMethod = null,
     DateOnly? RevenueDate = null,
-    decimal Discount = 0) : IRequest<PurchaseInvoiceDto>;
+    decimal Discount = 0,
+    // The purchase order it delivers, and whether it closes it with what came (no backorder).
+    Guid? PurchaseOrderId = null,
+    bool ClosesPurchaseOrder = false) : IRequest<PurchaseInvoiceDto>;
 
 // The checks and the recording of an invoice as entered, for a draft saved on its own and for each
 // invoice of a daily batch alike. Tracked, for the caller to save.
@@ -353,6 +383,9 @@ internal sealed class InvoiceRecorder(
         invoice.Record(
             request.SupplierId, request.SupplierInvoiceNumber, request.InvoiceDate, request.Lines, request.PaymentMethod, request.RevenueDate,
             request.Discount);
+        // A correction keeps the order of the invoice it corrects.
+        if (invoice.RevisionOf is null)
+            invoice.Delivers(request.PurchaseOrderId, request.ClosesPurchaseOrder);
     }
 }
 
@@ -364,13 +397,18 @@ internal sealed class SavePurchaseInvoiceCommandHandler(
     ISupplierRepository suppliers,
     ISafeTransactionRepository safe,
     IApprovalRequestRepository requests,
+    PurchaseOrderReceiver receiver,
     IUnitOfWork unitOfWork) : IRequestHandler<SavePurchaseInvoiceCommand, PurchaseInvoiceDto>
 {
     public async Task<PurchaseInvoiceDto> Handle(SavePurchaseInvoiceCommand request, CancellationToken cancellationToken)
     {
+        // Waiting for a manager to sign off what is over its order: kept as it was asked about.
+        await requests.EnsureNotPendingAsync(request.InvoiceId, cancellationToken);
         var invoice = await recorder.RecordAsync(request, cancellationToken);
+        if (await receiver.OrderOfAsync(invoice, cancellationToken) is { } order)
+            PurchaseOrderReceiver.EnsureReceivable(order, invoice);
         await unitOfWork.SaveChangesAsync(cancellationToken);
-        return await new InvoiceReading(materials, expenses, categories, suppliers, safe, requests).DtoAsync(invoice, cancellationToken);
+        return await new InvoiceReading(materials, expenses, categories, suppliers, safe, requests, receiver).DtoAsync(invoice, cancellationToken);
     }
 }
 
@@ -387,10 +425,15 @@ internal sealed class InvoicePoster(
     IRawMaterialRepository materials,
     IStockMovementRepository movements,
     IApprovalRequestRepository requests,
-    TreasuryWriter treasury)
+    TreasuryWriter treasury,
+    PurchaseOrderReceiver receiver)
 {
+    // Posted: its stock in, its payment settled, and what it brought counted on its purchase order.
     public async Task PostAsync(PurchaseInvoice invoice, string staffName, string staffId, bool canApprove, CancellationToken cancellationToken)
     {
+        var order = await receiver.OrderOfAsync(invoice, cancellationToken);
+        if (order is not null)
+            PurchaseOrderReceiver.EnsureReceivable(order, invoice);
         var materialIds = invoice.Lines.Where(l => l.RawMaterialId is not null).Select(l => l.RawMaterialId!.Value).ToList();
         IReadOnlyDictionary<Guid, RawMaterial> byId = materialIds.Count == 0
             ? new Dictionary<Guid, RawMaterial>()
@@ -398,6 +441,36 @@ internal sealed class InvoicePoster(
         foreach (var movement in invoice.Post(byId, staffName))
             movements.Add(movement);
         await treasury.SettleAsync(invoice, Guid.NewGuid(), staffId, staffName, canApprove, requests, cancellationToken);
+        if (order is not null)
+            await receiver.PostedAsync(invoice, order, staffName, cancellationToken);
+    }
+
+    // Posted now; or, for anyone who may not approve, an invoice against a purchase order billed
+    // above its prices or bringing more than was left to come (ThreeWayMatch) is asked of a manager
+    // instead: it stays a draft, its stock out and the average costs as they were, until a manager
+    // signs the differences off. Returns the request when it was asked.
+    public async Task<ApprovalRequest?> PostOrAskAsync(PurchaseInvoice invoice, string staffName, string staffId, bool canApprove, CancellationToken cancellationToken)
+    {
+        if (await requests.GetPendingForAsync(invoice.Id, cancellationToken) is { Module: ApprovalModule.PurchaseInvoice, Action: ApprovalAction.Create } waiting)
+            return waiting;
+        if (!canApprove && await receiver.OrderOfAsync(invoice, cancellationToken) is { } order)
+        {
+            invoice.EnsurePostable();
+            PurchaseOrderReceiver.EnsureReceivable(order, invoice);
+            var match = await receiver.MatchAsync(order, invoice, cancellationToken);
+            if (match.NeedsApproval)
+            {
+                await requests.EnsureNotPendingAsync(invoice.Id, cancellationToken);
+                var (summary, changes) = await receiver.DescribeAsync(order, invoice, match, cancellationToken);
+                var asked = ApprovalRequest.AskToChange(
+                    Guid.NewGuid(), ApprovalModule.PurchaseInvoice, ApprovalAction.Create, invoice.Id, summary, changes,
+                    ApprovalPayload.Write(new PostAgainstOrder(invoice.Id, order.Id)), null, staffId, staffName);
+                requests.Add(asked);
+                return asked;
+            }
+        }
+        await PostAsync(invoice, staffName, staffId, canApprove, cancellationToken);
+        return null;
     }
 }
 
@@ -410,16 +483,18 @@ internal sealed class PostPurchaseInvoiceCommandHandler(
     ISafeTransactionRepository safe,
     IApprovalRequestRepository requests,
     InvoicePoster poster,
+    PurchaseOrderReceiver receiver,
     IUnitOfWork unitOfWork) : IRequestHandler<PostPurchaseInvoiceCommand, PurchaseInvoiceDto>
 {
     public async Task<PurchaseInvoiceDto> Handle(PostPurchaseInvoiceCommand request, CancellationToken cancellationToken)
     {
-        var reading = new InvoiceReading(materials, expenses, categories, suppliers, safe, requests);
+        var reading = new InvoiceReading(materials, expenses, categories, suppliers, safe, requests, receiver);
         var invoice = await invoices.GetRequiredAsync(request.InvoiceId, cancellationToken);
         if (invoice.Status == PurchaseInvoiceStatus.Posted)
             return await reading.DtoAsync(invoice, cancellationToken);
 
-        await poster.PostAsync(invoice, request.StaffName, request.StaffId, request.CanApprove, cancellationToken);
+        // Over its purchase order, anyone else's waits for a manager: AwaitingApproval says so.
+        await poster.PostOrAskAsync(invoice, request.StaffName, request.StaffId, request.CanApprove, cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
         return await reading.DtoAsync(invoice, cancellationToken);
     }
@@ -427,7 +502,7 @@ internal sealed class PostPurchaseInvoiceCommandHandler(
 
 public sealed record DiscardPurchaseInvoiceCommand(Guid InvoiceId) : IRequest;
 
-internal sealed class DiscardPurchaseInvoiceCommandHandler(IPurchaseInvoiceRepository invoices, IUnitOfWork unitOfWork)
+internal sealed class DiscardPurchaseInvoiceCommandHandler(IPurchaseInvoiceRepository invoices, IApprovalRequestRepository requests, IUnitOfWork unitOfWork)
     : IRequestHandler<DiscardPurchaseInvoiceCommand>
 {
     public async Task Handle(DiscardPurchaseInvoiceCommand request, CancellationToken cancellationToken)
@@ -437,6 +512,7 @@ internal sealed class DiscardPurchaseInvoiceCommandHandler(IPurchaseInvoiceRepos
             return;
         if (invoice.Status == PurchaseInvoiceStatus.Posted)
             throw new DomainException("A posted invoice stays: it is the record of what came in.");
+        await requests.EnsureNotPendingAsync(invoice.Id, cancellationToken);
 
         invoices.Remove(invoice);
         await unitOfWork.SaveChangesAsync(cancellationToken);
@@ -751,7 +827,7 @@ internal sealed class InvoiceCorrector(
 - صورة الورقة تُرفع بعد الترحيل (لا تُحفظ في `localStorage`)،
 - وسلف الموظفين من نفس الشاشة.
 
-> 📄 **`backend/src/Costing.Application/Purchases/PurchaseBatch.cs`** — 294 سطر
+> 📄 **`backend/src/Costing.Application/Purchases/PurchaseBatch.cs`** — 302 سطر
 
 ```csharp
 using System.Globalization;
@@ -801,7 +877,10 @@ public sealed record BatchInvoice(
     IReadOnlyList<PurchaseInvoiceLineEntry> Lines,
     decimal Discount = 0,
     bool OnCredit = false,
-    Guid? EndOfDayInvoiceId = null);
+    Guid? EndOfDayInvoiceId = null,
+    // The purchase order it delivers, and whether it closes it with what came (no backorder).
+    Guid? PurchaseOrderId = null,
+    bool ClosesPurchaseOrder = false);
 
 public sealed record BatchPayment(Guid TransactionId, Guid SupplierId, decimal Amount, string? Notes = null);
 
@@ -841,6 +920,7 @@ internal sealed class PostPurchaseBatchHandler(
     IEndOfDayRepository endOfDays,
     IEndOfDayPhotoStore endOfDayPhotos,
     IPurchaseAttachmentStore attachments,
+    PurchaseOrderReceiver receiver,
     IUnitOfWork unitOfWork) : IRequestHandler<PostPurchaseBatchCommand, PurchaseBatchResult>
 {
     public const int MaxInvoices = 50;
@@ -883,10 +963,12 @@ internal sealed class PostPurchaseBatchHandler(
             var entry = request.Invoices[i];
             try
             {
-                // Sent again after an answer was lost: posted already, it is not posted twice.
-                if (await invoices.GetByIdAsync(entry.InvoiceId, cancellationToken) is { Status: PurchaseInvoiceStatus.Posted } posted)
+                // Sent again after an answer was lost: posted already, it is not posted twice; or
+                // asked of a manager already, against its purchase order.
+                if (await invoices.GetByIdAsync(entry.InvoiceId, cancellationToken) is { } existing
+                    && (existing.Status == PurchaseInvoiceStatus.Posted || await requests.GetPendingForAsync(existing.Id, cancellationToken) is not null))
                 {
-                    made.Add(posted);
+                    made.Add(existing);
                     continue;
                 }
 
@@ -897,9 +979,11 @@ internal sealed class PostPurchaseBatchHandler(
                 var invoice = await recorder.RecordAsync(
                     new SavePurchaseInvoiceCommand(
                         entry.InvoiceId, entry.SupplierId, entry.SupplierInvoiceNumber, request.InvoiceDate, entry.Lines, request.StaffName,
-                        method, method == PurchasePaymentMethod.DayRevenue ? request.RevenueDate : null, entry.Discount),
+                        method, method == PurchasePaymentMethod.DayRevenue ? request.RevenueDate : null, entry.Discount,
+                        entry.PurchaseOrderId ?? day?.Invoice(entry.EndOfDayInvoiceId!.Value).PurchaseOrderId, entry.ClosesPurchaseOrder),
                     cancellationToken);
-                await poster.PostAsync(invoice, request.StaffName, request.StaffId, request.CanApprove, cancellationToken);
+                // Over its purchase order, anyone else's waits for a manager, a draft until then.
+                await poster.PostOrAskAsync(invoice, request.StaffName, request.StaffId, request.CanApprove, cancellationToken);
                 if (day is not null)
                     await PostedFromAsync(day, entry.EndOfDayInvoiceId!.Value, invoice, request.StaffName, cancellationToken);
                 made.Add(invoice);
@@ -1012,7 +1096,7 @@ internal sealed class PostPurchaseBatchHandler(
             throw new DomainException(string.Join("\n", problems));
 
         await unitOfWork.SaveChangesAsync(cancellationToken);
-        var reading = new InvoiceReading(materials, expenses, categories, suppliers, safe, requests);
+        var reading = new InvoiceReading(materials, expenses, categories, suppliers, safe, requests, receiver);
         var dtos = new List<PurchaseInvoiceDto>();
         foreach (var invoice in made)
             dtos.Add(await reading.DtoAsync(invoice, cancellationToken));
@@ -1048,6 +1132,1158 @@ internal sealed class PostPurchaseBatchHandler(
 
     private static string Money(decimal value) => CompanyMoney.Text(value);
 }
+```
+
+
+### 1.4.1 أوامر الشراء والمطابقة الثلاثية (`PurchaseOrder`، `ThreeWayMatch`)
+
+أمر الشراء يمر بـ: مسودة ← معتمد (المدير فورًا، وغيره طلب موافقة `ApprovalModule.PurchaseOrder`) ← استلام جزئي ← مكتمل، أو ملغى قبل أن يصل شيء. **الكمية المستلمة لا تُكتب يدويًا أبدًا**: بعد كل ترحيل أو إلغاء لفاتورة تحمل `PurchaseOrderId` يُعاد عدّها من الفواتير المرحلة (`PurchaseOrderReceiver.RecountAsync`)، فالإلغاء والتعديل يصححان الأمر تلقائيًا، وإلغاء الفاتورة التي أغلقته يعيد فتحه.
+
+```text
+المستلم بوحدة الشراء = كمية البند بوحدة الخامة ÷ حجم وحدة الشراء
+صافي سعر الوحدة      = (إجمالي البند − خصمه − نصيبه من خصم الفاتورة) ÷ المستلم
+زيادة سعر            = صافي السعر > السعر المتوقع × (1 + 0.5%) وبقرش على الأقل
+كمية زائدة           = المستلم > المتبقي (والصنف غير المطلوب كله زائد)
+استلام جزئي          = المستلم < المتبقي
+```
+
+**بوابة الموافقة** في `InvoicePoster.PostOrAskAsync`: لغير المدير، فاتورة على أمر شراء فيها زيادة سعر أو كمية لا تُرحَّل؛ تبقى مسودة (لا مخزون ولا متوسط تكلفة) ويُرسل طلب `PurchaseInvoice/Create` بتفاصيل الفرق، وعند الموافقة تُرحَّل كما أُدخلت بـ `PostAsync`. لماذا البوابة خارج `PostAsync`؟ لأن طريق الموافقة نفسه والتعديلات يرحّلان دون سؤال جديد.
+
+> 📄 **`backend/src/Costing.Domain/Purchases/PurchaseOrder.cs`** — 373 سطر
+
+```csharp
+using Costing.Domain.Common;
+
+namespace Costing.Domain.Purchases;
+
+// Where a purchase order stands.
+public enum PurchaseOrderStatus
+{
+    // Being written: changed freely, nothing ordered yet.
+    Draft = 1,
+
+    // Approved by a manager (أمر شراء معتمد): sent to the supplier, open for deliveries.
+    Approved = 2,
+
+    // Part of it delivered (استلام جزئي): the rest still open, a backorder.
+    PartiallyReceived = 3,
+
+    // All of it delivered, or closed with what came (مكتمل).
+    Completed = 4,
+
+    // Called off before anything came (ملغى).
+    Cancelled = 5,
+}
+
+// How the supplier is to be paid for it: a delivery's invoice is paid so unless it says otherwise.
+public enum PurchaseOrderTerms
+{
+    Cash = 1,
+    Credit = 2,
+}
+
+// One line as it is ordered: how many of the material's purchase unit, at what price each.
+public sealed record PurchaseOrderLineEntry(Guid RawMaterialId, decimal OrderedPurchaseQty, decimal ExpectedUnitCost, string? LineNotes = null);
+
+// A purchase order (أمر شراء): what is ordered from one supplier, at what price, and by when. Written
+// as a draft, approved by a manager, then received against the supplier's invoices (ThreeWayMatch):
+// each posted invoice that names it (PurchaseInvoice.PurchaseOrderId) adds what it brought to each
+// line's received quantity, and a voided one takes it back (Recount). Fully received, it is complete;
+// received in part, the rest stays open as a backorder, or is closed with what came (Close).
+//
+// Its number is PO-year-sequence, the year it is ordered in: PO-2026-0001.
+public sealed class PurchaseOrder : AggregateRoot
+{
+    public const int MaxLines = 100;
+    public const int MaxNotesLength = 500;
+    public const int MaxLineNotesLength = 200;
+
+    // Quantities are kept to the thousandth of a purchase unit, as stock is.
+    private const decimal Unit = 0.0005m;
+
+    private readonly List<PurchaseOrderLine> _lines = [];
+
+    private PurchaseOrder() { }
+
+    public PurchaseOrder(
+        Guid id, int sequence, Guid supplierId, DateOnly orderDate, DateOnly? expectedDeliveryDate, PurchaseOrderTerms paymentTerms, string? notes,
+        IReadOnlyList<PurchaseOrderLineEntry> lines, string createdByUserId, string createdBy)
+    {
+        if (sequence <= 0)
+            throw new DomainException("A purchase order's number is 1 or more.");
+        Id = id;
+        Year = orderDate.Year;
+        Sequence = sequence;
+        PoNumber = NumberOf(Year, sequence);
+        Status = PurchaseOrderStatus.Draft;
+        CreatedByUserId = createdByUserId;
+        CreatedBy = createdBy;
+        CreatedAtUtc = DateTime.UtcNow;
+        Write(supplierId, orderDate, expectedDeliveryDate, paymentTerms, notes, lines);
+    }
+
+    public int Year { get; private set; }
+    public int Sequence { get; private set; }
+    public string PoNumber { get; private set; } = string.Empty;
+
+    public Guid SupplierId { get; private set; }
+    public DateOnly OrderDate { get; private set; }
+    public DateOnly? ExpectedDeliveryDate { get; private set; }
+    public PurchaseOrderTerms PaymentTerms { get; private set; }
+    public string? Notes { get; private set; }
+    public PurchaseOrderStatus Status { get; private set; }
+
+    public string CreatedByUserId { get; private set; } = string.Empty;
+    public string CreatedBy { get; private set; } = string.Empty;
+    public DateTime CreatedAtUtc { get; private set; }
+    public string? ApprovedByUserId { get; private set; }
+    public string? ApprovedBy { get; private set; }
+    public DateTime? ApprovedAtUtc { get; private set; }
+    public DateTime? CancelledAtUtc { get; private set; }
+    public string? CancelledBy { get; private set; }
+
+    // Closed with what was received (إغلاق بالكمية المستلمة): by the invoice that closed it, or by hand.
+    public DateTime? ClosedAtUtc { get; private set; }
+    public string? ClosedBy { get; private set; }
+    public Guid? ClosedByInvoiceId { get; private set; }
+
+    public IReadOnlyList<PurchaseOrderLine> Lines => _lines.OrderBy(l => l.Position).ToList();
+
+    // Open for deliveries: approved, and not complete or cancelled.
+    public bool IsOpen => Status is PurchaseOrderStatus.Approved or PurchaseOrderStatus.PartiallyReceived;
+
+    public decimal ExpectedTotal => Round(_lines.Sum(l => l.LineTotal));
+    public decimal RemainingValue => Round(_lines.Sum(l => l.RemainingQty * l.ExpectedUnitCost));
+
+    public static string NumberOf(int year, int sequence) => $"PO-{year:0000}-{sequence:0000}";
+
+    public PurchaseOrderLine? LineFor(Guid rawMaterialId) => _lines.SingleOrDefault(l => l.RawMaterialId == rawMaterialId);
+
+    // A draft rewritten: its supplier, dates, terms, notes and lines.
+    public void Change(
+        Guid supplierId, DateOnly orderDate, DateOnly? expectedDeliveryDate, PurchaseOrderTerms paymentTerms, string? notes,
+        IReadOnlyList<PurchaseOrderLineEntry> lines)
+    {
+        if (Status != PurchaseOrderStatus.Draft)
+            throw new DomainException($"{PoNumber} is {StatusName(Status)}: only a draft is changed. · لا يُعدل إلا أمر الشراء المسودة.");
+        if (orderDate.Year != Year)
+            throw new DomainException($"{PoNumber} is numbered in {Year}: keep its order date in that year, or write a new one.");
+        Write(supplierId, orderDate, expectedDeliveryDate, paymentTerms, notes, lines);
+    }
+
+    public void Approve(string userId, string by)
+    {
+        if (Status != PurchaseOrderStatus.Draft)
+            throw new DomainException($"{PoNumber} is {StatusName(Status)} already. · أمر الشراء معتمد بالفعل.");
+        Status = PurchaseOrderStatus.Approved;
+        ApprovedByUserId = userId;
+        ApprovedBy = by;
+        ApprovedAtUtc = DateTime.UtcNow;
+    }
+
+    // Called off before anything came; once something has, the rest is closed instead.
+    public void Cancel(string by)
+    {
+        if (Status is not (PurchaseOrderStatus.Draft or PurchaseOrderStatus.Approved))
+            throw new DomainException(Status == PurchaseOrderStatus.PartiallyReceived
+                ? $"Part of {PoNumber} has come: close it with what was received instead. · أغلق أمر الشراء بالكمية المستلمة."
+                : $"{PoNumber} is {StatusName(Status)}: it cannot be cancelled.");
+        if (_lines.Any(l => l.ReceivedPurchaseQty > 0))
+            throw new DomainException($"Part of {PoNumber} has come: close it with what was received instead.");
+        Status = PurchaseOrderStatus.Cancelled;
+        CancelledAtUtc = DateTime.UtcNow;
+        CancelledBy = by;
+    }
+
+    // Closed with what came: the rest is not expected any more. invoiceId: the invoice that closed it
+    // as it was received; none, by hand.
+    public void Close(string by, Guid? invoiceId = null)
+    {
+        if (!IsOpen)
+            throw new DomainException($"{PoNumber} is {StatusName(Status)}: only an open purchase order is closed.");
+        ClosedAtUtc = DateTime.UtcNow;
+        ClosedBy = by;
+        ClosedByInvoiceId = invoiceId;
+        Status = PurchaseOrderStatus.Completed;
+    }
+
+    // What its posted invoices brought, by material in purchase units, counted again after one is
+    // posted or voided. closingInvoiceStands: whether the invoice that closed it is still posted;
+    // voided, the order is open again. Complete once every line has come in full, or closed.
+    public void Recount(IReadOnlyDictionary<Guid, decimal> received, bool closingInvoiceStands = true)
+    {
+        foreach (var line in _lines)
+            line.Received(received.GetValueOrDefault(line.RawMaterialId));
+        if (Status is PurchaseOrderStatus.Draft or PurchaseOrderStatus.Cancelled)
+            return;
+        if (ClosedByInvoiceId is not null && !closingInvoiceStands)
+        {
+            ClosedAtUtc = null;
+            ClosedBy = null;
+            ClosedByInvoiceId = null;
+        }
+        Status = ClosedAtUtc is not null || _lines.All(l => l.RemainingQty <= Unit)
+            ? PurchaseOrderStatus.Completed
+            : _lines.Any(l => l.ReceivedPurchaseQty > 0) ? PurchaseOrderStatus.PartiallyReceived : PurchaseOrderStatus.Approved;
+    }
+
+    private void Write(
+        Guid supplierId, DateOnly orderDate, DateOnly? expectedDeliveryDate, PurchaseOrderTerms paymentTerms, string? notes,
+        IReadOnlyList<PurchaseOrderLineEntry> lines)
+    {
+        if (supplierId == Guid.Empty)
+            throw new DomainException("Choose the supplier it is ordered from. · اختر المورد.");
+        if (expectedDeliveryDate < orderDate)
+            throw new DomainException("It is expected on the day it is ordered or after. · تاريخ التوريد بعد تاريخ الطلب.");
+        if (!Enum.IsDefined(paymentTerms))
+            throw new DomainException("Say how it is paid: cash or credit. · نقدي أو آجل.");
+        if (notes?.Trim().Length > MaxNotesLength)
+            throw new DomainException($"Keep the notes under {MaxNotesLength} characters.");
+        if (lines.Count == 0)
+            throw new DomainException("Order at least one item. · أضف صنفًا واحدًا على الأقل.");
+        if (lines.Count > MaxLines)
+            throw new DomainException($"A purchase order holds {MaxLines} lines at most.");
+        if (lines.Select(l => l.RawMaterialId).Distinct().Count() != lines.Count)
+            throw new DomainException("Each item goes on the order once: add its quantities together. · كل صنف مرة واحدة.");
+
+        // A line kept keeps what has come of it (nothing, on a draft) and its id.
+        var kept = _lines.ToDictionary(l => l.RawMaterialId);
+        var written = lines.Select((entry, i) =>
+        {
+            var line = kept.GetValueOrDefault(entry.RawMaterialId) ?? new PurchaseOrderLine(Id, entry.RawMaterialId);
+            line.Set(entry, i);
+            return line;
+        }).ToList();
+
+        SupplierId = supplierId;
+        OrderDate = orderDate;
+        ExpectedDeliveryDate = expectedDeliveryDate;
+        PaymentTerms = paymentTerms;
+        Notes = string.IsNullOrWhiteSpace(notes) ? null : notes.Trim();
+        _lines.Clear();
+        _lines.AddRange(written);
+    }
+
+    public static string StatusName(PurchaseOrderStatus status) => status switch
+    {
+        PurchaseOrderStatus.Draft => "a draft",
+        PurchaseOrderStatus.Approved => "approved",
+        PurchaseOrderStatus.PartiallyReceived => "partly received",
+        PurchaseOrderStatus.Completed => "complete",
+        _ => "cancelled",
+    };
+
+    private static decimal Round(decimal amount) => Math.Round(amount, 2, MidpointRounding.AwayFromZero);
+}
+
+public sealed class PurchaseOrderLine : Entity
+{
+    private PurchaseOrderLine() { }
+
+    internal PurchaseOrderLine(Guid purchaseOrderId, Guid rawMaterialId)
+    {
+        PurchaseOrderId = purchaseOrderId;
+        RawMaterialId = rawMaterialId;
+    }
+
+    public Guid PurchaseOrderId { get; private set; }
+    public Guid RawMaterialId { get; private set; }
+    public int Position { get; private set; }
+
+    // In the material's purchase unit (kg, a carton): ordered, and come so far on posted invoices.
+    public decimal OrderedPurchaseQty { get; private set; }
+    public decimal ReceivedPurchaseQty { get; private set; }
+
+    // What one purchase unit is expected to cost, net (the latest price paid, or the vendor matrix's).
+    public decimal ExpectedUnitCost { get; private set; }
+    public string? LineNotes { get; private set; }
+
+    public decimal RemainingQty => Math.Max(OrderedPurchaseQty - ReceivedPurchaseQty, 0);
+    public decimal LineTotal => Math.Round(OrderedPurchaseQty * ExpectedUnitCost, 2, MidpointRounding.AwayFromZero);
+
+    internal void Set(PurchaseOrderLineEntry entry, int position)
+    {
+        if (entry.RawMaterialId == Guid.Empty)
+            throw new DomainException("Choose the item for each line. · اختر الصنف.");
+        if (entry.OrderedPurchaseQty <= 0 || entry.OrderedPurchaseQty > 1_000_000)
+            throw new DomainException("Order more than nothing of each item. · الكمية أكبر من صفر.");
+        if (entry.ExpectedUnitCost < 0)
+            throw new DomainException("An expected price is zero or more. · السعر صفر أو أكثر.");
+        if (entry.LineNotes?.Trim().Length > PurchaseOrder.MaxLineNotesLength)
+            throw new DomainException($"Keep each line's notes under {PurchaseOrder.MaxLineNotesLength} characters.");
+        Position = position;
+        OrderedPurchaseQty = Math.Round(entry.OrderedPurchaseQty, 3, MidpointRounding.AwayFromZero);
+        ExpectedUnitCost = Math.Round(entry.ExpectedUnitCost, 4, MidpointRounding.AwayFromZero);
+        LineNotes = string.IsNullOrWhiteSpace(entry.LineNotes) ? null : entry.LineNotes.Trim();
+    }
+
+    internal void Received(decimal quantity) => ReceivedPurchaseQty = Math.Round(Math.Max(quantity, 0), 3, MidpointRounding.AwayFromZero);
+}
+
+// How one item of a delivery stands against its purchase order.
+public enum MatchStatus
+{
+    // As ordered, at the price ordered (مطابق).
+    Matched = 1,
+
+    // Billed above the price ordered, beyond the tolerance (زيادة سعر).
+    PriceOvercharge = 2,
+
+    // More came than was left to come (كمية زائدة).
+    QtyOver = 3,
+
+    // Less came than was left to come (استلام جزئي): the rest a backorder, or closed.
+    Short = 4,
+
+    // On the invoice, not on the order at all (غير مطلوب).
+    NotOrdered = 5,
+}
+
+// One item of a delivery against its order: what was ordered and was left to come, what came, the
+// price ordered against the net price billed, and how it stands. A line can be over on both price
+// and quantity: Status is the first of QtyOver or NotOrdered, PriceOvercharge, Short, Matched.
+public sealed record MatchLine(
+    Guid RawMaterialId,
+    decimal Ordered,
+    decimal Remaining,
+    decimal Received,
+    decimal ExpectedUnitCost,
+    decimal? NetUnitPrice,
+    decimal? UnitOvercharge,
+    decimal Overcharge,
+    decimal QtyOver,
+    decimal ShortBy,
+    bool PriceOver,
+    MatchStatus Status);
+
+// A delivery against its order: each item, what was billed above the prices ordered, and whether a
+// manager must sign it off (an overcharge or more than was ordered) before its stock goes in.
+public sealed record MatchResult(IReadOnlyList<MatchLine> Lines, decimal Overcharge, decimal QtyOverLines, bool HasShort, bool NeedsApproval);
+
+// What came in on a delivery of a material: in its purchase units, at what it cost net of every discount.
+public sealed record DeliveredItem(Guid RawMaterialId, decimal PurchaseQty, decimal? NetCost);
+
+// The 3-way match (المطابقة الثلاثية): the purchase order (what was ordered, at what price), the goods
+// received (the quantity on the invoice, as counted at the door) and the supplier's invoice (what each
+// line is billed, net of its discounts):
+//
+//   Net unit price = line cost after every discount ÷ quantity received in purchase units
+//   Overcharge     = net unit price > expected unit cost × (1 + 0.5%), and at least a piastre more
+//   Over-delivery  = quantity received > what was left to come
+//   Short          = quantity received < what was left to come
+//
+// An item not on the order is an over-delivery of all of it. What was left to come is ordered less
+// what earlier posted invoices brought.
+public static class ThreeWayMatch
+{
+    public const decimal PriceTolerancePercent = 0.5m;
+    private const decimal Unit = 0.0005m;
+
+    public static MatchResult Compare(PurchaseOrder order, IReadOnlyList<DeliveredItem> delivered)
+    {
+        var byMaterial = delivered.GroupBy(d => d.RawMaterialId)
+            .ToDictionary(g => g.Key, g => (Qty: g.Sum(d => d.PurchaseQty), Cost: g.Any(d => d.NetCost is not null) ? g.Sum(d => d.NetCost ?? 0) : (decimal?)null));
+        var lines = new List<MatchLine>();
+        foreach (var line in order.Lines)
+        {
+            var (qty, cost) = byMaterial.GetValueOrDefault(line.RawMaterialId);
+            lines.Add(Line(line.RawMaterialId, line.OrderedPurchaseQty, line.RemainingQty, qty, line.ExpectedUnitCost, cost));
+        }
+        foreach (var (material, (qty, cost)) in byMaterial.Where(d => order.LineFor(d.Key) is null))
+            lines.Add(Line(material, 0, 0, qty, 0, cost, notOrdered: true));
+
+        return new MatchResult(
+            lines, Math.Round(lines.Sum(l => l.Overcharge), 2, MidpointRounding.AwayFromZero), lines.Count(l => l.QtyOver > 0),
+            lines.Any(l => l.ShortBy > 0), lines.Any(l => l.PriceOver || l.QtyOver > 0));
+    }
+
+    private static MatchLine Line(Guid material, decimal ordered, decimal remaining, decimal received, decimal expected, decimal? cost, bool notOrdered = false)
+    {
+        decimal? net = received > 0 && cost is { } c ? Math.Round(c / received, 4, MidpointRounding.AwayFromZero) : null;
+        var priceOver = !notOrdered && expected > 0 && net is { } price
+            && price > expected * (1 + PriceTolerancePercent / 100) && Math.Round(price - expected, 2, MidpointRounding.AwayFromZero) >= 0.01m;
+        decimal? unitOver = priceOver ? net - expected : null;
+        var over = Math.Max(received - remaining, 0);
+        var shortBy = notOrdered ? 0 : Math.Max(remaining - received, 0);
+        var status = notOrdered ? MatchStatus.NotOrdered
+            : over > Unit ? MatchStatus.QtyOver
+            : priceOver ? MatchStatus.PriceOvercharge
+            : shortBy > Unit ? MatchStatus.Short
+            : MatchStatus.Matched;
+        return new MatchLine(
+            material, ordered, remaining, Math.Round(received, 3), expected, net, unitOver,
+            priceOver ? Math.Round(unitOver!.Value * received, 2, MidpointRounding.AwayFromZero) : 0,
+            over > Unit ? Math.Round(over, 3) : 0, shortBy > Unit ? Math.Round(shortBy, 3) : 0, priceOver, status);
+    }
+}
+
+public interface IPurchaseOrderRepository : IRepository<PurchaseOrder>
+{
+    // Every purchase order, newest first, with its lines.
+    Task<IReadOnlyList<PurchaseOrder>> GetAllAsync(CancellationToken cancellationToken = default);
+
+    // The next number in the year, purchase orders added in this unit of work counted.
+    Task<int> NextSequenceAsync(int year, CancellationToken cancellationToken = default);
+}
+```
+
+
+> 📄 **`backend/src/Costing.Application/Purchases/PurchaseOrders.cs`** — 584 سطر
+
+```csharp
+using System.Globalization;
+using MediatR;
+using Costing.Application.Approvals;
+using Costing.Application.Common;
+using Costing.Domain.Approvals;
+using Costing.Domain.Common;
+using Costing.Domain.Purchases;
+using Costing.Domain.RawMaterials;
+using Costing.Domain.Suppliers;
+
+namespace Costing.Application.Purchases;
+
+// Purchase orders (أوامر الشراء): written as drafts (by hand, or from the order planner a supplier
+// each), approved by a manager (anyone else's asked of one), sent to the supplier, then received
+// against the supplier's invoices with the 3-way match (ThreeWayMatch). What each line has received
+// is counted from the posted invoices that name the order (PurchaseOrderReceiver), so a voided or
+// corrected invoice puts it right by itself. Ids are made by the till.
+
+public sealed record PurchaseOrderLineDto(
+    Guid Id,
+    Guid RawMaterialId,
+    string? Code,
+    string Material,
+    string PurchaseUnit,
+    decimal PurchaseUnitSize,
+    UnitOfMeasure Unit,
+    decimal OrderedPurchaseQty,
+    decimal ReceivedPurchaseQty,
+    decimal RemainingQty,
+    decimal ExpectedUnitCost,
+    decimal LineTotal,
+    string? LineNotes);
+
+// An invoice received against the order: posted (or voided since), or waiting for a manager to
+// sign its differences off; with its paper, when it has one.
+public sealed record PurchaseOrderDelivery(
+    Guid InvoiceId,
+    string? SupplierInvoiceNumber,
+    DateOnly? InvoiceDate,
+    PurchaseInvoiceStatus Status,
+    decimal Total,
+    DateTime? PostedAtUtc,
+    string? PostedBy,
+    string? AttachmentFileName,
+    bool ClosedTheOrder,
+    bool AwaitingApproval);
+
+public sealed record PurchaseOrderDto(
+    Guid Id,
+    string PoNumber,
+    Guid SupplierId,
+    string Supplier,
+    string? SupplierPhone,
+    DateOnly OrderDate,
+    DateOnly? ExpectedDeliveryDate,
+    PurchaseOrderTerms PaymentTerms,
+    string? Notes,
+    PurchaseOrderStatus Status,
+    string CreatedBy,
+    DateTime CreatedAtUtc,
+    string? ApprovedBy,
+    DateTime? ApprovedAtUtc,
+    string? CancelledBy,
+    DateTime? CancelledAtUtc,
+    string? ClosedBy,
+    DateTime? ClosedAtUtc,
+    decimal ExpectedTotal,
+    decimal RemainingValue,
+    // How much of what was ordered has come, by expected value.
+    decimal ReceivedPercent,
+    IReadOnlyList<PurchaseOrderLineDto> Lines,
+    IReadOnlyList<PurchaseOrderDelivery> Deliveries);
+
+public sealed record PurchaseOrderSummaryDto(
+    Guid Id,
+    string PoNumber,
+    Guid SupplierId,
+    string Supplier,
+    DateOnly OrderDate,
+    DateOnly? ExpectedDeliveryDate,
+    PurchaseOrderTerms PaymentTerms,
+    PurchaseOrderStatus Status,
+    int Lines,
+    decimal ExpectedTotal,
+    decimal RemainingValue,
+    decimal ReceivedPercent,
+    int Deliveries,
+    string CreatedBy,
+    string? ApprovedBy,
+    // Late: open, and its expected day gone.
+    bool Overdue);
+
+// One item of a delivery against its order, named, for the screens and the manager.
+public sealed record MatchLineDto(
+    Guid RawMaterialId,
+    string Material,
+    string PurchaseUnit,
+    decimal Ordered,
+    decimal Remaining,
+    decimal Received,
+    decimal ExpectedUnitCost,
+    decimal? NetUnitPrice,
+    decimal? UnitOvercharge,
+    decimal Overcharge,
+    decimal QtyOver,
+    decimal ShortBy,
+    bool PriceOver,
+    MatchStatus Status);
+
+// An invoice against the order it delivers: how each item stands (a draft's, before it is posted),
+// what was overbilled, whether a manager signs it off, and whether it closes the order.
+public sealed record PurchaseOrderMatchDto(
+    Guid PurchaseOrderId,
+    string PoNumber,
+    PurchaseOrderStatus Status,
+    bool Closes,
+    IReadOnlyList<MatchLineDto>? Lines,
+    decimal Overcharge,
+    bool HasShort,
+    bool NeedsApproval);
+
+public sealed record PurchaseOrderSaved(Guid Id, string PoNumber, PurchaseOrderStatus Status, ApprovalOutcome Outcome, ApprovalRequestDto? Request = null);
+
+// Reads purchase orders for the screens: names, units and deliveries.
+internal sealed class PurchaseOrderReading(
+    IRawMaterialRepository materials, ISupplierRepository suppliers, IPurchaseInvoiceRepository invoices, IApprovalRequestRepository requests)
+{
+    public async Task<PurchaseOrderDto> DtoAsync(PurchaseOrder order, CancellationToken cancellationToken)
+    {
+        var byId = (await materials.GetByIdsAsync(order.Lines.Select(l => l.RawMaterialId), cancellationToken)).ToDictionary(m => m.Id);
+        var supplier = await suppliers.GetByIdAsync(order.SupplierId, cancellationToken);
+        var pending = (await requests.GetPendingAsync(cancellationToken))
+            .Where(r => r.Module == ApprovalModule.PurchaseInvoice && r.Action == ApprovalAction.Create).Select(r => r.RecordId).ToHashSet();
+        var deliveries = (await invoices.GetForOrderAsync(order.Id, cancellationToken))
+            .Where(i => i.Status != PurchaseInvoiceStatus.Draft || pending.Contains(i.Id))
+            .OrderBy(i => i.PostedAtUtc ?? i.CreatedAtUtc)
+            .Select(i => new PurchaseOrderDelivery(
+                i.Id, i.SupplierInvoiceNumber, i.InvoiceDate, i.Status, i.Total, i.PostedAtUtc, i.PostedBy, i.AttachmentFileName,
+                order.ClosedByInvoiceId == i.Id, pending.Contains(i.Id)))
+            .ToList();
+        return new PurchaseOrderDto(
+            order.Id, order.PoNumber, order.SupplierId, supplier?.Name ?? "A removed supplier", supplier?.Phone, order.OrderDate, order.ExpectedDeliveryDate,
+            order.PaymentTerms, order.Notes, order.Status, order.CreatedBy, order.CreatedAtUtc, order.ApprovedBy, order.ApprovedAtUtc, order.CancelledBy,
+            order.CancelledAtUtc, order.ClosedBy, order.ClosedAtUtc, order.ExpectedTotal, order.RemainingValue, ReceivedPercent(order),
+            order.Lines.Select(l =>
+            {
+                var material = byId.GetValueOrDefault(l.RawMaterialId);
+                return new PurchaseOrderLineDto(
+                    l.Id, l.RawMaterialId, material?.Code, material?.Name ?? "A removed material", material?.PurchaseUnit ?? "unit",
+                    material?.PurchaseUnitSize ?? 1, material?.Unit ?? UnitOfMeasure.Piece, l.OrderedPurchaseQty, l.ReceivedPurchaseQty, l.RemainingQty,
+                    l.ExpectedUnitCost, l.LineTotal, l.LineNotes);
+            }).ToList(),
+            deliveries);
+    }
+
+    public static decimal ReceivedPercent(PurchaseOrder order) =>
+        order.ExpectedTotal > 0
+            ? Math.Round((order.ExpectedTotal - order.RemainingValue) * 100 / order.ExpectedTotal, 1, MidpointRounding.AwayFromZero)
+            : order.Lines.All(l => l.RemainingQty == 0) ? 100 : 0;
+}
+
+// What a purchase order has received, counted from the posted invoices that name it; and an
+// invoice set against its order (ThreeWayMatch), as it is posted and for a manager to sign off.
+internal sealed class PurchaseOrderReceiver(
+    IPurchaseOrderRepository orders,
+    IPurchaseInvoiceRepository invoices,
+    IRawMaterialRepository materials,
+    ISupplierRepository suppliers)
+{
+    private static readonly CultureInfo Invariant = CultureInfo.InvariantCulture;
+
+    // The order an invoice delivers, if it names one: from the same supplier.
+    public async Task<PurchaseOrder?> OrderOfAsync(PurchaseInvoice invoice, CancellationToken cancellationToken)
+    {
+        if (invoice.PurchaseOrderId is not { } id)
+            return null;
+        var order = await orders.GetByIdAsync(id, cancellationToken) ?? throw new NotFoundException("Purchase order", id);
+        if (order.SupplierId != invoice.SupplierId)
+            throw new DomainException($"{order.PoNumber} is ordered from another supplier: choose its supplier, or another order. · أمر الشراء لمورد آخر.");
+        return order;
+    }
+
+    // Open for a delivery: approved, and not complete or cancelled. A correction of an invoice
+    // already against it is received whatever it stands at.
+    public static void EnsureReceivable(PurchaseOrder order, PurchaseInvoice invoice)
+    {
+        if (invoice.RevisionOf is null && !order.IsOpen)
+            throw new DomainException(order.Status == PurchaseOrderStatus.Draft
+                ? $"{order.PoNumber} is not approved yet: a manager approves it before it is received. · أمر الشراء غير معتمد."
+                : $"{order.PoNumber} is {PurchaseOrder.StatusName(order.Status)}: nothing more is received against it. · أمر الشراء مغلق.");
+    }
+
+    // What the invoice brings of each material, in purchase units, at what it cost net.
+    public async Task<IReadOnlyList<DeliveredItem>> DeliveredAsync(PurchaseInvoice invoice, CancellationToken cancellationToken)
+    {
+        var stock = invoice.Lines.Where(l => l.ItemType == PurchaseItemType.Inventory && l.RawMaterialId is not null).ToList();
+        var sizes = await SizesAsync(stock.Select(l => l.RawMaterialId!.Value), cancellationToken);
+        return stock.Select(l => new DeliveredItem(l.RawMaterialId!.Value, l.Quantity / sizes.GetValueOrDefault(l.RawMaterialId!.Value, 1), l.Cost)).ToList();
+    }
+
+    public async Task<MatchResult> MatchAsync(PurchaseOrder order, PurchaseInvoice invoice, CancellationToken cancellationToken) =>
+        ThreeWayMatch.Compare(order, await DeliveredAsync(invoice, cancellationToken));
+
+    public async Task<PurchaseOrderMatchDto> MatchDtoAsync(PurchaseOrder order, PurchaseInvoice invoice, MatchResult? match, CancellationToken cancellationToken)
+    {
+        if (match is null)
+            return new PurchaseOrderMatchDto(order.Id, order.PoNumber, order.Status, invoice.ClosesPurchaseOrder, null, 0, false, false);
+        var named = (await materials.GetByIdsAsync(match.Lines.Select(l => l.RawMaterialId), cancellationToken)).ToDictionary(m => m.Id);
+        return new PurchaseOrderMatchDto(
+            order.Id, order.PoNumber, order.Status, invoice.ClosesPurchaseOrder,
+            match.Lines.Select(l => new MatchLineDto(
+                l.RawMaterialId, named.GetValueOrDefault(l.RawMaterialId)?.Name ?? "A removed material", named.GetValueOrDefault(l.RawMaterialId)?.PurchaseUnit ?? "unit",
+                l.Ordered, l.Remaining, l.Received, l.ExpectedUnitCost, l.NetUnitPrice, l.UnitOvercharge, l.Overcharge, l.QtyOver, l.ShortBy, l.PriceOver,
+                l.Status)).ToList(),
+            match.Overcharge, match.HasShort, match.NeedsApproval);
+    }
+
+    // Posted against its order: counted in, and the order closed with what came when it says so.
+    public async Task PostedAsync(PurchaseInvoice invoice, PurchaseOrder order, string by, CancellationToken cancellationToken)
+    {
+        await RecountAsync(order, invoice, cancellationToken);
+        if (invoice.ClosesPurchaseOrder && order.IsOpen)
+            order.Close(by, invoice.Id);
+    }
+
+    // Voided: what it brought comes off its order again, which may open again.
+    public async Task VoidedAsync(PurchaseInvoice invoice, CancellationToken cancellationToken)
+    {
+        if (invoice.PurchaseOrderId is { } id && await orders.GetByIdAsync(id, cancellationToken) is { } order)
+            await RecountAsync(order, invoice, cancellationToken);
+    }
+
+    private async Task RecountAsync(PurchaseOrder order, PurchaseInvoice changed, CancellationToken cancellationToken)
+    {
+        // The one in hand as it is now, posted or voided in this unit of work and not saved yet.
+        var posted = (await invoices.GetForOrderAsync(order.Id, cancellationToken)).Where(i => i.Id != changed.Id).Append(changed)
+            .Where(i => i.Status == PurchaseInvoiceStatus.Posted)
+            .ToList();
+        var lines = posted.SelectMany(i => i.Lines).Where(l => l.ItemType == PurchaseItemType.Inventory && l.RawMaterialId is not null).ToList();
+        var sizes = await SizesAsync(lines.Select(l => l.RawMaterialId!.Value), cancellationToken);
+        var received = lines.GroupBy(l => l.RawMaterialId!.Value)
+            .ToDictionary(g => g.Key, g => g.Sum(l => l.Quantity / sizes.GetValueOrDefault(g.Key, 1)));
+        order.Recount(received, order.ClosedByInvoiceId is not { } closer || posted.Any(i => i.Id == closer));
+    }
+
+    // "Invoice F-1 · Nile Farms against PO-2026-0001: L.E 40.00 overcharged, 1 item over", and each
+    // difference, the order against the invoice.
+    public async Task<(string Summary, IReadOnlyList<ApprovalChange> Changes)> DescribeAsync(
+        PurchaseOrder order, PurchaseInvoice invoice, MatchResult match, CancellationToken cancellationToken)
+    {
+        var supplier = (await suppliers.GetByIdAsync(order.SupplierId, cancellationToken))?.Name ?? "a supplier";
+        var named = (await materials.GetByIdsAsync(match.Lines.Select(l => l.RawMaterialId), cancellationToken)).ToDictionary(m => m.Id);
+        var over = match.Lines.Count(l => l.QtyOver > 0);
+        var parts = new List<string>();
+        if (match.Overcharge > 0)
+            parts.Add($"{Money(match.Overcharge)} overcharged");
+        if (over > 0)
+            parts.Add($"{over} {(over == 1 ? "item" : "items")} over the order");
+        var summary = $"{(invoice.SupplierInvoiceNumber is { } number ? $"Invoice {number}" : "An invoice")} · {supplier} against {order.PoNumber}: " +
+                      $"{string.Join(", ", parts)} · {Money(invoice.Total)}";
+        var changes = new List<ApprovalChange> { new("Purchase order · أمر الشراء", null, $"{order.PoNumber} · {supplier}") };
+        foreach (var line in match.Lines.Where(l => l.PriceOver || l.QtyOver > 0))
+        {
+            var material = named.GetValueOrDefault(line.RawMaterialId);
+            var (name, unit) = (material?.Name ?? "A removed material", material?.PurchaseUnit ?? "unit");
+            if (line.Status == MatchStatus.NotOrdered)
+            {
+                changes.Add(new ApprovalChange($"{name} · not ordered · غير مطلوب", "Not on the order", $"{Quantity(line.Received)} {unit} came"));
+                continue;
+            }
+            if (line.PriceOver)
+                changes.Add(new ApprovalChange(
+                    $"{name} · price per {unit} · زيادة سعر", $"{Money(line.ExpectedUnitCost)} on the order",
+                    $"{Money(line.NetUnitPrice ?? 0)} billed · +{Money(line.UnitOvercharge ?? 0)} each, {Money(line.Overcharge)} in all"));
+            if (line.QtyOver > 0)
+                changes.Add(new ApprovalChange(
+                    $"{name} · quantity · كمية زائدة", $"{Quantity(line.Remaining)} {unit} left to come",
+                    $"{Quantity(line.Received)} {unit} came · {Quantity(line.QtyOver)} over"));
+        }
+        changes.Add(new ApprovalChange("Invoice total · إجمالي الفاتورة", Money(order.RemainingValue) + " left on the order", Money(invoice.Total)));
+        return (summary, changes);
+    }
+
+    private async Task<IReadOnlyDictionary<Guid, decimal>> SizesAsync(IEnumerable<Guid> ids, CancellationToken cancellationToken)
+    {
+        var distinct = ids.Distinct().ToList();
+        return distinct.Count == 0
+            ? new Dictionary<Guid, decimal>()
+            : (await materials.GetByIdsAsync(distinct, cancellationToken)).ToDictionary(m => m.Id, m => m.PurchaseUnitSize > 0 ? m.PurchaseUnitSize : 1);
+    }
+
+    private static string Money(decimal value) => CompanyMoney.Text(value);
+
+    private static string Quantity(decimal value) => value.ToString("#,##0.###", Invariant);
+}
+
+// What a posting request waiting for a manager holds: the invoice, and the order it is against.
+public sealed record PostAgainstOrder(Guid InvoiceId, Guid PurchaseOrderId);
+
+// ---- Writing them ----
+
+public sealed record PurchaseOrderInput(
+    Guid SupplierId,
+    DateOnly OrderDate,
+    DateOnly? ExpectedDeliveryDate,
+    PurchaseOrderTerms PaymentTerms,
+    string? Notes,
+    IReadOnlyList<PurchaseOrderLineEntry> Lines);
+
+// A draft written or rewritten. Id made by the till.
+public sealed record SavePurchaseOrderCommand(Guid Id, PurchaseOrderInput Order, string StaffId, string StaffName)
+    : IRequest<PurchaseOrderDto>, IRetryOnConflict;
+
+// Approved: at once for a manager; asked of one for anyone else, the draft locked until then.
+public sealed record ApprovePurchaseOrderCommand(Guid RequestId, Guid Id, string? Reason, string StaffId, string StaffName, bool CanApprove)
+    : IRequest<PurchaseOrderSaved>, IRetryOnConflict;
+
+// Called off before anything came: a draft by whoever wrote orders, an approved one by a manager.
+public sealed record CancelPurchaseOrderCommand(Guid Id, string StaffName, bool CanApprove) : IRequest<PurchaseOrderDto>, IRetryOnConflict;
+
+// What has not come is not expected any more: closed with what was received. A manager's.
+public sealed record ClosePurchaseOrderCommand(Guid Id, string StaffName) : IRequest<PurchaseOrderDto>, IRetryOnConflict;
+
+// Several written at once, a supplier each (from the order planner): all or none. A manager's are
+// approved at once; anyone else's are drafts asked of a manager, each its own request.
+public sealed record NewPurchaseOrder(Guid Id, PurchaseOrderInput Order);
+
+public sealed record CreatePurchaseOrdersCommand(IReadOnlyList<NewPurchaseOrder> Orders, string StaffId, string StaffName, bool CanApprove)
+    : IRequest<IReadOnlyList<PurchaseOrderSaved>>, IRetryOnConflict;
+
+internal sealed class PurchaseOrderWriter(IPurchaseOrderRepository orders, ISupplierRepository suppliers, IRawMaterialRepository materials)
+{
+    public const int MaxAtOnce = 30;
+
+    public async Task<PurchaseOrder> CreateAsync(Guid id, PurchaseOrderInput input, string staffId, string staffName, CancellationToken cancellationToken)
+    {
+        await CheckAsync(input, null, cancellationToken);
+        var order = new PurchaseOrder(
+            id, await orders.NextSequenceAsync(input.OrderDate.Year, cancellationToken), input.SupplierId, input.OrderDate, input.ExpectedDeliveryDate,
+            input.PaymentTerms, input.Notes, input.Lines ?? [], staffId, staffName);
+        orders.Add(order);
+        return order;
+    }
+
+    public async Task ChangeAsync(PurchaseOrder order, PurchaseOrderInput input, CancellationToken cancellationToken)
+    {
+        await CheckAsync(input, order, cancellationToken);
+        order.Change(input.SupplierId, input.OrderDate, input.ExpectedDeliveryDate, input.PaymentTerms, input.Notes, input.Lines ?? []);
+    }
+
+    // A supplier on the list, materials bought (not made) and not deleted: a draft keeps what it had.
+    private async Task CheckAsync(PurchaseOrderInput input, PurchaseOrder? kept, CancellationToken cancellationToken)
+    {
+        var supplier = await suppliers.GetByIdAsync(input.SupplierId, cancellationToken)
+            ?? throw new DomainException("That supplier is no longer on the list. Choose it again, or add it.");
+        if (supplier.IsArchived && kept?.SupplierId != supplier.Id)
+            throw new DomainException($"{supplier.Name} is archived. Restore it on the Suppliers tab to order from it again.");
+        var ids = (input.Lines ?? []).Select(l => l.RawMaterialId).Distinct().ToList();
+        var found = (await materials.GetByIdsAsync(ids, cancellationToken)).ToDictionary(m => m.Id);
+        var had = kept?.Lines.Select(l => l.RawMaterialId).ToHashSet() ?? [];
+        foreach (var id in ids)
+        {
+            if (found.GetValueOrDefault(id) is not { } material)
+                throw new DomainException("An item on the order is no longer on the list. Choose it again.");
+            if (material.IsPrepItem)
+                throw new DomainException($"{material.Name} is made in the kitchen, not bought: make it with a production order.");
+            if (material.IsArchived && !had.Contains(id))
+                throw new DomainException($"{material.Name} has been deleted from the raw materials.");
+        }
+    }
+
+    // "PO-2026-0001 · Nile Farms · 3 items · L.E 1,200.00, expected 18 Nov", and what it orders.
+    public async Task<(string Summary, IReadOnlyList<ApprovalChange> Changes)> DescribeAsync(PurchaseOrder order, CancellationToken cancellationToken)
+    {
+        var supplier = (await suppliers.GetByIdAsync(order.SupplierId, cancellationToken))?.Name ?? "a supplier";
+        var named = (await materials.GetByIdsAsync(order.Lines.Select(l => l.RawMaterialId), cancellationToken)).ToDictionary(m => m.Id);
+        var summary = $"{order.PoNumber} · {supplier} · {order.Lines.Count} {(order.Lines.Count == 1 ? "item" : "items")} · {CompanyMoney.Text(order.ExpectedTotal)}" +
+                      (order.ExpectedDeliveryDate is { } due ? $", expected {due.ToString("d MMM", CultureInfo.InvariantCulture)}" : "");
+        var changes = new List<ApprovalChange>
+        {
+            new("Supplier · المورد", null, supplier),
+            new("Paid · الدفع", null, order.PaymentTerms == PurchaseOrderTerms.Credit ? "On credit · آجل" : "Cash · نقدي"),
+        };
+        changes.AddRange(order.Lines.Select(l =>
+        {
+            var material = named.GetValueOrDefault(l.RawMaterialId);
+            return new ApprovalChange(
+                material?.Name ?? "A removed material", null,
+                $"{l.OrderedPurchaseQty.ToString("#,##0.###", CultureInfo.InvariantCulture)} {material?.PurchaseUnit ?? "unit"} × {CompanyMoney.Text(l.ExpectedUnitCost)} = {CompanyMoney.Text(l.LineTotal)}");
+        }));
+        return (summary, changes);
+    }
+}
+
+internal sealed class SavePurchaseOrderHandler(
+    IPurchaseOrderRepository orders, PurchaseOrderWriter writer, PurchaseOrderReading reading, IApprovalRequestRepository requests, IUnitOfWork unitOfWork)
+    : IRequestHandler<SavePurchaseOrderCommand, PurchaseOrderDto>
+{
+    public async Task<PurchaseOrderDto> Handle(SavePurchaseOrderCommand request, CancellationToken cancellationToken)
+    {
+        var order = await orders.GetByIdAsync(request.Id, cancellationToken);
+        if (order is null)
+            order = await writer.CreateAsync(request.Id, request.Order, request.StaffId, request.StaffName, cancellationToken);
+        else
+        {
+            await requests.EnsureNotPendingAsync(order.Id, cancellationToken);
+            await writer.ChangeAsync(order, request.Order, cancellationToken);
+        }
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+        return await reading.DtoAsync(order, cancellationToken);
+    }
+}
+
+internal sealed class ApprovePurchaseOrderHandler(
+    IPurchaseOrderRepository orders, PurchaseOrderWriter writer, IApprovalRequestRepository requests, IUnitOfWork unitOfWork)
+    : IRequestHandler<ApprovePurchaseOrderCommand, PurchaseOrderSaved>
+{
+    public async Task<PurchaseOrderSaved> Handle(ApprovePurchaseOrderCommand request, CancellationToken cancellationToken)
+    {
+        var order = await orders.GetRequiredAsync(request.Id, cancellationToken);
+        if (await requests.GetByIdAsync(request.RequestId, cancellationToken) is { } asked)
+            return new PurchaseOrderSaved(order.Id, order.PoNumber, order.Status, asked.IsPending ? ApprovalOutcome.Requested : ApprovalOutcome.Applied,
+                ApprovalRequestDto.From(asked));
+        if (order.Status != PurchaseOrderStatus.Draft)
+            return order.Status == PurchaseOrderStatus.Cancelled
+                ? throw new DomainException($"{order.PoNumber} is cancelled.")
+                : new PurchaseOrderSaved(order.Id, order.PoNumber, order.Status, ApprovalOutcome.Applied);
+        await requests.EnsureNotPendingAsync(order.Id, cancellationToken);
+        var saved = await PurchaseOrderApproval.ApproveOrAskAsync(order, request.RequestId, request.Reason, request.StaffId, request.StaffName, request.CanApprove,
+            writer, requests, cancellationToken);
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+        return saved;
+    }
+}
+
+internal static class PurchaseOrderApproval
+{
+    public static async Task<PurchaseOrderSaved> ApproveOrAskAsync(
+        PurchaseOrder order, Guid requestId, string? reason, string staffId, string staffName, bool canApprove, PurchaseOrderWriter writer,
+        IApprovalRequestRepository requests, CancellationToken cancellationToken)
+    {
+        if (canApprove)
+        {
+            order.Approve(staffId, staffName);
+            return new PurchaseOrderSaved(order.Id, order.PoNumber, order.Status, ApprovalOutcome.Applied);
+        }
+        var (summary, changes) = await writer.DescribeAsync(order, cancellationToken);
+        var asked = ApprovalRequest.AskToChange(
+            requestId, ApprovalModule.PurchaseOrder, ApprovalAction.Create, order.Id, summary, changes, ApprovalPayload.Write(new { order.Id, order.PoNumber }),
+            reason, staffId, staffName);
+        requests.Add(asked);
+        return new PurchaseOrderSaved(order.Id, order.PoNumber, order.Status, ApprovalOutcome.Requested, ApprovalRequestDto.From(asked));
+    }
+}
+
+internal sealed class CancelPurchaseOrderHandler(
+    IPurchaseOrderRepository orders, PurchaseOrderReading reading, IApprovalRequestRepository requests, IUnitOfWork unitOfWork)
+    : IRequestHandler<CancelPurchaseOrderCommand, PurchaseOrderDto>
+{
+    public async Task<PurchaseOrderDto> Handle(CancelPurchaseOrderCommand request, CancellationToken cancellationToken)
+    {
+        var order = await orders.GetRequiredAsync(request.Id, cancellationToken);
+        if (order.Status != PurchaseOrderStatus.Cancelled)
+        {
+            if (order.Status != PurchaseOrderStatus.Draft && !request.CanApprove)
+                throw new DomainException($"{order.PoNumber} is approved: a manager calls it off. · إلغاء أمر شراء معتمد للمدير.");
+            // A request waiting to approve it is turned down with it.
+            if (await requests.GetPendingForAsync(order.Id, cancellationToken) is { } pending)
+                pending.Reject(request.StaffName, "Cancelled · ألغي أمر الشراء");
+            order.Cancel(request.StaffName);
+            await unitOfWork.SaveChangesAsync(cancellationToken);
+        }
+        return await reading.DtoAsync(order, cancellationToken);
+    }
+}
+
+internal sealed class ClosePurchaseOrderHandler(IPurchaseOrderRepository orders, PurchaseOrderReading reading, IUnitOfWork unitOfWork)
+    : IRequestHandler<ClosePurchaseOrderCommand, PurchaseOrderDto>
+{
+    public async Task<PurchaseOrderDto> Handle(ClosePurchaseOrderCommand request, CancellationToken cancellationToken)
+    {
+        var order = await orders.GetRequiredAsync(request.Id, cancellationToken);
+        if (order.Status != PurchaseOrderStatus.Completed)
+        {
+            order.Close(request.StaffName);
+            await unitOfWork.SaveChangesAsync(cancellationToken);
+        }
+        return await reading.DtoAsync(order, cancellationToken);
+    }
+}
+
+internal sealed class CreatePurchaseOrdersHandler(
+    IPurchaseOrderRepository orders, PurchaseOrderWriter writer, ISupplierRepository suppliers, IApprovalRequestRepository requests, IUnitOfWork unitOfWork)
+    : IRequestHandler<CreatePurchaseOrdersCommand, IReadOnlyList<PurchaseOrderSaved>>
+{
+    public async Task<IReadOnlyList<PurchaseOrderSaved>> Handle(CreatePurchaseOrdersCommand request, CancellationToken cancellationToken)
+    {
+        if (request.Orders.Count == 0)
+            throw new DomainException("Nothing to order: approve a quantity first. · لا توجد كميات معتمدة.");
+        if (request.Orders.Count > PurchaseOrderWriter.MaxAtOnce)
+            throw new DomainException($"Write {PurchaseOrderWriter.MaxAtOnce} purchase orders at most at once.");
+        if (request.Orders.Select(o => o.Id).Distinct().Count() != request.Orders.Count)
+            throw new DomainException("The same purchase order is there twice.");
+
+        var saved = new List<PurchaseOrderSaved>();
+        var problems = new List<string>();
+        foreach (var entry in request.Orders)
+        {
+            try
+            {
+                // Sent again after an answer was lost: written already.
+                if (await orders.GetByIdAsync(entry.Id, cancellationToken) is { } made)
+                {
+                    var waiting = await requests.GetPendingForAsync(made.Id, cancellationToken);
+                    saved.Add(new PurchaseOrderSaved(made.Id, made.PoNumber, made.Status, waiting is null ? ApprovalOutcome.Applied : ApprovalOutcome.Requested,
+                        waiting is null ? null : ApprovalRequestDto.From(waiting)));
+                    continue;
+                }
+                var order = await writer.CreateAsync(entry.Id, entry.Order, request.StaffId, request.StaffName, cancellationToken);
+                saved.Add(await PurchaseOrderApproval.ApproveOrAskAsync(
+                    order, entry.Id, null, request.StaffId, request.StaffName, request.CanApprove, writer, requests, cancellationToken));
+            }
+            catch (Exception error) when (error is DomainException or NotFoundException)
+            {
+                var supplier = (await suppliers.GetByIdAsync(entry.Order.SupplierId, cancellationToken))?.Name;
+                problems.Add($"{supplier ?? "A supplier"}: {error.Message}");
+            }
+        }
+        if (problems.Count > 0)
+            throw new DomainException(string.Join("\n", problems));
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+        return saved;
+    }
+}
+
+// ---- Reading them ----
+
+// Newest first; Open: approved or partly received, for a delivery to be received against.
+public sealed record GetPurchaseOrdersQuery(PurchaseOrderStatus? Status = null, bool OpenOnly = false, Guid? SupplierId = null, DateOnly? Today = null)
+    : IRequest<IReadOnlyList<PurchaseOrderSummaryDto>>;
+
+internal sealed class GetPurchaseOrdersHandler(IPurchaseOrderRepository orders, ISupplierRepository suppliers, IPurchaseInvoiceRepository invoices)
+    : IRequestHandler<GetPurchaseOrdersQuery, IReadOnlyList<PurchaseOrderSummaryDto>>
+{
+    public async Task<IReadOnlyList<PurchaseOrderSummaryDto>> Handle(GetPurchaseOrdersQuery request, CancellationToken cancellationToken)
+    {
+        var names = (await suppliers.GetAllAsync(cancellationToken)).ToDictionary(s => s.Id, s => s.Name);
+        var delivered = await invoices.GetDeliveriesByOrderAsync(cancellationToken);
+        return (await orders.GetAllAsync(cancellationToken))
+            .Where(o => (request.Status is null || o.Status == request.Status) && (!request.OpenOnly || o.IsOpen)
+                && (request.SupplierId is null || o.SupplierId == request.SupplierId))
+            .Select(o => new PurchaseOrderSummaryDto(
+                o.Id, o.PoNumber, o.SupplierId, names.GetValueOrDefault(o.SupplierId) ?? "A removed supplier", o.OrderDate, o.ExpectedDeliveryDate,
+                o.PaymentTerms, o.Status, o.Lines.Count, o.ExpectedTotal, o.RemainingValue, PurchaseOrderReading.ReceivedPercent(o),
+                delivered.GetValueOrDefault(o.Id), o.CreatedBy, o.ApprovedBy,
+                o.IsOpen && request.Today is { } today && o.ExpectedDeliveryDate < today))
+            .ToList();
+    }
+}
+
+public sealed record GetPurchaseOrderQuery(Guid Id) : IRequest<PurchaseOrderDto?>;
+
+internal sealed class GetPurchaseOrderHandler(IPurchaseOrderRepository orders, PurchaseOrderReading reading)
+    : IRequestHandler<GetPurchaseOrderQuery, PurchaseOrderDto?>
+{
+    public async Task<PurchaseOrderDto?> Handle(GetPurchaseOrderQuery request, CancellationToken cancellationToken) =>
+        await orders.GetByIdAsync(request.Id, cancellationToken) is { } order ? await reading.DtoAsync(order, cancellationToken) : null;
+}
+
+// The open orders, in full, for a delivery to be received against: a supplier's, or everyone's.
+public sealed record GetOpenPurchaseOrdersQuery(Guid? SupplierId = null) : IRequest<IReadOnlyList<PurchaseOrderDto>>;
+
+internal sealed class GetOpenPurchaseOrdersHandler(IPurchaseOrderRepository orders, PurchaseOrderReading reading)
+    : IRequestHandler<GetOpenPurchaseOrdersQuery, IReadOnlyList<PurchaseOrderDto>>
+{
+    public async Task<IReadOnlyList<PurchaseOrderDto>> Handle(GetOpenPurchaseOrdersQuery request, CancellationToken cancellationToken)
+    {
+        var open = (await orders.GetAllAsync(cancellationToken)).Where(o => o.IsOpen && (request.SupplierId is null || o.SupplierId == request.SupplierId)).ToList();
+        var dtos = new List<PurchaseOrderDto>();
+        foreach (var order in open)
+            dtos.Add(await reading.DtoAsync(order, cancellationToken));
+        return dtos;
+    }
+}
+```
+
+
+> 📄 **`backend/src/Costing.Infrastructure/Persistence/PurchaseOrderPersistence.cs`** — 72 سطر
+
+```csharp
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata.Builders;
+using Costing.Domain.Purchases;
+using Costing.Domain.RawMaterials;
+using Costing.Domain.Suppliers;
+using Costing.Infrastructure.Persistence.Configurations;
+
+namespace Costing.Infrastructure.Persistence;
+
+// Purchase orders and their lines: PO-year-sequence unique, a line per material.
+internal sealed class PurchaseOrderConfiguration : IEntityTypeConfiguration<PurchaseOrder>
+{
+    public void Configure(EntityTypeBuilder<PurchaseOrder> builder)
+    {
+        builder.ToTable("PurchaseOrders", CostingDbContext.CostingSchema);
+        builder.Property(o => o.PoNumber).HasMaxLength(16);
+        builder.Property(o => o.PaymentTerms).IsEnumName();
+        builder.Property(o => o.Status).IsEnumName();
+        builder.Property(o => o.Notes).HasMaxLength(PurchaseOrder.MaxNotesLength);
+        builder.Property(o => o.CreatedByUserId).HasMaxLength(450);
+        builder.Property(o => o.CreatedBy).HasMaxLength(200);
+        builder.Property(o => o.ApprovedByUserId).HasMaxLength(450);
+        builder.Property(o => o.ApprovedBy).HasMaxLength(200);
+        builder.Property(o => o.CancelledBy).HasMaxLength(200);
+        builder.Property(o => o.ClosedBy).HasMaxLength(200);
+        builder.Ignore(o => o.IsOpen);
+        builder.Ignore(o => o.ExpectedTotal);
+        builder.Ignore(o => o.RemainingValue);
+        builder.HasIndex(o => o.PoNumber).IsUnique();
+        builder.HasIndex(o => new { o.Year, o.Sequence }).IsUnique();
+        builder.HasIndex(o => new { o.Status, o.SupplierId });
+        builder.HasOne<Supplier>().WithMany().HasForeignKey(o => o.SupplierId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasMany(o => o.Lines).WithOne().HasForeignKey(l => l.PurchaseOrderId).OnDelete(DeleteBehavior.Cascade);
+        builder.Navigation(o => o.Lines).HasField("_lines").UsePropertyAccessMode(PropertyAccessMode.Field).AutoInclude();
+    }
+}
+
+internal sealed class PurchaseOrderLineConfiguration : IEntityTypeConfiguration<PurchaseOrderLine>
+{
+    public void Configure(EntityTypeBuilder<PurchaseOrderLine> builder)
+    {
+        builder.ToTable("PurchaseOrderLines", CostingDbContext.CostingSchema);
+        builder.Property(l => l.OrderedPurchaseQty).HasPrecision(18, 3);
+        builder.Property(l => l.ReceivedPurchaseQty).HasPrecision(18, 3);
+        builder.Property(l => l.ExpectedUnitCost).HasPrecision(18, 4);
+        builder.Property(l => l.LineNotes).HasMaxLength(PurchaseOrder.MaxLineNotesLength);
+        builder.Ignore(l => l.RemainingQty);
+        builder.Ignore(l => l.LineTotal);
+        builder.Property(l => l.RawMaterialId).HasColumnName("MaterialId");
+        builder.HasOne<RawMaterial>().WithMany().HasForeignKey(l => l.RawMaterialId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasIndex(l => new { l.PurchaseOrderId, l.RawMaterialId }).IsUnique();
+    }
+}
+
+internal sealed class PurchaseOrderRepository(CostingDbContext db) : IPurchaseOrderRepository
+{
+    public Task<PurchaseOrder?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default) =>
+        db.PurchaseOrders.SingleOrDefaultAsync(o => o.Id == id, cancellationToken);
+
+    public void Add(PurchaseOrder aggregate) => db.PurchaseOrders.Add(aggregate);
+
+    public async Task<IReadOnlyList<PurchaseOrder>> GetAllAsync(CancellationToken cancellationToken = default) =>
+        await db.PurchaseOrders.OrderByDescending(o => o.Year).ThenByDescending(o => o.Sequence).ToListAsync(cancellationToken);
+
+    public async Task<int> NextSequenceAsync(int year, CancellationToken cancellationToken = default)
+    {
+        var saved = await db.PurchaseOrders.Where(o => o.Year == year).MaxAsync(o => (int?)o.Sequence, cancellationToken) ?? 0;
+        var pending = db.ChangeTracker.Entries<PurchaseOrder>()
+            .Where(e => e.State == EntityState.Added && e.Entity.Year == year).Select(e => e.Entity.Sequence).DefaultIfEmpty(0).Max();
+        return Math.Max(saved, pending) + 1;
+    }
+}
+```
+
+
+`PurchaseOrdersController` (`api/inventory/purchase-orders`)، و `POST api/costing/intelligence/orders/purchase-orders` يحوّل كميات مخطط الطلبيات المعتمدة إلى أمر لكل مورد.
+
+> 📄 **`backend/src/Costing.Api/Controllers/PurchaseOrdersController.cs`** — 83 سطر
+
+```csharp
+using MediatR;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using Costing.Api.Auth;
+using Costing.Application.Approvals;
+using Costing.Application.Common;
+using Costing.Application.Purchases;
+using Costing.Domain.Access;
+using Costing.Domain.Purchases;
+
+namespace Costing.Api.Controllers;
+
+// Purchase orders (أوامر الشراء) on Purchases: written as drafts, by hand or from the order planner a
+// supplier each (batch), approved by a manager (anyone else's asked of one: 202), printed or copied
+// for the supplier, and received against the supplier's invoices (an invoice names the order it
+// delivers: PUT api/inventory/purchase-invoices/{id} with purchaseOrderId). Ids are made by the till.
+[ApiController]
+[Route("api/inventory/purchase-orders")]
+[Authorize(Policy = Permissions.InventoryManage)]
+public sealed class PurchaseOrdersController(ISender sender, IBusinessCalendar calendar) : ControllerBase
+{
+    // Newest first: by status, the open ones only, or a supplier's.
+    [HttpGet]
+    [CostingTab(CostingTabs.Purchases | CostingTabs.Intelligence | CostingTabs.EndOfDay)]
+    public Task<IReadOnlyList<PurchaseOrderSummaryDto>> GetOrders(
+        [FromQuery] PurchaseOrderStatus? status, [FromQuery] bool open, [FromQuery] Guid? supplierId, CancellationToken cancellationToken) =>
+        sender.Send(new GetPurchaseOrdersQuery(status, open, supplierId, calendar.BusinessDateOf(DateTime.UtcNow)), cancellationToken);
+
+    // The open ones in full, what is left to come of each line, for a delivery to be received against.
+    [HttpGet("open")]
+    [CostingTab(CostingTabs.Purchases | CostingTabs.EndOfDay)]
+    public Task<IReadOnlyList<PurchaseOrderDto>> GetOpenOrders([FromQuery] Guid? supplierId, CancellationToken cancellationToken) =>
+        sender.Send(new GetOpenPurchaseOrdersQuery(supplierId), cancellationToken);
+
+    [HttpGet("{id:guid}")]
+    [CostingTab(CostingTabs.Purchases)]
+    public async Task<ActionResult<PurchaseOrderDto>> GetOrder(Guid id, CancellationToken cancellationToken) =>
+        await sender.Send(new GetPurchaseOrderQuery(id), cancellationToken) is { } order ? order : NotFound();
+
+    // A draft, written or rewritten.
+    [HttpPut("{id:guid}")]
+    [CostingTab(CostingTabs.Purchases)]
+    public Task<PurchaseOrderDto> SaveOrder(Guid id, PurchaseOrderInput request, CancellationToken cancellationToken) =>
+        sender.Send(new SavePurchaseOrderCommand(id, request, StaffId, StaffName), cancellationToken);
+
+    // Approved at once for a manager (200); asked of one for anyone else (202).
+    [HttpPost("{id:guid}/approve")]
+    [CostingTab(CostingTabs.Purchases)]
+    public async Task<IActionResult> ApproveOrder(Guid id, ApprovePurchaseOrderRequest request, CancellationToken cancellationToken)
+    {
+        var saved = await sender.Send(new ApprovePurchaseOrderCommand(request.RequestId, id, request.Reason, StaffId, StaffName, CanApprove), cancellationToken);
+        return saved.Outcome == ApprovalOutcome.Requested ? Accepted(saved) : Ok(saved);
+    }
+
+    // Called off before anything came: a draft by whoever writes orders, an approved one by a manager.
+    [HttpPost("{id:guid}/cancel")]
+    [CostingTab(CostingTabs.Purchases)]
+    public Task<PurchaseOrderDto> CancelOrder(Guid id, CancellationToken cancellationToken) =>
+        sender.Send(new CancelPurchaseOrderCommand(id, StaffName, CanApprove), cancellationToken);
+
+    // What has not come is not expected any more. A manager's.
+    [HttpPost("{id:guid}/close")]
+    [CostingTab(CostingTabs.Purchases)]
+    [Authorize(Policy = Permissions.ApprovalDecide)]
+    public Task<PurchaseOrderDto> CloseOrder(Guid id, CancellationToken cancellationToken) =>
+        sender.Send(new ClosePurchaseOrderCommand(id, StaffName), cancellationToken);
+
+    // Several at once, a supplier each, from the order planner: all or none (422, each by its supplier).
+    [HttpPost("batch")]
+    [CostingTab(CostingTabs.Purchases | CostingTabs.Intelligence)]
+    public Task<IReadOnlyList<PurchaseOrderSaved>> CreateOrders(CreatePurchaseOrdersRequest request, CancellationToken cancellationToken) =>
+        sender.Send(new CreatePurchaseOrdersCommand(request.Orders ?? [], StaffId, StaffName, CanApprove), cancellationToken);
+
+    private string StaffName => User.FindFirst(UserClaims.Name)?.Value ?? string.Empty;
+
+    private string StaffId => UserClaims.IdOf(User) ?? string.Empty;
+
+    private bool CanApprove => UserClaims.RoleOf(User) is { } role && RolePermissions.Has(role, Permissions.ApprovalDecide);
+}
+
+public sealed record ApprovePurchaseOrderRequest(Guid RequestId, string? Reason = null);
+
+public sealed record CreatePurchaseOrdersRequest(IReadOnlyList<NewPurchaseOrder>? Orders);
 ```
 
 
@@ -1351,7 +2587,7 @@ Draft ──(تسليم: Review & confirm)──► Submitted ──(إعادة 
 - **المراجعة قبل التسليم:** لا يُسلّم يوم بلا مبيعات، أو بفاتورة/دفعة مكتوبة ولم تُضف.
 - الصور في `EndOfDayPhotos` بمفتاح الفاتورة/الدفعة (وصورة Z بمفتاح اليوم)، ويُتحقق من نوعها بأول بايتات وحجمها.
 
-> 📄 **`backend/src/Costing.Application/EndOfDay/EndOfDays.cs`** — 618 سطر
+> 📄 **`backend/src/Costing.Application/EndOfDay/EndOfDays.cs`** — 622 سطر
 
 ```csharp
 using System.Globalization;
@@ -1398,7 +2634,9 @@ public sealed record EndOfDayInvoiceDto(
     DateTime AddedAtUtc,
     // The purchase invoice it was posted as on the daily batch.
     Guid? PurchaseInvoiceId,
-    DateTime? PostedAtUtc);
+    DateTime? PostedAtUtc,
+    // The purchase order it delivers, when there was one: the batch receives it against it.
+    Guid? PurchaseOrderId = null);
 
 // Where a payment's safe entry is: none yet (the day not handed in), asked of a manager, in the
 // safe, or refused by a manager (it can then be taken off, and entered again).
@@ -1497,10 +2735,12 @@ public sealed record AddEndOfDayInvoiceCommand(
     string FileName,
     string ContentType,
     byte[] Content,
-    string StaffName = "") : IRequest<EndOfDayDto>;
+    string StaffName = "",
+    Guid? PurchaseOrderId = null) : IRequest<EndOfDayDto>;
 
 public sealed record ChangeEndOfDayInvoiceCommand(
-    DateOnly Date, Guid InvoiceId, EndOfDayInvoiceKind Kind, Guid SupplierId, decimal ReportedTotal, string? Note, string StaffName = "")
+    DateOnly Date, Guid InvoiceId, EndOfDayInvoiceKind Kind, Guid SupplierId, decimal ReportedTotal, string? Note, string StaffName = "",
+    Guid? PurchaseOrderId = null)
     : IRequest<EndOfDayDto>;
 
 public sealed record ReplaceEndOfDayInvoicePhotoCommand(DateOnly Date, Guid InvoiceId, string FileName, string ContentType, byte[] Content, string StaffName = "")
@@ -1737,7 +2977,7 @@ internal sealed class EndOfDayDays(
                 EndOfDayPhotoDto.From(day.SalesPhoto),
                 day.Invoices.Select(i => new EndOfDayInvoiceDto(
                     i.Id, i.Kind, i.SupplierId, names.GetValueOrDefault(i.SupplierId, "A removed supplier"), i.ReportedTotal, i.Note,
-                    EndOfDayPhotoDto.From(i.Photo)!, i.AddedAtUtc, i.PurchaseInvoiceId, i.PostedAtUtc)).ToList(),
+                    EndOfDayPhotoDto.From(i.Photo)!, i.AddedAtUtc, i.PurchaseInvoiceId, i.PostedAtUtc, i.PurchaseOrderId)).ToList(),
                 day.CountOf(EndOfDayInvoiceKind.Cash), day.TotalOf(EndOfDayInvoiceKind.Cash),
                 day.CountOf(EndOfDayInvoiceKind.Credit), day.TotalOf(EndOfDayInvoiceKind.Credit),
                 day.NetSales, day.TotalRevenue, day.CashAfterInvoices, day.ExpectedIntoSafe,
@@ -1798,7 +3038,7 @@ internal sealed class AddEndOfDayInvoiceCommandHandler(EndOfDayDays shared, IEnd
         var photo = EndOfDayDays.Photo(request.FileName, request.ContentType, request.Content);
         await shared.CheckSupplierAsync(request.SupplierId, cancellationToken);
         var day = await shared.OpenAsync(request.Date, request.StaffName, cancellationToken);
-        day.AddInvoice(request.InvoiceId, request.Kind, request.SupplierId, request.ReportedTotal, request.Note, photo, request.StaffName);
+        day.AddInvoice(request.InvoiceId, request.Kind, request.SupplierId, request.ReportedTotal, request.Note, photo, request.StaffName, request.PurchaseOrderId);
         shared.Photos.Put(request.InvoiceId, request.Content);
         await unitOfWork.SaveChangesAsync(cancellationToken);
         return await shared.DtoAsync(day, cancellationToken);
@@ -1812,7 +3052,7 @@ internal sealed class ChangeEndOfDayInvoiceCommandHandler(EndOfDayDays shared, I
         var day = await shared.GetAsync(request.Date, cancellationToken);
         if (day.Invoice(request.InvoiceId).SupplierId != request.SupplierId)
             await shared.CheckSupplierAsync(request.SupplierId, cancellationToken);
-        day.ChangeInvoice(request.InvoiceId, request.Kind, request.SupplierId, request.ReportedTotal, request.Note, request.StaffName);
+        day.ChangeInvoice(request.InvoiceId, request.Kind, request.SupplierId, request.ReportedTotal, request.Note, request.StaffName, request.PurchaseOrderId);
         await unitOfWork.SaveChangesAsync(cancellationToken);
         return await shared.DtoAsync(day, cancellationToken);
     }
@@ -1977,7 +3217,7 @@ internal sealed class GetEndOfDayPhotoQueryHandler(IEndOfDayRepository days, IEn
 
 `EndOfDayController`: `multipart/form-data` لإضافة البنود بصورها، و `GET {date}` يعيد 204 إن لم يوجد يوم، والقراءة لأقسام عدة (`Readers`) والتعديل لقسم تقفيل اليوم، وإعادة الفتح بصلاحية القرار.
 
-> 📄 **`backend/src/Costing.Api/Controllers/EndOfDayController.cs`** — 245 سطر
+> 📄 **`backend/src/Costing.Api/Controllers/EndOfDayController.cs`** — 251 سطر
 
 ```csharp
 using System.Globalization;
@@ -2045,14 +3285,17 @@ public sealed class EndOfDayController(ISender sender) : ControllerBase
             return Refused("Enter the invoice's total. · أدخل إجمالي الفاتورة.");
         if (file.Length > PurchaseInvoice.MaxAttachmentBytes)
             return Refused("The file must be under 10 MB. · الملف أقل من 10 ميجا.");
+        Guid? orderId = Guid.TryParse(form.PurchaseOrderId, out var order) ? order : null;
         return await sender.Send(new AddEndOfDayInvoiceCommand(
-            date, invoiceId, kind, supplierId, total, form.Note, file.FileName, file.ContentType, await ContentOf(file, cancellationToken), StaffName), cancellationToken);
+            date, invoiceId, kind, supplierId, total, form.Note, file.FileName, file.ContentType, await ContentOf(file, cancellationToken), StaffName, orderId),
+            cancellationToken);
     }
 
     [HttpPut("{date}/invoices/{invoiceId:guid}")]
     [CostingTab(CostingTabs.EndOfDay)]
     public Task<EndOfDayDto> ChangeInvoice(DateOnly date, Guid invoiceId, EndOfDayInvoiceRequest request, CancellationToken cancellationToken) =>
-        sender.Send(new ChangeEndOfDayInvoiceCommand(date, invoiceId, request.Kind, request.SupplierId, request.ReportedTotal, request.Note, StaffName), cancellationToken);
+        sender.Send(new ChangeEndOfDayInvoiceCommand(
+            date, invoiceId, request.Kind, request.SupplierId, request.ReportedTotal, request.Note, StaffName, request.PurchaseOrderId), cancellationToken);
 
     [HttpPut("{date}/invoices/{invoiceId:guid}/photo")]
     [CostingTab(CostingTabs.EndOfDay)]
@@ -2213,7 +3456,7 @@ public sealed class EndOfDayPayoutForm
     public IFormFile? File { get; set; }
 }
 
-public sealed record EndOfDayInvoiceRequest(EndOfDayInvoiceKind Kind, Guid SupplierId, decimal ReportedTotal, string? Note);
+public sealed record EndOfDayInvoiceRequest(EndOfDayInvoiceKind Kind, Guid SupplierId, decimal ReportedTotal, string? Note, Guid? PurchaseOrderId = null);
 
 // As the till sends it, text: the total is read with a point for its decimals, whatever the server's language.
 public sealed class EndOfDayInvoiceForm
@@ -2224,6 +3467,9 @@ public sealed class EndOfDayInvoiceForm
     public string? ReportedTotal { get; set; }
     public string? Note { get; set; }
     public IFormFile? File { get; set; }
+
+    // The purchase order it delivers, if any.
+    public string? PurchaseOrderId { get; set; }
 }
 ```
 
@@ -3291,7 +4537,7 @@ internal sealed class RecordStaffConsumptionHandler(
 
 أكبر Controller: الخامات والوحدات، الوصفات والمصنعات، أوامر الإنتاج، الجرد، الهالك، الفواتير ويومية المشتريات وتعديلها وصورها، الفئات والمصروفات والموردون، و **طلبات الحذف** (`deletion-requests`). الصلاحيات على كل endpoint (لا تعتمد على السجل)، و `CanApprove` يقرر "200 تنفيذ" أم "202 طلب".
 
-> 📄 **`backend/src/Costing.Api/Controllers/InventoryController.cs`** — 927 سطر
+> 📄 **`backend/src/Costing.Api/Controllers/InventoryController.cs`** — 930 سطر
 
 ```csharp
 using MediatR;
@@ -3456,7 +4702,7 @@ public sealed class InventoryController(ISender sender) : ControllerBase
     public Task<PurchaseInvoiceDto> SavePurchaseInvoice(Guid invoiceId, SavePurchaseInvoiceRequest request, CancellationToken cancellationToken) =>
         sender.Send(new SavePurchaseInvoiceCommand(
             invoiceId, request.SupplierId, request.SupplierInvoiceNumber, request.InvoiceDate, request.Lines, StaffName,
-            request.PaymentMethod, request.RevenueDate, request.Discount), cancellationToken);
+            request.PaymentMethod, request.RevenueDate, request.Discount, request.PurchaseOrderId, request.ClosesPurchaseOrder), cancellationToken);
 
     // Step two, after the review: the stock goes in, and it is paid as chosen: on credit, owed to
     // the supplier; in cash, paid for a manager and waiting for one's approval for anyone else
@@ -4057,7 +5303,7 @@ public sealed class InventoryController(ISender sender) : ControllerBase
     [CostingTab(CostingTabs.All)]
     [Authorize(Policy = Permissions.ApprovalDecide)]
     public Task<ApprovalRequestDto> ApproveRequest(Guid requestId, CancellationToken cancellationToken) =>
-        sender.Send(new ApproveRequestCommand(requestId, StaffName), cancellationToken);
+        sender.Send(new ApproveRequestCommand(requestId, StaffName, StaffId), cancellationToken);
 
     [HttpPost("approval-requests/{requestId:guid}/reject")]
     [CostingTab(CostingTabs.All)]
@@ -4120,7 +5366,10 @@ public sealed record SavePurchaseInvoiceRequest(
     IReadOnlyList<PurchaseInvoiceLineEntry> Lines,
     PurchasePaymentMethod? PaymentMethod = null,
     DateOnly? RevenueDate = null,
-    decimal Discount = 0);
+    decimal Discount = 0,
+    // The purchase order it delivers, and whether it closes it with what came.
+    Guid? PurchaseOrderId = null,
+    bool ClosesPurchaseOrder = false);
 
 public sealed record PayPurchaseInvoiceRequest(Guid RequestId, PurchasePaymentMethod Method, DateOnly? RevenueDate = null);
 

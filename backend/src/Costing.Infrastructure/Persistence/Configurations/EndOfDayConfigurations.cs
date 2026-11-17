@@ -58,6 +58,7 @@ internal sealed class EndOfDayInvoiceConfiguration : IEntityTypeConfiguration<En
         builder.Property(i => i.PhotoContentType).HasMaxLength(64);
         builder.Ignore(i => i.Photo);
         builder.HasOne<Supplier>().WithMany().HasForeignKey(i => i.SupplierId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne<Domain.Purchases.PurchaseOrder>().WithMany().HasForeignKey(i => i.PurchaseOrderId).OnDelete(DeleteBehavior.Restrict);
         // A purchase invoice is the one an invoice handed in was posted as, once.
         builder.HasOne<PurchaseInvoice>().WithMany().HasForeignKey(i => i.PurchaseInvoiceId).OnDelete(DeleteBehavior.Restrict);
         builder.HasIndex(i => i.PurchaseInvoiceId).IsUnique();

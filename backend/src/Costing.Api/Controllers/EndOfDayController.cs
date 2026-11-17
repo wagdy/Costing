@@ -63,14 +63,17 @@ public sealed class EndOfDayController(ISender sender) : ControllerBase
             return Refused("Enter the invoice's total. · أدخل إجمالي الفاتورة.");
         if (file.Length > PurchaseInvoice.MaxAttachmentBytes)
             return Refused("The file must be under 10 MB. · الملف أقل من 10 ميجا.");
+        Guid? orderId = Guid.TryParse(form.PurchaseOrderId, out var order) ? order : null;
         return await sender.Send(new AddEndOfDayInvoiceCommand(
-            date, invoiceId, kind, supplierId, total, form.Note, file.FileName, file.ContentType, await ContentOf(file, cancellationToken), StaffName), cancellationToken);
+            date, invoiceId, kind, supplierId, total, form.Note, file.FileName, file.ContentType, await ContentOf(file, cancellationToken), StaffName, orderId),
+            cancellationToken);
     }
 
     [HttpPut("{date}/invoices/{invoiceId:guid}")]
     [CostingTab(CostingTabs.EndOfDay)]
     public Task<EndOfDayDto> ChangeInvoice(DateOnly date, Guid invoiceId, EndOfDayInvoiceRequest request, CancellationToken cancellationToken) =>
-        sender.Send(new ChangeEndOfDayInvoiceCommand(date, invoiceId, request.Kind, request.SupplierId, request.ReportedTotal, request.Note, StaffName), cancellationToken);
+        sender.Send(new ChangeEndOfDayInvoiceCommand(
+            date, invoiceId, request.Kind, request.SupplierId, request.ReportedTotal, request.Note, StaffName, request.PurchaseOrderId), cancellationToken);
 
     [HttpPut("{date}/invoices/{invoiceId:guid}/photo")]
     [CostingTab(CostingTabs.EndOfDay)]
@@ -231,7 +234,7 @@ public sealed class EndOfDayPayoutForm
     public IFormFile? File { get; set; }
 }
 
-public sealed record EndOfDayInvoiceRequest(EndOfDayInvoiceKind Kind, Guid SupplierId, decimal ReportedTotal, string? Note);
+public sealed record EndOfDayInvoiceRequest(EndOfDayInvoiceKind Kind, Guid SupplierId, decimal ReportedTotal, string? Note, Guid? PurchaseOrderId = null);
 
 // As the till sends it, text: the total is read with a point for its decimals, whatever the server's language.
 public sealed class EndOfDayInvoiceForm
@@ -242,4 +245,7 @@ public sealed class EndOfDayInvoiceForm
     public string? ReportedTotal { get; set; }
     public string? Note { get; set; }
     public IFormFile? File { get; set; }
+
+    // The purchase order it delivers, if any.
+    public string? PurchaseOrderId { get; set; }
 }

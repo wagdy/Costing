@@ -199,6 +199,9 @@ internal sealed class PurchaseInvoiceConfiguration : IEntityTypeConfiguration<Pu
         builder.Navigation(i => i.Lines).HasField("_lines").UsePropertyAccessMode(PropertyAccessMode.Field);
         builder.HasIndex(i => new { i.Status, i.PostedAtUtc });
         builder.HasOne<Supplier>().WithMany().HasForeignKey(i => i.SupplierId).OnDelete(DeleteBehavior.Restrict);
+        // The purchase order it delivers: each posted invoice against one, for its deliveries.
+        builder.HasOne<PurchaseOrder>().WithMany().HasForeignKey(i => i.PurchaseOrderId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasIndex(i => i.PurchaseOrderId).HasFilter("\"PurchaseOrderId\" IS NOT NULL");
     }
 }
 

@@ -1022,7 +1022,7 @@ internal static class UserTabsDtos
 
 الوحدة (`ApprovalModule`: وصفات، مشتريات، هالك، جرد، خامات، إنتاج، الخزنة، الكسر، …)، الفعل (إنشاء/تعديل/حذف)، الملخص، **سطور التغيير** (`ApprovalChange`: "الكمية: 10 كجم ← 12 كجم")، الحمولة (`Payload` JSON بما أُدخل)، والقرار ومن اتخذه ومتى. ومعرّفه يصنعه التطبيق (Idempotent).
 
-> 📄 **`backend/src/Costing.Domain/Approvals/ApprovalRequest.cs`** — 246 سطر
+> 📄 **`backend/src/Costing.Domain/Approvals/ApprovalRequest.cs`** — 253 سطر
 
 ```csharp
 using Costing.Domain.Common;
@@ -1067,6 +1067,11 @@ public enum ApprovalModule
 
     // Breakage entered on Waste, voided: its cost off the day.
     Breakage = 11,
+
+    // A purchase order approved (اعتماد أمر شراء), or called off. With PurchaseInvoice Create: an
+    // invoice received against a purchase order with an overcharge or an over-delivery, posted
+    // (its stock in, its average costs moved) once a manager signs the differences off.
+    PurchaseOrder = 12,
 }
 
 public enum ApprovalAction
@@ -1126,15 +1131,17 @@ public sealed class ApprovalRequest : AggregateRoot
             throw new DomainException("Say what is to be done.");
         if (action != ApprovalAction.Delete
             && module is not (ApprovalModule.PrepItem or ApprovalModule.ProductionOrder or ApprovalModule.Treasury or ApprovalModule.PurchaseInvoice
-                or ApprovalModule.RawMaterial))
+                or ApprovalModule.RawMaterial or ApprovalModule.PurchaseOrder))
             throw new DomainException(
-                "Only prep items, production orders, safe entries, invoices and raw materials are added or changed through an approval.");
+                "Only prep items, production orders, safe entries, invoices, raw materials and purchase orders are added or changed through an approval.");
         if (action == ApprovalAction.Update && module == ApprovalModule.Treasury)
             throw new DomainException("A safe entry is not changed: void it and enter it again.");
         // An invoice is only corrected through one, and a raw material's unit changed: a new one
         // of either is entered as it is.
-        if (action == ApprovalAction.Create && module is (ApprovalModule.PurchaseInvoice or ApprovalModule.RawMaterial))
+        if (action == ApprovalAction.Create && module == ApprovalModule.RawMaterial)
             throw new DomainException("A new one is entered as it is, not asked for.");
+        if (action == ApprovalAction.Update && module == ApprovalModule.PurchaseOrder)
+            throw new DomainException("A purchase order is changed as a draft, not asked for.");
         if (action != ApprovalAction.Delete && string.IsNullOrWhiteSpace(payload))
             throw new DomainException("Say what the change is.");
         if (string.IsNullOrWhiteSpace(summary))
@@ -1281,7 +1288,7 @@ public interface IApprovalRequestRepository : IRepository<ApprovalRequest>
 - `RejectRequestCommand`: يرفض بملاحظة، والسجل يبقى كما هو ويُفتح قفله.
 - `IRecordDescriptions`: كل وحدة تصف سجلاتها للمدير.
 
-> 📄 **`backend/src/Costing.Application/Approvals/ApprovalRequests.cs`** — 245 سطر
+> 📄 **`backend/src/Costing.Application/Approvals/ApprovalRequests.cs`** — 270 سطر
 
 ```csharp
 using System.Text.Json;
@@ -1295,6 +1302,7 @@ using Costing.Application.Purchases;
 using Costing.Application.RawMaterials;
 using Costing.Application.Treasury;
 using Costing.Domain.Approvals;
+using Costing.Domain.Purchases;
 using Costing.Domain.RawMaterials;
 using Costing.Domain.Recipes;
 using Costing.Domain.StockMovements;
@@ -1375,6 +1383,8 @@ public static class ApprovalLocks
         ApprovalAction.Delete => "for this to be deleted",
         ApprovalAction.Update => "to change this",
         _ when pending.Module == ApprovalModule.Treasury => "to pay this",
+        _ when pending.Module == ApprovalModule.PurchaseInvoice => "to post this against its purchase order",
+        _ when pending.Module == ApprovalModule.PurchaseOrder => "to approve this purchase order",
         _ => "for this",
     };
 }
@@ -1396,7 +1406,7 @@ internal static class ApprovalPayload
 // the request closed, together. Approving again, after a lost answer, changes nothing. When it
 // can no longer be done (a price missing, an ingredient gone), it stays waiting, for the manager
 // to put right or reject.
-public sealed record ApproveRequestCommand(Guid RequestId, string StaffName) : IRequest<ApprovalRequestDto>, IRetryOnConflict;
+public sealed record ApproveRequestCommand(Guid RequestId, string StaffName, string StaffId = "") : IRequest<ApprovalRequestDto>, IRetryOnConflict;
 
 internal sealed class ApproveRequestHandler(
     IApprovalRequestRepository requests,
@@ -1409,6 +1419,9 @@ internal sealed class ApproveRequestHandler(
     CategoryDeleter categoryDeleter,
     IRawMaterialRepository materials,
     IStockMovementRepository movements,
+    InvoicePoster poster,
+    IPurchaseInvoiceRepository invoices2,
+    IPurchaseOrderRepository purchaseOrders,
     IUnitOfWork unitOfWork) : IRequestHandler<ApproveRequestCommand, ApprovalRequestDto>
 {
     public async Task<ApprovalRequestDto> Handle(ApproveRequestCommand request, CancellationToken cancellationToken)
@@ -1445,6 +1458,25 @@ internal sealed class ApproveRequestHandler(
             case (ApprovalAction.Create, ApprovalModule.Treasury):
                 await treasury.ApplyAsync(ApprovalPayload.Read<SafeVoucher>(approval), approval.RequestedBy, request.StaffName, cancellationToken);
                 break;
+
+            // A purchase order approved as it was written.
+            case (ApprovalAction.Create, ApprovalModule.PurchaseOrder):
+            {
+                var order = await purchaseOrders.GetRequiredAsync(approval.RecordId, cancellationToken);
+                if (order.Status == PurchaseOrderStatus.Draft)
+                    order.Approve(request.StaffId, request.StaffName);
+                break;
+            }
+
+            // An invoice over its purchase order, signed off: posted as it was entered, its stock in,
+            // its payment settled, and counted on the order.
+            case (ApprovalAction.Create, ApprovalModule.PurchaseInvoice):
+            {
+                var invoice = await invoices2.GetRequiredAsync(approval.RecordId, cancellationToken);
+                if (invoice.Status == PurchaseInvoiceStatus.Draft)
+                    await poster.PostAsync(invoice, approval.RequestedBy, approval.RequestedById, canApprove: true, cancellationToken);
+                break;
+            }
 
             // An invoice corrected: the original voided, the correction posted in its place.
             case (ApprovalAction.Update, ApprovalModule.PurchaseInvoice):
@@ -1536,7 +1568,7 @@ internal sealed class GetApprovalPreviewHandler(IApprovalRequestRepository reque
 
 **في الدفاتر لا يُحذف شيء مُرحّل؛ يُلغى (Void).** حذف فاتورة مرحّلة = حركات مخزون عكسية بنفس تكلفتها + عكس قيد الخزنة أو حساب المورد. حذف قيد خزنة = قيد عكسي بتاريخ اليوم. `DeletionTargets` يعرف لكل وحدة كيف "يلغي" سجلها، و `RequestDeletionCommand`: من يملك القرار يلغي فورًا (ويُسجل كموافَق منه)، وغيره يطلب. نقطة النهاية `POST api/inventory/deletion-requests` في `InventoryController` (الفصل 05).
 
-> 📄 **`backend/src/Costing.Application/Approvals/Deletions.cs`** — 386 سطر
+> 📄 **`backend/src/Costing.Application/Approvals/Deletions.cs`** — 389 سطر
 
 ```csharp
 using System.Globalization;
@@ -1582,7 +1614,8 @@ internal sealed class DeletionTargets(
     IRecordDescriptions descriptions,
     ISalesReceiptRepository sales,
     IBreakageEntryRepository breakage,
-    Costing.Domain.Menu.IComboOfferRepository combos)
+    Costing.Domain.Menu.IComboOfferRepository combos,
+    Purchases.PurchaseOrderReceiver receiver)
 {
     private static readonly CultureInfo Invariant = CultureInfo.InvariantCulture;
 
@@ -1861,6 +1894,8 @@ internal sealed class DeletionTargets(
         var reversals = await ReverseAsync(invoice.Id, StockMovementReason.Purchase, by, cancellationToken);
         await treasury.UndoInvoiceAsync(invoice, by, cancellationToken);
         invoice.Void(by, replacedBy);
+        // Against a purchase order: what it brought comes off it again.
+        await receiver.VoidedAsync(invoice, cancellationToken);
         return reversals;
     }
 

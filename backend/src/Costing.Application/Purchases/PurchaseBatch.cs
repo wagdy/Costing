@@ -45,7 +45,10 @@ public sealed record BatchInvoice(
     IReadOnlyList<PurchaseInvoiceLineEntry> Lines,
     decimal Discount = 0,
     bool OnCredit = false,
-    Guid? EndOfDayInvoiceId = null);
+    Guid? EndOfDayInvoiceId = null,
+    // The purchase order it delivers, and whether it closes it with what came (no backorder).
+    Guid? PurchaseOrderId = null,
+    bool ClosesPurchaseOrder = false);
 
 public sealed record BatchPayment(Guid TransactionId, Guid SupplierId, decimal Amount, string? Notes = null);
 
@@ -85,6 +88,7 @@ internal sealed class PostPurchaseBatchHandler(
     IEndOfDayRepository endOfDays,
     IEndOfDayPhotoStore endOfDayPhotos,
     IPurchaseAttachmentStore attachments,
+    PurchaseOrderReceiver receiver,
     IUnitOfWork unitOfWork) : IRequestHandler<PostPurchaseBatchCommand, PurchaseBatchResult>
 {
     public const int MaxInvoices = 50;
@@ -127,10 +131,12 @@ internal sealed class PostPurchaseBatchHandler(
             var entry = request.Invoices[i];
             try
             {
-                // Sent again after an answer was lost: posted already, it is not posted twice.
-                if (await invoices.GetByIdAsync(entry.InvoiceId, cancellationToken) is { Status: PurchaseInvoiceStatus.Posted } posted)
+                // Sent again after an answer was lost: posted already, it is not posted twice; or
+                // asked of a manager already, against its purchase order.
+                if (await invoices.GetByIdAsync(entry.InvoiceId, cancellationToken) is { } existing
+                    && (existing.Status == PurchaseInvoiceStatus.Posted || await requests.GetPendingForAsync(existing.Id, cancellationToken) is not null))
                 {
-                    made.Add(posted);
+                    made.Add(existing);
                     continue;
                 }
 
@@ -141,9 +147,11 @@ internal sealed class PostPurchaseBatchHandler(
                 var invoice = await recorder.RecordAsync(
                     new SavePurchaseInvoiceCommand(
                         entry.InvoiceId, entry.SupplierId, entry.SupplierInvoiceNumber, request.InvoiceDate, entry.Lines, request.StaffName,
-                        method, method == PurchasePaymentMethod.DayRevenue ? request.RevenueDate : null, entry.Discount),
+                        method, method == PurchasePaymentMethod.DayRevenue ? request.RevenueDate : null, entry.Discount,
+                        entry.PurchaseOrderId ?? day?.Invoice(entry.EndOfDayInvoiceId!.Value).PurchaseOrderId, entry.ClosesPurchaseOrder),
                     cancellationToken);
-                await poster.PostAsync(invoice, request.StaffName, request.StaffId, request.CanApprove, cancellationToken);
+                // Over its purchase order, anyone else's waits for a manager, a draft until then.
+                await poster.PostOrAskAsync(invoice, request.StaffName, request.StaffId, request.CanApprove, cancellationToken);
                 if (day is not null)
                     await PostedFromAsync(day, entry.EndOfDayInvoiceId!.Value, invoice, request.StaffName, cancellationToken);
                 made.Add(invoice);
@@ -256,7 +264,7 @@ internal sealed class PostPurchaseBatchHandler(
             throw new DomainException(string.Join("\n", problems));
 
         await unitOfWork.SaveChangesAsync(cancellationToken);
-        var reading = new InvoiceReading(materials, expenses, categories, suppliers, safe, requests);
+        var reading = new InvoiceReading(materials, expenses, categories, suppliers, safe, requests, receiver);
         var dtos = new List<PurchaseInvoiceDto>();
         foreach (var invoice in made)
             dtos.Add(await reading.DtoAsync(invoice, cancellationToken));

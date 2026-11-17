@@ -1,5 +1,6 @@
 import { DatePipe, DecimalPipe } from '@angular/common';
 import { Component, computed, input } from '@angular/core';
+import { RouterLink } from '@angular/router';
 import { PurchaseInvoice, PurchaseInvoiceLine, UnitOfMeasure, paymentMethodLabels, paymentStatusLabels } from '../../core/costing/costing.api';
 import { MoneyPipe } from '../../core/ui/money.pipe';
 import { PaperPreview } from './invoice-paper';
@@ -14,12 +15,18 @@ const baseLabels: Record<UnitOfMeasure, string> = { Gram: 'g', Millilitre: 'ml',
 // history's Show, and on the invoice's own page; from a stock card, its material's line marked.
 @Component({
   selector: 'app-invoice-view',
-  imports: [DatePipe, DecimalPipe, MoneyPipe, PaperPreview],
+  imports: [DatePipe, DecimalPipe, MoneyPipe, PaperPreview, RouterLink],
   template: `
     @let inv = invoice();
     <dl class="details">
       <div><dt>Supplier · المورد</dt><dd>{{ inv.supplierName ?? '—' }}</dd></div>
       <div><dt>Invoice no. · رقم الفاتورة</dt><dd>{{ inv.supplierInvoiceNumber ?? '—' }}</dd></div>
+      @if (inv.purchaseOrder; as po) {
+        <div>
+          <dt>Purchase order · أمر الشراء</dt>
+          <dd><a [routerLink]="['/costing/purchases/orders', po.purchaseOrderId]">{{ po.poNumber }}</a>{{ po.closes ? ' · closes it' : '' }}</dd>
+        </div>
+      }
       <div><dt>Date · التاريخ</dt><dd>{{ date() | date: 'd MMM y' }}</dd></div>
       @if (discounted()) {
         <div><dt>Net payable · الصافي المستحق</dt><dd class="total">{{ inv.total | money }}</dd></div>

@@ -59,6 +59,7 @@ public static class DependencyInjection
         services.AddScoped<IMenuRepository, MenuRepository>();
         services.AddScoped<IComboOfferRepository, ComboOfferRepository>();
         services.AddScoped<Domain.FixedAssets.IFixedAssetRepository, FixedAssetRepository>();
+        services.AddScoped<Domain.Purchases.IPurchaseOrderRepository, PurchaseOrderRepository>();
         services.AddScoped<Domain.Integrations.IPosLinkStore, PosLinkStore>();
         services.AddScoped<Domain.Integrations.IPosZReportRepository, PosZReportRepository>();
         services.AddScoped<Domain.Integrations.IPosDayRepository, PosDayRepository>();

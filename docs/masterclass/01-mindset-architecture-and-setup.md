@@ -697,7 +697,7 @@ internal sealed class ApplicationExceptionHandler(
 
 طبقة التطبيق: MediatR يجد الـ Handlers تلقائيًا، والخدمات الداخلية المشتركة (`TreasuryWriter`, `InvoicePoster`, `HrOutbox`, …) بعمر `Scoped`.
 
-> 📄 **`backend/src/Costing.Application/DependencyInjection.cs`** — 28 سطر
+> 📄 **`backend/src/Costing.Application/DependencyInjection.cs`** — 31 سطر
 
 ```csharp
 using Microsoft.Extensions.DependencyInjection;
@@ -719,6 +719,9 @@ public static class DependencyInjection
         services.AddScoped<Treasury.TreasuryWriter>();
         services.AddScoped<Purchases.InvoiceRecorder>();
         services.AddScoped<Purchases.InvoicePoster>();
+        services.AddScoped<Purchases.PurchaseOrderReceiver>();
+        services.AddScoped<Purchases.PurchaseOrderWriter>();
+        services.AddScoped<Purchases.PurchaseOrderReading>();
         services.AddScoped<Purchases.InvoiceCorrector>();
         services.AddScoped<RawMaterials.MaterialUnitWriter>();
         services.AddScoped<Categories.CategoryDeleter>();
@@ -733,7 +736,7 @@ public static class DependencyInjection
 
 البنية التحتية: كل "منفذ" يُربط بتطبيقه. `Singleton` للساعة وملف الشركة والتشفير؛ `Scoped` لكل ما يلمس `CostingDbContext`؛ `RetryOnConflictBehavior` يلف كل أمر؛ و `AddHttpClient` + `AddHostedService<HrSyncWorker>` للربط مع HR.
 
-> 📄 **`backend/src/Costing.Infrastructure/DependencyInjection.cs`** — 126 سطر
+> 📄 **`backend/src/Costing.Infrastructure/DependencyInjection.cs`** — 127 سطر
 
 ```csharp
 using MediatR;
@@ -797,6 +800,7 @@ public static class DependencyInjection
         services.AddScoped<IMenuRepository, MenuRepository>();
         services.AddScoped<IComboOfferRepository, ComboOfferRepository>();
         services.AddScoped<Domain.FixedAssets.IFixedAssetRepository, FixedAssetRepository>();
+        services.AddScoped<Domain.Purchases.IPurchaseOrderRepository, PurchaseOrderRepository>();
         services.AddScoped<Domain.Integrations.IPosLinkStore, PosLinkStore>();
         services.AddScoped<Domain.Integrations.IPosZReportRepository, PosZReportRepository>();
         services.AddScoped<Domain.Integrations.IPosDayRepository, PosDayRepository>();
@@ -1434,6 +1438,7 @@ Costing/
                     InventoryController.cs
                     MenuSalesController.cs
                     PosIntegrationController.cs
+                    PurchaseOrdersController.cs
                     SettingsController.cs
                     SuppliersController.cs
                     UsersController.cs
@@ -1490,6 +1495,7 @@ Costing/
                     InvoiceCorrections.cs
                     PurchaseBatch.cs
                     PurchaseInvoices.cs
+                    PurchaseOrders.cs
                 RawMaterials/
                     MaterialUnits.cs
                     RawMaterialRepositoryExtensions.cs
@@ -1557,6 +1563,7 @@ Costing/
                 Purchases/
                     IPurchaseInvoiceRepository.cs
                     PurchaseInvoice.cs
+                    PurchaseOrder.cs
                 RawMaterials/
                     IRawMaterialRepository.cs
                     RawMaterial.cs
@@ -1643,8 +1650,10 @@ Costing/
                         20261116112941_AddSupplierTermsAndStaffMeals.cs
                         20261116193324_AddCombosAndDiscounts.cs
                         20261116223159_AddFixedAssets.cs
+                        20261116233433_AddPurchaseOrders.cs
                         CostingDbContextModelSnapshot.cs
                     PosIntegrationPersistence.cs
+                    PurchaseOrderPersistence.cs
                     RetryOnConflictBehavior.cs
                 Reports/
                     BreakEvenService.cs
@@ -1681,6 +1690,7 @@ Costing/
                 FixedAssetsApiTests.cs
                 HrIntegrationApiTests.cs
                 PosIntegrationApiTests.cs
+                PurchaseOrdersApiTests.cs
                 SettingsApiTests.cs
                 StockCountApiTests.cs
                 TestApi.cs
@@ -1716,6 +1726,7 @@ Costing/
                 PlateCostTests.cs
                 ProductionTests.cs
                 PurchaseInvoiceTests.cs
+                PurchaseOrderTests.cs
                 RecipeCostsTests.cs
                 RecipeTests.cs
                 StockCountTests.cs
@@ -1735,6 +1746,7 @@ Costing/
                 FixedAssetsTests.cs
                 IntelligenceTests.cs
                 PosIntegrationTests.cs
+                PurchaseOrdersTests.cs
                 StaffMealsAndInflationTests.cs
                 SupplierAccountsTests.cs
                 TestSystem.cs
@@ -1903,6 +1915,7 @@ Costing/
                         period-bar.ts
                         permissions-page.spec.ts
                         permissions-page.ts
+                        po-generation-dialog.ts
                         prep-import-dialog.ts
                         prep-import.spec.ts
                         prep-item-page.spec.ts
@@ -1920,6 +1933,12 @@ Costing/
                         purchase-category-dialog.spec.ts
                         purchase-category-dialog.ts
                         purchase-category-field.ts
+                        purchase-order-actions.ts
+                        purchase-order-dialog.ts
+                        purchase-order-page.ts
+                        purchase-orders-page.ts
+                        purchase-orders.spec.ts
+                        purchase-orders.ts
                         purchases-page.spec.ts
                         purchases-page.ts
                         purchases-shell.ts
@@ -1967,6 +1986,7 @@ Costing/
                         tax-service-page.ts
                         theoretical-page.spec.ts
                         theoretical-page.ts
+                        three-way-match.ts
                         treasury-page.spec.ts
                         treasury-page.ts
                         variance-page.spec.ts

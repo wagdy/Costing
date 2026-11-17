@@ -6350,12 +6350,13 @@ export class TaxServicePage {
 
 وفي كل هذه الشاشات (وتقارير الإنفاق والخزنة والفروقات والـ KPIs وبطاقة الوصفة) البطاقة **عنوان ورقم وشارة قصيرة** فقط؛ المعادلات التي كانت تحت البطاقات وفي ذيل الصفحة انتقلت إلى (ⓘ) بجانب العنوان (الفصل 08). واسم الخامة في جداول التحليلات بجانبه زر كارتة الصنف على فترة التقرير، و "آخر سعر صافي" في انحراف الأسعار يفتح فاتورته وسطرها مُعلَّم.
 
-> 📄 **`frontend/src/app/core/costing/intelligence.api.ts`** — 597 سطر
+> 📄 **`frontend/src/app/core/costing/intelligence.api.ts`** — 603 سطر
 
 ```ts
 import { HttpClient } from '@angular/common/http';
 import { Injectable, inject } from '@angular/core';
 import { Observable } from 'rxjs';
+import { PurchaseOrderPlan } from './costing.api';
 
 // Material & demand intelligence (تحليلات الخامات والطلبيات): every quantity in the material's
 // purchase unit (kg, L, a carton), every price per it.
@@ -6879,6 +6880,11 @@ export class IntelligenceApi {
   }
 
   // The order as approved: each material's quantity in its purchase unit.
+  // The approved order as a purchase order per supplier, to be written in one go.
+  purchaseOrderPlan(lines: { rawMaterialId: string; quantity: number }[], groupBy: OrderSheetGrouping): Observable<PurchaseOrderPlan> {
+    return this.http.post<PurchaseOrderPlan>('/api/costing/intelligence/orders/purchase-orders', { lines, groupBy });
+  }
+
   orderSheet(lines: { rawMaterialId: string; quantity: number }[], groupBy: OrderSheetGrouping, coverageDays: number): Observable<Blob> {
     return this.http.post('/api/costing/intelligence/orders/sheet', { lines, groupBy, coverageDays }, { responseType: 'blob' });
   }
@@ -7366,7 +7372,7 @@ export class PriceVariancePage {
 ```
 
 
-> 📄 **`frontend/src/app/features/costing/order-planner-page.ts`** — 478 سطر
+> 📄 **`frontend/src/app/features/costing/order-planner-page.ts`** — 536 سطر
 
 ```ts
 import { DatePipe, DecimalPipe } from '@angular/common';
@@ -7379,7 +7385,13 @@ import { MatIconModule } from '@angular/material/icon';
 import { MatTooltipModule } from '@angular/material/tooltip';
 import { MatInputModule } from '@angular/material/input';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
+import { MatDialog } from '@angular/material/dialog';
+import { Router } from '@angular/router';
 import { firstValueFrom } from 'rxjs';
+import { CostingApi } from '../../core/costing/costing.api';
+import { Approvals } from './approvals';
+import { BusinessDay } from './financials';
+import { PoGenerationData, PoGenerationDialog, PoGenerationResult } from './po-generation-dialog';
 import { IntelligenceApi, OrderPlan, OrderPlanLine, OrderSheetGrouping, PlannedDish } from '../../core/costing/intelligence.api';
 import { errorMessage } from '../../core/http/error-message';
 import { Company } from '../../core/settings/company';
@@ -7553,7 +7565,10 @@ const dishKey = (d: { menuItemId: number; variantId: number | null }) => `${d.me
             Cheapest supplier · الأقل سعراً
           </mat-button-toggle>
         </mat-button-toggle-group>
-        <button mat-flat-button (click)="download()" [disabled]="!approvedLines()"><mat-icon>download</mat-icon> Excel order sheet</button>
+        <button mat-stroked-button (click)="download()" [disabled]="!approvedLines()"><mat-icon>download</mat-icon> Excel order sheet</button>
+        <button mat-flat-button (click)="createOrders()" [disabled]="!approvedLines() || creating()">
+          <mat-icon>assignment_add</mat-icon> Create Purchase Orders · إنشاء أوامر شراء من الطلبية
+        </button>
       </div>
 
       <div class="table-wrap">
@@ -7691,8 +7706,14 @@ const dishKey = (d: { menuItemId: number; variantId: number | null }) => `${d.me
 })
 export class OrderPlannerPage {
   private readonly api = inject(IntelligenceApi);
+  private readonly costing = inject(CostingApi);
+  private readonly dialog = inject(MatDialog);
+  private readonly router = inject(Router);
+  private readonly approvals = inject(Approvals);
+  private readonly businessDay = inject(BusinessDay);
   private readonly notify = inject(NotifyService);
   private readonly company = inject(Company);
+  protected readonly creating = signal(false);
 
   protected readonly lookback = signal(14);
   protected readonly coverage = signal(7);
@@ -7832,6 +7853,49 @@ export class OrderPlannerPage {
       this.notify.info(`Order sheet made: ${lines.length} ${lines.length === 1 ? 'material' : 'materials'}, ${this.company.money(this.approvedTotal())}.`);
     } catch (error) {
       this.notify.error(error, 'The order sheet could not be made.');
+    }
+  }
+
+  // The approved quantities as a purchase order per supplier: by who sold each last, or cheapest
+  // when the sheet is grouped so; previewed, then written together.
+  protected async createOrders(): Promise<void> {
+    const plan = this.plan();
+    if (!plan) {
+      return;
+    }
+    const lines = plan.lines.filter((l) => this.approvedOf(l) > 0).map((l) => ({ rawMaterialId: l.rawMaterialId, quantity: this.approvedOf(l) }));
+    this.creating.set(true);
+    try {
+      const [preview, suppliers, today] = await Promise.all([
+        firstValueFrom(this.api.purchaseOrderPlan(lines, this.groupBy() === 'CheapestSupplier' ? 'CheapestSupplier' : 'Supplier')),
+        firstValueFrom(this.costing.suppliers()),
+        this.businessDay.today(),
+      ]);
+      const answer = await firstValueFrom(
+        this.dialog
+          .open<PoGenerationDialog, PoGenerationData, PoGenerationResult>(PoGenerationDialog, {
+            data: { plan: preview, suppliers, canApprove: this.approvals.canApprove(), today },
+            width: '900px',
+            maxWidth: '96vw',
+          })
+          .afterClosed(),
+      );
+      if (!answer?.orders.length) {
+        return;
+      }
+      const saved = await firstValueFrom(this.costing.createPurchaseOrders(answer.orders));
+      const asked = saved.filter((s) => s.outcome === 'Requested').length;
+      this.notify.info(
+        asked
+          ? `${saved.length} purchase ${saved.length === 1 ? 'order' : 'orders'} written (${saved.map((s) => s.poNumber).join(', ')}): sent to a manager for approval.`
+          : `${saved.length} purchase ${saved.length === 1 ? 'order' : 'orders'} approved: ${saved.map((s) => s.poNumber).join(', ')}.`,
+      );
+      void this.approvals.refresh();
+      await this.router.navigate(saved.length === 1 ? ['/costing/purchases/orders', saved[0].id] : ['/costing/purchases/orders']);
+    } catch (error) {
+      this.notify.error(error, 'The purchase orders could not be created.');
+    } finally {
+      this.creating.set(false);
     }
   }
 
@@ -15527,7 +15591,7 @@ export class PermissionsPage {
 
 `Approvals` (الخدمة): **أثر الحذف لكل وحدة** بكلمات المحاسب ("الدفاتر لا تُعدَّل؛ القيد المرحّل يُلغى")، شارة الانتظار، ونافذة سبب الحذف. و `ApprovalsPage`: الطلبات بسطور التغيير، وتصحيح الفاتورة/الدفعة **بأثره على كل خامة** (`NetRow`)، والقرار. و `ApprovalChanges`: "الكمية: 10 كجم ← 12 كجم"، والجديد بقيمته فقط، والمحذوف مشطوب.
 
-> 📄 **`frontend/src/app/features/costing/approvals.ts`** — 223 سطر
+> 📄 **`frontend/src/app/features/costing/approvals.ts`** — 230 سطر
 
 ```ts
 import { Component, Injectable, computed, inject, signal } from '@angular/core';
@@ -15557,6 +15621,7 @@ export const consequences: Record<ApprovalModule, string> = {
     'The category goes and what is in it moves, converted as listed: raw materials made expense items have their past invoice lines restated as expenses on their own dates and their stock ledger taken out; expense items made raw materials start with nothing on hand.',
   Sale: 'It is kept, marked voided: everything its lines took from stock goes back in, as it was taken, and it leaves the reports.',
   Breakage: 'It is kept, marked voided: its cost leaves the day it was entered on.',
+  PurchaseOrder: 'It is called off: nothing more is received against it. It is kept, marked cancelled.',
 };
 
 // The posted records, which are voided rather than deleted.
@@ -15570,8 +15635,14 @@ export function approvalEffect(module: ApprovalModule, action: ApprovalAction): 
   if (module === 'Treasury') {
     return 'The cash moves now: into the safe, or out of it (or out of a day’s takings), as entered.';
   }
+  if (module === 'PurchaseInvoice' && action === 'Create') {
+    return 'The invoice is posted as entered, over its purchase order: its stock goes in and moves the average costs at its prices, its payment is settled, and it counts on the order.';
+  }
   if (module === 'PurchaseInvoice') {
     return 'The invoice is voided and the corrected one posted in its place: its stock, cash and supplier’s account are redone, at the average costs at this moment.';
+  }
+  if (module === 'PurchaseOrder') {
+    return 'The purchase order is approved: it can be sent to the supplier and received against.';
   }
   if (module === 'RawMaterial') {
     return 'The material is counted in the new unit from now: its stock, average cost, invoices, recipes, counts and batches are restated by the conversion, every amount of money as it was.';

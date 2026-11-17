@@ -42,7 +42,8 @@
 | الوصفات والإنتاج | `Recipes`, `RecipeIngredients`, `RecipeCategories`, `PrepRecipes`, `PrepRecipeIngredients`, `ProductionOrders`, `ProductionOrderLines` |
 | المنيو والمبيعات | `MenuCategories`, `MenuItems`, `MenuItemVariants`, `AddOns`, `SalesReceipts`, `SalesReceiptLines`, `ManualSalesSheets`, `ManualSalesLines` |
 | المخزون | `StockMovements`, `StockCounts`, `StockCountLines`, `BreakageEntries` |
-| المشتريات | `PurchaseInvoices`, `PurchaseInvoiceLines`, `PurchaseInvoiceAttachments` |
+| المشتريات | `PurchaseInvoices` (وفيها `PurchaseOrderId` و `ClosesPurchaseOrder`)، `PurchaseInvoiceLines`، `PurchaseInvoiceAttachments` |
+| أوامر الشراء | `PurchaseOrders` (رقم PO-السنة-التسلسل، المورد، التواريخ، شروط الدفع، الحالة، من كتب واعتمد وأغلق)، `PurchaseOrderLines` (`MaterialId`، الكمية المطلوبة والمستلمة بوحدة الشراء، السعر المتوقع) |
 | الخزنة | `SafeTransactions` (وفيها `FixedAssetId` لشراء أصل أو بيعه)، `SupplierLedgerEntries` |
 | الأصول الثابتة | `FixedAssets`: الكود FA-0001، التكلفة، القيمة التخريدية، العمر بالأشهر، الحالة، مصدر الدفع وقيد الشراء والبيع |
 | تقفيل اليوم | `EndOfDayReports`, `EndOfDayInvoices`, `EndOfDayPayouts`, `EndOfDayPhotos` |

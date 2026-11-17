@@ -42,7 +42,8 @@
 | الوصفات والإنتاج | `Recipes`, `RecipeIngredients`, `RecipeCategories`, `PrepRecipes`, `PrepRecipeIngredients`, `ProductionOrders`, `ProductionOrderLines` |
 | المنيو والمبيعات | `MenuCategories`, `MenuItems`, `MenuItemVariants`, `AddOns`, `SalesReceipts`, `SalesReceiptLines`, `ManualSalesSheets`, `ManualSalesLines` |
 | المخزون | `StockMovements`, `StockCounts`, `StockCountLines`, `BreakageEntries` |
-| المشتريات | `PurchaseInvoices`, `PurchaseInvoiceLines`, `PurchaseInvoiceAttachments` |
+| المشتريات | `PurchaseInvoices` (وفيها `PurchaseOrderId` و `ClosesPurchaseOrder`)، `PurchaseInvoiceLines`، `PurchaseInvoiceAttachments` |
+| أوامر الشراء | `PurchaseOrders` (رقم PO-السنة-التسلسل، المورد، التواريخ، شروط الدفع، الحالة، من كتب واعتمد وأغلق)، `PurchaseOrderLines` (`MaterialId`، الكمية المطلوبة والمستلمة بوحدة الشراء، السعر المتوقع) |
 | الخزنة | `SafeTransactions` (وفيها `FixedAssetId` لشراء أصل أو بيعه)، `SupplierLedgerEntries` |
 | الأصول الثابتة | `FixedAssets`: الكود FA-0001، التكلفة، القيمة التخريدية، العمر بالأشهر، الحالة، مصدر الدفع وقيد الشراء والبيع |
 | تقفيل اليوم | `EndOfDayReports`, `EndOfDayInvoices`, `EndOfDayPayouts`, `EndOfDayPhotos` |
@@ -2793,7 +2794,7 @@ public interface ISalesReceiptRepository : IRepository<SalesReceipt>
 
 `PurchaseInvoice`: مسودة ⇐ مرحّلة (`Posted`) ⇐ ملغاة (`Voided`). البند: خامة (يدخل المخزون) أو مصروف. `LineTotal` كما كُتب على الورقة، و `Discount` البند، و **`DiscountShare`** حصته من خصم الفاتورة (توزيع بالقرش، الفصل 05)، و `Cost` = الصافي الذي يدخل المتوسط. والدفع: نقدي من الخزنة، أو من إيراد يوم، أو آجل.
 
-> 📄 **`backend/src/Costing.Domain/Purchases/PurchaseInvoice.cs`** — 388 سطر
+> 📄 **`backend/src/Costing.Domain/Purchases/PurchaseInvoice.cs`** — 405 سطر
 
 ```csharp
 using Costing.Domain.Common;
@@ -2891,6 +2892,12 @@ public sealed class PurchaseInvoice : AggregateRoot
     public Guid? RevisionOf { get; private set; }
     public Guid? ReplacedBy { get; private set; }
 
+    // The purchase order it delivers (أمر الشراء), checked against it as it is posted (ThreeWayMatch);
+    // and whether what did not come is not expected any more (ClosesPurchaseOrder: the order closed
+    // with what was received) or stays open as a backorder.
+    public Guid? PurchaseOrderId { get; private set; }
+    public bool ClosesPurchaseOrder { get; private set; }
+
     // The attached photo or scan, described; its bytes are kept apart.
     public string? AttachmentFileName { get; private set; }
     public string? AttachmentContentType { get; private set; }
@@ -2925,6 +2932,17 @@ public sealed class PurchaseInvoice : AggregateRoot
                 ? "Only a posted invoice is corrected."
                 : "This invoice has already been corrected: correct the invoice that replaced it.");
         RevisionOf = original.Id;
+        PurchaseOrderId = original.PurchaseOrderId;
+        ClosesPurchaseOrder = original.ClosesPurchaseOrder;
+    }
+
+    // The purchase order this draft delivers, or none; closes: the order closed with what came.
+    public void Delivers(Guid? purchaseOrderId, bool closes)
+    {
+        if (Status != PurchaseInvoiceStatus.Draft)
+            throw new DomainException("Only a draft is put against a purchase order.");
+        PurchaseOrderId = purchaseOrderId;
+        ClosesPurchaseOrder = purchaseOrderId is not null && closes;
     }
 
     // Replaces the draft's details and lines. Each line is as written on the invoice: a quantity
@@ -3187,7 +3205,7 @@ public sealed class PurchaseInvoiceLine : Entity
 ```
 
 
-> 📄 **`backend/src/Costing.Domain/Purchases/IPurchaseInvoiceRepository.cs`** — 35 سطر
+> 📄 **`backend/src/Costing.Domain/Purchases/IPurchaseInvoiceRepository.cs`** — 41 سطر
 
 ```csharp
 using Costing.Domain.Common;
@@ -3208,6 +3226,12 @@ public interface IPurchaseInvoiceRepository : IRepository<PurchaseInvoice>
     Task<IReadOnlyDictionary<Guid, ExpenseItemUse>> GetExpenseItemUseAsync(CancellationToken cancellationToken = default);
 
     Task<bool> AnyForExpenseItemAsync(Guid expenseItemId, CancellationToken cancellationToken = default);
+
+    // The invoices that name a purchase order, drafts, posted and voided, with their lines.
+    Task<IReadOnlyList<PurchaseInvoice>> GetForOrderAsync(Guid purchaseOrderId, CancellationToken cancellationToken = default);
+
+    // For each purchase order, how many posted invoices delivered it.
+    Task<IReadOnlyDictionary<Guid, int>> GetDeliveriesByOrderAsync(CancellationToken cancellationToken = default);
 
     // Only a draft is ever removed. A posted invoice is the record of what came in.
     void Remove(PurchaseInvoice draft);
@@ -4306,7 +4330,7 @@ NetCashInTill      = العُهدة + CashSalesCollected − CashPaidOut      (�
 ExpectedIntoSafe   = إجمالي الإيراد − CashPaidOut                    (ما يجب أن يصل الخزنة)
 ```
 
-> 📄 **`backend/src/Costing.Domain/EndOfDay/EndOfDayReport.cs`** — 499 سطر
+> 📄 **`backend/src/Costing.Domain/EndOfDay/EndOfDayReport.cs`** — 506 سطر
 
 ```csharp
 using System.Globalization;
@@ -4496,23 +4520,25 @@ public sealed class EndOfDayReport : AggregateRoot
         Touch(by);
     }
 
-    public EndOfDayInvoice AddInvoice(Guid id, EndOfDayInvoiceKind kind, Guid supplierId, decimal reportedTotal, string? note, EndOfDayPhoto photo, string by)
+    public EndOfDayInvoice AddInvoice(
+        Guid id, EndOfDayInvoiceKind kind, Guid supplierId, decimal reportedTotal, string? note, EndOfDayPhoto photo, string by, Guid? purchaseOrderId = null)
     {
         EnsureDraft();
         if (_invoices.Any(i => i.Id == id))
             throw new DomainException("This invoice is handed in already.");
         if (_invoices.Count >= MaxInvoices)
             throw new DomainException($"A day holds at most {MaxInvoices} invoices. · {MaxInvoices} فاتورة على الأكثر في اليوم.");
-        var invoice = new EndOfDayInvoice(id, Id, kind, supplierId, reportedTotal, note, photo);
+        var invoice = new EndOfDayInvoice(id, Id, kind, supplierId, reportedTotal, note, photo, purchaseOrderId);
         _invoices.Add(invoice);
         Touch(by);
         return invoice;
     }
 
-    public void ChangeInvoice(Guid invoiceId, EndOfDayInvoiceKind kind, Guid supplierId, decimal reportedTotal, string? note, string by)
+    public void ChangeInvoice(
+        Guid invoiceId, EndOfDayInvoiceKind kind, Guid supplierId, decimal reportedTotal, string? note, string by, Guid? purchaseOrderId = null)
     {
         EnsureDraft();
-        Unposted(invoiceId).Change(kind, supplierId, reportedTotal, note);
+        Unposted(invoiceId).Change(kind, supplierId, reportedTotal, note, purchaseOrderId);
         Touch(by);
     }
 
@@ -4673,12 +4699,13 @@ public sealed class EndOfDayInvoice : Entity
 {
     private EndOfDayInvoice() { }
 
-    internal EndOfDayInvoice(Guid id, Guid reportId, EndOfDayInvoiceKind kind, Guid supplierId, decimal reportedTotal, string? note, EndOfDayPhoto photo)
+    internal EndOfDayInvoice(
+        Guid id, Guid reportId, EndOfDayInvoiceKind kind, Guid supplierId, decimal reportedTotal, string? note, EndOfDayPhoto photo, Guid? purchaseOrderId = null)
     {
         Id = id;
         ReportId = reportId;
         AddedAtUtc = DateTime.UtcNow;
-        Change(kind, supplierId, reportedTotal, note);
+        Change(kind, supplierId, reportedTotal, note, purchaseOrderId);
         Photographed(photo);
     }
 
@@ -4693,11 +4720,14 @@ public sealed class EndOfDayInvoice : Entity
     public EndOfDayPhoto Photo => new(PhotoFileName, PhotoContentType, PhotoBytes);
     public DateTime AddedAtUtc { get; private set; }
 
+    // The purchase order it delivers, when it was ordered (أمر شراء): the daily batch receives it against it.
+    public Guid? PurchaseOrderId { get; private set; }
+
     // The purchase invoice it was posted as on the daily batch, and when.
     public Guid? PurchaseInvoiceId { get; private set; }
     public DateTime? PostedAtUtc { get; private set; }
 
-    internal void Change(EndOfDayInvoiceKind kind, Guid supplierId, decimal reportedTotal, string? note)
+    internal void Change(EndOfDayInvoiceKind kind, Guid supplierId, decimal reportedTotal, string? note, Guid? purchaseOrderId = null)
     {
         if (!Enum.IsDefined(kind))
             throw new DomainException("Say whether it was paid in cash or is on credit. · نقدي أم آجل.");
@@ -4712,6 +4742,7 @@ public sealed class EndOfDayInvoice : Entity
         SupplierId = supplierId;
         ReportedTotal = Math.Round(reportedTotal, 2, MidpointRounding.AwayFromZero);
         Note = cleaned;
+        PurchaseOrderId = purchaseOrderId;
     }
 
     internal void Photographed(EndOfDayPhoto photo) =>
@@ -5229,7 +5260,7 @@ public static class DatabaseConnection
 - `ConfigureConventions`: كل `decimal` بدقة (10,2) افتراضيًا (والكميات تتجاوزه صراحة بـ `IsQuantity()`).
 - `SaveChangesAsync`: `TouchRootsOfChangedChildren` (تعديل ابن يعلّم أباه معدّلًا ليُفحص `xmin` الخاص به)، وترجمة أخطاء EF/Npgsql (تزامن، تكرار فريد، مفتاح أجنبي) إلى `ConflictException`، فلا تعرف الطبقات العليا شيئًا عن EF.
 
-> 📄 **`backend/src/Costing.Infrastructure/Persistence/CostingDbContext.cs`** — 170 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Persistence/CostingDbContext.cs`** — 171 سطر
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
@@ -5290,6 +5321,7 @@ public sealed class CostingDbContext(DbContextOptions<CostingDbContext> options)
     public DbSet<StockMovement> StockMovements => Set<StockMovement>();
     public DbSet<StockCount> StockCounts => Set<StockCount>();
     public DbSet<PurchaseInvoice> PurchaseInvoices => Set<PurchaseInvoice>();
+    public DbSet<PurchaseOrder> PurchaseOrders => Set<PurchaseOrder>();
     public DbSet<PurchaseInvoiceAttachment> PurchaseInvoiceAttachments => Set<PurchaseInvoiceAttachment>();
     public DbSet<Supplier> Suppliers => Set<Supplier>();
     public DbSet<PurchaseCategory> PurchaseCategories => Set<PurchaseCategory>();
@@ -5488,7 +5520,7 @@ internal static class PropertyBuilderExtensions
 
 `InventoryConfigurations.cs`: الخامات، الوصفات، المخزون، الجرد، المشتريات، الخزنة، الموردون، الموافقات. لاحظ: **وصفة فعّالة واحدة لكل هدف** (فهرس فريد مرشّح `NULLS NOT DISTINCT` على `(TargetKind, CatalogItemId, VariantId)`)، فهرس الحركات الفريد، خامة واحدة لكل بند جرد ولكل بند فاتورة، **طلب موافقة معلّق واحد لكل سجل** (فهرس فريد على `RecordId` بشرط `Status = 'Pending'`)، قيد عكسي واحد لكل قيد خزنة، `Cascade` على البنود و `Restrict` على المراجع، وفهرس `PayrollRunId` على قيود الخزنة.
 
-> 📄 **`backend/src/Costing.Infrastructure/Persistence/Configurations/InventoryConfigurations.cs`** — 467 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Persistence/Configurations/InventoryConfigurations.cs`** — 470 سطر
 
 ```csharp
 using System.Text.Json;
@@ -5692,6 +5724,9 @@ internal sealed class PurchaseInvoiceConfiguration : IEntityTypeConfiguration<Pu
         builder.Navigation(i => i.Lines).HasField("_lines").UsePropertyAccessMode(PropertyAccessMode.Field);
         builder.HasIndex(i => new { i.Status, i.PostedAtUtc });
         builder.HasOne<Supplier>().WithMany().HasForeignKey(i => i.SupplierId).OnDelete(DeleteBehavior.Restrict);
+        // The purchase order it delivers: each posted invoice against one, for its deliveries.
+        builder.HasOne<PurchaseOrder>().WithMany().HasForeignKey(i => i.PurchaseOrderId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasIndex(i => i.PurchaseOrderId).HasFilter("\"PurchaseOrderId\" IS NOT NULL");
     }
 }
 
@@ -6120,7 +6155,7 @@ internal sealed class UserTabAccessConfiguration : IEntityTypeConfiguration<User
 
 `EndOfDayConfigurations.cs`: تقرير واحد لكل يوم تجاري (فهرس فريد على التاريخ)، والصور في جدول منفصل.
 
-> 📄 **`backend/src/Costing.Infrastructure/Persistence/Configurations/EndOfDayConfigurations.cs`** — 93 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Persistence/Configurations/EndOfDayConfigurations.cs`** — 94 سطر
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
@@ -6183,6 +6218,7 @@ internal sealed class EndOfDayInvoiceConfiguration : IEntityTypeConfiguration<En
         builder.Property(i => i.PhotoContentType).HasMaxLength(64);
         builder.Ignore(i => i.Photo);
         builder.HasOne<Supplier>().WithMany().HasForeignKey(i => i.SupplierId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne<Domain.Purchases.PurchaseOrder>().WithMany().HasForeignKey(i => i.PurchaseOrderId).OnDelete(DeleteBehavior.Restrict);
         // A purchase invoice is the one an invoice handed in was posted as, once.
         builder.HasOne<PurchaseInvoice>().WithMany().HasForeignKey(i => i.PurchaseInvoiceId).OnDelete(DeleteBehavior.Restrict);
         builder.HasIndex(i => i.PurchaseInvoiceId).IsUnique();
@@ -6559,7 +6595,7 @@ internal sealed class FinancialSettingsConfiguration : IEntityTypeConfiguration<
 
 قراءات العرض `AsNoTracking`، وقراءات التعديل متتبَّعة؛ ودوال بأسماء دقيقة بدل `IQueryable` يتسرب للأعلى.
 
-> 📄 **`backend/src/Costing.Infrastructure/Persistence/InventoryRepositories.cs`** — 463 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Persistence/InventoryRepositories.cs`** — 474 سطر
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
@@ -6715,6 +6751,17 @@ internal sealed class PurchaseInvoiceRepository(CostingDbContext db) : IPurchase
     public void Add(PurchaseInvoice aggregate) => db.PurchaseInvoices.Add(aggregate);
 
     public void Remove(PurchaseInvoice draft) => db.PurchaseInvoices.Remove(draft);
+
+    // Tracked: one already loaded in this unit of work is the same one, as it is now.
+    public async Task<IReadOnlyList<PurchaseInvoice>> GetForOrderAsync(Guid purchaseOrderId, CancellationToken cancellationToken = default) =>
+        await WithLines.Where(i => i.PurchaseOrderId == purchaseOrderId).ToListAsync(cancellationToken);
+
+    public async Task<IReadOnlyDictionary<Guid, int>> GetDeliveriesByOrderAsync(CancellationToken cancellationToken = default) =>
+        await db.PurchaseInvoices.AsNoTracking()
+            .Where(i => i.PurchaseOrderId != null && i.Status == PurchaseInvoiceStatus.Posted)
+            .GroupBy(i => i.PurchaseOrderId!.Value)
+            .Select(g => new { Id = g.Key, Count = g.Count() })
+            .ToDictionaryAsync(x => x.Id, x => x.Count, cancellationToken);
 
     public async Task<IReadOnlyList<PurchaseInvoice>> GetByStatusAsync(PurchaseInvoiceStatus status, CancellationToken cancellationToken = default) =>
         await WithLines.AsNoTracking().Where(i => i.Status == status).ToListAsync(cancellationToken);
@@ -7296,6 +7343,7 @@ dotnet ef migrations add <Name> \
 | 12 | `20261116112941_AddSupplierTermsAndStaffMeals` | Add Supplier Terms And Staff Meals |
 | 13 | `20261116193324_AddCombosAndDiscounts` | Add Combos And Discounts |
 | 14 | `20261116223159_AddFixedAssets` | Add Fixed Assets |
+| 15 | `20261116233433_AddPurchaseOrders` | Add Purchase Orders |
 
 
 ### 14.1 `UnifySafeTakings`: migration تحوّل بيانات لا شكلًا فقط

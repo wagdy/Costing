@@ -40,6 +40,11 @@ public enum ApprovalModule
 
     // Breakage entered on Waste, voided: its cost off the day.
     Breakage = 11,
+
+    // A purchase order approved (اعتماد أمر شراء), or called off. With PurchaseInvoice Create: an
+    // invoice received against a purchase order with an overcharge or an over-delivery, posted
+    // (its stock in, its average costs moved) once a manager signs the differences off.
+    PurchaseOrder = 12,
 }
 
 public enum ApprovalAction
@@ -99,15 +104,17 @@ public sealed class ApprovalRequest : AggregateRoot
             throw new DomainException("Say what is to be done.");
         if (action != ApprovalAction.Delete
             && module is not (ApprovalModule.PrepItem or ApprovalModule.ProductionOrder or ApprovalModule.Treasury or ApprovalModule.PurchaseInvoice
-                or ApprovalModule.RawMaterial))
+                or ApprovalModule.RawMaterial or ApprovalModule.PurchaseOrder))
             throw new DomainException(
-                "Only prep items, production orders, safe entries, invoices and raw materials are added or changed through an approval.");
+                "Only prep items, production orders, safe entries, invoices, raw materials and purchase orders are added or changed through an approval.");
         if (action == ApprovalAction.Update && module == ApprovalModule.Treasury)
             throw new DomainException("A safe entry is not changed: void it and enter it again.");
         // An invoice is only corrected through one, and a raw material's unit changed: a new one
         // of either is entered as it is.
-        if (action == ApprovalAction.Create && module is (ApprovalModule.PurchaseInvoice or ApprovalModule.RawMaterial))
+        if (action == ApprovalAction.Create && module == ApprovalModule.RawMaterial)
             throw new DomainException("A new one is entered as it is, not asked for.");
+        if (action == ApprovalAction.Update && module == ApprovalModule.PurchaseOrder)
+            throw new DomainException("A purchase order is changed as a draft, not asked for.");
         if (action != ApprovalAction.Delete && string.IsNullOrWhiteSpace(payload))
             throw new DomainException("Say what the change is.");
         if (string.IsNullOrWhiteSpace(summary))

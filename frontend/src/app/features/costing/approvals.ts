@@ -25,6 +25,7 @@ export const consequences: Record<ApprovalModule, string> = {
     'The category goes and what is in it moves, converted as listed: raw materials made expense items have their past invoice lines restated as expenses on their own dates and their stock ledger taken out; expense items made raw materials start with nothing on hand.',
   Sale: 'It is kept, marked voided: everything its lines took from stock goes back in, as it was taken, and it leaves the reports.',
   Breakage: 'It is kept, marked voided: its cost leaves the day it was entered on.',
+  PurchaseOrder: 'It is called off: nothing more is received against it. It is kept, marked cancelled.',
 };
 
 // The posted records, which are voided rather than deleted.
@@ -38,8 +39,14 @@ export function approvalEffect(module: ApprovalModule, action: ApprovalAction): 
   if (module === 'Treasury') {
     return 'The cash moves now: into the safe, or out of it (or out of a day’s takings), as entered.';
   }
+  if (module === 'PurchaseInvoice' && action === 'Create') {
+    return 'The invoice is posted as entered, over its purchase order: its stock goes in and moves the average costs at its prices, its payment is settled, and it counts on the order.';
+  }
   if (module === 'PurchaseInvoice') {
     return 'The invoice is voided and the corrected one posted in its place: its stock, cash and supplier’s account are redone, at the average costs at this moment.';
+  }
+  if (module === 'PurchaseOrder') {
+    return 'The purchase order is approved: it can be sent to the supplier and received against.';
   }
   if (module === 'RawMaterial') {
     return 'The material is counted in the new unit from now: its stock, average cost, invoices, recipes, counts and batches are restated by the conversion, every amount of money as it was.';

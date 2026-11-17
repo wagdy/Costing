@@ -443,7 +443,7 @@ export const appConfig: ApplicationConfig = {
 
 كل قسم بـ `canActivate: [costingTabGuard('Materials')]` و `loadComponent` كسول، والأقسام الفرعية (الوصفات، المشتريات، الماليات، التقارير، التحليلات) كأبناء لـ Shell خاص بها، والمسار الفارغ يفتح أول قسم يملكه المستخدم.
 
-> 📄 **`frontend/src/app/app.routes.ts`** — 302 سطر
+> 📄 **`frontend/src/app/app.routes.ts`** — 311 سطر
 
 ```ts
 import { Routes } from '@angular/router';
@@ -579,6 +579,15 @@ const costingChildren: Routes = [
       {
         path: 'invoices/:id',
         loadComponent: () => import('./features/costing/invoice-page').then((m) => m.InvoicePage),
+      },
+      {
+        // Purchase orders (أوامر الشراء): written, approved, sent, received against invoices.
+        path: 'orders',
+        loadComponent: () => import('./features/costing/purchase-orders-page').then((m) => m.PurchaseOrdersPage),
+      },
+      {
+        path: 'orders/:id',
+        loadComponent: () => import('./features/costing/purchase-order-page').then((m) => m.PurchaseOrderPage),
       },
       {
         path: 'suppliers',
@@ -1397,7 +1406,7 @@ function insert(field: HTMLInputElement, text: string): void {
 
 `costing.api.ts`: أكبر ملف: كل الأنواع والنداءات لـ `api/costing` و `api/inventory` و `api/financials` (الخامات، التكاليف، الوصفات، المصنعات، الإنتاج، المشتريات، الجرد، الهالك، الخزنة، التقارير، الموافقات…). الأنواع تطابق DTOs الـ API، والـ enums كـ union types، وقواميس التسميات ثنائية اللغة (`Record<Kind, { en; ar }>`) تجبر TypeScript على تسمية كل حالة.
 
-> 📄 **`frontend/src/app/core/costing/costing.api.ts`** — 3231 سطر
+> 📄 **`frontend/src/app/core/costing/costing.api.ts`** — 3455 سطر
 
 ```ts
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
@@ -2347,6 +2356,10 @@ export interface PurchaseInvoice {
   subtotal?: number;
   lineDiscounts?: number;
   discount?: number;
+  // The purchase order it delivers: a draft's matched against it item by item (3-way match), a posted
+  // one's named. awaitingApproval: its posting waits for a manager to sign off what is over the order.
+  purchaseOrder?: PurchaseOrderMatch | null;
+  awaitingApproval?: boolean;
 }
 
 // A posted invoice as it should have been: a new invoice (newInvoiceId, made here) that replaces
@@ -2393,6 +2406,7 @@ export interface PurchaseInvoiceSummary {
   paymentMethod: PurchasePaymentMethod | null;
   revenueDate: string | null;
   paymentStatus: InvoicePaymentStatus;
+  purchaseOrderId?: string | null;
 }
 
 // Maker-checker: what a manager decides. Deletions in every costing module; new and changed prep
@@ -2408,7 +2422,9 @@ export type ApprovalModule =
   | 'Treasury'
   | 'PurchaseCategory'
   | 'Sale'
-  | 'Breakage';
+  | 'Breakage'
+  // A purchase order approved; with PurchaseInvoice Create, an invoice over its order posted once signed off.
+  | 'PurchaseOrder';
 export type ApprovalAction = 'Create' | 'Update' | 'Delete';
 export type ApprovalStatus = 'Pending' | 'Approved' | 'Rejected';
 export type ApprovalOutcome = 'Requested' | 'Applied';
@@ -2425,6 +2441,7 @@ export const moduleLabels: Record<ApprovalModule, { en: string; ar: string }> = 
   PurchaseCategory: { en: 'Purchase category', ar: 'أقسام المشتريات' },
   Sale: { en: 'Sale', ar: 'المبيعات' },
   Breakage: { en: 'Breakage', ar: 'الكسر' },
+  PurchaseOrder: { en: 'Purchase order', ar: 'أوامر الشراء' },
 };
 
 export const actionLabels: Record<ApprovalAction, { en: string; ar: string }> = {
@@ -2673,6 +2690,179 @@ export interface SavePurchaseInvoice {
   revenueDate: string | null;
   // The invoice's own discount (خصم الفاتورة), off what the lines come to after theirs.
   discount: number;
+  // The purchase order it delivers, and whether it closes it with what came (no backorder).
+  purchaseOrderId?: string | null;
+  closesPurchaseOrder?: boolean;
+}
+
+// ---- Purchase orders (أوامر الشراء) and the 3-way match ----
+
+export type PurchaseOrderStatus = 'Draft' | 'Approved' | 'PartiallyReceived' | 'Completed' | 'Cancelled';
+export type PurchaseOrderTerms = 'Cash' | 'Credit';
+export type MatchStatus = 'Matched' | 'PriceOvercharge' | 'QtyOver' | 'Short' | 'NotOrdered';
+
+export const purchaseOrderStatusLabels: Record<PurchaseOrderStatus, { en: string; ar: string }> = {
+  Draft: { en: 'Draft', ar: 'مسودة' },
+  Approved: { en: 'Approved / Open', ar: 'معتمد / مفتوح' },
+  PartiallyReceived: { en: 'Partially received', ar: 'استلام جزئي' },
+  Completed: { en: 'Completed', ar: 'مكتمل' },
+  Cancelled: { en: 'Cancelled', ar: 'ملغى' },
+};
+
+export const matchStatusLabels: Record<MatchStatus, { en: string; ar: string }> = {
+  Matched: { en: 'Matched', ar: 'مطابق' },
+  PriceOvercharge: { en: 'Price overcharge', ar: 'زيادة سعر' },
+  QtyOver: { en: 'Qty over', ar: 'كمية زائدة' },
+  Short: { en: 'Partial / short', ar: 'استلام جزئي' },
+  NotOrdered: { en: 'Not ordered', ar: 'غير مطلوب' },
+};
+
+export interface PurchaseOrderLine {
+  id: string;
+  rawMaterialId: string;
+  code: string | null;
+  material: string;
+  purchaseUnit: string;
+  purchaseUnitSize: number;
+  unit: UnitOfMeasure;
+  orderedPurchaseQty: number;
+  receivedPurchaseQty: number;
+  remainingQty: number;
+  expectedUnitCost: number;
+  lineTotal: number;
+  lineNotes: string | null;
+}
+
+// An invoice received against the order, posted (or voided since) or waiting for a manager.
+export interface PurchaseOrderDelivery {
+  invoiceId: string;
+  supplierInvoiceNumber: string | null;
+  invoiceDate: string | null;
+  status: PurchaseInvoiceStatus;
+  total: number;
+  postedAtUtc: string | null;
+  postedBy: string | null;
+  attachmentFileName: string | null;
+  closedTheOrder: boolean;
+  awaitingApproval: boolean;
+}
+
+export interface PurchaseOrder {
+  id: string;
+  poNumber: string;
+  supplierId: string;
+  supplier: string;
+  supplierPhone: string | null;
+  orderDate: string;
+  expectedDeliveryDate: string | null;
+  paymentTerms: PurchaseOrderTerms;
+  notes: string | null;
+  status: PurchaseOrderStatus;
+  createdBy: string;
+  createdAtUtc: string;
+  approvedBy: string | null;
+  approvedAtUtc: string | null;
+  cancelledBy: string | null;
+  cancelledAtUtc: string | null;
+  closedBy: string | null;
+  closedAtUtc: string | null;
+  expectedTotal: number;
+  remainingValue: number;
+  receivedPercent: number;
+  lines: PurchaseOrderLine[];
+  deliveries: PurchaseOrderDelivery[];
+}
+
+export interface PurchaseOrderSummary {
+  id: string;
+  poNumber: string;
+  supplierId: string;
+  supplier: string;
+  orderDate: string;
+  expectedDeliveryDate: string | null;
+  paymentTerms: PurchaseOrderTerms;
+  status: PurchaseOrderStatus;
+  lines: number;
+  expectedTotal: number;
+  remainingValue: number;
+  receivedPercent: number;
+  deliveries: number;
+  createdBy: string;
+  approvedBy: string | null;
+  overdue: boolean;
+}
+
+export interface PurchaseOrderInput {
+  supplierId: string;
+  orderDate: string;
+  expectedDeliveryDate: string | null;
+  paymentTerms: PurchaseOrderTerms;
+  notes: string | null;
+  lines: { rawMaterialId: string; orderedPurchaseQty: number; expectedUnitCost: number; lineNotes?: string | null }[];
+}
+
+export interface PurchaseOrderSaved {
+  id: string;
+  poNumber: string;
+  status: PurchaseOrderStatus;
+  outcome: ApprovalOutcome;
+  request: ApprovalRequest | null;
+}
+
+// One item of a delivery against its order, as the server matched it.
+export interface MatchLine {
+  rawMaterialId: string;
+  material: string;
+  purchaseUnit: string;
+  ordered: number;
+  remaining: number;
+  received: number;
+  expectedUnitCost: number;
+  netUnitPrice: number | null;
+  unitOvercharge: number | null;
+  overcharge: number;
+  qtyOver: number;
+  shortBy: number;
+  priceOver: boolean;
+  status: MatchStatus;
+}
+
+export interface PurchaseOrderMatch {
+  purchaseOrderId: string;
+  poNumber: string;
+  status: PurchaseOrderStatus;
+  closes: boolean;
+  lines: MatchLine[] | null;
+  overcharge: number;
+  hasShort: boolean;
+  needsApproval: boolean;
+}
+
+// The order planner's approved quantities as a purchase order per supplier.
+export interface PlannedOrderLine {
+  rawMaterialId: string;
+  code: string | null;
+  material: string;
+  purchaseUnit: string;
+  quantity: number;
+  unitPrice: number;
+  cost: number;
+  priceKnown: boolean;
+}
+
+export interface PlannedOrder {
+  supplierId: string | null;
+  supplier: string | null;
+  paymentTermsDays: number;
+  lines: PlannedOrderLine[];
+  total: number;
+}
+
+export interface PurchaseOrderPlan {
+  groupBy: 'Category' | 'Supplier' | 'CheapestSupplier';
+  today: string;
+  orders: PlannedOrder[];
+  total: number;
 }
 
 // A stock line names its material; an expense line its expense item, in units of 1, with its cost.
@@ -2694,6 +2884,8 @@ export interface PurchaseBatch {
     discount: number;
     onCredit?: boolean;
     endOfDayInvoiceId?: string | null;
+    purchaseOrderId?: string | null;
+    closesPurchaseOrder?: boolean;
   }[];
   payments: { transactionId: string; supplierId: string; amount: number; notes: string | null }[];
   // No employee: advances handed out with no one named, shared among the staff.
@@ -3158,6 +3350,47 @@ export class CostingApi {
   }
 
   // Posted invoices for the history, newest first, or the drafts.
+  purchaseOrders(filter: { status?: PurchaseOrderStatus; open?: boolean; supplierId?: string } = {}): Observable<PurchaseOrderSummary[]> {
+    const params: Record<string, string | boolean> = {};
+    if (filter.status) params['status'] = filter.status;
+    if (filter.open) params['open'] = true;
+    if (filter.supplierId) params['supplierId'] = filter.supplierId;
+    return this.http.get<PurchaseOrderSummary[]>('/api/inventory/purchase-orders', { params });
+  }
+
+  // The open ones in full, what is left of each line, for a delivery to be received against.
+  openPurchaseOrders(supplierId?: string | null): Observable<PurchaseOrder[]> {
+    return this.http.get<PurchaseOrder[]>('/api/inventory/purchase-orders/open', { params: supplierId ? { supplierId } : {} });
+  }
+
+  purchaseOrder(id: string): Observable<PurchaseOrder | null> {
+    return this.http.get<PurchaseOrder>(`/api/inventory/purchase-orders/${id}`).pipe(
+      catchError((error: HttpErrorResponse) => (error.status === 404 ? of(null) : throwError(() => error))),
+    );
+  }
+
+  savePurchaseOrder(id: string, order: PurchaseOrderInput): Observable<PurchaseOrder> {
+    return this.http.put<PurchaseOrder>(`/api/inventory/purchase-orders/${id}`, order);
+  }
+
+  // Approved at once for a manager; asked of one for anyone else (outcome Requested).
+  approvePurchaseOrder(id: string, requestId: string, reason: string | null = null): Observable<PurchaseOrderSaved> {
+    return this.http.post<PurchaseOrderSaved>(`/api/inventory/purchase-orders/${id}/approve`, { requestId, reason });
+  }
+
+  cancelPurchaseOrder(id: string): Observable<PurchaseOrder> {
+    return this.http.post<PurchaseOrder>(`/api/inventory/purchase-orders/${id}/cancel`, null);
+  }
+
+  closePurchaseOrder(id: string): Observable<PurchaseOrder> {
+    return this.http.post<PurchaseOrder>(`/api/inventory/purchase-orders/${id}/close`, null);
+  }
+
+  // Several at once, a supplier each: all or none.
+  createPurchaseOrders(orders: { id: string; order: PurchaseOrderInput }[]): Observable<PurchaseOrderSaved[]> {
+    return this.http.post<PurchaseOrderSaved[]>('/api/inventory/purchase-orders/batch', { orders });
+  }
+
   purchaseInvoices(status: PurchaseInvoiceStatus): Observable<PurchaseInvoiceSummary[]> {
     return this.http.get<PurchaseInvoiceSummary[]>('/api/inventory/purchase-invoices', { params: { status } });
   }
@@ -4634,7 +4867,7 @@ export interface StaffMealReport {
 ```
 
 
-> 📄 **`frontend/src/app/core/costing/end-of-day.api.ts`** — 301 سطر
+> 📄 **`frontend/src/app/core/costing/end-of-day.api.ts`** — 308 سطر
 
 ```ts
 import { HttpClient } from '@angular/common/http';
@@ -4671,6 +4904,8 @@ export interface EndOfDayInvoice {
   // The purchase invoice it was posted as on the daily batch.
   purchaseInvoiceId: string | null;
   postedAtUtc: string | null;
+  // The purchase order it delivers, when there was one: the batch receives it against it.
+  purchaseOrderId?: string | null;
 }
 
 // Cash paid out of the till: to a supplier (إذن صرف مورد) or an employee as an advance (سلفة).
@@ -4785,6 +5020,8 @@ export interface EndOfDayInvoiceEntry {
   supplierId: string;
   reportedTotal: number;
   note: string | null;
+  // The purchase order it delivers, if any.
+  purchaseOrderId?: string | null;
 }
 
 export const invoiceKindLabels: Record<EndOfDayInvoiceKind, { en: string; ar: string }> = {
@@ -4827,6 +5064,9 @@ export class EndOfDayApi {
     form.append('reportedTotal', String(entry.reportedTotal));
     if (entry.note) {
       form.append('note', entry.note);
+    }
+    if (entry.purchaseOrderId) {
+      form.append('purchaseOrderId', entry.purchaseOrderId);
     }
     form.append('file', file, file.name);
     return this.http.post<EndOfDay>(`/api/end-of-day/${date}/invoices`, form);
@@ -8366,7 +8606,7 @@ export class InfoTip implements OnDestroy {
 ```
 
 
-> 📄 **`frontend/src/app/features/costing/info-tips.ts`** — 1065 سطر
+> 📄 **`frontend/src/app/features/costing/info-tips.ts`** — 1108 سطر
 
 ```ts
 // What each figure on the costing screens is, and how it is worked out, in Arabic and English: the
@@ -9430,6 +9670,49 @@ export const infoTips = {
     { en: 'Net profit', ar: 'صافي الربح النهائي' },
     { en: 'What is left after everything: the running costs, the interest, the assets’ depreciation and what disposing of them made or lost.', ar: 'ما يتبقى بعد كل شيء: مصاريف التشغيل والفوائد وإهلاك الأصول وأرباح أو خسائر استبعادها.' },
     { en: 'EBITDA − interest − depreciation expense ± gain / (loss) on asset disposals.', ar: 'EBITDA − الفوائد − إهلاك الأصول ± أرباح / (خسائر) استبعاد الأصول.' },
+  ),
+
+  // ---- Purchase orders and the 3-way match ----
+  poExpectedPrice: tip(
+    { en: 'Expected price', ar: 'السعر المتوقع' },
+    { en: 'What one purchase unit should cost on this order, net of discounts: the delivery’s invoice is checked against it.', ar: 'سعر وحدة الشراء المتفق عليه في أمر الشراء صافيًا من الخصومات: تُطابق عليه فاتورة التوريد.' },
+    { en: 'The latest net price paid for the item (or the cheapest supplier’s, from the order planner); its average when nothing was bought yet.', ar: 'آخر سعر شراء صافٍ للصنف (أو أرخص مورد من مخطط الطلبيات)، أو متوسط تكلفته إن لم يُشترَ بعد.' },
+  ),
+  poReceived: tip(
+    { en: 'Received', ar: 'نسبة الاستلام' },
+    { en: 'How much of the order has come, on the invoices posted against it.', ar: 'ما وصل من أمر الشراء على الفواتير المرحلة عليه.' },
+    { en: '(Expected total − what is left to come × its expected price) ÷ expected total × 100.', ar: '(الإجمالي المتوقع − المتبقي × سعره المتوقع) ÷ الإجمالي المتوقع × 100.' },
+  ),
+  poRemaining: tip(
+    { en: 'Left to come', ar: 'المتبقي' },
+    { en: 'What is still to be delivered: the backorder, at the prices ordered.', ar: 'ما لم يُورد بعد (الطلبية المتأخرة) بأسعار أمر الشراء.' },
+    { en: 'Σ (ordered − received) × expected unit price, over each line.', ar: 'مجموع (المطلوب − المستلم) × السعر المتوقع لكل بند.' },
+  ),
+  poMatch: tip(
+    { en: '3-way match', ar: 'المطابقة الثلاثية' },
+    {
+      en: 'Each item checked three ways: the purchase order (what was ordered, at what price), what came through the door (the quantity received) and the supplier’s invoice (what it is billed).',
+      ar: 'كل صنف يُراجع من ثلاث جهات: أمر الشراء (الكمية والسعر)، والاستلام الفعلي (الكمية المستلمة)، وفاتورة المورد (المبلغ المطالب به).',
+    },
+    {
+      en: 'Matched; Price overcharge: net unit price above the expected by more than 0.5%; Qty over: more than was left to come; Partial / short: less. Over the price or the quantity, anyone but a manager waits for a manager’s sign-off.',
+      ar: 'مطابق؛ زيادة سعر: صافي سعر الوحدة أعلى من المتوقع بأكثر من 0.5%؛ كمية زائدة: أكثر من المتبقي؛ استلام جزئي: أقل. زيادة السعر أو الكمية تنتظر موافقة المدير لغير المدير.',
+    },
+  ),
+  poNetUnitPrice: tip(
+    { en: 'Actual net unit price', ar: 'صافي سعر الوحدة الفعلي' },
+    { en: 'What one purchase unit really cost on this invoice, after its discounts: what goes into the average cost.', ar: 'تكلفة وحدة الشراء الفعلية في هذه الفاتورة بعد الخصومات: ما يدخل متوسط التكلفة.' },
+    { en: '(Line total − line discount − its share of the invoice discount) ÷ quantity received.', ar: '(إجمالي البند − خصم البند − نصيبه من خصم الفاتورة) ÷ الكمية المستلمة.' },
+  ),
+  poOvercharge: tip(
+    { en: 'Overcharge', ar: 'قيمة الزيادة' },
+    { en: 'What the invoice bills above the order’s prices, on the lines over the tolerance.', ar: 'ما تطالب به الفاتورة فوق أسعار أمر الشراء في البنود التي تتجاوز الحد المسموح.' },
+    { en: 'Σ (net unit price − expected unit price) × quantity received, over each line priced above the order by more than 0.5%.', ar: 'مجموع (صافي سعر الوحدة − السعر المتوقع) × الكمية المستلمة للبنود التي تزيد بأكثر من 0.5%.' },
+  ),
+  poBackorder: tip(
+    { en: 'Backorder or close', ar: 'إبقاء المتبقي أو الإغلاق' },
+    { en: 'A short delivery: keep what did not come open on the order for the next delivery, or close the order with what came.', ar: 'عند الاستلام الجزئي: إبقاء المتبقي مفتوحًا على أمر الشراء للتوريد القادم، أو إغلاق الأمر بالكمية المستلمة.' },
+    { en: 'Kept open: Remaining = ordered − received, status Partially received. Closed: status Completed, nothing more expected.', ar: 'مفتوح: المتبقي = المطلوب − المستلم، والحالة استلام جزئي. مغلق: الحالة مكتمل ولا يُنتظر المزيد.' },
   ),
 } satisfies Record<string, InfoTipContent>;
 
@@ -18359,7 +18642,7 @@ export class AddToMenuDialog {
 
 `PurchasesShell`. ثم `InvoiceLines` (مشترك بين شاشة الفاتورة وكل فاتورة في اليومية): البنود، الوحدات، المجاميع، **حصص الخصم** (`discount` signal و `shares`)، المورد، والإضافة السريعة، و **حارس السعر** (`priceDeviation`): إن ابتعد سعر وحدة الشراء في السطر عن المتوسط الحالي بأكثر من ±25% ظهرت شارة كهرمانية "تنبيه: السعر يختلف بـ X% عن المتوسط الحالي - تأكد من الوحدة!"، تنبيه فقط لا يمنع الحفظ (أغلب أسبابه جرامات كُتبت كيلوهات). و `PurchasesPage`: الخطوتان (حفظ مسودة ⇐ تأكيد وترحيل)، وصورة الورقة.
 
-> 📄 **`frontend/src/app/features/costing/purchases-shell.ts`** — 47 سطر
+> 📄 **`frontend/src/app/features/costing/purchases-shell.ts`** — 49 سطر
 
 ```ts
 import { Component, computed, inject } from '@angular/core';
@@ -18372,7 +18655,8 @@ import { CostingAccess } from '../../core/costing/costing-tabs';
 import { Permissions } from '../../core/auth/permissions';
 import { Treasury } from './financials';
 
-// Purchases: entering a supplier's invoice, the invoices entered, the suppliers they are from, and
+// Purchases: entering a supplier's invoice, the purchase orders it is received against, the invoices
+// entered, the suppliers they are from, and
 // the categories everything is filed under. What was spent is under Reports. An employee's advance
 // is paid from here too, as in Financials: out of the safe or a day's takings, and off their pay
 // (or, naming no one, a lump sum shared among the staff).
@@ -18403,6 +18687,7 @@ export class PurchasesShell {
   protected readonly tabs: SubNavTab[] = [
     { path: 'new', icon: 'add_shopping_cart', en: 'New invoice', ar: 'فاتورة جديدة' },
     { path: 'batch', icon: 'library_add', en: 'Daily batch', ar: 'يومية المشتريات' },
+    { path: 'orders', icon: 'assignment', en: 'Purchase orders', ar: 'أوامر الشراء' },
     { path: 'invoices', icon: 'history', en: 'Invoices', ar: 'أرشيف الفواتير' },
     { path: 'suppliers', icon: 'local_shipping', en: 'Suppliers', ar: 'إدارة الموردين' },
     { path: 'vendor-prices', icon: 'compare', en: 'Vendor prices', ar: 'مقارنة أسعار الموردين' },
@@ -19362,7 +19647,7 @@ export class InvoiceLinesTable {
 ```
 
 
-> 📄 **`frontend/src/app/features/costing/purchases-page.ts`** — 952 سطر
+> 📄 **`frontend/src/app/features/costing/purchases-page.ts`** — 1089 سطر
 
 ```ts
 import { DatePipe } from '@angular/common';
@@ -19387,6 +19672,7 @@ import {
   MaterialCost,
   PurchaseInvoice,
   PurchaseInvoiceSummary,
+  PurchaseOrder,
   SavePurchaseInvoice,
   Supplier,
   SupplierBalance,
@@ -19405,6 +19691,7 @@ import { AddNew, InvoiceLine, InvoiceLines, InvoiceLinesTable, InvoiceSupplier, 
 import { paperIcon, viewInvoicePaper } from './invoice-paper';
 import { InvoiceView } from './invoice-view';
 import { SupplierPaymentEntry, SupplierPaymentFields, newSupplierPayment, paymentProblems } from './supplier-payment-fields';
+import { ThreeWayMatchPanel, fillFromOrder } from './three-way-match';
 import { PickRow } from '../shared/pick-row';
 
 // A supplier's invoice, in two steps. Entered as it is written (who from, their number and date,
@@ -19416,6 +19703,11 @@ import { PickRow } from '../shared/pick-row';
 //
 // Or, switched at the top, a supplier paid with no invoice (سداد مورد): entered as in the daily
 // batch, against what they are owed, from the safe or a day's takings, and no stock moves.
+//
+// Against a purchase order (أمر الشراء, chosen here or opened with ?po=): its open lines come onto the
+// invoice at what is left of them, at the expected prices, and the 3-way match sets what the paper and
+// the door say against them as it is typed. A short delivery keeps the rest open or closes the order;
+// over the order's price or quantity, anyone but a manager waits for a manager to sign it off.
 //
 // With ?correct=, a posted invoice corrected (تعديل فاتورة): it opens here as entered, and once its
 // changes are reviewed, it is voided and posted again as it should have been, a new invoice in its
@@ -19439,6 +19731,7 @@ import { PickRow } from '../shared/pick-row';
     MoneyPipe,
     RouterLink,
     SupplierPaymentFields,
+    ThreeWayMatchPanel,
   ],
   template: `
     @if (loading()) {
@@ -19450,11 +19743,24 @@ import { PickRow } from '../shared/pick-row';
       <section class="review">
         <h2>Review the invoice <span class="inline-ar">مراجعة الفاتورة</span></h2>
         <p class="note">Check it against the paper. Nothing is in stock until you confirm.</p>
+        @if (inv.purchaseOrder; as po) {
+          <p class="note" [class.ask]="po.needsApproval && !approvals.canApprove()">
+            Against {{ po.poNumber }}{{ po.overcharge ? ': ' + (po.overcharge | money) + ' over its prices' : '' }}.
+            @if (po.needsApproval && !approvals.canApprove()) {
+              Confirmed, it waits for a manager to sign off what is over the order before its stock goes in. · بانتظار موافقة المدير.
+            } @else if (po.hasShort) {
+              {{ po.closes ? 'What did not come closes the order.' : 'What did not come stays open on the order.' }}
+            }
+          </p>
+        }
         <app-invoice-view [invoice]="inv" />
         <div class="toolbar actions">
           <button mat-button (click)="backToEdit()" [disabled]="saving()"><mat-icon>edit</mat-icon> Back to edit</button>
           <span class="spacer"></span>
-          <button mat-flat-button (click)="confirm()" [disabled]="saving()"><mat-icon>inventory</mat-icon> Confirm &amp; post</button>
+          <button mat-flat-button (click)="confirm()" [disabled]="saving()">
+            <mat-icon>inventory</mat-icon>
+            {{ inv.purchaseOrder?.needsApproval && !approvals.canApprove() ? 'Confirm & send for sign-off · إرسال للموافقة' : 'Confirm & post' }}
+          </button>
         </div>
       </section>
     } @else if (correctionPreview(); as cp) {
@@ -19528,8 +19834,12 @@ import { PickRow } from '../shared/pick-row';
               <span>{{ d.supplierName ?? 'No supplier' }} · {{ d.lines }} {{ d.lines === 1 ? 'line' : 'lines' }} · {{ d.total | money }}
                 <span class="muted">· {{ d.createdBy }}, {{ d.createdAtUtc | date: 'd MMM, HH:mm' }}</span></span>
               <span class="spacer"></span>
-              <button mat-button (click)="continueDraft(d.id)">Continue</button>
-              <button mat-button class="danger" (click)="discardDraft(d.id)" [disabled]="saving()">Discard</button>
+              @if (approvals.pendingFor(d.id); as asked) {
+                <span class="pending-badge">Waiting for a manager · بانتظار المدير</span>
+              } @else {
+                <button mat-button (click)="continueDraft(d.id)">Continue</button>
+                <button mat-button class="danger" (click)="discardDraft(d.id)" [disabled]="saving()">Discard</button>
+              }
             </div>
           }
         </div>
@@ -19607,10 +19917,32 @@ import { PickRow } from '../shared/pick-row';
           }
         </div>
       </div>
+      @if (!correcting()) {
+        <div class="po-row">
+          <mat-form-field subscriptSizing="dynamic" class="po">
+            <mat-label>Purchase order · أمر الشراء</mat-label>
+            <mat-select [ngModel]="orderId()" (ngModelChange)="chooseOrder($event)" aria-label="Purchase order">
+              <mat-option [value]="null">None · بدون أمر شراء</mat-option>
+              @for (o of ordersOffered(); track o.id) {
+                <mat-option [value]="o.id">{{ o.poNumber }} · {{ o.supplier }} · {{ o.remainingValue | money }} left</mat-option>
+              } @empty {
+                <mat-option disabled>{{ supplierId ? 'No open purchase order from this supplier' : 'No open purchase orders' }}</mat-option>
+              }
+            </mat-select>
+            <mat-hint>Received against it: each item matched to the order. · المطابقة مع أمر الشراء</mat-hint>
+          </mat-form-field>
+          @if (order(); as o) {
+            <a mat-button [routerLink]="['/costing/purchases/orders', o.id]"><mat-icon>open_in_new</mat-icon> {{ o.poNumber }}</a>
+          }
+        </div>
+      }
       @if (materials().length === 0 && expenses().length === 0) {
         <p class="note">No raw materials or expense items yet: type one's name on a line to add it.</p>
       }
       <app-invoice-lines [editor]="editor" [checks]="checks" />
+      @if (order(); as o) {
+        <app-three-way-match [order]="o" [editor]="editor" [canApprove]="approvals.canApprove()" [(closes)]="closes" />
+      }
       <div class="toolbar actions">
         <span class="spacer"></span>
         @if (correcting(); as original) {
@@ -19690,6 +20022,17 @@ import { PickRow } from '../shared/pick-row';
     }
     .actions {
       margin-top: 12px;
+    }
+    .po-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      margin: 4px 0 8px;
+
+      .po {
+        min-width: 320px;
+      }
     }
     .header {
       display: flex;
@@ -19875,6 +20218,21 @@ export class PurchasesPage {
 
   // ?correct=: the posted invoice to correct.
   readonly correct = input<string>();
+  // ?po=: the purchase order to receive against.
+  readonly po = input<string>();
+
+  // The purchase orders open for a delivery, the one this invoice is received against, and whether
+  // it closes it with what came.
+  private readonly openOrders = signal<PurchaseOrder[]>([]);
+  protected readonly orderId = signal<string | null>(null);
+  protected readonly order = computed(() => this.openOrders().find((o) => o.id === this.orderId()) ?? null);
+  protected readonly closes = signal(false);
+  // The chosen supplier's, or every supplier's while none is.
+  protected readonly ordersOffered = computed(() => {
+    this.supplier.version();
+    const supplierId = this.supplierId;
+    return this.openOrders().filter((o) => !supplierId || o.supplierId === supplierId || o.id === this.orderId());
+  });
   // The posted invoice being corrected, opened here as it was entered; null for a new invoice.
   protected readonly correcting = signal<PurchaseInvoice | null>(null);
   // Its changes, reviewed before they are sent: the same lines the manager sees.
@@ -19913,10 +20271,48 @@ export class PurchasesPage {
 
   constructor() {
     void this.load();
+    void this.approvals.refresh();
     effect(() => {
       const id = this.correct();
       untracked(() => void this.openCorrection(id));
     });
+    // Opened from a purchase order: received against it once the open ones are in.
+    effect(() => {
+      const id = this.po();
+      const open = this.openOrders();
+      if (id && open.some((o) => o.id === id)) {
+        untracked(() => {
+          if (this.orderId() !== id) {
+            this.chooseOrder(id);
+          }
+        });
+      }
+    });
+  }
+
+  // Received against an order: its supplier, its terms as the payment, its open lines on the invoice
+  // (asked first when lines are typed already). None: the lines stay as they are.
+  protected chooseOrder(id: string | null): void {
+    const order = this.openOrders().find((o) => o.id === id) ?? null;
+    if (!order) {
+      this.orderId.set(null);
+      this.closes.set(false);
+      this.touch();
+      return;
+    }
+    const typed = this.lines().some((l) => l.rawMaterialId || l.expenseItemId || l.quantity);
+    if (typed && !confirm(`Put ${order.poNumber}'s open lines on the invoice, in place of what is typed? · استبدال البنود ببنود أمر الشراء؟`)) {
+      this.orderId.set(order.id);
+      this.supplier.set(order.supplierId, order.supplier);
+      this.touch();
+      return;
+    }
+    this.orderId.set(order.id);
+    this.closes.set(false);
+    this.supplier.set(order.supplierId, order.supplier);
+    this.paymentMethod ??= order.paymentTerms === 'Credit' ? 'Credit' : 'Safe';
+    fillFromOrder(this.editor, order, this.materials());
+    this.touch();
   }
 
   // "Invoice F-1 · Nile Farms of 12 Oct".
@@ -20084,6 +20480,11 @@ export class PurchasesPage {
 
   protected supplierEntered(value: string | Supplier | AddNew | null): void {
     this.supplier.entered(value);
+    // Another supplier's invoice is not against this one's order.
+    if (this.order() && this.supplierId && this.supplierId !== this.order()!.supplierId) {
+      this.orderId.set(null);
+      this.closes.set(false);
+    }
     this.editor.touch();
   }
 
@@ -20156,6 +20557,8 @@ export class PurchasesPage {
     this.revenueDate = this.today;
     this.paper.set(null);
     this.review.set(null);
+    this.orderId.set(null);
+    this.closes.set(false);
     this.invoiceId = crypto.randomUUID();
   }
 
@@ -20183,6 +20586,15 @@ export class PurchasesPage {
     this.saving.set(true);
     try {
       const posted = await firstValueFrom(this.api.postPurchaseInvoice(this.invoiceId));
+      if (posted.awaitingApproval) {
+        this.notify.info(
+          `Sent to a manager: it is over ${posted.purchaseOrder?.poNumber ?? 'its purchase order'}, and its stock goes in once signed off. · أُرسلت للمدير.`,
+        );
+        this.reset();
+        void this.approvals.refresh();
+        await this.load();
+        return;
+      }
       const stock = posted.lines.filter((l) => l.itemType === 'Inventory').length;
       const expenses = posted.lines.length - stock;
       const parts = [
@@ -20256,6 +20668,8 @@ export class PurchasesPage {
     this.revenueDate = invoice.revenueDate ?? this.today;
     this.paper.set(invoice.attachment?.fileName ?? null);
     this.review.set(null);
+    this.orderId.set(invoice.purchaseOrder?.purchaseOrderId ?? null);
+    this.closes.set(invoice.purchaseOrder?.closes ?? false);
     this.editor.fill(invoice.lines, invoice.discount ?? 0);
     this.touch();
   }
@@ -20287,6 +20701,8 @@ export class PurchasesPage {
       revenueDate: this.paymentMethod === 'DayRevenue' ? this.revenueDate || null : null,
       lines: this.editor.toSave(partial),
       discount: this.editor.discountToSave(partial),
+      // Against a purchase order: which, and whether it closes it with what came.
+      ...(this.orderId() ? { purchaseOrderId: this.orderId(), closesPurchaseOrder: this.closes() } : {}),
     };
   }
 
@@ -20303,8 +20719,14 @@ export class PurchasesPage {
       this.today = today;
     });
     try {
-      const [drafts] = await Promise.all([firstValueFrom(this.api.purchaseInvoices('Draft')), this.catalog.load(), this.loadBalances()]);
+      const [drafts, open] = await Promise.all([
+        firstValueFrom(this.api.purchaseInvoices('Draft')),
+        firstValueFrom(this.api.openPurchaseOrders()),
+        this.catalog.load(),
+        this.loadBalances(),
+      ]);
       this.unfinished.set(drafts);
+      this.openOrders.set(open);
     } catch (error) {
       this.error.set(errorMessage(error, 'The purchases could not be loaded.'));
     } finally {
@@ -20324,7 +20746,7 @@ export class PurchasesPage {
 
 فاتورة لكل مورد بمعرّف يُصنع هنا، نقدي/آجل لكل فاتورة، **الفواتير المسلّمة في تقفيل اليوم** تفتح جاهزة مع صورتها للنسخ ("مسلّمة"/"مطابقة")، والصور تُرسل بعد الترحيل، وما لم يُرسل يعرض "أعد المحاولة". والمسودة محفوظة محليًا (بلا الصور) حتى لا يضيع العمل.
 
-> 📄 **`frontend/src/app/features/costing/purchase-batch-page.ts`** — 1230 سطر
+> 📄 **`frontend/src/app/features/costing/purchase-batch-page.ts`** — 1306 سطر
 
 ```ts
 import { DatePipe } from '@angular/common';
@@ -20344,6 +20766,7 @@ import { firstValueFrom } from 'rxjs';
 import {
   CostingApi,
   PurchaseBatchResult,
+  PurchaseOrder,
   PurchasePaymentMethod,
   SupplierBalance,
   paymentMethodLabels,
@@ -20368,6 +20791,7 @@ import { InvoiceLine, InvoiceLines, InvoiceLinesTable, InvoiceSupplier, Purchase
 import { paperIcon, viewInvoicePaper } from './invoice-paper';
 import { SupplierPaymentEntry, SupplierPaymentFields, newSupplierPayment, paymentProblems } from './supplier-payment-fields';
 import { PickRow } from '../shared/pick-row';
+import { ThreeWayMatchPanel, fillFromOrder } from './three-way-match';
 
 // One invoice of the batch: its id, made here; its supplier, number and lines, entered as on the
 // invoice screen; and the photo or scan of its paper, sent once the invoice is posted. On credit
@@ -20383,6 +20807,9 @@ interface BatchBlock {
   handedIn: HandedIn | null;
   // The photo above the lines, or hidden to give them the room.
   photoShown: boolean;
+  // The purchase order it delivers (3-way match), and whether it closes it with what came.
+  orderId: string | null;
+  closes: boolean;
 }
 
 // An invoice handed in at the end of a day, as its block starts from it.
@@ -20420,6 +20847,8 @@ interface StoredBatch {
     discount?: number | null;
     credit?: boolean;
     handedIn?: Omit<HandedIn, 'source'> | null;
+    orderId?: string | null;
+    closes?: boolean;
   }[];
   payments?: PaymentBlock[];
   advances?: AdvanceEntry[];
@@ -20456,6 +20885,7 @@ const storageKey = 'otantik-till.purchase-batch';
     RouterLink,
     SupplierPaymentFields,
     AdvanceFields,
+    ThreeWayMatchPanel,
   ],
   template: `
     @if (loading()) {
@@ -20673,6 +21103,15 @@ const storageKey = 'otantik-till.purchase-batch';
               <mat-label>Invoice no. · رقم الفاتورة</mat-label>
               <input matInput [(ngModel)]="block.number" (ngModelChange)="changed()" maxlength="64" data-western-digits [attr.aria-label]="'Invoice ' + (i + 1) + ', number'" />
             </mat-form-field>
+            <mat-form-field subscriptSizing="dynamic" class="po">
+              <mat-label>Purchase order · أمر الشراء</mat-label>
+              <mat-select [ngModel]="block.orderId" (ngModelChange)="chooseOrder(block, $event)" [attr.aria-label]="'Invoice ' + (i + 1) + ', purchase order'">
+                <mat-option [value]="null">None · بدون</mat-option>
+                @for (o of ordersFor(block); track o.id) {
+                  <mat-option [value]="o.id">{{ o.poNumber }} · {{ o.supplier }}</mat-option>
+                }
+              </mat-select>
+            </mat-form-field>
             <div class="paid-as">
               <mat-button-toggle-group [value]="paymentMethod === 'Credit' || block.credit ? 'Credit' : 'Cash'" (change)="payAs(block, $event.value)"
                 [disabled]="paymentMethod === 'Credit'" hideSingleSelectionIndicator [attr.aria-label]="'Invoice ' + (i + 1) + ', paid'">
@@ -20739,6 +21178,10 @@ const storageKey = 'otantik-till.purchase-batch';
             </div>
           } @else {
             <app-invoice-lines [editor]="block.editor" [label]="'Invoice ' + (i + 1) + ', '" [checks]="checks" />
+          }
+          @if (orderOf(block); as o) {
+            <app-three-way-match [order]="o" [editor]="block.editor" [canApprove]="approvals.canApprove()" [label]="'Invoice ' + (i + 1) + ', '"
+              [closes]="block.closes" (closesChange)="block.closes = $event; changed()" />
           }
         </section>
       }
@@ -20831,6 +21274,9 @@ const storageKey = 'otantik-till.purchase-batch';
     }
     .number {
       width: 190px;
+    }
+    .po {
+      width: 220px;
     }
     .payment-block {
       border-style: dashed;
@@ -21298,6 +21744,8 @@ export class PurchaseBatchPage {
             discount: b.editor.discount() ?? 0,
             onCredit: b.credit,
             endOfDayInvoiceId: b.handedIn?.invoiceId ?? null,
+            purchaseOrderId: b.orderId,
+            closesPurchaseOrder: b.orderId !== null && b.closes,
           })),
           payments: this.payments().map((p) => ({ transactionId: p.id, supplierId: p.supplierId!, amount: p.amount!, notes: p.notes.trim() || null })),
           advances: this.advances().map((a) => ({ transactionId: a.id, employeeId: a.employeeId, amount: a.amount!, notes: a.notes.trim() || null })),
@@ -21314,6 +21762,7 @@ export class PurchaseBatchPage {
       void this.loadHandedIn();
       const sent = await Promise.all(papers.map((p) => this.sendPaper(p.invoiceId, p.file, false)));
       const attached = sent.filter((ok) => ok).length;
+      const held = made.invoices.filter((i) => i.awaitingApproval).length;
       const pending =
         made.invoices.filter((i) => i.paymentStatus === 'Pending').length +
         made.payments.filter((p) => p.outcome === 'Requested').length +
@@ -21321,13 +21770,14 @@ export class PurchaseBatchPage {
       const said =
         `${this.sentLabel(made)}.` +
         (attached ? ` ${attached === 1 ? '1 paper' : `${attached} papers`} attached.` : '') +
-        (pending ? ` ${pending === 1 ? '1 payment waits' : `${pending} payments wait`} for a manager's approval.` : '');
+        (pending ? ` ${pending === 1 ? '1 payment waits' : `${pending} payments wait`} for a manager's approval.` : '') +
+        (held ? ` ${held === 1 ? '1 invoice is' : `${held} invoices are`} over its purchase order: its stock goes in once a manager signs it off.` : '');
       if (attached < papers.length) {
         this.notify.error(null, `${said} ${papers.length - attached === 1 ? 'A paper' : 'Some papers'} could not be attached: try again below.`);
       } else {
         this.notify.info(said);
       }
-      await Promise.all([this.catalog.loadMaterials(), this.loadBalances()]);
+      await Promise.all([this.catalog.loadMaterials(), this.loadBalances(), this.loadOrders()]);
     } catch (error) {
       this.problems.set(errorMessage(error, 'The batch could not be posted.'));
     } finally {
@@ -21345,7 +21795,45 @@ export class PurchaseBatchPage {
       credit: false,
       handedIn: null,
       photoShown: true,
+      orderId: null,
+      closes: false,
     };
+  }
+
+  // The purchase orders open for a delivery: a block's supplier's, or every one's while none is chosen.
+  private readonly openOrders = signal<PurchaseOrder[]>([]);
+
+  protected ordersFor(block: BatchBlock): PurchaseOrder[] {
+    block.supplier.version();
+    return this.openOrders().filter((o) => !block.supplier.id || o.supplierId === block.supplier.id || o.id === block.orderId);
+  }
+
+  protected orderOf(block: BatchBlock): PurchaseOrder | null {
+    return this.openOrders().find((o) => o.id === block.orderId) ?? null;
+  }
+
+  // Received against an order: its supplier, and its open lines (asked first over lines typed).
+  protected chooseOrder(block: BatchBlock, id: string | null): void {
+    const order = this.openOrders().find((o) => o.id === id) ?? null;
+    block.orderId = order?.id ?? null;
+    block.closes = false;
+    if (order) {
+      block.supplier.set(order.supplierId, order.supplier);
+      const typed = block.editor.lines().some((l) => l.rawMaterialId || l.expenseItemId || l.quantity);
+      if (!typed || confirm(`Put ${order.poNumber}'s open lines on the invoice, in place of what is typed? · استبدال البنود ببنود أمر الشراء؟`)) {
+        fillFromOrder(block.editor, order, this.catalog.materials());
+      }
+    }
+    block.editor.touch();
+    this.changed();
+  }
+
+  private async loadOrders(): Promise<void> {
+    try {
+      this.openOrders.set(await firstValueFrom(this.api.openPurchaseOrders()));
+    } catch {
+      this.openOrders.set([]);
+    }
   }
 
   // An invoice handed in at the end of the day, as a block: its supplier, paid as it was, its photo.
@@ -21363,6 +21851,12 @@ export class PurchaseBatchPage {
       contentType: invoice.photo.contentType,
       source: this.photoSource(date, invoice.id),
     };
+    // Handed in against a purchase order: received against it, its open lines to type over.
+    const order = this.openOrders().find((o) => o.id === invoice.purchaseOrderId);
+    if (order) {
+      block.orderId = order.id;
+      fillFromOrder(block.editor, order, this.catalog.materials());
+    }
     return block;
   }
 
@@ -21452,6 +21946,8 @@ export class PurchaseBatchPage {
         discount: b.editor.discount(),
         credit: b.credit,
         handedIn: b.handedIn ? (({ source, ...kept }) => kept)(b.handedIn) : null,
+        orderId: b.orderId,
+        closes: b.closes,
       })),
       payments: this.payments().map((p) => ({ ...p })),
       advances: this.advances().map((a) => ({ ...a })),
@@ -21513,6 +22009,8 @@ export class PurchaseBatchPage {
         block.editor.touch();
         block.credit = b.credit ?? false;
         block.handedIn = b.handedIn ? { ...b.handedIn, source: this.photoSource(b.handedIn.date, b.handedIn.invoiceId) } : null;
+        block.orderId = b.orderId ?? null;
+        block.closes = b.closes ?? false;
         return block;
       }),
     );
@@ -21536,7 +22034,7 @@ export class PurchaseBatchPage {
       }
     });
     try {
-      await Promise.all([this.catalog.load(), this.loadBalances(), this.loadEmployees()]);
+      await Promise.all([this.catalog.load(), this.loadBalances(), this.loadEmployees(), this.loadOrders()]);
       this.restore();
       // Opened on a day (from the end of the day): that day's batch.
       const asked = this.route.snapshot.queryParamMap.get('date');
@@ -21555,6 +22053,1968 @@ export class PurchaseBatchPage {
   private static today(): string {
     const now = new Date();
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  }
+}
+```
+
+
+### 10.2 أوامر الشراء والمطابقة الثلاثية
+
+`purchase-orders.ts` يكرر قواعد `ThreeWayMatch` في المتصفح (`matchAgainst`) لتظهر الشارات أثناء الكتابة، والخادم يعيد الحساب عند الترحيل فهو المرجع. `ThreeWayMatchPanel` يربط شبكة المطابقة بنفس كائنات `InvoiceLine` في محرر الفاتورة: تعديل الكمية المستلمة أو الإجمالي أو الخصم هنا هو تعديل البند نفسه (ثم `touch()`)، فلا مصدرين للحقيقة. ويُستخدم في فاتورة جديدة (حقل أمر الشراء، أو `?po=`) وفي كل فاتورة من يومية المشتريات. وصفحة الأمر تطبع ورقة المورد بلا أسعار (`window.print` مع `.print-only`) وتنسخ رسالة واتساب.
+
+> 📄 **`frontend/src/app/features/costing/purchase-orders.ts`** — 135 سطر
+
+```ts
+import { MatchStatus, PurchaseOrder, PurchaseOrderStatus, PurchaseOrderTerms } from '../../core/costing/costing.api';
+
+// Purchase orders (أوامر الشراء) as the screens work them: the 3-way match worked out as an invoice
+// is typed (the server's ThreeWayMatch, the same rules), and the order as a message for the supplier.
+
+// Billed this much above the order's price before it is an overcharge, as the server allows.
+export const priceTolerancePercent = 0.5;
+const unit = 0.0005;
+
+const round = (n: number, digits = 2) => Math.round(n * 10 ** digits) / 10 ** digits;
+
+// What an invoice brings of a material: in its purchase units, at what it cost net of every discount.
+export interface Delivered {
+  rawMaterialId: string;
+  purchaseQty: number;
+  netCost: number | null;
+}
+
+// One item of a delivery against its order, as the screen shows it.
+export interface LiveMatch {
+  rawMaterialId: string;
+  material: string;
+  purchaseUnit: string;
+  ordered: number;
+  remaining: number;
+  received: number;
+  expectedUnitCost: number;
+  netUnitPrice: number | null;
+  unitOvercharge: number | null;
+  overcharge: number;
+  qtyOver: number;
+  shortBy: number;
+  priceOver: boolean;
+  status: MatchStatus;
+}
+
+export interface LiveMatchResult {
+  lines: LiveMatch[];
+  overcharge: number;
+  hasShort: boolean;
+  needsApproval: boolean;
+}
+
+// Net unit price = net cost ÷ quantity received; over the price ordered by more than 0.5% and a
+// piastre, an overcharge. More than was left to come, over; less, short. Not on the order, all over.
+export function matchAgainst(order: PurchaseOrder, delivered: Delivered[], names: (id: string) => { name: string; unit: string }): LiveMatchResult {
+  const by = new Map<string, { qty: number; cost: number | null }>();
+  for (const d of delivered) {
+    const was = by.get(d.rawMaterialId);
+    by.set(d.rawMaterialId, {
+      qty: (was?.qty ?? 0) + d.purchaseQty,
+      cost: d.netCost === null && (was?.cost ?? null) === null ? null : (was?.cost ?? 0) + (d.netCost ?? 0),
+    });
+  }
+  const line = (id: string, material: string, purchaseUnit: string, ordered: number, remaining: number, expected: number, notOrdered: boolean): LiveMatch => {
+    const got = by.get(id);
+    const received = got?.qty ?? 0;
+    const net = received > 0 && got?.cost != null ? round(got.cost / received, 4) : null;
+    const priceOver = !notOrdered && expected > 0 && net !== null && net > expected * (1 + priceTolerancePercent / 100) && round(net - expected) >= 0.01;
+    const over = Math.max(received - remaining, 0);
+    const shortBy = notOrdered ? 0 : Math.max(remaining - received, 0);
+    const status: MatchStatus = notOrdered ? 'NotOrdered' : over > unit ? 'QtyOver' : priceOver ? 'PriceOvercharge' : shortBy > unit ? 'Short' : 'Matched';
+    return {
+      rawMaterialId: id, material, purchaseUnit, ordered, remaining, received: round(received, 3), expectedUnitCost: expected, netUnitPrice: net,
+      unitOvercharge: priceOver ? round(net! - expected, 4) : null, overcharge: priceOver ? round((net! - expected) * received) : 0,
+      qtyOver: over > unit ? round(over, 3) : 0, shortBy: shortBy > unit ? round(shortBy, 3) : 0, priceOver, status,
+    };
+  };
+  const lines = order.lines.map((l) => line(l.rawMaterialId, l.material, l.purchaseUnit, l.orderedPurchaseQty, l.remainingQty, l.expectedUnitCost, false));
+  for (const [id] of by) {
+    if (!order.lines.some((l) => l.rawMaterialId === id)) {
+      const named = names(id);
+      lines.push(line(id, named.name, named.unit, 0, 0, 0, true));
+    }
+  }
+  return {
+    lines,
+    overcharge: round(lines.reduce((sum, l) => sum + l.overcharge, 0)),
+    hasShort: lines.some((l) => l.shortBy > 0),
+    needsApproval: lines.some((l) => l.priceOver || l.qtyOver > 0),
+  };
+}
+
+const quantity = (n: number) => n.toLocaleString('en-GB', { maximumFractionDigits: 3 });
+const day = (iso: string | null) =>
+  iso ? new Date(`${iso}T12:00:00`).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' }) : null;
+
+// The order as a message to paste into WhatsApp: what, how much, by when, in English and Arabic;
+// never what it is expected to cost the kitchen.
+export function whatsAppText(order: PurchaseOrder, company: string): string {
+  const due = day(order.expectedDeliveryDate);
+  const lines = order.lines
+    .filter((l) => (order.status === 'PartiallyReceived' ? l.remainingQty : l.orderedPurchaseQty) > 0)
+    .map((l, i) => {
+      const qty = order.status === 'PartiallyReceived' ? l.remainingQty : l.orderedPurchaseQty;
+      return `${i + 1}. ${l.material} — ${quantity(qty)} ${l.purchaseUnit}${l.lineNotes ? ` (${l.lineNotes})` : ''}`;
+    });
+  return [
+    `*${company}* · أمر شراء *${order.poNumber}*`,
+    `Purchase order *${order.poNumber}* for ${order.supplier}`,
+    '',
+    ...lines,
+    '',
+    due ? `Delivery · التوريد: ${due}` : null,
+    `Payment · الدفع: ${order.paymentTerms === 'Credit' ? 'On credit · آجل' : 'Cash · نقدي'}`,
+    order.notes ? `Notes · ملاحظات: ${order.notes}` : null,
+    order.status === 'PartiallyReceived' ? 'The rest of the order still to come · المتبقي من الطلبية' : null,
+    '',
+    'Please confirm · برجاء التأكيد 🙏',
+  ]
+    .filter((l) => l !== null)
+    .join('\n');
+}
+
+export const termsLabels: Record<PurchaseOrderTerms, { en: string; ar: string }> = {
+  Cash: { en: 'Cash', ar: 'نقدي' },
+  Credit: { en: 'On credit', ar: 'آجل' },
+};
+
+// What a status filter pill holds: Approved / Open is approved, nothing received yet.
+export const statusPills: { value: '' | PurchaseOrderStatus; en: string; ar: string }[] = [
+  { value: '', en: 'All', ar: 'الكل' },
+  { value: 'Draft', en: 'Draft', ar: 'مسودة' },
+  { value: 'Approved', en: 'Approved / Open', ar: 'معتمد / مفتوح' },
+  { value: 'PartiallyReceived', en: 'Partially received', ar: 'استلام جزئي' },
+  { value: 'Completed', en: 'Completed', ar: 'مكتمل' },
+  { value: 'Cancelled', en: 'Cancelled', ar: 'ملغى' },
+];
+
+// Tomorrow, as the API takes a day: an order's expected delivery unless another is chosen.
+export function dayAfter(iso: string): string {
+  const d = new Date(`${iso}T12:00:00`);
+  d.setDate(d.getDate() + 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+```
+
+
+> 📄 **`frontend/src/app/features/costing/three-way-match.ts`** — 324 سطر
+
+```ts
+import { DecimalPipe } from '@angular/common';
+import { Component, computed, input, model } from '@angular/core';
+import { FormsModule } from '@angular/forms';
+import { MatButtonModule } from '@angular/material/button';
+import { MatButtonToggleModule } from '@angular/material/button-toggle';
+import { MatIconModule } from '@angular/material/icon';
+import { MaterialCost, PurchaseOrder, matchStatusLabels } from '../../core/costing/costing.api';
+import { MoneyPipe } from '../../core/ui/money.pipe';
+import { InfoTip } from './info-tip';
+import { InvoiceLine, InvoiceLines } from './invoice-lines';
+import { Delivered, LiveMatch, matchAgainst } from './purchase-orders';
+
+// An invoice's lines put against the purchase order it delivers: what was left to come of each line,
+// at what price, and what the invoice brings, as a line of the invoice; the order's lines come onto it
+// at what was left, at the expected price, to be typed over as the paper and the door say.
+export function fillFromOrder(editor: InvoiceLines, order: PurchaseOrder, materials: readonly MaterialCost[]): void {
+  const open = order.lines.filter((l) => l.remainingQty > 0);
+  editor.lines.set(
+    (open.length ? open : order.lines).map((l): InvoiceLine => {
+      const material = materials.find((m) => m.id === l.rawMaterialId);
+      return {
+        entry: material ?? l.material,
+        itemType: 'Inventory',
+        rawMaterialId: l.rawMaterialId,
+        expenseItemId: null,
+        quantity: l.remainingQty || l.orderedPurchaseQty,
+        unitSize: material?.purchaseUnitSize ?? l.purchaseUnitSize,
+        unitLabel: '',
+        cost: Math.round((l.remainingQty || l.orderedPurchaseQty) * l.expectedUnitCost * 100) / 100,
+        discount: 0,
+      };
+    }),
+  );
+  editor.discount.set(0);
+  editor.touch();
+}
+
+// What the invoice's stock lines bring, in purchase units, at what each cost net.
+export function deliveredBy(editor: InvoiceLines): Delivered[] {
+  editor.version();
+  return editor.lines().flatMap((line) => {
+    const material = editor.material(line);
+    const base = editor.baseQuantity(line);
+    return material && base ? [{ rawMaterialId: material.id, purchaseQty: base / material.purchaseUnitSize, netCost: editor.netCost(line) }] : [];
+  });
+}
+
+export function liveMatch(editor: InvoiceLines, order: PurchaseOrder) {
+  return matchAgainst(order, deliveredBy(editor), (id) => {
+    const material = editor.catalog.materials().find((m) => m.id === id);
+    return { name: material?.name ?? 'An item', unit: material?.purchaseUnit ?? 'unit' };
+  });
+}
+
+// The side-by-side grid (المطابقة الثلاثية): the order's line, what came, at what net price, and how it
+// stands, received quantity, line total and discount typed here or on the invoice's own lines; with
+// the backorder choice when something is short, and the word that a manager signs off what is over.
+@Component({
+  selector: 'app-three-way-match',
+  imports: [DecimalPipe, FormsModule, InfoTip, MatButtonModule, MatButtonToggleModule, MatIconModule, MoneyPipe],
+  template: `
+    @let m = match();
+    <section class="match" [attr.aria-label]="label() + '3-way match against ' + order().poNumber">
+      <header>
+        <h3>3-way match · المطابقة الثلاثية <app-info-tip tip="poMatch" /></h3>
+        <span class="muted">against {{ order().poNumber }} · {{ order().supplier }}</span>
+        <span class="spacer"></span>
+        @if (m.overcharge > 0) {
+          <span class="chip bad">Overcharge {{ m.overcharge | money }} <app-info-tip tip="poOvercharge" /></span>
+        }
+        @if (overLines() > 0) {
+          <span class="chip bad">{{ overLines() }} over the order</span>
+        }
+        @if (!m.needsApproval && !m.hasShort) {
+          <span class="chip good">All matched · مطابق</span>
+        }
+      </header>
+      <div class="table-wrap">
+        <table class="grid">
+          <thead>
+            <tr>
+              <th>Material<span class="ar">الصنف</span></th>
+              <th class="num">PO ordered / left<span class="ar">المطلوب / المتبقي</span></th>
+              <th class="num">Received<span class="ar">المستلم فعليًا</span></th>
+              <th class="num">PO price<span class="ar">السعر المتوقع</span></th>
+              <th class="num">Invoice line total<span class="ar">إجمالي البند</span></th>
+              <th class="num">Line discount<span class="ar">الخصم</span></th>
+              <th class="num">Net unit price <app-info-tip tip="poNetUnitPrice" /><span class="ar">صافي السعر</span></th>
+              <th>Match<span class="ar">المطابقة</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            @for (row of m.lines; track row.rawMaterialId) {
+              @let line = lineOf(row.rawMaterialId);
+              <tr [class]="'st-' + row.status">
+                <td>{{ row.material }} <span class="muted small">· {{ row.purchaseUnit }}</span></td>
+                <td class="num">{{ row.status === 'NotOrdered' ? '—' : (row.ordered | number: '1.0-3') + ' / ' + (row.remaining | number: '1.0-3') }}</td>
+                <td class="num">
+                  @if (line) {
+                    <input class="cell" type="number" min="0" step="any" [ngModel]="received(row)" (ngModelChange)="setReceived(line, $event)"
+                      [attr.aria-label]="label() + 'Received, ' + row.material" />
+                    @if (row.qtyOver > 0) {
+                      <div class="over">+{{ row.qtyOver | number: '1.0-3' }} over</div>
+                    }
+                  } @else {
+                    <button mat-button type="button" (click)="addLine(row)">Add · إضافة</button>
+                  }
+                </td>
+                <td class="num">{{ row.status === 'NotOrdered' ? '—' : (row.expectedUnitCost | money) }}</td>
+                <td class="num">
+                  @if (line) {
+                    <input class="cell" type="number" min="0" step="any" [(ngModel)]="line.cost" (ngModelChange)="editor().touch()"
+                      [attr.aria-label]="label() + 'Line total, ' + row.material" />
+                  }
+                </td>
+                <td class="num">
+                  @if (line) {
+                    <input class="cell" type="number" min="0" step="any" [(ngModel)]="line.discount" (ngModelChange)="editor().touch()"
+                      [attr.aria-label]="label() + 'Line discount, ' + row.material" />
+                  }
+                </td>
+                <td class="num">
+                  {{ row.netUnitPrice === null ? '—' : (row.netUnitPrice | money) }}
+                  @if (row.priceOver) {
+                    <div class="over">+{{ row.unitOvercharge | money }} each · {{ row.overcharge | money }}</div>
+                  }
+                </td>
+                <td>
+                  <span class="badge" [class]="row.status">{{ labels[row.status].en }} · {{ labels[row.status].ar }}</span>
+                  @if (row.priceOver && row.status !== 'PriceOvercharge') {
+                    <span class="badge PriceOvercharge">{{ labels.PriceOvercharge.en }}</span>
+                  }
+                  @if (row.shortBy > 0) {
+                    <div class="muted small">{{ row.shortBy | number: '1.0-3' }} {{ row.purchaseUnit }} short</div>
+                  }
+                </td>
+              </tr>
+            }
+          </tbody>
+        </table>
+      </div>
+      @if (m.hasShort) {
+        <div class="backorder">
+          <span>Something is short · استلام جزئي <app-info-tip tip="poBackorder" /></span>
+          <mat-button-toggle-group [ngModel]="closes() ? 'close' : 'keep'" (ngModelChange)="closes.set($event === 'close')" hideSingleSelectionIndicator
+            [attr.aria-label]="label() + 'What is short'">
+            <mat-button-toggle value="keep">Keep remaining balance open (Backorder) · إبقاء المتبقي كأمر شراء مفتوح</mat-button-toggle>
+            <mat-button-toggle value="close">Close PO with received qty · إغلاق أمر الشراء بالكمية المستلمة</mat-button-toggle>
+          </mat-button-toggle-group>
+        </div>
+      }
+      @if (m.needsApproval) {
+        <p class="gate" role="status">
+          <mat-icon>gpp_maybe</mat-icon>
+          @if (canApprove()) {
+            Over the order's price or quantity: posted as you confirm, since you approve. · تتجاوز أمر الشراء.
+          } @else {
+            Over the order's price or quantity: a manager signs it off before its stock goes in and the average costs move. · تحتاج موافقة المدير.
+          }
+        </p>
+      }
+    </section>
+  `,
+  styles: `
+    .match {
+      margin: 12px 0;
+      padding: 12px;
+      border: 1px solid var(--app-line);
+      border-radius: 12px;
+      background: var(--mat-sys-surface-container-lowest);
+    }
+    header {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+
+      h3 {
+        margin: 0;
+        font: var(--mat-sys-title-small);
+      }
+    }
+    .spacer {
+      flex: 1;
+    }
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 2px;
+      padding: 2px 10px;
+      border-radius: 999px;
+      font: var(--mat-sys-label-medium);
+
+      &.bad {
+        background: color-mix(in srgb, var(--mat-sys-error) 12%, transparent);
+        color: var(--mat-sys-error);
+      }
+      &.good {
+        background: color-mix(in srgb, var(--app-good, #15803d) 14%, transparent);
+        color: var(--app-good, #15803d);
+      }
+    }
+    .ar {
+      display: block;
+      font-size: 0.8em;
+      opacity: 0.75;
+    }
+    .small {
+      font-size: 0.85em;
+    }
+    .cell {
+      width: 92px;
+      padding: 5px 8px;
+      border: 1px solid var(--app-line-strong);
+      border-radius: 8px;
+      font: inherit;
+      text-align: end;
+      background: var(--mat-sys-surface-container-lowest);
+      color: inherit;
+    }
+    .over {
+      color: var(--mat-sys-error);
+      font: var(--mat-sys-label-small);
+    }
+    tr.st-PriceOvercharge td,
+    tr.st-QtyOver td,
+    tr.st-NotOrdered td {
+      background: color-mix(in srgb, var(--mat-sys-error) 6%, transparent);
+    }
+    tr.st-Short td {
+      background: color-mix(in srgb, var(--app-warn) 8%, transparent);
+    }
+    .badge {
+      display: inline-block;
+      margin: 0 4px 2px 0;
+      padding: 1px 8px;
+      border-radius: 999px;
+      font: var(--mat-sys-label-small);
+      white-space: nowrap;
+
+      &.Matched {
+        background: color-mix(in srgb, var(--app-good, #15803d) 16%, transparent);
+        color: var(--app-good, #15803d);
+      }
+      &.PriceOvercharge,
+      &.QtyOver,
+      &.NotOrdered {
+        background: color-mix(in srgb, var(--mat-sys-error) 14%, transparent);
+        color: var(--mat-sys-error);
+      }
+      &.Short {
+        background: color-mix(in srgb, var(--app-warn) 18%, transparent);
+        color: var(--app-warn);
+      }
+    }
+    .backorder {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px 12px;
+      margin-top: 8px;
+    }
+    .gate {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin: 8px 0 0;
+      padding: 8px 10px;
+      border-radius: 8px;
+      background: color-mix(in srgb, var(--app-warn) 14%, transparent);
+    }
+    @media (max-width: 599px) {
+      .backorder mat-button-toggle-group {
+        flex-direction: column;
+      }
+    }
+  `,
+})
+export class ThreeWayMatchPanel {
+  readonly order = input.required<PurchaseOrder>();
+  readonly editor = input.required<InvoiceLines>();
+  readonly canApprove = input(false);
+  // Before each field's accessible name, to tell one invoice's from another's: "Invoice 2, ".
+  readonly label = input('');
+  // What did not come is not expected any more: the order closed with what was received.
+  readonly closes = model(false);
+
+  protected readonly labels = matchStatusLabels;
+  protected readonly match = computed(() => liveMatch(this.editor(), this.order()));
+  protected readonly overLines = computed(() => this.match().lines.filter((l) => l.qtyOver > 0).length);
+
+  protected lineOf(materialId: string): InvoiceLine | undefined {
+    return this.editor().lines().find((l) => l.rawMaterialId === materialId);
+  }
+
+  protected received(row: LiveMatch): number {
+    return row.received;
+  }
+
+  // Received, in the order's purchase unit: the invoice line keeps the unit it is in.
+  protected setReceived(line: InvoiceLine, value: number | null): void {
+    const material = this.editor().material(line);
+    if (!material) {
+      return;
+    }
+    const size = line.unitSize ?? material.purchaseUnitSize;
+    line.quantity = value === null ? null : Math.round(((value * material.purchaseUnitSize) / size) * 1000) / 1000;
+    this.editor().touch();
+  }
+
+  // A line of the order missing from the invoice, put back at nothing received: typed in as it came.
+  protected addLine(row: LiveMatch): void {
+    const material = this.editor().catalog.materials().find((m) => m.id === row.rawMaterialId);
+    this.editor().lines.update((lines) => [
+      ...lines.filter((l) => l.rawMaterialId || l.expenseItemId || l.quantity),
+      {
+        entry: material ?? row.material, itemType: 'Inventory', rawMaterialId: row.rawMaterialId, expenseItemId: null, quantity: row.remaining,
+        unitSize: material?.purchaseUnitSize ?? 1, unitLabel: '', cost: Math.round(row.remaining * row.expectedUnitCost * 100) / 100, discount: 0,
+      },
+    ]);
+    this.editor().touch();
+  }
+}
+```
+
+
+> 📄 **`frontend/src/app/features/costing/purchase-order-dialog.ts`** — 328 سطر
+
+```ts
+import { Component, computed, inject, signal } from '@angular/core';
+import { FormsModule } from '@angular/forms';
+import { MatButtonModule } from '@angular/material/button';
+import { MatButtonToggleModule } from '@angular/material/button-toggle';
+import { MAT_DIALOG_DATA, MatDialogModule, MatDialogRef } from '@angular/material/dialog';
+import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatIconModule } from '@angular/material/icon';
+import { MatInputModule } from '@angular/material/input';
+import { MatSelectModule } from '@angular/material/select';
+import { MaterialCost, PurchaseOrder, PurchaseOrderInput, PurchaseOrderTerms, Supplier } from '../../core/costing/costing.api';
+import { Company } from '../../core/settings/company';
+import { MoneyPipe } from '../../core/ui/money.pipe';
+import { GridKeys } from '../shared/grid-keys';
+import { InfoTip } from './info-tip';
+import { MaterialPicker } from './material-picker';
+import { dayAfter } from './purchase-orders';
+
+// A purchase order written or rewritten as a draft (أمر شراء): the supplier, when it is ordered and
+// expected, cash or credit, and each item in its purchase unit at the price expected, the latest net
+// price paid to begin with. Keyboard first: Enter moves along a line and, on the last, adds one.
+
+export interface PurchaseOrderDialogData {
+  order: PurchaseOrder | null;
+  canApprove: boolean;
+  today: string;
+  suppliers: Supplier[];
+  materials: MaterialCost[];
+}
+
+export interface PurchaseOrderDialogResult {
+  input: PurchaseOrderInput;
+  // Approved (a manager's) or sent for approval, besides saved.
+  approve: boolean;
+  reason: string | null;
+}
+
+interface DraftLine {
+  rawMaterialId: string | null;
+  quantity: number | null;
+  expectedUnitCost: number | null;
+  lineNotes: string;
+}
+
+const round = (n: number) => Math.round(n * 100) / 100;
+
+@Component({
+  selector: 'app-purchase-order-dialog',
+  imports: [
+    FormsModule, GridKeys, InfoTip, MatButtonModule, MatButtonToggleModule, MatDialogModule, MatFormFieldModule, MatIconModule, MatInputModule,
+    MatSelectModule, MaterialPicker, MoneyPipe,
+  ],
+  template: `
+    <h2 mat-dialog-title>
+      {{ data.order ? data.order.poNumber + ' · draft' : 'New purchase order' }} <span class="ar">{{ data.order ? 'تعديل أمر شراء' : 'أمر شراء جديد' }}</span>
+    </h2>
+    <mat-dialog-content>
+      <div class="head">
+        <mat-form-field class="supplier">
+          <mat-label>Supplier · المورد</mat-label>
+          <mat-select [(ngModel)]="supplierId" (ngModelChange)="supplierChosen()" aria-label="Supplier">
+            @for (s of suppliers; track s.id) {
+              <mat-option [value]="s.id">{{ s.name }}</mat-option>
+            }
+          </mat-select>
+        </mat-form-field>
+        <mat-form-field>
+          <mat-label>Order date · تاريخ الطلب</mat-label>
+          <input matInput type="date" [(ngModel)]="orderDate" aria-label="Order date" />
+        </mat-form-field>
+        <mat-form-field>
+          <mat-label>Expected delivery · تاريخ التوريد</mat-label>
+          <input matInput type="date" [(ngModel)]="expected" [min]="orderDate" aria-label="Expected delivery" />
+        </mat-form-field>
+        <mat-button-toggle-group [(ngModel)]="terms" aria-label="Paid" hideSingleSelectionIndicator>
+          <mat-button-toggle value="Cash">Cash · نقدي</mat-button-toggle>
+          <mat-button-toggle value="Credit">On credit · آجل</mat-button-toggle>
+        </mat-button-toggle-group>
+      </div>
+      <div class="table-wrap">
+        <table class="grid lines" appGridKeys (appGridKeysAppend)="add()">
+          <thead>
+            <tr>
+              <th>Item<span class="ar">الصنف</span></th>
+              <th class="num">Quantity<span class="ar">الكمية</span></th>
+              <th>Unit<span class="ar">الوحدة</span></th>
+              <th class="num">Expected price <app-info-tip tip="poExpectedPrice" /><span class="ar">السعر المتوقع</span></th>
+              <th class="num">Line total<span class="ar">الإجمالي</span></th>
+              <th>Notes<span class="ar">ملاحظات</span></th>
+              <th><span class="visually-hidden">Remove</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            @for (line of lines(); track $index; let i = $index) {
+              <tr>
+                <td class="item">
+                  <app-material-picker [materials]="materials" [value]="line.rawMaterialId" (valueChange)="choose(i, $event)" [label]="'Item ' + (i + 1)" />
+                </td>
+                <td class="num">
+                  <input class="cell" type="number" min="0" step="any" [(ngModel)]="line.quantity" (ngModelChange)="touch()" [attr.aria-label]="'Quantity, line ' + (i + 1)" />
+                </td>
+                <td class="unit">{{ unitOf(line) }}</td>
+                <td class="num">
+                  <input class="cell" type="number" min="0" step="any" [(ngModel)]="line.expectedUnitCost" (ngModelChange)="touch()"
+                    [attr.aria-label]="'Expected price, line ' + (i + 1)" />
+                </td>
+                <td class="num">{{ lineTotal(line) | money }}</td>
+                <td><input class="cell notes" [(ngModel)]="line.lineNotes" maxlength="200" [attr.aria-label]="'Notes, line ' + (i + 1)" /></td>
+                <td>
+                  <button mat-icon-button type="button" (click)="remove(i)" [disabled]="lines().length === 1" [attr.aria-label]="'Remove line ' + (i + 1)">
+                    <mat-icon>close</mat-icon>
+                  </button>
+                </td>
+              </tr>
+            }
+          </tbody>
+          <tfoot>
+            <tr>
+              <td colspan="4">
+                <button mat-button type="button" (click)="add()"><mat-icon>add</mat-icon> Add a line · إضافة صنف</button>
+              </td>
+              <td class="num"><strong>{{ total() | money }}</strong></td>
+              <td colspan="2"></td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+      <mat-form-field class="full" subscriptSizing="dynamic">
+        <mat-label>Notes for the supplier · ملاحظات للمورد</mat-label>
+        <input matInput [(ngModel)]="notes" maxlength="500" aria-label="Notes" placeholder="Deliver before 10 am" />
+      </mat-form-field>
+      @if (!data.canApprove) {
+        <mat-form-field class="full" subscriptSizing="dynamic">
+          <mat-label>Reason · السبب</mat-label>
+          <input matInput [(ngModel)]="reason" maxlength="500" aria-label="Reason" placeholder="Optional: tells the manager why" />
+        </mat-form-field>
+      }
+      @if (problem(); as p) {
+        <p class="error" role="alert">{{ p }}</p>
+      }
+    </mat-dialog-content>
+    <mat-dialog-actions align="end">
+      <button mat-button mat-dialog-close>Cancel</button>
+      <button mat-stroked-button (click)="done(false)">Save draft · حفظ كمسودة</button>
+      <button mat-flat-button (click)="done(true)">
+        <mat-icon>{{ data.canApprove ? 'verified' : 'send' }}</mat-icon>
+        {{ data.canApprove ? 'Save & approve · حفظ واعتماد' : 'Save & send for approval · إرسال للموافقة' }}
+      </button>
+    </mat-dialog-actions>
+  `,
+  styleUrl: './costing.scss',
+  styles: `
+    .head {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 4px 12px;
+      margin-bottom: 8px;
+    }
+    .supplier {
+      min-width: 240px;
+      flex: 1;
+    }
+    .item {
+      min-width: 240px;
+    }
+    .cell {
+      width: 96px;
+      padding: 6px 8px;
+      border: 1px solid var(--app-line-strong);
+      border-radius: 8px;
+      font: inherit;
+      text-align: end;
+      background: var(--mat-sys-surface-container-lowest);
+      color: inherit;
+    }
+    .cell.notes {
+      width: 140px;
+      text-align: start;
+    }
+    .unit {
+      white-space: nowrap;
+      color: var(--mat-sys-on-surface-variant);
+    }
+    .full {
+      width: 100%;
+      margin-top: 8px;
+    }
+    .ar {
+      direction: rtl;
+      unicode-bidi: isolate;
+      margin-inline-start: 6px;
+      opacity: 0.75;
+      font-size: 0.8em;
+    }
+    .error {
+      color: var(--mat-sys-error);
+      white-space: pre-line;
+    }
+    .visually-hidden {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip: rect(0 0 0 0);
+    }
+  `,
+})
+export class PurchaseOrderDialog {
+  protected readonly company = inject(Company);
+  protected readonly data = inject<PurchaseOrderDialogData>(MAT_DIALOG_DATA);
+  private readonly ref = inject<MatDialogRef<PurchaseOrderDialog, PurchaseOrderDialogResult>>(MatDialogRef);
+
+  private readonly order = this.data.order;
+  // Archived ones are not offered, unless the draft already has it.
+  protected readonly suppliers = this.data.suppliers.filter((s) => !s.isArchived || s.id === this.order?.supplierId);
+  protected readonly materials = this.data.materials.filter((m) => m.kind !== 'Prep');
+  protected supplierId: string | null = this.order?.supplierId ?? null;
+  protected orderDate = this.order?.orderDate ?? this.data.today;
+  protected expected: string = this.order?.expectedDeliveryDate ?? dayAfter(this.data.today);
+  protected terms: PurchaseOrderTerms = this.order?.paymentTerms ?? 'Cash';
+  protected notes = this.order?.notes ?? '';
+  protected reason = '';
+  protected readonly lines = signal<DraftLine[]>(
+    this.order?.lines.map((l) => ({ rawMaterialId: l.rawMaterialId, quantity: l.orderedPurchaseQty, expectedUnitCost: l.expectedUnitCost, lineNotes: l.lineNotes ?? '' }))
+      ?? [{ rawMaterialId: null, quantity: null, expectedUnitCost: null, lineNotes: '' }],
+  );
+  private readonly version = signal(0);
+  private readonly tried = signal(false);
+
+  protected readonly total = computed(() => {
+    this.version();
+    return round(this.lines().reduce((sum, l) => sum + this.lineTotal(l), 0));
+  });
+
+  protected readonly problem = computed(() => {
+    this.version();
+    return this.tried() ? this.problems()[0] ?? null : null;
+  });
+
+  protected touch(): void {
+    this.version.update((v) => v + 1);
+  }
+
+  // A supplier's terms: on credit when it gives days to pay.
+  protected supplierChosen(): void {
+    const supplier = this.suppliers.find((s) => s.id === this.supplierId);
+    if (supplier && !this.order) {
+      this.terms = (supplier.paymentTermsDays ?? 0) > 0 ? 'Credit' : 'Cash';
+    }
+    this.touch();
+  }
+
+  protected add(): void {
+    this.lines.update((lines) => [...lines, { rawMaterialId: null, quantity: null, expectedUnitCost: null, lineNotes: '' }]);
+  }
+
+  protected remove(index: number): void {
+    this.lines.update((lines) => lines.filter((_, i) => i !== index));
+  }
+
+  // The item chosen: priced at the latest net price paid for it, or its average.
+  protected choose(index: number, id: string | null): void {
+    const line = this.lines()[index];
+    line.rawMaterialId = id;
+    const material = this.materials.find((m) => m.id === id);
+    if (material && line.expectedUnitCost === null) {
+      line.expectedUnitCost = round(material.lastPurchaseCostPerPurchaseUnit ?? material.costPerPurchaseUnit ?? 0);
+    }
+    this.touch();
+  }
+
+  protected unitOf(line: DraftLine): string {
+    return this.materials.find((m) => m.id === line.rawMaterialId)?.purchaseUnit ?? '—';
+  }
+
+  protected lineTotal(line: DraftLine): number {
+    return round((line.quantity ?? 0) * (line.expectedUnitCost ?? 0));
+  }
+
+  private problems(): string[] {
+    const found: string[] = [];
+    if (!this.supplierId) {
+      found.push('Choose the supplier. · اختر المورد.');
+    }
+    if (!this.orderDate) {
+      found.push('Choose the order date. · تاريخ الطلب.');
+    } else if (this.expected && this.expected < this.orderDate) {
+      found.push('It is expected on the day it is ordered or after. · تاريخ التوريد بعد تاريخ الطلب.');
+    }
+    const lines = this.lines();
+    lines.forEach((l, i) => {
+      if (!l.rawMaterialId) {
+        found.push(`Line ${i + 1}: choose the item. · اختر الصنف.`);
+      } else if (lines.findIndex((o) => o.rawMaterialId === l.rawMaterialId) < i) {
+        found.push(`Line ${i + 1}: it is on the order twice, put it on one line. · الصنف مكرر.`);
+      }
+      if (!((l.quantity ?? 0) > 0)) {
+        found.push(`Line ${i + 1}: enter the quantity. · أدخل الكمية.`);
+      }
+      if ((l.expectedUnitCost ?? 0) < 0) {
+        found.push(`Line ${i + 1}: the price is zero or more. · السعر صفر أو أكثر.`);
+      }
+    });
+    return found;
+  }
+
+  protected done(approve: boolean): void {
+    this.tried.set(true);
+    this.touch();
+    if (this.problems().length) {
+      return;
+    }
+    this.ref.close({
+      input: {
+        supplierId: this.supplierId!,
+        orderDate: this.orderDate,
+        expectedDeliveryDate: this.expected || null,
+        paymentTerms: this.terms,
+        notes: this.notes.trim() || null,
+        lines: this.lines().map((l) => ({
+          rawMaterialId: l.rawMaterialId!, orderedPurchaseQty: l.quantity!, expectedUnitCost: l.expectedUnitCost ?? 0, lineNotes: l.lineNotes.trim() || null,
+        })),
+      },
+      approve,
+      reason: this.reason.trim() || null,
+    });
+  }
+}
+```
+
+
+> 📄 **`frontend/src/app/features/costing/purchase-order-actions.ts`** — 101 سطر
+
+```ts
+import { Injectable, inject } from '@angular/core';
+import { MatDialog } from '@angular/material/dialog';
+import { firstValueFrom } from 'rxjs';
+import { CostingApi, PurchaseOrder } from '../../core/costing/costing.api';
+import { NotifyService } from '../../core/ui/notify.service';
+import { Approvals } from './approvals';
+import { BusinessDay } from './financials';
+import { PurchaseOrderDialog, PurchaseOrderDialogData, PurchaseOrderDialogResult } from './purchase-order-dialog';
+
+// What is done to a purchase order from its screens: written (a new one, or a draft rewritten) and
+// approved at once for a manager or asked of one for anyone else; called off; closed with what came.
+@Injectable({ providedIn: 'root' })
+export class PurchaseOrderActions {
+  private readonly api = inject(CostingApi);
+  private readonly dialog = inject(MatDialog);
+  private readonly notify = inject(NotifyService);
+  private readonly approvals = inject(Approvals);
+  private readonly businessDay = inject(BusinessDay);
+
+  // The order's id once saved; null when cancelled or refused.
+  async write(order: PurchaseOrder | null): Promise<string | null> {
+    const [today, suppliers, materials] = await Promise.all([
+      this.businessDay.today(),
+      firstValueFrom(this.api.suppliers(true)),
+      firstValueFrom(this.api.materials()),
+    ]);
+    const answer = await firstValueFrom(
+      this.dialog
+        .open<PurchaseOrderDialog, PurchaseOrderDialogData, PurchaseOrderDialogResult>(PurchaseOrderDialog, {
+          data: { order, canApprove: this.approvals.canApprove(), today, suppliers, materials },
+          width: '1080px',
+          maxWidth: '96vw',
+        })
+        .afterClosed(),
+    );
+    if (!answer) {
+      return null;
+    }
+    const id = order?.id ?? crypto.randomUUID();
+    try {
+      const saved = await firstValueFrom(this.api.savePurchaseOrder(id, answer.input));
+      if (answer.approve) {
+        await this.approveSaved(saved, answer.reason);
+      } else {
+        this.notify.info(`${saved.poNumber} saved as a draft. · حُفظ كمسودة.`);
+      }
+      return id;
+    } catch (error) {
+      this.notify.error(error, 'The purchase order could not be saved.');
+      return null;
+    }
+  }
+
+  async approve(order: PurchaseOrder): Promise<boolean> {
+    try {
+      await this.approveSaved(order, null);
+      return true;
+    } catch (error) {
+      this.notify.error(error, 'The purchase order could not be approved.');
+      return false;
+    }
+  }
+
+  async cancel(order: PurchaseOrder): Promise<boolean> {
+    if (!confirm(`Cancel ${order.poNumber}? Nothing more is received against it. · إلغاء أمر الشراء؟`)) {
+      return false;
+    }
+    try {
+      await firstValueFrom(this.api.cancelPurchaseOrder(order.id));
+      this.notify.info(`${order.poNumber} cancelled. · ألغي أمر الشراء.`);
+      await this.approvals.refresh();
+      return true;
+    } catch (error) {
+      this.notify.error(error, 'The purchase order could not be cancelled.');
+      return false;
+    }
+  }
+
+  async close(order: PurchaseOrder): Promise<boolean> {
+    if (!confirm(`Close ${order.poNumber} with what was received? What did not come is not expected any more. · إغلاق أمر الشراء بالكمية المستلمة؟`)) {
+      return false;
+    }
+    try {
+      await firstValueFrom(this.api.closePurchaseOrder(order.id));
+      this.notify.info(`${order.poNumber} closed with what was received. · أُغلق أمر الشراء.`);
+      return true;
+    } catch (error) {
+      this.notify.error(error, 'The purchase order could not be closed.');
+      return false;
+    }
+  }
+
+  private async approveSaved(order: PurchaseOrder, reason: string | null): Promise<void> {
+    const result = await firstValueFrom(this.api.approvePurchaseOrder(order.id, crypto.randomUUID(), reason));
+    if (result.outcome === 'Requested' && result.request) {
+      await this.approvals.requested({ outcome: result.outcome, request: result.request });
+    } else {
+      this.notify.info(`${result.poNumber} approved: send it to the supplier. · تم اعتماد أمر الشراء.`);
+    }
+  }
+}
+```
+
+
+> 📄 **`frontend/src/app/features/costing/purchase-orders-page.ts`** — 274 سطر
+
+```ts
+import { DatePipe, DecimalPipe } from '@angular/common';
+import { Component, computed, inject, signal } from '@angular/core';
+import { MatButtonModule } from '@angular/material/button';
+import { MatIconModule } from '@angular/material/icon';
+import { MatProgressBarModule } from '@angular/material/progress-bar';
+import { Router, RouterLink } from '@angular/router';
+import { firstValueFrom } from 'rxjs';
+import { CostingApi, PurchaseOrderStatus, PurchaseOrderSummary, purchaseOrderStatusLabels } from '../../core/costing/costing.api';
+import { errorMessage } from '../../core/http/error-message';
+import { MoneyPipe } from '../../core/ui/money.pipe';
+import { FilterOption, FilterSelect } from '../shared/filter-select';
+import { SearchField } from '../shared/search-field';
+import { smartMatch } from '../shared/smart-search';
+import { Approvals, pendingLabel } from './approvals';
+import { InfoTip } from './info-tip';
+import { PurchaseOrderActions } from './purchase-order-actions';
+import { statusPills, termsLabels } from './purchase-orders';
+
+// Purchase orders (أوامر الشراء) on Purchases: every order newest first, found by number, supplier or
+// who wrote it, filtered by where it stands and by supplier; each opens on its own page, where it is
+// printed, copied for the supplier and received against an invoice.
+@Component({
+  selector: 'app-purchase-orders-page',
+  imports: [DatePipe, DecimalPipe, FilterSelect, InfoTip, MatButtonModule, MatIconModule, MatProgressBarModule, MoneyPipe, RouterLink, SearchField],
+  template: `
+    <div class="toolbar smart">
+      <app-search-field [(value)]="search" placeholder="PO number, supplier or who wrote it · رقم الأمر أو المورد" />
+      <div class="pills">
+        <app-filter-select label="Supplier · المورد" icon="local_shipping" [options]="supplierOptions()" [(value)]="supplier" />
+      </div>
+      <span class="spacer"></span>
+      <button mat-flat-button (click)="create()"><mat-icon>add</mat-icon> New purchase order · أمر شراء جديد</button>
+    </div>
+    <div class="status-pills" role="group" aria-label="Status">
+      @for (p of pills; track p.value) {
+        <button type="button" class="status-pill" [class.on]="status() === p.value" [attr.aria-pressed]="status() === p.value" (click)="status.set(p.value)">
+          {{ p.en }} <span class="ar">{{ p.ar }}</span> <span class="count">{{ countOf(p.value) }}</span>
+        </button>
+      }
+    </div>
+    @if (loading()) {
+      <mat-progress-bar mode="indeterminate" />
+    }
+    @if (error(); as e) {
+      <p class="error">{{ e }}</p>
+    } @else {
+      <div class="table-wrap">
+        <table class="grid orders">
+          <thead>
+            <tr>
+              <th>PO number<span class="ar">رقم الأمر</span></th>
+              <th>Supplier<span class="ar">المورد</span></th>
+              <th>Ordered<span class="ar">تاريخ الطلب</span></th>
+              <th>Expected<span class="ar">التوريد</span></th>
+              <th>Paid<span class="ar">الدفع</span></th>
+              <th class="num">Expected total<span class="ar">الإجمالي المتوقع</span></th>
+              <th class="num">Received <app-info-tip tip="poReceived" /><span class="ar">نسبة الاستلام</span></th>
+              <th class="num">Left to come <app-info-tip tip="poRemaining" /><span class="ar">المتبقي</span></th>
+              <th>Status<span class="ar">الحالة</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            @for (o of shown(); track o.id) {
+              @let asked = approvals.pendingFor(o.id);
+              <tr class="clickable" (click)="open(o)" [class.cancelled]="o.status === 'Cancelled'">
+                <td class="code"><a [routerLink]="['/costing/purchases/orders', o.id]" (click)="$event.stopPropagation()">{{ o.poNumber }}</a></td>
+                <td>
+                  {{ o.supplier }}
+                  <div class="muted small">{{ o.lines }} {{ o.lines === 1 ? 'item' : 'items' }} · by {{ o.createdBy }}</div>
+                </td>
+                <td class="nowrap">{{ o.orderDate | date: 'd MMM y' }}</td>
+                <td class="nowrap" [class.late]="o.overdue">
+                  {{ o.expectedDeliveryDate ? (o.expectedDeliveryDate | date: 'd MMM') : '—' }}
+                  @if (o.overdue) {
+                    <div class="small">Late · متأخر</div>
+                  }
+                </td>
+                <td>{{ terms[o.paymentTerms].en }}</td>
+                <td class="num">{{ o.expectedTotal | money }}</td>
+                <td class="num">
+                  {{ o.receivedPercent | number: '1.0-1' }}%
+                  <div class="bar" aria-hidden="true"><span [style.width.%]="o.receivedPercent"></span></div>
+                </td>
+                <td class="num">{{ o.status === 'Cancelled' || o.status === 'Completed' ? '—' : (o.remainingValue | money) }}</td>
+                <td>
+                  <span class="po-status" [class]="o.status">{{ labels[o.status].en }}<span class="ar">{{ labels[o.status].ar }}</span></span>
+                  @if (asked) {
+                    <div><span class="pending-badge">{{ pendingLabel(asked).en }}</span></div>
+                  }
+                </td>
+              </tr>
+            } @empty {
+              <tr>
+                <td colspan="9" class="muted">
+                  {{ orders().length ? 'Nothing matches.' : 'No purchase orders yet: write one here, or create them from the order planner.' }}
+                </td>
+              </tr>
+            }
+          </tbody>
+        </table>
+      </div>
+      <p class="muted small">
+        Received against the supplier’s invoices on New invoice or the Daily batch: each item matched to the order (<a routerLink="/costing/intelligence/orders">order planner</a>).
+      </p>
+    }
+  `,
+  styleUrl: './costing.scss',
+  styles: `
+    .spacer {
+      flex: 1;
+    }
+    .status-pills {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin: 0 0 12px;
+    }
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 6px 12px;
+      border-radius: 999px;
+      border: 1px solid var(--app-line-strong);
+      background: var(--mat-sys-surface-container-lowest);
+      color: var(--mat-sys-on-surface);
+      font: var(--mat-sys-label-large);
+      cursor: pointer;
+
+      &.on {
+        background: var(--mat-sys-secondary-container);
+        color: var(--mat-sys-on-secondary-container);
+        border-color: transparent;
+      }
+      .ar {
+        opacity: 0.75;
+        font-size: 0.85em;
+      }
+      .count {
+        min-width: 18px;
+        padding: 0 6px;
+        border-radius: 999px;
+        background: var(--mat-sys-surface-container-high);
+        font: var(--mat-sys-label-small);
+      }
+    }
+    .code {
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+    .nowrap {
+      white-space: nowrap;
+    }
+    .small {
+      font-size: 0.85em;
+    }
+    .late {
+      color: var(--mat-sys-error);
+    }
+    tr.clickable {
+      cursor: pointer;
+    }
+    tr.cancelled td {
+      color: var(--mat-sys-on-surface-variant);
+    }
+    .bar {
+      height: 4px;
+      margin-top: 4px;
+      border-radius: 2px;
+      background: var(--mat-sys-surface-container-high);
+      overflow: hidden;
+
+      span {
+        display: block;
+        height: 100%;
+        background: var(--mat-sys-primary);
+      }
+    }
+    .po-status {
+      display: inline-block;
+      padding: 1px 8px;
+      border-radius: 999px;
+      font: var(--mat-sys-label-small);
+      white-space: nowrap;
+      background: var(--mat-sys-surface-container-high);
+
+      .ar {
+        display: inline;
+        margin-inline-start: 4px;
+      }
+      &.Approved {
+        background: color-mix(in srgb, var(--mat-sys-primary) 14%, transparent);
+        color: var(--mat-sys-primary);
+      }
+      &.PartiallyReceived {
+        background: color-mix(in srgb, var(--app-warn) 16%, transparent);
+        color: var(--app-warn);
+      }
+      &.Completed {
+        background: color-mix(in srgb, var(--app-good, #15803d) 16%, transparent);
+        color: var(--app-good, #15803d);
+      }
+      &.Cancelled {
+        text-decoration: line-through;
+      }
+    }
+  `,
+})
+export class PurchaseOrdersPage {
+  private readonly api = inject(CostingApi);
+  private readonly router = inject(Router);
+  private readonly actions = inject(PurchaseOrderActions);
+  protected readonly approvals = inject(Approvals);
+  protected readonly pendingLabel = pendingLabel;
+  protected readonly labels = purchaseOrderStatusLabels;
+  protected readonly terms = termsLabels;
+  protected readonly pills = statusPills;
+
+  protected readonly orders = signal<PurchaseOrderSummary[]>([]);
+  protected readonly loading = signal(true);
+  protected readonly error = signal<string | null>(null);
+  protected readonly search = signal('');
+  protected readonly status = signal<'' | PurchaseOrderStatus>('');
+  protected readonly supplier = signal('');
+
+  // By supplier and search first: the pills count what the other filters leave.
+  private readonly matching = computed(() =>
+    this.orders().filter((o) => (!this.supplier() || o.supplierId === this.supplier()) && smartMatch(this.search(), o.poNumber, o.supplier, o.createdBy)),
+  );
+  protected readonly shown = computed(() => this.matching().filter((o) => !this.status() || o.status === this.status()));
+
+  protected readonly supplierOptions = computed<FilterOption[]>(() => {
+    const by = new Map<string, { name: string; count: number }>();
+    for (const o of this.orders()) {
+      by.set(o.supplierId, { name: o.supplier, count: (by.get(o.supplierId)?.count ?? 0) + 1 });
+    }
+    return [
+      { value: '', label: 'All · الكل', count: this.orders().length },
+      ...[...by.entries()].sort((a, b) => a[1].name.localeCompare(b[1].name)).map(([value, s]) => ({ value, label: s.name, count: s.count })),
+    ];
+  });
+
+  constructor() {
+    void this.load();
+    void this.approvals.refresh();
+  }
+
+  protected countOf(status: '' | PurchaseOrderStatus): number {
+    return status ? this.matching().filter((o) => o.status === status).length : this.matching().length;
+  }
+
+  protected open(order: PurchaseOrderSummary): void {
+    void this.router.navigate(['/costing/purchases/orders', order.id]);
+  }
+
+  protected async create(): Promise<void> {
+    const id = await this.actions.write(null);
+    if (id) {
+      await this.router.navigate(['/costing/purchases/orders', id]);
+    }
+  }
+
+  private async load(): Promise<void> {
+    this.loading.set(true);
+    this.error.set(null);
+    try {
+      this.orders.set(await firstValueFrom(this.api.purchaseOrders()));
+    } catch (error) {
+      this.error.set(errorMessage(error, 'The purchase orders could not be loaded.'));
+    } finally {
+      this.loading.set(false);
+    }
+  }
+}
+```
+
+
+> 📄 **`frontend/src/app/features/costing/purchase-order-page.ts`** — 479 سطر
+
+```ts
+import { DatePipe, DecimalPipe } from '@angular/common';
+import { Component, computed, effect, inject, input, signal, untracked } from '@angular/core';
+import { MatButtonModule } from '@angular/material/button';
+import { MatDialog } from '@angular/material/dialog';
+import { MatIconModule } from '@angular/material/icon';
+import { MatProgressBarModule } from '@angular/material/progress-bar';
+import { MatTooltipModule } from '@angular/material/tooltip';
+import { RouterLink } from '@angular/router';
+import { firstValueFrom } from 'rxjs';
+import { CostingApi, PurchaseOrder, purchaseOrderStatusLabels } from '../../core/costing/costing.api';
+import { errorMessage } from '../../core/http/error-message';
+import { Company } from '../../core/settings/company';
+import { MoneyPipe } from '../../core/ui/money.pipe';
+import { NotifyService } from '../../core/ui/notify.service';
+import { Approvals, pendingLabel } from './approvals';
+import { InfoTip } from './info-tip';
+import { paperIcon, viewInvoicePaper } from './invoice-paper';
+import { PurchaseOrderActions } from './purchase-order-actions';
+import { termsLabels, whatsAppText } from './purchase-orders';
+
+// One purchase order: its lines, what has come of each and what is left, and every invoice received
+// against it (its deliveries, each opening the invoice and its paper). From here it is written and
+// approved, printed for the supplier or copied for WhatsApp (quantities only, never what it costs the
+// kitchen), received against an invoice (New invoice, with the order), closed or called off.
+@Component({
+  selector: 'app-purchase-order-page',
+  imports: [DatePipe, DecimalPipe, InfoTip, MatButtonModule, MatIconModule, MatProgressBarModule, MatTooltipModule, MoneyPipe, RouterLink],
+  template: `
+    <div class="toolbar no-print">
+      <a mat-button routerLink="/costing/purchases/orders"><mat-icon>arrow_back</mat-icon> All purchase orders</a>
+    </div>
+    @if (loading()) {
+      <mat-progress-bar mode="indeterminate" />
+    } @else if (error(); as e) {
+      <p class="error">{{ e }}</p>
+    } @else if (order(); as o) {
+      <div class="no-print">
+        <h2 class="title">
+          {{ o.poNumber }} · {{ o.supplier }}
+          <span class="po-status" [class]="o.status">{{ labels[o.status].en }}<span class="ar">{{ labels[o.status].ar }}</span></span>
+        </h2>
+        @if (asked(); as a) {
+          <p class="ask">{{ a.requestedBy }} has asked for it to be approved: it waits for a manager, and stays a draft until then. · بانتظار موافقة المدير</p>
+        }
+        <div class="actions">
+          @if (o.status === 'Approved' || o.status === 'PartiallyReceived') {
+            <a mat-flat-button [routerLink]="['/costing/purchases/new']" [queryParams]="{ po: o.id }">
+              <mat-icon>fact_check</mat-icon> Receive &amp; match invoice · استلام ومطابقة فاتورة
+            </a>
+          }
+          @if (o.status === 'Draft' && !asked()) {
+            <button mat-flat-button (click)="approve(o)">
+              <mat-icon>{{ approvals.canApprove() ? 'verified' : 'send' }}</mat-icon>
+              {{ approvals.canApprove() ? 'Approve · اعتماد' : 'Send for approval · إرسال للموافقة' }}
+            </button>
+            <button mat-stroked-button (click)="edit(o)"><mat-icon>edit</mat-icon> Edit · تعديل</button>
+          }
+          @if (o.status !== 'Draft' && o.status !== 'Cancelled') {
+            <button mat-stroked-button (click)="print()"><mat-icon>print</mat-icon> Print PO · طباعة أمر الشراء</button>
+            <button mat-stroked-button (click)="copy(o)"><mat-icon>chat</mat-icon> Copy for WhatsApp · نسخ لإرسال واتساب</button>
+          }
+          <span class="spacer"></span>
+          @if (o.status === 'PartiallyReceived' && approvals.canApprove()) {
+            <button mat-button (click)="close(o)"><mat-icon>task_alt</mat-icon> Close with what came · إغلاق بالكمية المستلمة</button>
+          }
+          @if (o.status === 'Draft' || (o.status === 'Approved' && approvals.canApprove())) {
+            <button mat-button class="danger" (click)="cancel(o)"><mat-icon>block</mat-icon> Cancel · إلغاء</button>
+          }
+        </div>
+
+        <dl class="facts">
+          <div><dt>Ordered · تاريخ الطلب</dt><dd>{{ o.orderDate | date: 'd MMM y' }}</dd></div>
+          <div><dt>Expected · التوريد</dt><dd>{{ o.expectedDeliveryDate ? (o.expectedDeliveryDate | date: 'EEE d MMM y') : '—' }}</dd></div>
+          <div><dt>Paid · الدفع</dt><dd>{{ terms[o.paymentTerms].en }} · {{ terms[o.paymentTerms].ar }}</dd></div>
+          <div><dt>Written by · بواسطة</dt><dd>{{ o.createdBy }}, {{ o.createdAtUtc | date: 'd MMM, HH:mm' }}</dd></div>
+          <div><dt>Approved by · اعتمده</dt><dd>{{ o.approvedBy ? o.approvedBy + ', ' + (o.approvedAtUtc | date: 'd MMM, HH:mm') : '—' }}</dd></div>
+          @if (o.closedAtUtc) {
+            <div><dt>Closed · أُغلق</dt><dd>{{ o.closedBy }}, {{ o.closedAtUtc | date: 'd MMM, HH:mm' }}</dd></div>
+          }
+          @if (o.cancelledAtUtc) {
+            <div><dt>Cancelled · أُلغي</dt><dd>{{ o.cancelledBy }}, {{ o.cancelledAtUtc | date: 'd MMM, HH:mm' }}</dd></div>
+          }
+          <div><dt>Received · الاستلام <app-info-tip tip="poReceived" /></dt><dd>{{ o.receivedPercent | number: '1.0-1' }}%</dd></div>
+        </dl>
+        @if (o.notes) {
+          <p class="note">{{ o.notes }}</p>
+        }
+
+        <div class="table-wrap">
+          <table class="grid lines">
+            <thead>
+              <tr>
+                <th>Item<span class="ar">الصنف</span></th>
+                <th class="num">Ordered<span class="ar">المطلوب</span></th>
+                <th class="num">Received<span class="ar">المستلم</span></th>
+                <th class="num">Left to come <app-info-tip tip="poRemaining" /><span class="ar">المتبقي</span></th>
+                <th class="num">Expected price <app-info-tip tip="poExpectedPrice" /><span class="ar">السعر المتوقع</span></th>
+                <th class="num">Line total<span class="ar">الإجمالي</span></th>
+              </tr>
+            </thead>
+            <tbody>
+              @for (l of o.lines; track l.id) {
+                <tr>
+                  <td>
+                    {{ l.material }} <span class="muted small">{{ l.code }}</span>
+                    @if (l.lineNotes) {
+                      <div class="muted small">{{ l.lineNotes }}</div>
+                    }
+                  </td>
+                  <td class="num">{{ l.orderedPurchaseQty | number: '1.0-3' }} {{ l.purchaseUnit }}</td>
+                  <td class="num">{{ l.receivedPurchaseQty | number: '1.0-3' }}</td>
+                  <td class="num" [class.open]="l.remainingQty > 0 && o.status !== 'Completed' && o.status !== 'Cancelled'">{{ l.remainingQty | number: '1.0-3' }}</td>
+                  <td class="num">{{ l.expectedUnitCost | money }}</td>
+                  <td class="num">{{ l.lineTotal | money }}</td>
+                </tr>
+              }
+            </tbody>
+            <tfoot>
+              <tr>
+                <td colspan="3">Expected total · الإجمالي المتوقع</td>
+                <td class="num">{{ o.status === 'Completed' || o.status === 'Cancelled' ? '—' : (o.remainingValue | money) }}</td>
+                <td></td>
+                <td class="num">{{ o.expectedTotal | money }}</td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+
+        <h3 class="section">Deliveries &amp; invoices history <span class="ar">سجل التوريدات والفواتير</span></h3>
+        <div class="table-wrap">
+          <table class="grid deliveries">
+            <thead>
+              <tr>
+                <th>Invoice<span class="ar">الفاتورة</span></th>
+                <th>Date<span class="ar">التاريخ</span></th>
+                <th class="num">Total<span class="ar">الإجمالي</span></th>
+                <th>Status<span class="ar">الحالة</span></th>
+                <th>Paper<span class="ar">الأصل</span></th>
+              </tr>
+            </thead>
+            <tbody>
+              @for (d of o.deliveries; track d.invoiceId) {
+                <tr [class.voided]="d.status === 'Voided'">
+                  <td>
+                    <a [routerLink]="['/costing/purchases/invoices', d.invoiceId]">{{ d.supplierInvoiceNumber ? 'Invoice ' + d.supplierInvoiceNumber : 'The invoice' }}</a>
+                    @if (d.closedTheOrder) {
+                      <div class="muted small">Closed the order · أغلق أمر الشراء</div>
+                    }
+                  </td>
+                  <td class="nowrap">{{ d.invoiceDate ? (d.invoiceDate | date: 'd MMM y') : '—' }}</td>
+                  <td class="num">{{ d.total | money }}</td>
+                  <td>
+                    @if (d.awaitingApproval) {
+                      <span class="pending-badge">Waiting for a manager · بانتظار المدير</span>
+                    } @else {
+                      {{ d.status === 'Posted' ? 'Posted' : d.status === 'Voided' ? 'Voided' : 'Draft' }}
+                      @if (d.postedBy) {
+                        <div class="muted small">by {{ d.postedBy }}, {{ d.postedAtUtc | date: 'd MMM, HH:mm' }}</div>
+                      }
+                    }
+                  </td>
+                  <td>
+                    @if (d.attachmentFileName; as file) {
+                      <button mat-button (click)="paper(d.invoiceId, file)"><mat-icon>{{ icon(file) }}</mat-icon> View</button>
+                    } @else {
+                      <span class="muted">—</span>
+                    }
+                  </td>
+                </tr>
+              } @empty {
+                <tr><td colspan="5" class="muted">Nothing received against it yet. · لم يتم استلام شيء بعد.</td></tr>
+              }
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- What the supplier is sent: printed alone, without the kitchen's costs. -->
+      <section class="po-paper print-only" aria-hidden="true">
+        <header>
+          @if (company.logoUrl(); as logo) {
+            <img [src]="logo" alt="" />
+          }
+          <div>
+            <h1>{{ company.name() }}</h1>
+            <p>Purchase order · أمر شراء</p>
+          </div>
+          <div class="number">
+            <strong>{{ o.poNumber }}</strong>
+            <span>{{ o.orderDate | date: 'd MMM y' }}</span>
+          </div>
+        </header>
+        <dl>
+          <div><dt>Supplier · المورد</dt><dd>{{ o.supplier }}{{ o.supplierPhone ? ' · ' + o.supplierPhone : '' }}</dd></div>
+          <div><dt>Expected delivery · تاريخ التوريد</dt><dd>{{ o.expectedDeliveryDate ? (o.expectedDeliveryDate | date: 'EEEE d MMMM y') : '—' }}</dd></div>
+          <div><dt>Payment · الدفع</dt><dd>{{ terms[o.paymentTerms].en }} · {{ terms[o.paymentTerms].ar }}</dd></div>
+        </dl>
+        <table>
+          <thead>
+            <tr><th>#</th><th>Item · الصنف</th><th class="num">Quantity · الكمية</th><th>Unit · الوحدة</th><th>Notes · ملاحظات</th></tr>
+          </thead>
+          <tbody>
+            @for (l of printed(); track l.id; let i = $index) {
+              <tr>
+                <td>{{ i + 1 }}</td>
+                <td>{{ l.material }}</td>
+                <td class="num">{{ (o.status === 'PartiallyReceived' ? l.remainingQty : l.orderedPurchaseQty) | number: '1.0-3' }}</td>
+                <td>{{ l.purchaseUnit }}</td>
+                <td>{{ l.lineNotes }}</td>
+              </tr>
+            }
+          </tbody>
+        </table>
+        @if (o.status === 'PartiallyReceived') {
+          <p>The rest of the order still to come · المتبقي من الطلبية</p>
+        }
+        @if (o.notes) {
+          <p>{{ o.notes }}</p>
+        }
+        <footer>
+          <span>Approved by · اعتمده: {{ o.approvedBy ?? '—' }}</span>
+          <span>Received by · استلمه: ____________________</span>
+        </footer>
+      </section>
+    } @else {
+      <p class="error">No such purchase order. · أمر الشراء غير موجود.</p>
+    }
+  `,
+  styleUrl: './costing.scss',
+  styles: `
+    .title {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      margin: 0 0 8px;
+      font: var(--mat-sys-title-large);
+    }
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    .spacer {
+      flex: 1;
+    }
+    .facts {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 8px 16px;
+      margin: 0 0 12px;
+
+      dt {
+        font: var(--mat-sys-label-medium);
+        color: var(--mat-sys-on-surface-variant);
+      }
+      dd {
+        margin: 0;
+      }
+    }
+    .ask {
+      padding: 8px 10px;
+      border-radius: 8px;
+      background: color-mix(in srgb, var(--app-warn) 14%, transparent);
+    }
+    .section {
+      margin: 20px 0 8px;
+      font: var(--mat-sys-title-small);
+    }
+    .open {
+      color: var(--app-warn);
+      font-weight: 600;
+    }
+    .small {
+      font-size: 0.85em;
+    }
+    .nowrap {
+      white-space: nowrap;
+    }
+    .danger {
+      color: var(--mat-sys-error);
+    }
+    tr.voided td {
+      color: var(--mat-sys-on-surface-variant);
+      text-decoration: line-through;
+    }
+    tfoot td {
+      font-weight: 600;
+    }
+    .po-status {
+      display: inline-block;
+      padding: 1px 8px;
+      border-radius: 999px;
+      font: var(--mat-sys-label-medium);
+      background: var(--mat-sys-surface-container-high);
+
+      .ar {
+        display: inline;
+        margin-inline-start: 4px;
+      }
+      &.Approved {
+        background: color-mix(in srgb, var(--mat-sys-primary) 14%, transparent);
+        color: var(--mat-sys-primary);
+      }
+      &.PartiallyReceived {
+        background: color-mix(in srgb, var(--app-warn) 16%, transparent);
+        color: var(--app-warn);
+      }
+      &.Completed {
+        background: color-mix(in srgb, var(--app-good, #15803d) 16%, transparent);
+        color: var(--app-good, #15803d);
+      }
+    }
+    .print-only {
+      display: none;
+    }
+    @media print {
+      .print-only {
+        display: block;
+      }
+      .no-print {
+        display: none !important;
+      }
+    }
+    .po-paper {
+      color: #000;
+      font-size: 12pt;
+
+      header {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        padding-bottom: 12px;
+        border-bottom: 2px solid #000;
+
+        img {
+          max-height: 56px;
+        }
+        h1 {
+          margin: 0;
+          font-size: 18pt;
+        }
+        p {
+          margin: 0;
+        }
+        .number {
+          margin-inline-start: auto;
+          display: grid;
+          text-align: end;
+
+          strong {
+            font-size: 16pt;
+          }
+        }
+      }
+      dl {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 8px;
+        margin: 12px 0;
+
+        dt {
+          font-size: 9pt;
+          color: #444;
+        }
+        dd {
+          margin: 0;
+          font-weight: 600;
+        }
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+
+        th,
+        td {
+          padding: 6px 8px;
+          border: 1px solid #999;
+          text-align: start;
+        }
+        .num {
+          text-align: end;
+        }
+      }
+      footer {
+        display: flex;
+        justify-content: space-between;
+        margin-top: 40px;
+      }
+    }
+  `,
+})
+export class PurchaseOrderPage {
+  private readonly api = inject(CostingApi);
+  private readonly dialog = inject(MatDialog);
+  private readonly notify = inject(NotifyService);
+  private readonly actions = inject(PurchaseOrderActions);
+  protected readonly company = inject(Company);
+  protected readonly approvals = inject(Approvals);
+  protected readonly pendingLabel = pendingLabel;
+  protected readonly labels = purchaseOrderStatusLabels;
+  protected readonly terms = termsLabels;
+  protected readonly icon = paperIcon;
+
+  readonly id = input.required<string>();
+
+  protected readonly order = signal<PurchaseOrder | null>(null);
+  protected readonly loading = signal(true);
+  protected readonly error = signal<string | null>(null);
+  protected readonly asked = computed(() => {
+    const order = this.order();
+    return order ? this.approvals.pendingFor(order.id) : undefined;
+  });
+  // What the supplier is sent: what is left to come of a part-delivered order, all of a new one.
+  protected readonly printed = computed(() =>
+    (this.order()?.lines ?? []).filter((l) => (this.order()!.status === 'PartiallyReceived' ? l.remainingQty : l.orderedPurchaseQty) > 0),
+  );
+
+  constructor() {
+    effect(() => {
+      const id = this.id();
+      untracked(() => void this.load(id));
+    });
+    void this.approvals.refresh();
+  }
+
+  protected print(): void {
+    window.print();
+  }
+
+  protected async copy(order: PurchaseOrder): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(whatsAppText(order, this.company.name()));
+      this.notify.info('Copied: paste it into WhatsApp. · تم النسخ.');
+    } catch {
+      this.notify.error(null, 'The browser would not copy it: select the text and copy it by hand.');
+    }
+  }
+
+  protected paper(invoiceId: string, fileName: string): void {
+    viewInvoicePaper(this.dialog, invoiceId, fileName);
+  }
+
+  protected async edit(order: PurchaseOrder): Promise<void> {
+    if (await this.actions.write(order)) {
+      await this.load(order.id);
+    }
+  }
+
+  protected async approve(order: PurchaseOrder): Promise<void> {
+    if (await this.actions.approve(order)) {
+      await this.load(order.id);
+    }
+  }
+
+  protected async cancel(order: PurchaseOrder): Promise<void> {
+    if (await this.actions.cancel(order)) {
+      await this.load(order.id);
+    }
+  }
+
+  protected async close(order: PurchaseOrder): Promise<void> {
+    if (await this.actions.close(order)) {
+      await this.load(order.id);
+    }
+  }
+
+  private async load(id: string): Promise<void> {
+    this.error.set(null);
+    try {
+      this.order.set(await firstValueFrom(this.api.purchaseOrder(id)));
+    } catch (error) {
+      this.error.set(errorMessage(error, 'The purchase order could not be loaded.'));
+    } finally {
+      this.loading.set(false);
+    }
+  }
+}
+```
+
+
+ومن مخطط الطلبيات: `PoGenerationDialog` يعرض أمرًا لكل مورد، ويطلب موردًا للخامات التي لم تُشترَ من قبل، ثم تُكتب كلها معًا أو لا شيء.
+
+> 📄 **`frontend/src/app/features/costing/po-generation-dialog.ts`** — 273 سطر
+
+```ts
+import { DecimalPipe } from '@angular/common';
+import { Component, computed, inject, signal } from '@angular/core';
+import { FormsModule } from '@angular/forms';
+import { MatButtonModule } from '@angular/material/button';
+import { MatButtonToggleModule } from '@angular/material/button-toggle';
+import { MAT_DIALOG_DATA, MatDialogModule, MatDialogRef } from '@angular/material/dialog';
+import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatIconModule } from '@angular/material/icon';
+import { MatInputModule } from '@angular/material/input';
+import { MatSelectModule } from '@angular/material/select';
+import { PlannedOrderLine, PurchaseOrderInput, PurchaseOrderPlan, PurchaseOrderTerms, Supplier } from '../../core/costing/costing.api';
+import { MoneyPipe } from '../../core/ui/money.pipe';
+import { InfoTip } from './info-tip';
+import { dayAfter } from './purchase-orders';
+
+// The order planner's approved quantities as purchase orders, one a supplier (إنشاء أوامر شراء من
+// الطلبية): who sold each last, or cheapest, at that price; a material no one has sold yet waits for a
+// supplier to be chosen here, or is left out. Each order's delivery day and terms are set here too.
+// Sent together: all are written, or none.
+
+export interface PoGenerationData {
+  plan: PurchaseOrderPlan;
+  suppliers: Supplier[];
+  canApprove: boolean;
+  today: string;
+}
+
+export interface PoGenerationResult {
+  orders: { id: string; order: PurchaseOrderInput }[];
+}
+
+interface Group {
+  supplierId: string;
+  supplier: string;
+  lines: PlannedOrderLine[];
+  total: number;
+}
+
+const round = (n: number) => Math.round(n * 100) / 100;
+
+@Component({
+  selector: 'app-po-generation-dialog',
+  imports: [
+    DecimalPipe, FormsModule, InfoTip, MatButtonModule, MatButtonToggleModule, MatDialogModule, MatFormFieldModule, MatIconModule, MatInputModule,
+    MatSelectModule, MoneyPipe,
+  ],
+  template: `
+    <h2 mat-dialog-title>Create purchase orders <span class="ar">إنشاء أوامر شراء من الطلبية</span></h2>
+    <mat-dialog-content>
+      <p class="muted">
+        One purchase order a supplier, {{ data.plan.groupBy === 'CheapestSupplier' ? 'each item to the supplier with the lowest last net price' : 'each item to who sold it last' }},
+        at that price <app-info-tip tip="poExpectedPrice" />.
+        {{ data.canApprove ? 'Approved at once: ready to send.' : 'Sent to a manager for approval: drafts until then.' }}
+      </p>
+
+      @if (unassigned().length) {
+        <section class="choose">
+          <h3>No supplier yet · بدون مورد</h3>
+          <p class="muted small">No one has sold these yet: choose who to order each from, or leave it out.</p>
+          @for (l of unassigned(); track l.rawMaterialId) {
+            <div class="pick">
+              <span class="what">{{ l.material }} · {{ l.quantity | number: '1.0-3' }} {{ l.purchaseUnit }}</span>
+              <mat-form-field subscriptSizing="dynamic">
+                <mat-label>Order from · المورد</mat-label>
+                <mat-select [ngModel]="assigned().get(l.rawMaterialId) ?? ''" (ngModelChange)="assign(l.rawMaterialId, $event)" [attr.aria-label]="'Supplier for ' + l.material">
+                  <mat-option value="">Leave it out · استبعاد</mat-option>
+                  @for (s of suppliers; track s.id) {
+                    <mat-option [value]="s.id">{{ s.name }}</mat-option>
+                  }
+                </mat-select>
+              </mat-form-field>
+            </div>
+          }
+        </section>
+      }
+
+      @for (g of groups(); track g.supplierId) {
+        <section class="order" [attr.aria-label]="'Purchase order for ' + g.supplier">
+          <header>
+            <h3>{{ g.supplier }}</h3>
+            <span class="spacer"></span>
+            <mat-form-field subscriptSizing="dynamic" class="day">
+              <mat-label>Expected · التوريد</mat-label>
+              <input matInput type="date" [ngModel]="expectedOf(g.supplierId)" (ngModelChange)="setExpected(g.supplierId, $event)" [min]="data.today"
+                [attr.aria-label]="'Expected delivery from ' + g.supplier" />
+            </mat-form-field>
+            <mat-button-toggle-group [ngModel]="termsOf(g.supplierId)" (ngModelChange)="setTerms(g.supplierId, $event)" hideSingleSelectionIndicator
+              [attr.aria-label]="'Paid to ' + g.supplier">
+              <mat-button-toggle value="Cash">Cash · نقدي</mat-button-toggle>
+              <mat-button-toggle value="Credit">Credit · آجل</mat-button-toggle>
+            </mat-button-toggle-group>
+          </header>
+          <table class="grid">
+            <thead>
+              <tr>
+                <th>Item<span class="ar">الصنف</span></th>
+                <th class="num">Quantity<span class="ar">الكمية</span></th>
+                <th class="num">Expected price<span class="ar">السعر المتوقع</span></th>
+                <th class="num">Line total<span class="ar">الإجمالي</span></th>
+              </tr>
+            </thead>
+            <tbody>
+              @for (l of g.lines; track l.rawMaterialId) {
+                <tr>
+                  <td>{{ l.material }} @if (!l.priceKnown) {<span class="muted small">· its average, never bought</span>}</td>
+                  <td class="num">{{ l.quantity | number: '1.0-3' }} {{ l.purchaseUnit }}</td>
+                  <td class="num">{{ l.unitPrice | money }}</td>
+                  <td class="num">{{ l.cost | money }}</td>
+                </tr>
+              }
+            </tbody>
+            <tfoot>
+              <tr><td colspan="3">{{ g.lines.length }} {{ g.lines.length === 1 ? 'item' : 'items' }}</td><td class="num">{{ g.total | money }}</td></tr>
+            </tfoot>
+          </table>
+        </section>
+      } @empty {
+        <p class="muted">Choose a supplier for an item to make an order.</p>
+      }
+    </mat-dialog-content>
+    <mat-dialog-actions align="end">
+      <span class="summary muted">
+        {{ groups().length }} {{ groups().length === 1 ? 'order' : 'orders' }} · {{ total() | money }}
+        @if (leftOut()) {
+          · {{ leftOut() }} left out
+        }
+      </span>
+      <button mat-button mat-dialog-close>Cancel</button>
+      <button mat-flat-button (click)="done()" [disabled]="!groups().length">
+        <mat-icon>{{ data.canApprove ? 'verified' : 'send' }}</mat-icon>
+        {{ data.canApprove ? 'Create & approve' : 'Create & send for approval' }} ({{ groups().length }})
+      </button>
+    </mat-dialog-actions>
+  `,
+  styleUrl: './costing.scss',
+  styles: `
+    .ar {
+      direction: rtl;
+      unicode-bidi: isolate;
+      margin-inline-start: 6px;
+      opacity: 0.75;
+      font-size: 0.8em;
+    }
+    .small {
+      font-size: 0.85em;
+    }
+    .choose,
+    .order {
+      margin: 0 0 16px;
+      padding: 12px;
+      border: 1px solid var(--app-line);
+      border-radius: 12px;
+    }
+    .choose {
+      background: color-mix(in srgb, var(--app-warn) 8%, transparent);
+    }
+    h3 {
+      margin: 0;
+      font: var(--mat-sys-title-small);
+    }
+    .pick {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px 12px;
+      margin-top: 8px;
+
+      .what {
+        flex: 1;
+        min-width: 180px;
+      }
+    }
+    header {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .spacer {
+      flex: 1;
+    }
+    .day {
+      width: 170px;
+    }
+    table {
+      width: 100%;
+    }
+    tfoot td {
+      font-weight: 600;
+    }
+    .summary {
+      margin-inline-end: auto;
+    }
+  `,
+})
+export class PoGenerationDialog {
+  protected readonly data = inject<PoGenerationData>(MAT_DIALOG_DATA);
+  private readonly ref = inject<MatDialogRef<PoGenerationDialog, PoGenerationResult>>(MatDialogRef);
+  protected readonly suppliers = this.data.suppliers.filter((s) => !s.isArchived);
+
+  // Each material no one has sold yet, and who it is ordered from here ('' left out).
+  protected readonly unassigned = computed(() => this.data.plan.orders.filter((o) => o.supplierId === null).flatMap((o) => o.lines));
+  protected readonly assigned = signal(new Map<string, string>());
+  private readonly expected = signal(new Map<string, string>());
+  private readonly terms = signal(new Map<string, PurchaseOrderTerms>());
+
+  // A purchase order a supplier: the planner's, with what was given to it here.
+  protected readonly groups = computed<Group[]>(() => {
+    const by = new Map<string, Group>();
+    const name = (id: string) => this.suppliers.find((s) => s.id === id)?.name ?? this.data.plan.orders.find((o) => o.supplierId === id)?.supplier ?? 'A supplier';
+    const put = (supplierId: string, line: PlannedOrderLine) => {
+      const group = by.get(supplierId) ?? { supplierId, supplier: name(supplierId), lines: [], total: 0 };
+      group.lines.push(line);
+      group.total = round(group.total + line.cost);
+      by.set(supplierId, group);
+    };
+    for (const order of this.data.plan.orders) {
+      for (const line of order.lines) {
+        const to = order.supplierId ?? this.assigned().get(line.rawMaterialId);
+        if (to) {
+          put(to, line);
+        }
+      }
+    }
+    return [...by.values()].sort((a, b) => a.supplier.localeCompare(b.supplier));
+  });
+
+  protected readonly total = computed(() => round(this.groups().reduce((sum, g) => sum + g.total, 0)));
+  protected readonly leftOut = computed(() => this.unassigned().filter((l) => !this.assigned().get(l.rawMaterialId)).length);
+
+  protected assign(materialId: string, supplierId: string): void {
+    const next = new Map(this.assigned());
+    next.set(materialId, supplierId);
+    this.assigned.set(next);
+  }
+
+  protected expectedOf(supplierId: string): string {
+    return this.expected().get(supplierId) ?? dayAfter(this.data.today);
+  }
+
+  protected setExpected(supplierId: string, day: string): void {
+    this.expected.set(new Map(this.expected()).set(supplierId, day));
+  }
+
+  // On credit when the supplier gives days to pay, unless chosen here.
+  protected termsOf(supplierId: string): PurchaseOrderTerms {
+    return this.terms().get(supplierId)
+      ?? ((this.data.plan.orders.find((o) => o.supplierId === supplierId)?.paymentTermsDays ?? this.suppliers.find((s) => s.id === supplierId)?.paymentTermsDays ?? 0) > 0
+        ? 'Credit'
+        : 'Cash');
+  }
+
+  protected setTerms(supplierId: string, terms: PurchaseOrderTerms): void {
+    this.terms.set(new Map(this.terms()).set(supplierId, terms));
+  }
+
+  protected done(): void {
+    this.ref.close({
+      orders: this.groups().map((g) => ({
+        id: crypto.randomUUID(),
+        order: {
+          supplierId: g.supplierId,
+          orderDate: this.data.today,
+          expectedDeliveryDate: this.expectedOf(g.supplierId) || null,
+          paymentTerms: this.termsOf(g.supplierId),
+          notes: null,
+          lines: g.lines.map((l) => ({ rawMaterialId: l.rawMaterialId, orderedPurchaseQty: l.quantity, expectedUnitCost: l.unitPrice })),
+        },
+      })),
+    });
   }
 }
 ```
@@ -22021,11 +24481,12 @@ export class InvoicePage {
 ```
 
 
-> 📄 **`frontend/src/app/features/costing/invoice-view.ts`** — 254 سطر
+> 📄 **`frontend/src/app/features/costing/invoice-view.ts`** — 261 سطر
 
 ```ts
 import { DatePipe, DecimalPipe } from '@angular/common';
 import { Component, computed, input } from '@angular/core';
+import { RouterLink } from '@angular/router';
 import { PurchaseInvoice, PurchaseInvoiceLine, UnitOfMeasure, paymentMethodLabels, paymentStatusLabels } from '../../core/costing/costing.api';
 import { MoneyPipe } from '../../core/ui/money.pipe';
 import { PaperPreview } from './invoice-paper';
@@ -22040,12 +24501,18 @@ const baseLabels: Record<UnitOfMeasure, string> = { Gram: 'g', Millilitre: 'ml',
 // history's Show, and on the invoice's own page; from a stock card, its material's line marked.
 @Component({
   selector: 'app-invoice-view',
-  imports: [DatePipe, DecimalPipe, MoneyPipe, PaperPreview],
+  imports: [DatePipe, DecimalPipe, MoneyPipe, PaperPreview, RouterLink],
   template: `
     @let inv = invoice();
     <dl class="details">
       <div><dt>Supplier · المورد</dt><dd>{{ inv.supplierName ?? '—' }}</dd></div>
       <div><dt>Invoice no. · رقم الفاتورة</dt><dd>{{ inv.supplierInvoiceNumber ?? '—' }}</dd></div>
+      @if (inv.purchaseOrder; as po) {
+        <div>
+          <dt>Purchase order · أمر الشراء</dt>
+          <dd><a [routerLink]="['/costing/purchases/orders', po.purchaseOrderId]">{{ po.poNumber }}</a>{{ po.closes ? ' · closes it' : '' }}</dd>
+        </div>
+      }
       <div><dt>Date · التاريخ</dt><dd>{{ date() | date: 'd MMM y' }}</dd></div>
       @if (discounted()) {
         <div><dt>Net payable · الصافي المستحق</dt><dd class="total">{{ inv.total | money }}</dd></div>
@@ -24542,7 +27009,7 @@ export class ExpenseItemDialog {
 - **المراجعة** (`EndOfDaySummaryDialog`): تقرير ملخص قبل التسليم؛ لا تسليم بفاتورة أو دفعة مكتوبة لم تُضف، أو بلا مبيعات.
 - **بعد التسليم:** القسم مقفول، وما تحوّل لفواتير وقيود يظهر بحالته، وإعادة الفتح للمدير.
 
-> 📄 **`frontend/src/app/features/costing/end-of-day-page.ts`** — 1605 سطر
+> 📄 **`frontend/src/app/features/costing/end-of-day-page.ts`** — 1638 سطر
 
 ```ts
 import { DatePipe } from '@angular/common';
@@ -24557,7 +27024,8 @@ import { MatInputModule } from '@angular/material/input';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { ActivatedRoute, RouterLink } from '@angular/router';
 import { firstValueFrom } from 'rxjs';
-import { CostingApi, DiscountReason } from '../../core/costing/costing.api';
+import { CostingApi, DiscountReason, PurchaseOrderSummary } from '../../core/costing/costing.api';
+import { MatSelectModule } from '@angular/material/select';
 import { CostingAccess } from '../../core/costing/costing-tabs';
 import {
   EndOfDay,
@@ -24635,7 +27103,10 @@ const payoutSectionLabels: Record<
 // so it is never added twice; then the form is empty for the next.
 @Component({
   selector: 'app-eod-invoice-form',
-  imports: [FormsModule, ItemPicker, MatButtonModule, MatButtonToggleModule, MatFormFieldModule, MatIconModule, MatInputModule, MatProgressBarModule, PhotoThumb],
+  imports: [
+    FormsModule, ItemPicker, MatButtonModule, MatButtonToggleModule, MatFormFieldModule, MatIconModule, MatInputModule, MatProgressBarModule, MatSelectModule,
+    PhotoThumb,
+  ],
   template: `
     <div class="form" [class.editing]="!!invoice()">
       <div class="photo">
@@ -24671,6 +27142,17 @@ const payoutSectionLabels: Record<
             data-western-digits [attr.aria-label]="label() + ', total'" />
           <span matTextSuffix>&nbsp;{{ company.currency() }}</span>
         </mat-form-field>
+        @if (ordersOf().length || orderId()) {
+          <mat-form-field subscriptSizing="dynamic">
+            <mat-label>Purchase order (optional) · أمر الشراء</mat-label>
+            <mat-select [ngModel]="orderId()" (ngModelChange)="orderId.set($event); touch()" [attr.aria-label]="label() + ', purchase order'">
+              <mat-option [value]="null">None · بدون</mat-option>
+              @for (o of ordersOf(); track o.id) {
+                <mat-option [value]="o.id">{{ o.poNumber }}</mat-option>
+              }
+            </mat-select>
+          </mat-form-field>
+        }
         <mat-form-field subscriptSizing="dynamic">
           <mat-label>Note (optional) · ملاحظة</mat-label>
           <input matInput [(ngModel)]="note" (ngModelChange)="touch()" maxlength="200" [attr.aria-label]="label() + ', note'" />
@@ -24766,6 +27248,8 @@ export class EodInvoiceForm {
   readonly date = input.required<string>();
   readonly section = input.required<EndOfDayInvoiceKind>();
   readonly suppliers = input.required<readonly PickItem[]>();
+  // The purchase orders open for a delivery: the chosen supplier's are offered.
+  readonly orders = input<readonly PurchaseOrderSummary[]>([]);
   // The invoice being changed; none for a new one.
   readonly invoice = input<EndOfDayInvoice | null>(null);
   readonly saved = output<EndOfDay>();
@@ -24776,6 +27260,9 @@ export class EodInvoiceForm {
   protected readonly kind = signal<EndOfDayInvoiceKind>('Cash');
   protected readonly file = signal<File | null>(null);
   protected readonly supplierId = signal<string | null>(null);
+  // The purchase order it delivers, for the batch to receive it against.
+  protected readonly orderId = signal<string | null>(null);
+  protected readonly ordersOf = computed(() => this.orders().filter((o) => o.supplierId === this.supplierId()));
   protected total: number | null = null;
   protected note = '';
   protected readonly saving = signal(false);
@@ -24807,6 +27294,7 @@ export class EodInvoiceForm {
         const invoice = this.invoice();
         this.kind.set(invoice?.kind ?? section);
         this.supplierId.set(invoice?.supplierId ?? null);
+        this.orderId.set(invoice?.purchaseOrderId ?? null);
         this.total = invoice?.reportedTotal ?? null;
         this.note = invoice?.note ?? '';
         this.file.set(null);
@@ -24846,6 +27334,7 @@ export class EodInvoiceForm {
   protected clear(): void {
     this.file.set(null);
     this.supplierId.set(null);
+    this.orderId.set(null);
     this.total = null;
     this.note = '';
     this.touch();
@@ -24867,7 +27356,11 @@ export class EodInvoiceForm {
     }
     this.saving.set(true);
     this.problem.set(null);
-    const entry = { kind: this.kind(), supplierId: this.supplierId()!, reportedTotal: round(total), note: this.note.trim() || null };
+    // Another supplier's order is not this invoice's.
+    const orderId = this.ordersOf().some((o) => o.id === this.orderId()) ? this.orderId() : null;
+    const entry = {
+      kind: this.kind(), supplierId: this.supplierId()!, reportedTotal: round(total), note: this.note.trim() || null, ...(orderId ? { purchaseOrderId: orderId } : {}),
+    };
     try {
       let day: EndOfDay;
       if (!invoice) {
@@ -25151,7 +27644,7 @@ export class EndOfDaySummaryDialog {
           <div class="invoices">
             @for (inv of invoicesOf(kind); track inv.id; let i = $index) {
               @if (editing() === inv.id && !locked()) {
-                <app-eod-invoice-form [date]="date()" [section]="kind" [suppliers]="suppliers()" [invoice]="inv" (saved)="saved($event)"
+                <app-eod-invoice-form [date]="date()" [section]="kind" [suppliers]="suppliers()" [orders]="openOrders()" [invoice]="inv" (saved)="saved($event)"
                   (cancelled)="editing.set(null)" />
               } @else {
                 <article class="invoice" [attr.aria-label]="sections[kind].en + ' ' + (i + 1)">
@@ -25185,7 +27678,7 @@ export class EndOfDaySummaryDialog {
             }
           </div>
           @if (!locked()) {
-            <app-eod-invoice-form [date]="date()" [section]="kind" [suppliers]="suppliers()" (saved)="saved($event)" (pendingChange)="pendingIn(kind, $event)" />
+            <app-eod-invoice-form [date]="date()" [section]="kind" [suppliers]="suppliers()" [orders]="openOrders()" (saved)="saved($event)" (pendingChange)="pendingIn(kind, $event)" />
           }
           <footer class="counter" aria-live="polite">
             <span>{{ sections[kind].count.en }} <span class="inline-ar">{{ sections[kind].count.ar }}</span>: <strong>{{ countOf(kind) }}</strong></span>
@@ -25769,6 +28262,8 @@ export class EndOfDayPage {
   protected readonly error = signal<string | null>(null);
   protected readonly busy = signal(false);
   protected readonly suppliers = signal<PickItem[]>([]);
+  // The purchase orders open for a delivery, for an invoice handed in to name the one it delivers.
+  protected readonly openOrders = signal<PurchaseOrderSummary[]>([]);
   // The staff, those who left too (the day's advances name them); the form offers those still here.
   protected readonly employees = signal<Employee[]>([]);
   // The staff come from HR while it is linked: chosen from HR's, none added here.
@@ -26072,6 +28567,11 @@ export class EndOfDayPage {
       );
     } catch (error) {
       this.error.set(errorMessage(error, 'The suppliers could not be loaded.'));
+    }
+    try {
+      this.openOrders.set(await firstValueFrom(this.costing.purchaseOrders({ open: true })));
+    } catch {
+      // Not offered: invoices are handed in without an order.
     }
     try {
       const [staff, hr] = await Promise.all([

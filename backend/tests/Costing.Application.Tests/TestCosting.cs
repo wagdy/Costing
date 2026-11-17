@@ -40,6 +40,7 @@ public sealed class TestCosting
     public MenuStore Menu { get; } = new();
     public ComboStore Combos { get; } = new();
     public FixedAssetStore FixedAssets { get; } = new();
+    public PurchaseOrderStore PurchaseOrders { get; } = new();
     public SalesStore Sales { get; } = new();
     public StaffStore Staff { get; } = new();
     public BreakageStore Breakage { get; } = new();
@@ -85,6 +86,7 @@ public sealed class TestCosting
         services.AddSingleton<IMenuRepository>(Menu);
         services.AddSingleton<Costing.Domain.Menu.IComboOfferRepository>(Combos);
         services.AddSingleton<Costing.Domain.FixedAssets.IFixedAssetRepository>(FixedAssets);
+        services.AddSingleton<IPurchaseOrderRepository>(PurchaseOrders);
         services.AddSingleton<ISalesReceiptRepository>(Sales);
         services.AddSingleton<IStaffMemberRepository>(Staff);
         services.AddSingleton<IBreakageEntryRepository>(Breakage);
@@ -565,6 +567,18 @@ public sealed class CountStore : IStockCountRepository
             .ToDictionary(g => g.Key, g => g.Min(x => x.Posted)));
 }
 
+public sealed class PurchaseOrderStore : IPurchaseOrderRepository
+{
+    public List<PurchaseOrder> All { get; } = new();
+
+    public Task<PurchaseOrder?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default) => Task.FromResult(All.SingleOrDefault(o => o.Id == id));
+    public void Add(PurchaseOrder aggregate) => All.Add(aggregate);
+    public Task<IReadOnlyList<PurchaseOrder>> GetAllAsync(CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyList<PurchaseOrder>>(All.OrderByDescending(o => o.Year).ThenByDescending(o => o.Sequence).ToList());
+    public Task<int> NextSequenceAsync(int year, CancellationToken cancellationToken = default) =>
+        Task.FromResult(All.Where(o => o.Year == year).Select(o => o.Sequence).DefaultIfEmpty(0).Max() + 1);
+}
+
 public sealed class InvoiceStore : IPurchaseInvoiceRepository, IPurchaseAttachmentStore
 {
     private readonly List<PurchaseInvoice> _invoices = new();
@@ -589,6 +603,11 @@ public sealed class InvoiceStore : IPurchaseInvoiceRepository, IPurchaseAttachme
                 g.Count(), g.Where(x => x.Invoice.Status == PurchaseInvoiceStatus.Posted).Sum(x => x.Line.Cost ?? 0), g.Max(x => x.Invoice.PostedAtUtc))));
     public Task<bool> AnyForExpenseItemAsync(Guid expenseItemId, CancellationToken cancellationToken = default) =>
         Task.FromResult(_invoices.Any(i => i.Lines.Any(l => l.ExpenseItemId == expenseItemId)));
+    public Task<IReadOnlyList<PurchaseInvoice>> GetForOrderAsync(Guid purchaseOrderId, CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyList<PurchaseInvoice>>(_invoices.Where(i => i.PurchaseOrderId == purchaseOrderId).ToList());
+    public Task<IReadOnlyDictionary<Guid, int>> GetDeliveriesByOrderAsync(CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyDictionary<Guid, int>>(_invoices.Where(i => i.PurchaseOrderId != null && i.Status == PurchaseInvoiceStatus.Posted)
+            .GroupBy(i => i.PurchaseOrderId!.Value).ToDictionary(g => g.Key, g => g.Count()));
     public void Put(Guid invoiceId, byte[] content) => _attachments[invoiceId] = content;
     public Task<byte[]?> GetAsync(Guid invoiceId, CancellationToken cancellationToken = default) => Task.FromResult(_attachments.GetValueOrDefault(invoiceId));
 }
