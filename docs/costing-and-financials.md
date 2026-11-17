@@ -796,12 +796,14 @@ file), `POST {date}/advances` (a form: id, employeeId, amount, note, file), `PUT
 and `{date}/advances/{id}/receipt`, `PUT|DELETE {date}/sales-photo`, `POST {date}/submit` (body
 `{ "zeroSales": true }` for a day that sold nothing; the answer's `warnings` say what to look at),
 `GET sequence`, `POST void-last` (also `POST /api/costing/end-of-day/void-last`; a manager's), `POST
-{date}/reopen` (the same undo, of that day only when it is the last closed), `GET {date}/photos/{id}`
+mark-closed-day` and `POST {id}/reassign-date` (also under `/api/costing/end-of-day/`; the second a
+manager's), `POST {date}/reopen` (the same undo, of that day only when it is the last closed), `GET {date}/photos/{id}`
 (an invoice's or a receipt's by its id, the sales report's by the day's). Written with End of the
 day; read with it, Purchases or Financials; `GET /api/staff` is read with End of the day too. A
 batch invoice names `endOfDayInvoiceId` and `onCredit`. Kept in `costing.EndOfDayReports` (with
-`OpeningFloat`, `ReopenReason`), `EndOfDayInvoices`, `EndOfDayPayouts` (with `VoucherId`; migrations
-`AddEndOfDayPayouts`, `AddEndOfDaySequence`) and `EndOfDayPhotos`; the books' lock in
+`OpeningFloat`, `ReopenReason`, `IsClosedDay`, `ClosedDayReason`, `AuditTrail`), `EndOfDayInvoices`,
+`EndOfDayPayouts` (with `VoucherId`; migrations `AddEndOfDayPayouts`, `AddEndOfDaySequence`,
+`AddEndOfDayClosedDaysAndAudit`) and `EndOfDayPhotos`; the books' lock in
 `costing.FinancialSettings.BooksLockedUntil`.
 
 ### Strict sequentiality and the manager's undo (التسلسل الزمني وإلغاء التقفيل)
@@ -873,6 +875,59 @@ was reversed (`takingsVoided`, `salesVoided`, `invoicesVoided`, `payoutsVoided`,
 `zReports`). `GET sequence` gives `lastClosedDate`, `nextExpectedDate`, `today`, `allClosed`,
 `booksLockedUntil`, `warnings` and `lastClosed`, what undoing it would reverse (its takings, sales
 items, posted invoices, payments in the safe, Z reports, and whether the books are locked over it).
+
+### Closed days and stranded drafts (يوم مغلق، والمسودة العالقة)
+
+Two ways through the order without breaking it.
+
+**A day the restaurant did not trade** (تسجيل يوم إغلاق أو صيانة): closed for maintenance, a holiday,
+a power cut. On the blank page of the day to close next, **Mark as Closed/Off Day · تسجيل كيوم
+مغلق** asks why (required, up to 300 characters, e.g. *Restaurant closed for plumbing
+maintenance*) and closes it as a submitted day with nothing on it (`IsClosedDay`,
+`ClosedDayReason`): no sales report, no Z report, nothing to post or take in. The next day is then
+the one to close, and the page opens on it. A closed day is shown as **Closed day · يوم مغلق** with
+its reason on End of the day, Recent days and Daily summaries, and is undone like any day (the last
+closed, by a manager), becoming an ordinary draft again.
+
+- Only the day to close next (the same order rules: never a day to come, never in the books
+  locked); anyone who works End of the day.
+- Not a day with anything handed in (an invoice, a payment, a sales figure or the Z photo): that
+  is handed in with it. An empty draft left on the day is closed as it is.
+- Not a day the restaurant sold on: a sales summary (from the POS or by hand) or takings in the safe
+  for it refuse it (*hand the day in with its sales instead*). It needs no sales report, but a
+  closed day with sales in the books would hide them from the end of day.
+- `POST /api/costing/end-of-day/mark-closed-day` with `{ "targetDate", "reason" }`; the answer is the
+  day, with the `warnings` a submit gives.
+
+**A draft entered under the wrong date** (ترحيل المسودة العالقة): the day's invoices typed on the
+17th while the 16th is still to close. Such a draft (from before the order rules, or made before
+any day was closed) can never be handed in where it is. `GET sequence` lists them
+(`strandedDrafts`: each draft dated after the day to close next, with its invoices, payments and
+whether it has sales); the page of the day to close next points to each (*A draft dated Tue 17 Nov
+holds 3 invoices…: Open it*), and the draft itself shows a warning banner with **Migrate Data to
+Mon 16 Nov · نقل البيانات وإصلاح التاريخ** for a manager (anyone else is told a manager moves it).
+It asks the **reason for the change (required)** (سبب التعديل الإجباري), then, in one unit:
+
+1. The draft takes the date of the day to close next, everything on it with it: its invoices,
+   payments, sales report, notes and photos (kept by their own ids).
+2. The draft purchase invoices paid out of its day's takings (`DayRevenue`, that takings day) move
+   too: their takings day, and their date when it was the draft's. Others (paid from the safe, on
+   credit, or posted) stay as they are. Refused while one of them waits for a manager.
+3. The reason is written in: *System Audit: Migrated from 17/11/2026 to 16/11/2026 by Boss due to:
+   wrong initial entry* is added to the day's notes and to each invoice's note, and to the day's
+   **audit trail** (`AuditTrail`, سجل التدقيق), a timestamped line each, shown under the day and never
+   changed by anyone (the notes can still be typed over; the trail cannot). The day's notes take up
+   to 2,000 characters and an invoice's note up to 1,000 to leave room for these lines.
+4. The page opens on the day it was moved to.
+
+- Only onto the day to close next (`targetDate`, the one the manager saw), and never a submitted
+  draft (undo it first).
+- Days are never merged: a day to close next with entries of its own refuses it (hand them in or
+  take them off first); an empty draft left there is taken away to make room.
+- The POS's Z reports and takings stay on their own dates: they are what the till recorded, not
+  what was typed.
+- `POST /api/costing/end-of-day/{id}/reassign-date` with `{ "targetDate", "auditReason" }`, a
+  manager's; the answer is the day, the date it came `from` and the `purchaseInvoicesMoved`.
 
 ## Purchases: discounts and the paper
 

@@ -943,6 +943,92 @@ public class CostingApiTests
         Assert.Equal("Submitted", (await Json(await branch.PostAsync($"{Day(today)}/submit", null, Cancel))).GetProperty("status").GetString());
     }
 
+    // A day the restaurant did not trade closed by the branch with why, never one the POS sold on; a
+    // draft entered under the wrong date moved by a manager alone, with why, onto the empty draft left
+    // on the day to close next, its photos with it.
+    [Fact]
+    public async Task A_closed_day_and_a_stranded_draft_moved_by_a_manager_keep_the_days_in_order()
+    {
+        await using var api = await TestApi.StartAsync();
+        var manager = await api.ManagerAsync();
+        var (_, large, _) = await PizzaAsync(manager);
+        var today = await TodayAsync(manager);
+        var nile = Guid.NewGuid();
+        await Json(await manager.PutAsJsonAsync($"/api/inventory/suppliers/{nile}", new { name = "Nile Mills" }, Cancel));
+        var branch = await api.UserAsync(manager, "Hany", UserRole.Storekeeper);
+        await Json(await manager.PutAsJsonAsync($"/api/access/{api.UserIds["hany@example.com"]}", new { tabs = new[] { "EndOfDay" } }, Cancel));
+        string Day(DateOnly d) => $"/api/end-of-day/{Iso(d)}";
+        var (d4, d3, d2, d1) = (today.AddDays(-4), today.AddDays(-3), today.AddDays(-2), today.AddDays(-1));
+        byte[] jpeg = [0xFF, 0xD8, 0xFF, 0xE0, 0, 0x10, 0x4A, 0x46, 0x49, 0x46];
+        MultipartFormDataContent Invoice(Guid id, string total)
+        {
+            var photo = new ByteArrayContent(jpeg);
+            photo.Headers.ContentType = new MediaTypeHeaderValue("image/jpeg");
+            return new MultipartFormDataContent
+            {
+                { new StringContent(id.ToString()), "invoiceId" }, { new StringContent("Cash"), "kind" }, { new StringContent(nile.ToString()), "supplierId" },
+                { new StringContent(total), "reportedTotal" }, { photo, "file", "cash.jpg" },
+            };
+        }
+        async Task<string> Refused(HttpResponseMessage response)
+        {
+            Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
+            return await response.Content.ReadAsStringAsync(Cancel);
+        }
+        Task<HttpResponseMessage> MarkClosed(HttpClient who, DateOnly day, string reason) =>
+            who.PostAsJsonAsync("/api/costing/end-of-day/mark-closed-day", new { targetDate = Iso(day), reason }, Cancel);
+
+        // Entered under the wrong day before any day was closed; then the day four days ago closed.
+        var handed = Guid.NewGuid();
+        var stranded = (await Json(await branch.PostAsync($"{Day(d1)}/invoices", Invoice(handed, "75"), Cancel))).GetProperty("id").GetGuid();
+        await Json(await branch.PutAsJsonAsync($"{Day(d4)}/sales", new { cashAmount = 400 }, Cancel));
+        await Json(await branch.PostAsync($"{Day(d4)}/submit", null, Cancel));
+
+        // The restaurant shut: closed with why, and the days go on.
+        Assert.Contains("Say why the restaurant was closed", await Refused(await MarkClosed(branch, d3, " ")));
+        var closed = await Json(await MarkClosed(branch, d3, "Closed for plumbing maintenance"));
+        Assert.Equal(("Submitted", true, "Closed for plumbing maintenance", 0m), (closed.GetProperty("status").GetString(),
+            closed.GetProperty("isClosedDay").GetBoolean(), closed.GetProperty("closedDayReason").GetString(), closed.GetProperty("netSales").GetDecimal()));
+        // The POS sold on the next: never a closed day.
+        await Json(await manager.PostAsJsonAsync("/api/sales/daily", new
+        {
+            id = Guid.NewGuid(), date = Iso(d2), lines = new[] { new { menuItemId = 6101, variantId = large, quantity = 2 } },
+        }, Cancel));
+        Assert.Contains("sales summary has 1 items", await Refused(await MarkClosed(branch, d2, "Closed")));
+
+        var sequence = await Json(await branch.GetAsync("/api/end-of-day/sequence", Cancel));
+        Assert.Equal(Iso(d2), sequence.GetProperty("nextExpectedDate").GetString());
+        var listed = Assert.Single(sequence.GetProperty("strandedDrafts").EnumerateArray());
+        Assert.Equal((stranded, Iso(d1), 1), (listed.GetProperty("id").GetGuid(), listed.GetProperty("date").GetString(), listed.GetProperty("invoices").GetInt32()));
+
+        // An empty draft left on the day to close next: an invoice handed in and taken off.
+        var mistaken = Guid.NewGuid();
+        await Json(await branch.PostAsync($"{Day(d2)}/invoices", Invoice(mistaken, "10"), Cancel));
+        await Json(await branch.DeleteAsync($"{Day(d2)}/invoices/{mistaken}", Cancel));
+
+        // Moved by a manager alone, with why.
+        var reassign = $"/api/costing/end-of-day/{stranded}/reassign-date";
+        Assert.Equal(HttpStatusCode.Forbidden,
+            (await branch.PostAsJsonAsync(reassign, new { targetDate = Iso(d2), auditReason = "Typo" }, Cancel)).StatusCode);
+        Assert.Contains("Give the reason", await Refused(await manager.PostAsJsonAsync(reassign, new { targetDate = Iso(d2), auditReason = " " }, Cancel)));
+        Assert.Contains("first", await Refused(await manager.PostAsJsonAsync(reassign, new { targetDate = Iso(today), auditReason = "Typo" }, Cancel)));
+        var moved = await Json(await manager.PostAsJsonAsync(reassign, new { targetDate = Iso(d2), auditReason = "Typed on the wrong day" }, Cancel));
+        var day = moved.GetProperty("day");
+        Assert.Equal((Iso(d1), Iso(d2), stranded), (moved.GetProperty("from").GetString(), day.GetProperty("date").GetString(), day.GetProperty("id").GetGuid()));
+        var line = $"System Audit: Migrated from {d1:dd/MM/yyyy} to {d2:dd/MM/yyyy} by ";
+        Assert.StartsWith(line, day.GetProperty("notes").GetString());
+        Assert.EndsWith("due to: Typed on the wrong day", day.GetProperty("invoices")[0].GetProperty("note").GetString());
+        Assert.Contains(line, day.GetProperty("auditTrail").GetString());
+        // The wrong day is empty again; the photo went with its invoice.
+        Assert.Equal(HttpStatusCode.NoContent, (await branch.GetAsync(Day(d1), Cancel)).StatusCode);
+        Assert.Equal(jpeg, await (await branch.GetAsync($"{Day(d2)}/photos/{handed}", Cancel)).Content.ReadAsByteArrayAsync(Cancel));
+        Assert.Equal(0, (await Json(await branch.GetAsync("/api/end-of-day/sequence", Cancel))).GetProperty("strandedDrafts").GetArrayLength());
+
+        // Handed in on its own day now, with its sales.
+        await Json(await branch.PutAsJsonAsync($"{Day(d2)}/sales", new { cashAmount = 280 }, Cancel));
+        Assert.Equal("Submitted", (await Json(await branch.PostAsync($"{Day(d2)}/submit", null, Cancel))).GetProperty("status").GetString());
+    }
+
     // The cash a branch paid out of the till, each with its receipt sent as a file: a supplier paid,
     // an employee advanced. Handed in by the branch, each is asked of a manager; approved, it is in
     // the safe. The cash left in the drawer is the float and the cash sales, less all paid out.

@@ -4881,7 +4881,7 @@ export interface StaffMealReport {
 ```
 
 
-> 📄 **`frontend/src/app/core/costing/end-of-day.api.ts`** — 360 سطر
+> 📄 **`frontend/src/app/core/costing/end-of-day.api.ts`** — 393 سطر
 
 ```ts
 import { HttpClient } from '@angular/common/http';
@@ -4991,6 +4991,28 @@ export interface EndOfDay {
   reopenReason?: string | null;
   // As it was handed in: what to look at before the next day, never refusing it.
   warnings?: string[] | null;
+  // A day the restaurant did not trade (يوم مغلق), and why.
+  isClosedDay?: boolean;
+  closedDayReason?: string | null;
+  // What the system did to the day, a line each (سجل التدقيق): never changed.
+  auditTrail?: string | null;
+}
+
+// A draft dated after the day to close next (مسودة عالقة): moved there by a manager, with why.
+export interface EndOfDayStranded {
+  id: string;
+  date: string;
+  invoices: number;
+  payouts: number;
+  hasSales: boolean;
+}
+
+// A draft moved to the day to close next: as it is now, where it was, and the draft purchase
+// invoices paid out of its drawer that moved with it.
+export interface EndOfDayReassigned {
+  day: EndOfDay;
+  from: string;
+  purchaseInvoicesMoved: number;
 }
 
 // The days in their order (التسلسل الزمني): the last closed and the one to close next (none before
@@ -5005,6 +5027,7 @@ export interface EndOfDaySequence {
   booksLockedUntil: string | null;
   warnings: string[];
   lastClosed: EndOfDayUndoPreview | null;
+  strandedDrafts?: EndOfDayStranded[];
 }
 
 export interface EndOfDayUndoPreview {
@@ -5163,6 +5186,16 @@ export class EndOfDayApi {
   // Only the next day in order; with no sales, only once said to be a day that sold nothing.
   submit(date: string, zeroSales = false): Observable<EndOfDay> {
     return this.http.post<EndOfDay>(`/api/end-of-day/${date}/submit`, zeroSales ? { zeroSales: true } : null);
+  }
+
+  // A day the restaurant did not trade: the day to close next, closed with nothing on it and why.
+  markClosedDay(targetDate: string, reason: string): Observable<EndOfDay> {
+    return this.http.post<EndOfDay>('/api/costing/end-of-day/mark-closed-day', { targetDate, reason });
+  }
+
+  // A manager's: a draft entered under the wrong date moved to the day to close next, with why.
+  reassignDate(id: string, targetDate: string, auditReason: string): Observable<EndOfDayReassigned> {
+    return this.http.post<EndOfDayReassigned>(`/api/costing/end-of-day/${id}/reassign-date`, { targetDate, auditReason });
   }
 
   // A manager's: the last closed day undone (date, the one the manager saw), with why.
@@ -27077,7 +27110,7 @@ export class ExpenseItemDialog {
 - **المراجعة** (`EndOfDaySummaryDialog`): تقرير ملخص قبل التسليم؛ لا تسليم بفاتورة أو دفعة مكتوبة لم تُضف. بلا مبيعات ⇐ `EndOfDayZeroSalesDialog` يسأل "No POS sales found for this date…" ثم `submit(date, true)` (ولا ملخص لو لم يُسلّم شيء أصلًا).
 - **بعد التسليم:** القسم مقفول، وما تحوّل لفواتير وقيود يظهر بحالته، و **Undo & reopen day** للمدير على آخر يوم مقفول فقط وخارج الدفاتر المقفلة (`canUndo`).
 
-> 📄 **`frontend/src/app/features/costing/end-of-day-page.ts`** — 1845 سطر
+> 📄 **`frontend/src/app/features/costing/end-of-day-page.ts`** — 2038 سطر
 
 ```ts
 import { DatePipe } from '@angular/common';
@@ -27094,6 +27127,7 @@ import { ActivatedRoute, RouterLink } from '@angular/router';
 import { firstValueFrom } from 'rxjs';
 import { CostingApi, DiscountReason, PurchaseOrderSummary } from '../../core/costing/costing.api';
 import { MatSelectModule } from '@angular/material/select';
+import { TextFieldModule } from '@angular/cdk/text-field';
 import { CostingAccess } from '../../core/costing/costing-tabs';
 import {
   EndOfDay,
@@ -27121,6 +27155,7 @@ import { Company } from '../../core/settings/company';
 import { ItemPicker, PickItem } from '../shared/item-picker';
 import { Approvals } from './approvals';
 import { EodPayoutForm } from './end-of-day-payouts';
+import { ClosedDayData, ClosedDayDialog, ReassignDateData, ReassignDateDialog } from './end-of-day-reasons';
 import { EndOfDayUndo } from './end-of-day-undo';
 import { PhotoSource, PhotoThumb, viewPhoto } from './end-of-day-photo';
 import { BusinessDay, Treasury } from './financials';
@@ -27690,7 +27725,7 @@ export class EndOfDaySummaryDialog {
 @Component({
   selector: 'app-end-of-day-page',
   imports: [DatePipe, EodInvoiceForm, EodPayoutForm, FormsModule, MatButtonModule, MatFormFieldModule, MatIconModule, MatInputModule, MatProgressBarModule, MoneyPipe,
-    PhotoThumb, RouterLink],
+    PhotoThumb, RouterLink, TextFieldModule],
   template: `
     <header class="head">
       <div>
@@ -27717,6 +27752,10 @@ export class EndOfDaySummaryDialog {
         <span class="tag" [class.ok]="d.status === 'Submitted'" [class.warn]="d.status === 'Draft'">
           {{ statusLabels[d.status].en }}<span class="ar">{{ statusLabels[d.status].ar }}</span>
         </span>
+        @if (d.isClosedDay) {
+          <span class="tag closed-day">Closed day<span class="ar">يوم مغلق</span></span>
+          <span class="muted small closed-reason">{{ d.closedDayReason }}</span>
+        }
         @if (d.status === 'Submitted') {
           <span class="muted small">by {{ d.submittedBy }}, {{ d.submittedAtUtc | date: 'd MMM, HH:mm' }}</span>
         } @else if (d.reopenedBy) {
@@ -27751,6 +27790,23 @@ export class EndOfDaySummaryDialog {
           <mat-icon>event_available</mat-icon>
           <span>All days are closed up to today. Come back tomorrow. <span class="inline-ar">(تم تقفيل جميع الأيام حتى تاريخ اليوم)</span></span>
         </p>
+      } @else if (stranded(); as to) {
+        <div class="sequence-banner stranded" role="alert">
+          <mat-icon>warning</mat-icon>
+          <span>
+            This draft is dated <strong>{{ date() | date: 'EEE d MMM y' }}</strong>, after the day to close next, <strong>{{ to | date: 'EEE d MMM y' }}</strong>:
+            it cannot be handed in before that day. Entered under the wrong date? Move its data there.
+            <span class="line-ar" lang="ar" dir="rtl">هذه المسودة بتاريخ بعد اليوم المطلوب تقفيله ({{ to | date: 'd/M/y' }}): إن سُجلت بتاريخ خاطئ انقل بياناتها إليه.</span>
+          </span>
+          @if (canMigrate()) {
+            <button mat-flat-button class="migrate" (click)="migrate()" [disabled]="busy()">
+              <mat-icon>drive_file_move</mat-icon> Migrate Data to {{ to | date: 'EEE d MMM' }} · نقل البيانات وإصلاح التاريخ
+            </button>
+          } @else {
+            <span class="muted small">A manager moves it, with the reason. · ينقلها المدير مع ذكر السبب.</span>
+          }
+          <button mat-stroked-button (click)="choose(to)">Go to {{ to | date: 'd MMM' }} · الذهاب لليوم</button>
+        </div>
       } @else if (s.lastClosedDate && s.nextExpectedDate) {
         <p class="sequence-banner" role="status">
           <mat-icon>format_list_numbered</mat-icon>
@@ -27763,6 +27819,17 @@ export class EndOfDaySummaryDialog {
             <button mat-stroked-button (click)="choose(s.nextExpectedDate)">Go to {{ s.nextExpectedDate | date: 'd MMM' }} · الذهاب لليوم</button>
           }
         </p>
+        @if (date() === s.nextExpectedDate) {
+          @for (x of s.strandedDrafts ?? []; track x.id) {
+            <p class="stranded-note" role="note">
+              <mat-icon>info</mat-icon>
+              <span>A draft dated {{ x.date | date: 'EEE d MMM' }} holds {{ x.invoices }} {{ x.invoices === 1 ? 'invoice' : 'invoices' }}, {{ x.payouts }}
+                {{ x.payouts === 1 ? 'payment' : 'payments' }}{{ x.hasSales ? ' and a sales report' : '' }}: entered under the wrong date?
+                <span class="inline-ar">مسودة بتاريخ لاحق</span></span>
+              <button mat-button (click)="choose(x.date)">Open it · فتح</button>
+            </p>
+          }
+        }
       } @else if (!s.lastClosedDate) {
         <p class="sequence-banner" role="status">
           <mat-icon>format_list_numbered</mat-icon>
@@ -27770,6 +27837,17 @@ export class EndOfDaySummaryDialog {
             <span class="line-ar" lang="ar" dir="rtl">لم يُقفل أي يوم بعد: أول يوم يُقفل يبدأ التسلسل.</span></span>
         </p>
       }
+    }
+
+    @if (auditLines().length) {
+      <section class="audit" aria-label="Audit trail">
+        <h3><mat-icon>history</mat-icon> Audit trail <span class="inline-ar">سجل التدقيق</span></h3>
+        <ul>
+          @for (line of auditLines(); track $index) {
+            <li>{{ line }}</li>
+          }
+        </ul>
+      </section>
     }
 
     @if (loading()) {
@@ -27792,7 +27870,7 @@ export class EndOfDaySummaryDialog {
                     <strong dir="auto">{{ inv.supplier }}</strong>
                     <span class="amount">{{ inv.reportedTotal | money }}</span>
                     @if (inv.note) {
-                      <span class="muted small" dir="auto">{{ inv.note }}</span>
+                      <span class="muted small note-lines" dir="auto">{{ inv.note }}</span>
                     }
                     @if (inv.purchaseInvoiceId) {
                       <a class="tag ok" [routerLink]="canBatch() ? ['/costing/purchases/invoices', inv.purchaseInvoiceId] : null">Posted<span class="ar">تم الترحيل</span></a>
@@ -27926,7 +28004,8 @@ export class EndOfDaySummaryDialog {
           </div>
           <mat-form-field subscriptSizing="dynamic" class="wide">
             <mat-label>Notes (void reasons) · ملاحظات</mat-label>
-            <input matInput [ngModel]="sales().notes" (ngModelChange)="setSale('notes', $event)" [disabled]="locked()" maxlength="500" aria-label="Sales notes" />
+            <textarea matInput cdkTextareaAutosize cdkAutosizeMinRows="1" cdkAutosizeMaxRows="6" [ngModel]="sales().notes" (ngModelChange)="setSale('notes', $event)"
+              [disabled]="locked()" maxlength="2000" aria-label="Sales notes"></textarea>
           </mat-form-field>
           @if ((sales().discountsAmount ?? 0) > 0 || (sales().discountReasons?.length ?? 0) > 0) {
             <div class="wide discount-reasons" role="group" aria-label="Discount reasons">
@@ -28040,6 +28119,11 @@ export class EndOfDaySummaryDialog {
             revenue {{ totalRevenue() | money }} · in till {{ netCashInTill().net | money }}
           </span>
           <span class="spacer"></span>
+          @if (canMarkClosed()) {
+            <button mat-stroked-button class="closed-day" (click)="markClosed()" [disabled]="busy()">
+              <mat-icon>event_busy</mat-icon> Mark as Closed/Off Day · تسجيل كيوم مغلق
+            </button>
+          }
           <button mat-flat-button (click)="review()" [disabled]="busy() || !!outOfOrder()">
             <mat-icon>fact_check</mat-icon> Review &amp; confirm <span class="inline-ar">مراجعة وتأكيد</span>
           </button>
@@ -28072,7 +28156,12 @@ export class EndOfDaySummaryDialog {
                 @for (h of history(); track h.id) {
                   <tr [class.current]="h.date === date()" (click)="choose(h.date)" class="pick">
                     <td>{{ h.date | date: 'EEE d MMM' }}</td>
-                    <td><span class="tag" [class.ok]="h.status === 'Submitted'" [class.warn]="h.status === 'Draft'">{{ statusLabels[h.status].en }}</span></td>
+                    <td>
+                      <span class="tag" [class.ok]="h.status === 'Submitted'" [class.warn]="h.status === 'Draft'">{{ statusLabels[h.status].en }}</span>
+                      @if (h.isClosedDay) {
+                        <span class="tag closed-day">Closed day</span>
+                      }
+                    </td>
                     <td class="num">{{ h.cashInvoices }} · {{ h.cashInvoicesTotal | money }}</td>
                     <td class="num">{{ h.creditInvoices }} · {{ h.creditInvoicesTotal | money }}</td>
                     <td class="num">{{ h.totalRevenue | money }}</td>
@@ -28397,6 +28486,61 @@ export class EndOfDaySummaryDialog {
         border-color: color-mix(in srgb, var(--app-ok, #2e7d32) 30%, transparent);
       }
     }
+    .note-lines {
+      white-space: pre-line;
+    }
+    .sequence-banner.stranded {
+      background: var(--tag-warn-bg);
+
+      > span {
+        min-width: min(100%, 460px);
+      }
+      color: var(--tag-warn-fg);
+      border-color: color-mix(in srgb, var(--tag-warn-fg) 35%, transparent);
+
+      button.migrate {
+        --mat-button-filled-container-color: var(--tag-warn-fg);
+      }
+    }
+    .stranded-note {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px 10px;
+      margin: -6px 0 14px;
+      padding: 6px 12px;
+      border-radius: 12px;
+      background: var(--mat-sys-surface-container);
+
+      > span {
+        flex: 1;
+        min-width: 200px;
+      }
+    }
+    .audit {
+      margin: 0 0 14px;
+      padding: 10px 14px;
+      border: 1px dashed var(--app-line-strong);
+      border-radius: 14px;
+
+      h3 {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin: 0 0 6px;
+        font: var(--mat-sys-title-small);
+      }
+      ul {
+        margin: 0;
+        padding-inline-start: 18px;
+        font: var(--mat-sys-body-small);
+        color: var(--mat-sys-on-surface-variant);
+        overflow-wrap: anywhere;
+      }
+    }
+    .tag.closed-day {
+      background: var(--mat-sys-surface-container-high);
+    }
     .warnings {
       display: flex;
       gap: 8px;
@@ -28514,6 +28658,24 @@ export class EndOfDayPage {
     const s = this.sequence();
     return s && !s.allClosed && this.date() === (s.nextExpectedDate ?? s.today) ? s.warnings : [];
   });
+  // A draft dated after the day to close next: the day it belongs to, to move it there, or null.
+  protected readonly stranded = computed(() => {
+    const s = this.sequence();
+    const d = this.day();
+    return s && !s.allClosed && s.nextExpectedDate && d?.status === 'Draft' && d.date > s.nextExpectedDate ? s.nextExpectedDate : null;
+  });
+  protected readonly canMigrate = computed(() => this.approvals.canApprove());
+  // A day the restaurant did not trade is closed as such from its blank page, in its turn.
+  protected readonly canMarkClosed = computed(() => {
+    const s = this.sequence();
+    const d = this.day();
+    const typed = this.sales();
+    const blank =
+      !d?.invoices.length && !d?.payouts.length && !d?.salesPhoto
+      && ![typed.cashAmount, typed.cardAmount, typed.taxAmount, typed.voidsAmount, typed.openingFloat, typed.discountsAmount].some((n) => (Number(n) || 0) > 0);
+    return !!s && !s.allClosed && !this.locked() && !this.outOfOrder() && blank;
+  });
+  protected readonly auditLines = computed(() => (this.day()?.auditTrail ?? '').split('\n').filter((l) => l.trim()));
   // A manager's, on the last closed day only, outside the books locked.
   protected readonly canUndo = computed(() => {
     const s = this.sequence();
@@ -28725,6 +28887,70 @@ export class EndOfDayPage {
     }
   }
 
+  // A day the restaurant did not trade, closed with why from its blank page; then on to the next.
+  protected async markClosed(): Promise<void> {
+    const date = this.date();
+    const reason = await firstValueFrom(
+      this.dialog.open<ClosedDayDialog, ClosedDayData, string>(ClosedDayDialog, { data: { date }, width: '480px', maxWidth: '96vw' }).afterClosed(),
+    );
+    if (!reason) {
+      return;
+    }
+    this.busy.set(true);
+    try {
+      const closed = await firstValueFrom(this.api.markClosedDay(date, reason));
+      this.notify.info(`${date} is closed as a day with no trade. · تم تسجيله كيوم مغلق.`);
+      const sequence = await this.fetchSequence();
+      void this.loadHistory();
+      if (sequence?.nextExpectedDate && !sequence.allClosed) {
+        await this.choose(sequence.nextExpectedDate);
+      } else {
+        this.show(closed);
+      }
+    } catch (error) {
+      this.notify.error(error, 'The day could not be closed.');
+    } finally {
+      this.busy.set(false);
+    }
+  }
+
+  // A manager's: the draft entered under the wrong date moved to the day to close next with the
+  // reason, which is required; the page then opens that day with all of it.
+  protected async migrate(): Promise<void> {
+    const to = this.stranded();
+    if (!to || !(await this.flushSales())) {
+      return;
+    }
+    const day = this.day()!;
+    const reason = await firstValueFrom(
+      this.dialog
+        .open<ReassignDateDialog, ReassignDateData, string>(ReassignDateDialog, {
+          data: { from: day.date, to, invoices: day.invoices.length, payouts: day.payouts.length, hasSales: day.netSales > 0 },
+          width: '560px',
+          maxWidth: '96vw',
+        })
+        .afterClosed(),
+    );
+    if (!reason) {
+      return;
+    }
+    this.busy.set(true);
+    try {
+      const moved = await firstValueFrom(this.api.reassignDate(day.id, to, reason));
+      const invoices = moved.purchaseInvoicesMoved;
+      this.notify.info(
+        `Moved from ${moved.from} to ${to}${invoices ? `, with ${invoices} draft purchase ${invoices === 1 ? 'invoice' : 'invoices'} paid out of its takings` : ''}. · تم نقل البيانات.`,
+      );
+      await this.fetchSequence();
+      void this.loadHistory();
+      await this.choose(to);
+    } catch (error) {
+      this.notify.error(error, 'The data could not be moved.');
+    } finally {
+      this.busy.set(false);
+    }
+  }
+
   // A manager's: the last closed day undone (its takings, the POS's sales, the invoices posted from
   // it and its payments reversed), a draft again to hand in again.
   protected async undo(): Promise<void> {
@@ -28924,6 +29150,171 @@ function addDays(iso: string, days: number): string {
 // The photo of a day handed in, over the page.
 export function viewEndOfDayPhoto(dialog: MatDialog, api: EndOfDayApi, date: string, photoId: string, fileName: string): void {
   viewPhoto(dialog, () => api.photo(date, photoId), fileName);
+}
+```
+
+
+**يوم مغلق ومسودة عالقة:** على صفحة اليوم التالي الفارغة زر **Mark as Closed/Off Day** (`canMarkClosed`: لا فواتير ولا دفعات ولا أرقام مكتوبة) يفتح `ClosedDayDialog` (السبب إجباري) ثم ينتقل لليوم الذي بعده. ومسودة بتاريخ بعد اليوم التالي (`stranded`) تظهر بشريط تحذير وزر **Migrate Data to …** للمدير (`canMigrate`) يفتح `ReassignDateDialog` (سبب التعديل الإجباري) ثم `reassignDate` ويفتح الصفحة على اليوم الصحيح؛ وصفحة اليوم التالي تشير لكل مسودة عالقة ("Open it"). سجل التدقيق (`auditLines`) يظهر تحت التاريخ.
+
+> 📄 **`frontend/src/app/features/costing/end-of-day-reasons.ts`** — 157 سطر
+
+```ts
+import { DatePipe } from '@angular/common';
+import { Component, inject } from '@angular/core';
+import { FormsModule } from '@angular/forms';
+import { MatButtonModule } from '@angular/material/button';
+import { MAT_DIALOG_DATA, MatDialogModule, MatDialogRef } from '@angular/material/dialog';
+import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatIconModule } from '@angular/material/icon';
+import { MatInputModule } from '@angular/material/input';
+
+// The reasons the end of day asks for before it bends its order: a day the restaurant did not trade
+// (تسجيل يوم إغلاق أو صيانة), and a draft moved off the wrong date (سبب التعديل الإجباري). Both are
+// required and kept on the day; each dialog gives back the reason typed, or nothing when cancelled.
+
+export const maxAuditReason = 300;
+
+export interface ClosedDayData {
+  date: string;
+}
+
+@Component({
+  selector: 'app-closed-day-dialog',
+  imports: [DatePipe, FormsModule, MatButtonModule, MatDialogModule, MatFormFieldModule, MatIconModule, MatInputModule],
+  template: `
+    <h2 mat-dialog-title>Mark as a closed day? <span class="inline-ar">تسجيل كيوم مغلق</span></h2>
+    <mat-dialog-content>
+      <p class="muted">{{ data.date | date: 'EEEE d MMMM y' }}</p>
+      <p>
+        The restaurant did not trade that day: it is closed with nothing on it, so the next day can be closed.
+        <span class="line-ar" lang="ar" dir="rtl">المطعم لم يعمل هذا اليوم: يُقفل بدون بيانات حتى يمكن تقفيل اليوم التالي.</span>
+      </p>
+      <mat-form-field class="full" subscriptSizing="dynamic">
+        <mat-label>Reason · السبب</mat-label>
+        <textarea matInput rows="2" [maxlength]="max" [(ngModel)]="reason" placeholder="Restaurant closed for plumbing maintenance" aria-label="Why the restaurant was closed" required></textarea>
+      </mat-form-field>
+      @if (missing) {
+        <p class="error small" role="alert">Say why the restaurant was closed that day. · اذكر سبب الإغلاق.</p>
+      }
+    </mat-dialog-content>
+    <mat-dialog-actions align="end">
+      <button mat-button [mat-dialog-close]="undefined">Cancel · إلغاء</button>
+      <button mat-flat-button (click)="done()"><mat-icon>event_busy</mat-icon> Mark as closed · تسجيل كيوم مغلق</button>
+    </mat-dialog-actions>
+  `,
+  styleUrl: './costing.scss',
+  styles: `
+    .full {
+      width: 100%;
+    }
+    .line-ar {
+      display: block;
+      margin-top: 4px;
+    }
+    .small {
+      font-size: 0.85em;
+    }
+  `,
+})
+export class ClosedDayDialog {
+  protected readonly data = inject<ClosedDayData>(MAT_DIALOG_DATA);
+  private readonly ref = inject<MatDialogRef<ClosedDayDialog, string>>(MatDialogRef);
+  protected readonly max = maxAuditReason;
+  protected reason = '';
+  protected missing = false;
+
+  protected done(): void {
+    const reason = this.reason.trim();
+    this.missing = !reason;
+    if (reason) {
+      this.ref.close(reason);
+    }
+  }
+}
+
+export interface ReassignDateData {
+  from: string;
+  to: string;
+  invoices: number;
+  payouts: number;
+  hasSales: boolean;
+}
+
+@Component({
+  selector: 'app-reassign-date-dialog',
+  imports: [DatePipe, FormsModule, MatButtonModule, MatDialogModule, MatFormFieldModule, MatIconModule, MatInputModule],
+  template: `
+    <h2 mat-dialog-title>Move the data to {{ data.to | date: 'EEE d MMM y' }}? <span class="inline-ar">نقل البيانات وإصلاح التاريخ</span></h2>
+    <mat-dialog-content>
+      <p class="move" aria-label="The move">
+        <span>{{ data.from | date: 'EEE d MMM y' }}</span>
+        <mat-icon aria-hidden="true">arrow_forward</mat-icon>
+        <strong>{{ data.to | date: 'EEE d MMM y' }}</strong>
+      </p>
+      <p>
+        Everything on this draft moves with it: {{ what }}. The draft purchase invoices paid out of its day's takings move too.
+        <span class="line-ar" lang="ar" dir="rtl">كل ما في المسودة يُنقل معها، والفواتير المسودة المدفوعة من إيراد اليوم.</span>
+      </p>
+      <p class="muted small">The reason is written into the day's notes, each invoice's note and its audit trail, which is never changed.</p>
+      <mat-form-field class="full" subscriptSizing="dynamic">
+        <mat-label>Reason for the change (required) · سبب التعديل الإجباري</mat-label>
+        <textarea matInput rows="2" [maxlength]="max" [(ngModel)]="reason" placeholder="Entered under the wrong date" aria-label="Reason for the date change" required></textarea>
+      </mat-form-field>
+      @if (missing) {
+        <p class="error small" role="alert">Give the reason for moving the day. · سبب التعديل إجباري.</p>
+      }
+    </mat-dialog-content>
+    <mat-dialog-actions align="end">
+      <button mat-button [mat-dialog-close]="undefined">Cancel · إلغاء</button>
+      <button mat-flat-button (click)="done()"><mat-icon>drive_file_move</mat-icon> Move the data · نقل البيانات</button>
+    </mat-dialog-actions>
+  `,
+  styleUrl: './costing.scss',
+  styles: `
+    .move {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin: 0 0 12px;
+      padding: 10px 12px;
+      border-radius: 10px;
+      background: var(--mat-sys-surface-container);
+      font: var(--mat-sys-title-small);
+    }
+    .full {
+      width: 100%;
+    }
+    .line-ar {
+      display: block;
+      margin-top: 4px;
+    }
+    .small {
+      font-size: 0.85em;
+    }
+  `,
+})
+export class ReassignDateDialog {
+  protected readonly data = inject<ReassignDateData>(MAT_DIALOG_DATA);
+  private readonly ref = inject<MatDialogRef<ReassignDateDialog, string>>(MatDialogRef);
+  protected readonly max = maxAuditReason;
+  protected reason = '';
+  protected missing = false;
+  protected readonly what =
+    [
+      `${this.data.invoices} ${this.data.invoices === 1 ? 'invoice' : 'invoices'}`,
+      `${this.data.payouts} ${this.data.payouts === 1 ? 'payment' : 'payments'}`,
+      this.data.hasSales ? 'the sales report' : null,
+    ]
+      .filter(Boolean)
+      .join(', ') + ' and their photos';
+
+  protected done(): void {
+    const reason = this.reason.trim();
+    this.missing = !reason;
+    if (reason) {
+      this.ref.close(reason);
+    }
+  }
 }
 ```
 

@@ -1,5 +1,5 @@
 import { TestBed } from '@angular/core/testing';
-import { MAT_DIALOG_DATA, MatDialog } from '@angular/material/dialog';
+import { MAT_DIALOG_DATA, MatDialog, MatDialogRef } from '@angular/material/dialog';
 import { By } from '@angular/platform-browser';
 import { provideRouter } from '@angular/router';
 import { of } from 'rxjs';
@@ -20,6 +20,7 @@ import { Employee } from '../../core/costing/staff';
 import { NotifyService } from '../../core/ui/notify.service';
 import { Approvals } from './approvals';
 import { EndOfDayPage, EndOfDaySummaryDialog, EndOfDayZeroSalesDialog, EodInvoiceForm } from './end-of-day-page';
+import { ClosedDayDialog, ReassignDateDialog } from './end-of-day-reasons';
 import { EndOfDayUndo } from './end-of-day-undo';
 import { EodPayoutForm } from './end-of-day-payouts';
 import { HrStaffApi } from '../../core/costing/hr-staff.api';
@@ -108,6 +109,8 @@ describe('the end of the day', () => {
     submit: vi.fn(),
     sequence: vi.fn(),
     voidLast: vi.fn(),
+    markClosedDay: vi.fn(),
+    reassignDate: vi.fn(),
     photo: vi.fn(),
     addPayout: vi.fn(),
     changePayout: vi.fn(),
@@ -410,6 +413,133 @@ describe('the end of the day', () => {
     back.click();
     await new Promise((r) => setTimeout(r));
     expect(api.day).toHaveBeenLastCalledWith('2026-11-03');
+  });
+
+  it('closes the blank next day as a day with no trade, with why, and moves on to the day after', async () => {
+    api.sequence.mockReturnValue(of(sequence({ lastClosedDate: '2026-11-02', nextExpectedDate: '2026-11-03' })));
+    const { fixture, el } = await render();
+    const button = () => [...el.querySelectorAll<HTMLButtonElement>('.submit-bar button')].find((b) => text(b).includes('Mark as Closed/Off Day'));
+    expect(text(button()!)).toBe('event_busy Mark as Closed/Off Day · تسجيل كيوم مغلق');
+
+    open.mockReturnValue({ afterClosed: () => of('Restaurant closed for plumbing maintenance') });
+    api.markClosedDay.mockReturnValue(of(day({ date: '2026-11-03', status: 'Submitted', isClosedDay: true, closedDayReason: 'Restaurant closed for plumbing maintenance' })));
+    api.sequence.mockReturnValue(of(sequence({ lastClosedDate: '2026-11-03', nextExpectedDate: '2026-11-04' })));
+    button()!.click();
+    await new Promise((r) => setTimeout(r));
+    await fixture.whenStable();
+    fixture.detectChanges();
+
+    expect(open.mock.lastCall![0]).toBe(ClosedDayDialog);
+    expect(open.mock.lastCall![1].data).toEqual({ date: '2026-11-03' });
+    expect(api.markClosedDay).toHaveBeenCalledWith('2026-11-03', 'Restaurant closed for plumbing maintenance');
+    expect(notify.info).toHaveBeenCalledWith('2026-11-03 is closed as a day with no trade. · تم تسجيله كيوم مغلق.');
+    expect(api.day).toHaveBeenLastCalledWith('2026-11-04');
+    expect(text(el.querySelector('.sequence-banner')!)).toContain('The last closed day was Tue 3 Nov 2026. You are currently closing Wed 4 Nov 2026.');
+  });
+
+  it('offers no closed day once something is handed in, nor out of order', async () => {
+    api.sequence.mockReturnValue(of(sequence({ lastClosedDate: '2026-11-03', nextExpectedDate: '2026-11-04' })));
+    api.day.mockReturnValue(of(day({ invoices: [threeInvoices[0]] })));
+    let { el } = await render();
+    expect(text(el.querySelector('.submit-bar')!)).not.toContain('Mark as Closed');
+
+    TestBed.resetTestingModule();
+    api.sequence.mockReturnValue(of(sequence({ lastClosedDate: '2026-11-02', nextExpectedDate: '2026-11-03' })));
+    api.day.mockReturnValue(of(null));
+    let page: Record<string, any>;
+    ({ el, page } = await render());
+    await page['choose']('2026-11-04');
+    expect(page['canMarkClosed']()).toBe(false);
+  });
+
+  it('points from the day to close next to a draft dated after it, and a manager moves its data there with the reason', async () => {
+    const strandedDay = day({ id: 'day-17', date: '2026-11-04', invoices: threeInvoices });
+    const moved = day({
+      id: 'day-17', date: '2026-11-03', invoices: threeInvoices,
+      auditTrail: '2026-11-04 10:00 UTC · System Audit: Migrated from 04/11/2026 to 03/11/2026 by Boss due to: Typed on the wrong day',
+    });
+    api.day.mockImplementation((date: string) => of(date === '2026-11-04' ? strandedDay : null));
+    api.sequence.mockReturnValue(of(sequence({
+      lastClosedDate: '2026-11-02', nextExpectedDate: '2026-11-03',
+      strandedDrafts: [{ id: 'day-17', date: '2026-11-04', invoices: 3, payouts: 0, hasSales: false }],
+    })));
+    // The branch: told, not offered the move.
+    let { fixture, el } = await render();
+    expect(text(el.querySelector('.stranded-note')!)).toBe(
+      'infoA draft dated Wed 4 Nov holds 3 invoices, 0 payments: entered under the wrong date? مسودة بتاريخ لاحقOpen it · فتح',
+    );
+    el.querySelector<HTMLButtonElement>('.stranded-note button')!.click();
+    await new Promise((r) => setTimeout(r));
+    fixture.detectChanges();
+    expect(text(el.querySelector('.sequence-banner.stranded')!)).toContain(
+      'This draft is dated Wed 4 Nov 2026, after the day to close next, Tue 3 Nov 2026: it cannot be handed in before that day.',
+    );
+    expect(el.querySelector('.sequence-banner.stranded button.migrate')).toBeNull();
+    expect(text(el.querySelector('.sequence-banner.stranded')!)).toContain('A manager moves it, with the reason.');
+
+    // A manager: moved with the reason, then the page opens on the day it belongs to.
+    TestBed.resetTestingModule();
+    manager = true;
+    ({ fixture, el } = await render());
+    await (fixture.componentInstance as unknown as Record<string, any>)['choose']('2026-11-04');
+    fixture.detectChanges();
+    const migrate = el.querySelector<HTMLButtonElement>('.sequence-banner.stranded button.migrate')!;
+    expect(text(migrate)).toBe('drive_file_move Migrate Data to Tue 3 Nov · نقل البيانات وإصلاح التاريخ');
+
+    open.mockReturnValue({ afterClosed: () => of('Typed on the wrong day') });
+    api.reassignDate.mockReturnValue(of({ day: moved, from: '2026-11-04', purchaseInvoicesMoved: 1 }));
+    api.day.mockImplementation((date: string) => of(date === '2026-11-03' ? moved : null));
+    api.sequence.mockReturnValue(of(sequence({ lastClosedDate: '2026-11-02', nextExpectedDate: '2026-11-03' })));
+    migrate.click();
+    await new Promise((r) => setTimeout(r));
+    await fixture.whenStable();
+    fixture.detectChanges();
+
+    expect(open.mock.lastCall![0]).toBe(ReassignDateDialog);
+    expect(open.mock.lastCall![1].data).toEqual({ from: '2026-11-04', to: '2026-11-03', invoices: 3, payouts: 0, hasSales: false });
+    expect(api.reassignDate).toHaveBeenCalledWith('day-17', '2026-11-03', 'Typed on the wrong day');
+    expect(notify.info).toHaveBeenCalledWith(
+      'Moved from 2026-11-04 to 2026-11-03, with 1 draft purchase invoice paid out of its takings. · تم نقل البيانات.',
+    );
+    expect(api.day).toHaveBeenLastCalledWith('2026-11-03');
+    expect(el.querySelector('.sequence-banner.stranded')).toBeNull();
+    expect([...el.querySelectorAll('.audit li')].map(text)).toEqual([
+      '2026-11-04 10:00 UTC · System Audit: Migrated from 04/11/2026 to 03/11/2026 by Boss due to: Typed on the wrong day',
+    ]);
+  });
+
+  it('asks the reason for a closed day and for a move, and gives nothing back without one', () => {
+    const close = vi.fn();
+    TestBed.configureTestingModule({ providers: [{ provide: MAT_DIALOG_DATA, useValue: { date: '2026-11-03' } }, { provide: MatDialogRef, useValue: { close } }] });
+    const closedDay = TestBed.createComponent(ClosedDayDialog);
+    closedDay.detectChanges();
+    const done = (f: { nativeElement: HTMLElement }) => [...f.nativeElement.querySelectorAll<HTMLButtonElement>('mat-dialog-actions button')].at(-1)!.click();
+    done(closedDay);
+    closedDay.detectChanges();
+    expect(close).not.toHaveBeenCalled();
+    expect(text(closedDay.nativeElement.querySelector('.error')!)).toBe('Say why the restaurant was closed that day. · اذكر سبب الإغلاق.');
+    (closedDay.componentInstance as unknown as { reason: string }).reason = '  Plumbing ';
+    done(closedDay);
+    expect(close).toHaveBeenCalledWith('Plumbing');
+
+    TestBed.resetTestingModule();
+    close.mockReset();
+    TestBed.configureTestingModule({
+      providers: [
+        { provide: MAT_DIALOG_DATA, useValue: { from: '2026-11-04', to: '2026-11-03', invoices: 1, payouts: 2, hasSales: true } },
+        { provide: MatDialogRef, useValue: { close } },
+      ],
+    });
+    const move = TestBed.createComponent(ReassignDateDialog);
+    move.detectChanges();
+    expect(text(move.nativeElement.querySelector('.move')!)).toBe('Wed 4 Nov 2026arrow_forwardTue 3 Nov 2026');
+    expect(text(move.nativeElement)).toContain('Everything on this draft moves with it: 1 invoice, 2 payments, the sales report and their photos.');
+    expect(text(move.nativeElement)).toContain('Reason for the change (required) · سبب التعديل الإجباري');
+    done(move);
+    expect(close).not.toHaveBeenCalled();
+    (move.componentInstance as unknown as { reason: string }).reason = 'Typed on the wrong day';
+    done(move);
+    expect(close).toHaveBeenCalledWith('Typed on the wrong day');
   });
 
   it('closes a day with nothing handed in as a zero-sales day once that is confirmed', async () => {

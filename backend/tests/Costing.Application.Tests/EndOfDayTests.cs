@@ -30,6 +30,101 @@ public class EndOfDayTests
     private static BatchInvoice Transcribed(Guid handedIn, Guid supplier, Guid flour, decimal kilos, decimal cost, bool onCredit = false) =>
         new(Guid.NewGuid(), supplier, null, [new PurchaseInvoiceLineEntry(flour, kilos, "kg", 1000, cost)], OnCredit: onCredit, EndOfDayInvoiceId: handedIn);
 
+    // A day the restaurant did not trade, closed with why so the days go on; only the next day, never
+    // one with entries on it or one that sold.
+    [Fact]
+    public async Task A_closed_day_keeps_the_days_in_order_with_why_never_one_that_traded()
+    {
+        var start = _today.AddDays(-3);
+        await _pos.Send(new SaveEndOfDaySalesCommand(start, 500, null, null, null, null, "Ali"));
+        await _pos.Send(new SubmitEndOfDayCommand(start, "Ali"));
+
+        Assert.StartsWith("Close ", (await Assert.ThrowsAsync<DomainException>(() =>
+            _pos.Send(new MarkClosedDayCommand(_today.AddDays(-1), "Plumbing", "Ali")))).Message);
+        await Assert.ThrowsAsync<DomainException>(() => _pos.Send(new MarkClosedDayCommand(start.AddDays(1), " ", "Ali")));
+        var closed = await _pos.Send(new MarkClosedDayCommand(start.AddDays(1), "Restaurant closed for plumbing maintenance", "Ali"));
+        Assert.Equal((EndOfDayStatus.Submitted, true, "Restaurant closed for plumbing maintenance", 0m),
+            (closed.Status, closed.IsClosedDay, closed.ClosedDayReason, closed.NetSales));
+        Assert.Contains("Marked as a closed day by Ali: Restaurant closed for plumbing maintenance", closed.AuditTrail);
+        var sequence = await _pos.Send(new GetEndOfDaySequenceQuery());
+        Assert.Equal((start.AddDays(1), start.AddDays(2)), (sequence.LastClosedDate, sequence.NextExpectedDate));
+        // Sent again after an answer was lost: as it is.
+        Assert.True((await _pos.Send(new MarkClosedDayCommand(start.AddDays(1), "Restaurant closed for plumbing maintenance", "Ali"))).IsClosedDay);
+
+        // With an invoice handed in: handed in with it instead.
+        var invoice = Guid.NewGuid();
+        var nile = Guid.NewGuid();
+        await _pos.Send(new SaveSupplierCommand(nile, "Nile Mills"));
+        await HandIn(invoice, EndOfDayInvoiceKind.Cash, nile, 40, Jpeg, on: start.AddDays(2));
+        Assert.Contains("has entries handed in", (await Assert.ThrowsAsync<DomainException>(() =>
+            _pos.Send(new MarkClosedDayCommand(start.AddDays(2), "Closed", "Ali")))).Message);
+        await _pos.Send(new RemoveEndOfDayInvoiceCommand(start.AddDays(2), invoice, "Ali"));
+
+        // Its takings in the safe: it traded.
+        await _pos.Send(new RecordSafeVoucherCommand(
+            Guid.NewGuid(), new SafeVoucher(Guid.NewGuid(), SafeTransactionKind.RevenueTransfer, 300, start.AddDays(2), RevenueDate: start.AddDays(2)),
+            null, "staff-omar", "Omar", true));
+        Assert.StartsWith("The day's takings are in the safe: hand the day in with its sales", (await Assert.ThrowsAsync<DomainException>(() =>
+            _pos.Send(new MarkClosedDayCommand(start.AddDays(2), "Closed", "Ali")))).Message);
+    }
+
+    // A draft entered under the wrong date (after the day to close next) moved there by a manager with
+    // the reason written into it; the draft invoices paid out of its drawer move with it; never onto a
+    // day with entries of its own.
+    [Fact]
+    public async Task A_stranded_draft_moves_to_the_day_to_close_next_with_its_reason_written_in()
+    {
+        var (start, next, stranded) = (_today.AddDays(-3), _today.AddDays(-2), _today.AddDays(-1));
+        var nile = Guid.NewGuid();
+        await _pos.Send(new SaveSupplierCommand(nile, "Nile Mills"));
+        var flour = (await _pos.Send(new CreateRawMaterialCommand("Flour", UnitOfMeasure.Gram, CostPerPurchaseUnit: 30))).Id;
+        // Entered under the wrong day before any day was closed; then the day before it closed.
+        var gas = Guid.NewGuid();
+        await HandIn(gas, EndOfDayInvoiceKind.Cash, nile, 60, Jpeg, on: stranded);
+        var draft = await _pos.Send(new SaveEndOfDaySalesCommand(stranded, 800, 200, 140, null, "Busy lunch", "Ali"));
+        var drawer = Guid.NewGuid();
+        var onCredit = Guid.NewGuid();
+        PurchaseInvoiceLineEntry[] kilo = [new(flour, 1, "kg", 1000, 30)];
+        await _pos.Send(new SavePurchaseInvoiceCommand(drawer, nile, "F-1", stranded, kilo, "Omar", PurchasePaymentMethod.DayRevenue, stranded));
+        await _pos.Send(new SavePurchaseInvoiceCommand(onCredit, nile, "F-2", stranded, kilo, "Omar", PurchasePaymentMethod.Credit));
+        await _pos.Send(new SaveEndOfDaySalesCommand(start, 500, null, null, null, null, "Ali"));
+        await _pos.Send(new SubmitEndOfDayCommand(start, "Ali"));
+
+        var sequence = await _pos.Send(new GetEndOfDaySequenceQuery());
+        Assert.Equal(new EndOfDayStranded(draft.Id, stranded, 1, 0, true), Assert.Single(sequence.StrandedDrafts!));
+
+        Assert.StartsWith("Give the reason", (await Assert.ThrowsAsync<DomainException>(() =>
+            _pos.Send(new ReassignEndOfDayDateCommand(draft.Id, next, "  ", "Boss")))).Message);
+        Assert.StartsWith("Close ", (await Assert.ThrowsAsync<DomainException>(() =>
+            _pos.Send(new ReassignEndOfDayDateCommand(draft.Id, _today, "Typo", "Boss")))).Message);
+        // The day to close next with entries of its own: days are not merged.
+        var other = Guid.NewGuid();
+        await HandIn(other, EndOfDayInvoiceKind.Credit, nile, 25, Jpeg, on: next);
+        Assert.Contains("has entries of its own", (await Assert.ThrowsAsync<DomainException>(() =>
+            _pos.Send(new ReassignEndOfDayDateCommand(draft.Id, next, "Typo", "Boss")))).Message);
+        // Taken off, the empty draft left there makes room.
+        await _pos.Send(new RemoveEndOfDayInvoiceCommand(next, other, "Ali"));
+
+        // Nothing moved by the refusals.
+        Assert.Equal((stranded, (DateOnly?)stranded), (_pos.EndOfDays.All.Single(d => d.Id == draft.Id).Date, (await _pos.Inventory.Invoices.GetByIdAsync(drawer))!.RevenueDate));
+        var moved = await _pos.Send(new ReassignEndOfDayDateCommand(draft.Id, next, "wrong initial entry", "Boss"));
+        var line = $"System Audit: Migrated from {stranded:dd/MM/yyyy} to {next:dd/MM/yyyy} by Boss due to: wrong initial entry";
+        Assert.Equal((stranded, 1, next, draft.Id), (moved.From, moved.PurchaseInvoicesMoved, moved.Day.Date, moved.Day.Id));
+        Assert.Equal(($"Busy lunch\n{line}", line), (moved.Day.Notes, moved.Day.Invoices.Single().Note));
+        Assert.Contains(line, moved.Day.AuditTrail);
+        Assert.Equal((1_000m, 60m), (moved.Day.NetSales, moved.Day.CashInvoicesTotal));
+        Assert.Single(_pos.EndOfDays.All, d => d.Date == next);
+        var paid = (await _pos.Inventory.Invoices.GetByIdAsync(drawer))!;
+        Assert.Equal((next, next), (paid.InvoiceDate, paid.RevenueDate));
+        Assert.Equal(stranded, (await _pos.Inventory.Invoices.GetByIdAsync(onCredit))!.InvoiceDate);
+        Assert.Empty((await _pos.Send(new GetEndOfDaySequenceQuery())).StrandedDrafts!);
+
+        // Sent again after an answer was lost: as it is.
+        Assert.Equal((next, 0), ((await _pos.Send(new ReassignEndOfDayDateCommand(draft.Id, next, "wrong initial entry", "Boss"))).Day.Date, 0));
+        // Handed in on its own day now.
+        Assert.Equal(EndOfDayStatus.Submitted, (await _pos.Send(new SubmitEndOfDayCommand(next, "Ali"))).Status);
+    }
+
     // Before a day is closed: purchase invoices left as drafts dated on or before it, and cash handed
     // out with no one named more than 48 hours ago, said; neither stops it.
     [Fact]

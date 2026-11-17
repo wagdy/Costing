@@ -265,8 +265,8 @@ namespace Costing.Infrastructure.Persistence.Migrations
                         .HasColumnType("character varying(32)");
 
                     b.Property<string>("Note")
-                        .HasMaxLength(200)
-                        .HasColumnType("character varying(200)");
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
 
                     b.Property<int>("PhotoBytes")
                         .HasColumnType("integer");
@@ -382,6 +382,9 @@ namespace Costing.Infrastructure.Persistence.Migrations
                     b.Property<Guid>("Id")
                         .HasColumnType("uuid");
 
+                    b.Property<string>("AuditTrail")
+                        .HasColumnType("text");
+
                     b.Property<decimal?>("CardAmount")
                         .HasPrecision(18, 2)
                         .HasColumnType("numeric(18,2)");
@@ -389,6 +392,10 @@ namespace Costing.Infrastructure.Persistence.Migrations
                     b.Property<decimal?>("CashAmount")
                         .HasPrecision(18, 2)
                         .HasColumnType("numeric(18,2)");
+
+                    b.Property<string>("ClosedDayReason")
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
 
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone");
@@ -405,9 +412,12 @@ namespace Costing.Infrastructure.Persistence.Migrations
                         .HasPrecision(18, 2)
                         .HasColumnType("numeric(18,2)");
 
+                    b.Property<bool>("IsClosedDay")
+                        .HasColumnType("boolean");
+
                     b.Property<string>("Notes")
-                        .HasMaxLength(500)
-                        .HasColumnType("character varying(500)");
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)");
 
                     b.Property<decimal?>("OpeningFloat")
                         .HasPrecision(18, 2)

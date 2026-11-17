@@ -20,7 +20,8 @@ internal sealed class EndOfDayReportConfiguration : IEntityTypeConfiguration<End
         builder.Property(d => d.DiscountsAmount).HasPrecision(18, 2);
         builder.HasDiscountReasons();
         builder.Property(d => d.OpeningFloat).HasPrecision(18, 2);
-        builder.Property(d => d.Notes).HasMaxLength(EndOfDayReport.MaxNotes);
+        builder.Property(d => d.Notes).HasMaxLength(EndOfDayReport.MaxDayNotes);
+        builder.Property(d => d.ClosedDayReason).HasMaxLength(EndOfDayReport.MaxAuditReason);
         builder.Property(d => d.SalesPhotoFileName).HasMaxLength(200);
         builder.Property(d => d.SalesPhotoContentType).HasMaxLength(64);
         builder.Property(d => d.CreatedBy).HasMaxLength(200);
@@ -74,7 +75,7 @@ internal sealed class EndOfDayPayoutConfiguration : IEntityTypeConfiguration<End
         builder.ToTable("EndOfDayPayouts", CostingDbContext.CostingSchema);
         builder.Property(p => p.Kind).IsEnumName();
         builder.Property(p => p.Amount).HasPrecision(18, 2);
-        builder.Property(p => p.Note).HasMaxLength(EndOfDayReport.MaxInvoiceNote);
+        builder.Property(p => p.Note).HasMaxLength(EndOfDayReport.MaxPayoutNote);
         builder.Property(p => p.ReceiptFileName).HasMaxLength(200);
         builder.Property(p => p.ReceiptContentType).HasMaxLength(64);
         builder.Ignore(p => p.Receipt);

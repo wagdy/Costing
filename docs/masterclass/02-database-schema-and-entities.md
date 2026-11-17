@@ -2794,7 +2794,7 @@ public interface ISalesReceiptRepository : IRepository<SalesReceipt>
 
 `PurchaseInvoice`: مسودة ⇐ مرحّلة (`Posted`) ⇐ ملغاة (`Voided`). البند: خامة (يدخل المخزون) أو مصروف. `LineTotal` كما كُتب على الورقة، و `Discount` البند، و **`DiscountShare`** حصته من خصم الفاتورة (توزيع بالقرش، الفصل 05)، و `Cost` = الصافي الذي يدخل المتوسط. والدفع: نقدي من الخزنة، أو من إيراد يوم، أو آجل.
 
-> 📄 **`backend/src/Costing.Domain/Purchases/PurchaseInvoice.cs`** — 405 سطر
+> 📄 **`backend/src/Costing.Domain/Purchases/PurchaseInvoice.cs`** — 420 سطر
 
 ```csharp
 using Costing.Domain.Common;
@@ -2934,6 +2934,21 @@ public sealed class PurchaseInvoice : AggregateRoot
         RevisionOf = original.Id;
         PurchaseOrderId = original.PurchaseOrderId;
         ClosesPurchaseOrder = original.ClosesPurchaseOrder;
+    }
+
+    // Its end of day moved to another date (the draft entered under the wrong day): paid out of that
+    // day's takings, it is paid out of the new day's; dated that day, it is dated the new one. A draft
+    // alone: what is posted is corrected instead.
+    public bool MoveDay(DateOnly from, DateOnly to)
+    {
+        if (Status != PurchaseInvoiceStatus.Draft)
+            throw new DomainException("Only a draft invoice moves with its day: correct a posted one instead.");
+        var moved = false;
+        if (PaymentMethod == PurchasePaymentMethod.DayRevenue && RevenueDate == from)
+            (RevenueDate, moved) = (to, true);
+        if (InvoiceDate == from)
+            (InvoiceDate, moved) = (to, true);
+        return moved;
     }
 
     // The purchase order this draft delivers, or none; closes: the order closed with what came.
@@ -4330,9 +4345,9 @@ NetCashInTill      = العُهدة + CashSalesCollected − CashPaidOut      (�
 ExpectedIntoSafe   = إجمالي الإيراد − CashPaidOut                    (ما يجب أن يصل الخزنة)
 ```
 
-**التسلسل:** `EndOfDaySequence` دالة نقية تفحص ترتيب الأيام (الفصل 05)، و `Undo` يعيد اليوم مسودة بسببه (`ReopenReason`) ويفك ربط الفواتير (`Unposted`) والمدفوعات (`Unvouchered`، بـ `VoucherId` جديد عليه فهرس فريد).
+**التسلسل:** `EndOfDaySequence` دالة نقية تفحص ترتيب الأيام (الفصل 05)، و `Undo` يعيد اليوم مسودة بسببه (`ReopenReason`) ويفك ربط الفواتير (`Unposted`) والمدفوعات (`Unvouchered`، بـ `VoucherId` جديد عليه فهرس فريد). و `MarkClosed` يقفل يومًا بلا تجارة (`IsClosedDay`, `ClosedDayReason`)، و `MoveTo` ينقل مسودة لتاريخ آخر بسطر تدقيق في `Notes` وملاحظة كل فاتورة و `AuditTrail` (نص بلا حد، لا يُعدَّل).
 
-> 📄 **`backend/src/Costing.Domain/EndOfDay/EndOfDayReport.cs`** — 572 سطر
+> 📄 **`backend/src/Costing.Domain/EndOfDay/EndOfDayReport.cs`** — 667 سطر
 
 ```csharp
 using System.Globalization;
@@ -4400,8 +4415,14 @@ public sealed class EndOfDayReport : AggregateRoot
 {
     public const int MaxInvoices = 50;
     public const int MaxNotes = 500;
-    public const int MaxInvoiceNote = 200;
+    // The day's notes and an invoice's or payment's note, room left in each for the system's audit
+    // lines (a day moved to another date) on top of what is typed.
+    public const int MaxDayNotes = 2000;
+    public const int MaxInvoiceNote = 1000;
+    public const int MaxPayoutNote = 200;
     public const int MaxPayouts = 50;
+    // Why a day is closed with no trade, or moved to another date: required, kept on it.
+    public const int MaxAuditReason = 300;
 
     private readonly List<EndOfDayInvoice> _invoices = [];
     private readonly List<EndOfDayPayout> _payouts = [];
@@ -4455,11 +4476,25 @@ public sealed class EndOfDayReport : AggregateRoot
     // Why a manager undid it (إلغاء تقفيل اليوم), to be handed in again.
     public string? ReopenReason { get; private set; }
 
+    // A day the restaurant did not trade (يوم مغلق أو صيانة): handed in with nothing on it, for the
+    // days to stay in order, and why.
+    public bool IsClosedDay { get; private set; }
+    public string? ClosedDayReason { get; private set; }
+
+    // What the system did to the day, a line each, never changed: a day closed with no trade, a draft
+    // moved to another date (سجل التدقيق).
+    public string? AuditTrail { get; private set; }
+
     public IReadOnlyList<EndOfDayInvoice> Invoices => _invoices.OrderBy(i => i.AddedAtUtc).ToList().AsReadOnly();
 
     public IReadOnlyList<EndOfDayPayout> Payouts => _payouts.OrderBy(p => p.AddedAtUtc).ToList().AsReadOnly();
 
     public bool IsSubmitted => Status == EndOfDayStatus.Submitted;
+
+    // Anything handed in for the day: an invoice, a payment, a figure of its sales report or its photo.
+    public bool HasEntries =>
+        _invoices.Count > 0 || _payouts.Count > 0 || SalesPhotoFileName is not null
+        || new[] { CashAmount, CardAmount, TaxAmount, VoidsAmount, OpeningFloat, DiscountsAmount }.Any(n => n is > 0);
 
     public decimal TotalOf(EndOfDayInvoiceKind kind) => _invoices.Where(i => i.Kind == kind).Sum(i => i.ReportedTotal);
 
@@ -4511,8 +4546,8 @@ public sealed class EndOfDayReport : AggregateRoot
         if (openingFloat < 0)
             throw new DomainException("The opening float is zero or more. · العهدة صفر أو أكثر.");
         var cleaned = Clean(notes);
-        if (cleaned?.Length > MaxNotes)
-            throw new DomainException("Keep the notes under 500 characters. · الملاحظات 500 حرف على الأكثر.");
+        if (cleaned?.Length > MaxDayNotes)
+            throw new DomainException("Keep the notes under 2,000 characters. · الملاحظات 2000 حرف على الأكثر.");
         CashAmount = Money(cash);
         CardAmount = Money(card);
         TaxAmount = Money(tax);
@@ -4657,12 +4692,72 @@ public sealed class EndOfDayReport : AggregateRoot
             payout.Unvouchered();
         foreach (var invoice in _invoices)
             invoice.Unposted();
+        if (IsClosedDay)
+            Audit($"Closed day undone by {by}{(why is null ? "" : $": {why}")}");
+        (IsClosedDay, ClosedDayReason) = (false, null);
         Status = EndOfDayStatus.Draft;
         ReopenedAtUtc = DateTime.UtcNow;
         ReopenedBy = by;
         ReopenReason = why;
         Touch(by);
     }
+
+    // A day the restaurant did not trade (تسجيل يوم إغلاق أو صيانة), closed with nothing on it so the
+    // days stay in order: why is required. Never a day with anything handed in: that is handed in as
+    // it is.
+    public void MarkClosed(string by, string? reason)
+    {
+        EnsureDraft();
+        var why = Reason(reason, "Say why the restaurant was closed that day: it is kept on the day. · اذكر سبب الإغلاق.");
+        if (HasEntries)
+            throw new DomainException(
+                $"{Day(Date)} has entries handed in: hand it in with them, or take them off before closing it as a day with no trade. · لهذا اليوم بيانات مسجلة.");
+        IsClosedDay = true;
+        ClosedDayReason = why;
+        Audit($"Marked as a closed day by {by}: {why}");
+        Status = EndOfDayStatus.Submitted;
+        SubmittedAtUtc = DateTime.UtcNow;
+        SubmittedBy = by;
+        Touch(by);
+    }
+
+    // A draft entered under the wrong date, moved to the one it belongs to (ترحيل المسودة العالقة),
+    // everything on it with it: why is required, and the move is written into its notes, each
+    // invoice's note and its audit trail. The caller checks the date is the one to close next.
+    public void MoveTo(DateOnly date, string by, string? reason)
+    {
+        EnsureDraft();
+        var why = Reason(reason, "Give the reason for moving the day to another date: it is kept on it. · سبب التعديل إجباري.");
+        if (date == Date)
+            throw new DomainException($"It is dated {Day(date)} already. · التاريخ نفسه.");
+        var line = $"System Audit: Migrated from {Date.ToString("dd/MM/yyyy", CultureInfo.InvariantCulture)} to "
+            + $"{date.ToString("dd/MM/yyyy", CultureInfo.InvariantCulture)} by {by} due to: {why}";
+        var notes = Notes is null ? line : $"{Notes}\n{line}";
+        if (notes.Length > MaxDayNotes)
+            throw new DomainException("The day's notes are too long to take the audit line: shorten them first. · اختصر ملاحظات اليوم أولاً.");
+        foreach (var invoice in _invoices)
+            invoice.Audited(line);
+        Notes = notes;
+        Audit(line);
+        Date = date;
+        Touch(by);
+    }
+
+    private static string Reason(string? reason, string missing)
+    {
+        var why = Clean(reason) ?? throw new DomainException(missing);
+        return why.Length > MaxAuditReason
+            ? throw new DomainException($"Keep the reason under {MaxAuditReason} characters. · السبب {MaxAuditReason} حرف على الأكثر.")
+            : why;
+    }
+
+    private void Audit(string line)
+    {
+        var stamped = $"{DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture)} UTC · {line}";
+        AuditTrail = AuditTrail is null ? stamped : $"{AuditTrail}\n{stamped}";
+    }
+
+    private static string Day(DateOnly day) => day.ToString("ddd d MMM yyyy", CultureInfo.InvariantCulture);
 
     // An invoice handed in, posted on the daily batch as the purchase invoice given.
     public void Posted(Guid invoiceId, Guid purchaseInvoiceId)
@@ -4754,7 +4849,7 @@ public sealed class EndOfDayInvoice : Entity
             throw new DomainException("Enter the invoice's total, more than nothing. · أدخل إجمالي الفاتورة.");
         var cleaned = string.IsNullOrWhiteSpace(note) ? null : note.Trim();
         if (cleaned?.Length > EndOfDayReport.MaxInvoiceNote)
-            throw new DomainException("Keep the note under 200 characters. · الملاحظة 200 حرف على الأكثر.");
+            throw new DomainException("Keep the note under 1,000 characters. · الملاحظة 1000 حرف على الأكثر.");
         Kind = kind;
         SupplierId = supplierId;
         ReportedTotal = Math.Round(reportedTotal, 2, MidpointRounding.AwayFromZero);
@@ -4764,6 +4859,15 @@ public sealed class EndOfDayInvoice : Entity
 
     internal void Photographed(EndOfDayPhoto photo) =>
         (PhotoFileName, PhotoContentType, PhotoBytes) = (photo.FileName, photo.ContentType, photo.Bytes);
+
+    // Its day moved to another date: the system's audit line under its note.
+    internal void Audited(string line)
+    {
+        var note = Note is null ? line : $"{Note}\n{line}";
+        Note = note.Length <= EndOfDayReport.MaxInvoiceNote
+            ? note
+            : throw new DomainException("An invoice's note is too long to take the audit line: shorten it first. · اختصر ملاحظة الفاتورة أولاً.");
+    }
 
     // Its day undone: its purchase invoice voided, to be posted again.
     internal void Unposted()
@@ -4828,7 +4932,7 @@ public sealed class EndOfDayPayout : Entity
         if (amount <= 0)
             throw new DomainException("Enter the amount paid, more than nothing. · أدخل المبلغ المدفوع.");
         var cleaned = string.IsNullOrWhiteSpace(note) ? null : note.Trim();
-        if (cleaned?.Length > EndOfDayReport.MaxInvoiceNote)
+        if (cleaned?.Length > EndOfDayReport.MaxPayoutNote)
             throw new DomainException("Keep the note under 200 characters. · الملاحظة 200 حرف على الأكثر.");
         var toSupplier = Kind == EndOfDayPayoutKind.SupplierPayment;
         SupplierId = toSupplier ? payeeId : null;
@@ -4854,6 +4958,12 @@ public sealed class EndOfDayPayout : Entity
 public interface IEndOfDayRepository : IRepository<EndOfDayReport>
 {
     Task<EndOfDayReport?> GetByDateAsync(DateOnly date, CancellationToken cancellationToken = default);
+
+    // Drafts dated after a day (stranded past the one to close next), earliest first.
+    Task<IReadOnlyList<EndOfDayReport>> GetDraftsAfterAsync(DateOnly date, CancellationToken cancellationToken = default);
+
+    // A draft with nothing on it, taken away to make room for one moved onto its date.
+    void Remove(EndOfDayReport report);
 
     // The last day handed in (آخر يوم تم تقفيله), if any: the sequence goes on from it.
     Task<DateOnly?> LastSubmittedDateAsync(CancellationToken cancellationToken = default);
@@ -6223,7 +6333,7 @@ internal sealed class UserTabAccessConfiguration : IEntityTypeConfiguration<User
 
 `EndOfDayConfigurations.cs`: تقرير واحد لكل يوم تجاري (فهرس فريد على التاريخ)، والصور في جدول منفصل.
 
-> 📄 **`backend/src/Costing.Infrastructure/Persistence/Configurations/EndOfDayConfigurations.cs`** — 97 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Persistence/Configurations/EndOfDayConfigurations.cs`** — 98 سطر
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
@@ -6248,7 +6358,8 @@ internal sealed class EndOfDayReportConfiguration : IEntityTypeConfiguration<End
         builder.Property(d => d.DiscountsAmount).HasPrecision(18, 2);
         builder.HasDiscountReasons();
         builder.Property(d => d.OpeningFloat).HasPrecision(18, 2);
-        builder.Property(d => d.Notes).HasMaxLength(EndOfDayReport.MaxNotes);
+        builder.Property(d => d.Notes).HasMaxLength(EndOfDayReport.MaxDayNotes);
+        builder.Property(d => d.ClosedDayReason).HasMaxLength(EndOfDayReport.MaxAuditReason);
         builder.Property(d => d.SalesPhotoFileName).HasMaxLength(200);
         builder.Property(d => d.SalesPhotoContentType).HasMaxLength(64);
         builder.Property(d => d.CreatedBy).HasMaxLength(200);
@@ -6302,7 +6413,7 @@ internal sealed class EndOfDayPayoutConfiguration : IEntityTypeConfiguration<End
         builder.ToTable("EndOfDayPayouts", CostingDbContext.CostingSchema);
         builder.Property(p => p.Kind).IsEnumName();
         builder.Property(p => p.Amount).HasPrecision(18, 2);
-        builder.Property(p => p.Note).HasMaxLength(EndOfDayReport.MaxInvoiceNote);
+        builder.Property(p => p.Note).HasMaxLength(EndOfDayReport.MaxPayoutNote);
         builder.Property(p => p.ReceiptFileName).HasMaxLength(200);
         builder.Property(p => p.ReceiptContentType).HasMaxLength(64);
         builder.Ignore(p => p.Receipt);
@@ -7295,7 +7406,7 @@ internal sealed class ComboOfferRepository(CostingDbContext db) : IComboOfferRep
 ```
 
 
-> 📄 **`backend/src/Costing.Infrastructure/Persistence/EndOfDayRepositories.cs`** — 58 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Persistence/EndOfDayRepositories.cs`** — 63 سطر
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
@@ -7314,6 +7425,11 @@ internal sealed class EndOfDayRepository(CostingDbContext db) : IEndOfDayReposit
 
     public Task<EndOfDayReport?> GetByDateAsync(DateOnly date, CancellationToken cancellationToken = default) =>
         WithInvoices.SingleOrDefaultAsync(d => d.Date == date, cancellationToken);
+
+    public async Task<IReadOnlyList<EndOfDayReport>> GetDraftsAfterAsync(DateOnly date, CancellationToken cancellationToken = default) =>
+        await WithInvoices.Where(d => d.Status == EndOfDayStatus.Draft && d.Date > date).OrderBy(d => d.Date).ToListAsync(cancellationToken);
+
+    public void Remove(EndOfDayReport report) => db.EndOfDayReports.Remove(report);
 
     public Task<DateOnly?> LastSubmittedDateAsync(CancellationToken cancellationToken = default) =>
         db.EndOfDayReports.Where(d => d.Status == EndOfDayStatus.Submitted).MaxAsync(d => (DateOnly?)d.Date, cancellationToken);
@@ -7429,6 +7545,7 @@ dotnet ef migrations add <Name> \
 | 14 | `20261116223159_AddFixedAssets` | Add Fixed Assets |
 | 15 | `20261116233433_AddPurchaseOrders` | Add Purchase Orders |
 | 16 | `20261117092011_AddEndOfDaySequence` | Add End Of Day Sequence |
+| 17 | `20261117103857_AddEndOfDayClosedDaysAndAudit` | Add End Of Day Closed Days And Audit |
 
 
 ### 14.1 `UnifySafeTakings`: migration تحوّل بيانات لا شكلًا فقط

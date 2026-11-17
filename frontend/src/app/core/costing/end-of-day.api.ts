@@ -105,6 +105,28 @@ export interface EndOfDay {
   reopenReason?: string | null;
   // As it was handed in: what to look at before the next day, never refusing it.
   warnings?: string[] | null;
+  // A day the restaurant did not trade (يوم مغلق), and why.
+  isClosedDay?: boolean;
+  closedDayReason?: string | null;
+  // What the system did to the day, a line each (سجل التدقيق): never changed.
+  auditTrail?: string | null;
+}
+
+// A draft dated after the day to close next (مسودة عالقة): moved there by a manager, with why.
+export interface EndOfDayStranded {
+  id: string;
+  date: string;
+  invoices: number;
+  payouts: number;
+  hasSales: boolean;
+}
+
+// A draft moved to the day to close next: as it is now, where it was, and the draft purchase
+// invoices paid out of its drawer that moved with it.
+export interface EndOfDayReassigned {
+  day: EndOfDay;
+  from: string;
+  purchaseInvoicesMoved: number;
 }
 
 // The days in their order (التسلسل الزمني): the last closed and the one to close next (none before
@@ -119,6 +141,7 @@ export interface EndOfDaySequence {
   booksLockedUntil: string | null;
   warnings: string[];
   lastClosed: EndOfDayUndoPreview | null;
+  strandedDrafts?: EndOfDayStranded[];
 }
 
 export interface EndOfDayUndoPreview {
@@ -277,6 +300,16 @@ export class EndOfDayApi {
   // Only the next day in order; with no sales, only once said to be a day that sold nothing.
   submit(date: string, zeroSales = false): Observable<EndOfDay> {
     return this.http.post<EndOfDay>(`/api/end-of-day/${date}/submit`, zeroSales ? { zeroSales: true } : null);
+  }
+
+  // A day the restaurant did not trade: the day to close next, closed with nothing on it and why.
+  markClosedDay(targetDate: string, reason: string): Observable<EndOfDay> {
+    return this.http.post<EndOfDay>('/api/costing/end-of-day/mark-closed-day', { targetDate, reason });
+  }
+
+  // A manager's: a draft entered under the wrong date moved to the day to close next, with why.
+  reassignDate(id: string, targetDate: string, auditReason: string): Observable<EndOfDayReassigned> {
+    return this.http.post<EndOfDayReassigned>(`/api/costing/end-of-day/${id}/reassign-date`, { targetDate, auditReason });
   }
 
   // A manager's: the last closed day undone (date, the one the manager saw), with why.

@@ -222,7 +222,7 @@ NetCashInTill      = العُهدة + CashSalesCollected − CashPaidOut      (�
 ExpectedIntoSafe   = إجمالي الإيراد − CashPaidOut                    (ما يجب أن يصل الخزنة)
 ```
 
-**التسلسل:** `EndOfDaySequence` دالة نقية تفحص ترتيب الأيام (الفصل 05)، و `Undo` يعيد اليوم مسودة بسببه (`ReopenReason`) ويفك ربط الفواتير (`Unposted`) والمدفوعات (`Unvouchered`، بـ `VoucherId` جديد عليه فهرس فريد).
+**التسلسل:** `EndOfDaySequence` دالة نقية تفحص ترتيب الأيام (الفصل 05)، و `Undo` يعيد اليوم مسودة بسببه (`ReopenReason`) ويفك ربط الفواتير (`Unposted`) والمدفوعات (`Unvouchered`، بـ `VoucherId` جديد عليه فهرس فريد). و `MarkClosed` يقفل يومًا بلا تجارة (`IsClosedDay`, `ClosedDayReason`)، و `MoveTo` ينقل مسودة لتاريخ آخر بسطر تدقيق في `Notes` وملاحظة كل فاتورة و `AuditTrail` (نص بلا حد، لا يُعدَّل).
 
 @@file backend/src/Costing.Domain/EndOfDay/EndOfDayReport.cs
 

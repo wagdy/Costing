@@ -1653,6 +1653,7 @@ Costing/
                         20261116223159_AddFixedAssets.cs
                         20261116233433_AddPurchaseOrders.cs
                         20261117092011_AddEndOfDaySequence.cs
+                        20261117103857_AddEndOfDayClosedDaysAndAudit.cs
                         CostingDbContextModelSnapshot.cs
                     PosIntegrationPersistence.cs
                     PurchaseOrderPersistence.cs
@@ -1871,6 +1872,7 @@ Costing/
                         end-of-day-page.ts
                         end-of-day-payouts.ts
                         end-of-day-photo.ts
+                        end-of-day-reasons.ts
                         end-of-day-undo.spec.ts
                         end-of-day-undo.ts
                         end-of-day.spec.ts

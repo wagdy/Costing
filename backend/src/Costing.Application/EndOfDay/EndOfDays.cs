@@ -125,7 +125,11 @@ public sealed record EndOfDayDto(
     // Why a manager undid it, when one did.
     string? ReopenReason = null,
     // As it was handed in: what to look at before the next day (EndOfDayChecks), never refusing it.
-    IReadOnlyList<string>? Warnings = null);
+    IReadOnlyList<string>? Warnings = null,
+    // A day the restaurant did not trade, and why; what the system did to the day, a line each.
+    bool IsClosedDay = false,
+    string? ClosedDayReason = null,
+    string? AuditTrail = null);
 
 // The days in their order (التسلسل الزمني): the last one closed and the one to close next (none
 // before the first is ever closed: any day up to today starts the sequence), today as the till
@@ -138,7 +142,16 @@ public sealed record EndOfDaySequenceDto(
     bool AllClosed,
     DateOnly? BooksLockedUntil,
     IReadOnlyList<string> Warnings,
-    EndOfDayUndoPreview? LastClosed);
+    EndOfDayUndoPreview? LastClosed,
+    IReadOnlyList<EndOfDayStranded>? StrandedDrafts = null);
+
+// A draft dated after the day to close next (مسودة عالقة): it cannot be handed in before that day
+// is, so a manager moves it there with why.
+public sealed record EndOfDayStranded(Guid Id, DateOnly Date, int Invoices, int Payouts, bool HasSales);
+
+// A draft moved to the day to close next: as it is now, the date it was on, and the draft purchase
+// invoices paid out of its takings that moved with it.
+public sealed record EndOfDayReassigned(EndOfDayDto Day, DateOnly From, int PurchaseInvoicesMoved);
 
 // What undoing the last closed day reverses: its takings in the safe, its sales summary (by hand
 // or from the POS), the purchase invoices posted from the invoices handed in, and its payments'
@@ -216,6 +229,15 @@ public sealed record SubmitEndOfDayCommand(DateOnly Date, string StaffName = "",
 
 public sealed record GetEndOfDaySequenceQuery : IRequest<EndOfDaySequenceDto>;
 
+// A day the restaurant did not trade (تسجيل يوم إغلاق أو صيانة): the day to close next, closed with
+// nothing on it and why, so the days go on.
+public sealed record MarkClosedDayCommand(DateOnly Date, string? Reason, string StaffName = "") : IRequest<EndOfDayDto>, IRetryOnConflict;
+
+// A manager's: a draft entered under the wrong date moved to the day to close next (TargetDate, the
+// one the manager saw), with the reason, which is required and written into it.
+public sealed record ReassignEndOfDayDateCommand(Guid Id, DateOnly TargetDate, string? AuditReason, string StaffName = "")
+    : IRequest<EndOfDayReassigned>, IRetryOnConflict;
+
 // A manager's: the last day closed, undone and back to a draft (Date: the one the manager saw, so
 // a day closed since is never undone by mistake).
 public sealed record UndoLastEndOfDayCommand(DateOnly? Date, string? Reason, string StaffName = "", string StaffId = "")
@@ -259,7 +281,8 @@ internal sealed class EndOfDayDays(
     IApprovalRequestRepository requests,
     TreasuryWriter treasury,
     IBooksLock books,
-    Costing.Domain.Purchases.IPurchaseInvoiceRepository invoices)
+    Costing.Domain.Purchases.IPurchaseInvoiceRepository invoices,
+    ISalesReceiptRepository sales)
 {
     private static readonly CultureInfo Invariant = CultureInfo.InvariantCulture;
 
@@ -288,6 +311,17 @@ internal sealed class EndOfDayDays(
         await CheckSequenceAsync(date, cancellationToken);
         days.Add(day = new EndOfDayReport(Guid.NewGuid(), date, by));
         return day;
+    }
+
+    // A day closed with no sales, or with no trade, only when nothing was sold on it: neither a sales
+    // summary (from the POS or by hand) nor takings in the safe.
+    public async Task EnsureNothingSoldAsync(DateOnly date, string instead, CancellationToken cancellationToken)
+    {
+        if (await sales.GetDailySummaryAsync(date, cancellationToken) is { } summary)
+            throw new DomainException(
+                $"The day's sales summary has {summary.Lines.Count} items sold on it: {instead}. · توجد مبيعات مسجلة لهذا اليوم: أدخل ريبورت المبيعات.");
+        if (await safe.GetTakingsAsync(date, cancellationToken) is not null)
+            throw new DomainException($"The day's takings are in the safe: {instead}. · توجد إيرادات مسجلة لهذا اليوم.");
     }
 
     public async Task CheckSequenceAsync(DateOnly date, CancellationToken cancellationToken) =>
@@ -501,7 +535,7 @@ internal sealed class EndOfDayDays(
                 day.CountOf(EndOfDayPayoutKind.SupplierPayment), day.TotalOf(EndOfDayPayoutKind.SupplierPayment),
                 day.CountOf(EndOfDayPayoutKind.EmployeeAdvance), day.TotalOf(EndOfDayPayoutKind.EmployeeAdvance),
                 day.CashTax, day.CashSalesCollected, day.CashPaidOut, day.NetCashInTill, day.DiscountsAmount, day.DiscountReasons.ToList(),
-                day.ReopenReason));
+                day.ReopenReason, null, day.IsClosedDay, day.ClosedDayReason, day.AuditTrail));
         }
         return dtos;
     }
@@ -625,8 +659,7 @@ internal sealed class RemoveEndOfDaySalesPhotoCommandHandler(EndOfDayDays shared
     }
 }
 
-internal sealed class SubmitEndOfDayCommandHandler(
-    EndOfDayDays shared, ISalesReceiptRepository sales, ISafeTransactionRepository safe, IUnitOfWork unitOfWork)
+internal sealed class SubmitEndOfDayCommandHandler(EndOfDayDays shared, IUnitOfWork unitOfWork)
     : IRequestHandler<SubmitEndOfDayCommand, EndOfDayDto>
 {
     public async Task<EndOfDayDto> Handle(SubmitEndOfDayCommand request, CancellationToken cancellationToken)
@@ -639,16 +672,9 @@ internal sealed class SubmitEndOfDayCommandHandler(
 
         // Only the next day in the sequence, never one to come or in the books locked.
         await shared.CheckSequenceAsync(day.Date, cancellationToken);
+        // Closed as a day that sold nothing only when nothing was.
         if (day.NetSales <= 0 && request.ZeroSales)
-        {
-            // Closed as a day that sold nothing only when nothing was: neither a sales summary nor takings.
-            if (await sales.GetDailySummaryAsync(day.Date, cancellationToken) is { } summary)
-                throw new DomainException(
-                    $"The day's sales summary has {summary.Lines.Count} items sold on it: enter the day's sales report instead of closing it with none. " +
-                    "· توجد مبيعات مسجلة لهذا اليوم: أدخل ريبورت المبيعات.");
-            if (await safe.GetTakingsAsync(day.Date, cancellationToken) is not null)
-                throw new DomainException("The day's takings are in the safe: enter the day's sales report instead of closing it with none. · توجد إيرادات مسجلة لهذا اليوم.");
-        }
+            await shared.EnsureNothingSoldAsync(day.Date, "enter the day's sales report instead of closing it with none", cancellationToken);
         var warnings = await shared.WarningsAsync(day.Date, cancellationToken);
         day.Submit(request.StaffName, request.ZeroSales);
         await shared.VoucherPayoutsAsync(day, request.StaffId, request.StaffName, request.CanApprove, cancellationToken);
@@ -680,8 +706,86 @@ internal sealed class GetEndOfDaySequenceHandler(
                 locked is { } l && lastDate <= l, (await zReports.GetByDateAsync(lastDate, cancellationToken)).Count);
         }
         var closing = next ?? today;
+        // Drafts past the day to close next, which can never be handed in where they are.
+        var stranded = next is { } expected
+            ? (await days.GetDraftsAfterAsync(expected, cancellationToken))
+                .Select(d => new EndOfDayStranded(d.Id, d.Date, d.Invoices.Count, d.Payouts.Count, d.NetSales > 0))
+                .ToList()
+            : [];
         return new EndOfDaySequenceDto(
-            last, next, today, next > today, locked, next > today ? [] : await shared.WarningsAsync(closing, cancellationToken), preview);
+            last, next, today, next > today, locked, next > today ? [] : await shared.WarningsAsync(closing, cancellationToken), preview, stranded);
+    }
+}
+
+// A day the restaurant did not trade (تسجيل يوم إغلاق أو صيانة): the day to close next, never one to
+// come or in the books locked, closed with nothing on it and why, so the next day can be closed. Its
+// draft is closed when it has nothing on it; one with entries is handed in with them. Never a day
+// something was sold on: its sales summary or takings say the restaurant traded.
+internal sealed class MarkClosedDayCommandHandler(EndOfDayDays shared, IUnitOfWork unitOfWork) : IRequestHandler<MarkClosedDayCommand, EndOfDayDto>
+{
+    public async Task<EndOfDayDto> Handle(MarkClosedDayCommand request, CancellationToken cancellationToken)
+    {
+        var day = await shared.OpenAsync(request.Date, request.StaffName, cancellationToken);
+        // Sent again after an answer was lost: closed already.
+        if (day is { IsSubmitted: true, IsClosedDay: true })
+            return await shared.DtoAsync(day, cancellationToken);
+        await shared.CheckSequenceAsync(day.Date, cancellationToken);
+        await shared.EnsureNothingSoldAsync(day.Date, "hand the day in with its sales instead of closing it as a day with no trade", cancellationToken);
+        var warnings = await shared.WarningsAsync(day.Date, cancellationToken);
+        day.MarkClosed(request.StaffName, request.Reason);
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+        return await shared.DtoAsync(day, cancellationToken) with { Warnings = warnings };
+    }
+}
+
+// A manager's: a draft entered under the wrong date (ترحيل المسودة العالقة) moved to the day to close
+// next, everything on it with it: its invoices, payments, sales report and photos. The draft purchase
+// invoices paid out of its day's takings move with it (their takings' day, and their date when it was
+// the day's). The reason is required and written into the day's notes, each invoice's note and the
+// day's audit trail. Never onto a day with entries of its own (days are not merged): an empty draft
+// there is taken away.
+internal sealed class ReassignEndOfDayDateCommandHandler(
+    EndOfDayDays shared,
+    IEndOfDayRepository days,
+    Costing.Domain.Purchases.IPurchaseInvoiceRepository invoices,
+    IApprovalRequestRepository requests,
+    IUnitOfWork unitOfWork) : IRequestHandler<ReassignEndOfDayDateCommand, EndOfDayReassigned>
+{
+    public async Task<EndOfDayReassigned> Handle(ReassignEndOfDayDateCommand request, CancellationToken cancellationToken)
+    {
+        var day = await days.GetByIdAsync(request.Id, cancellationToken) ?? throw new NotFoundException("End of day", request.Id);
+        var (from, to) = (day.Date, request.TargetDate);
+        // Sent again after an answer was lost: moved there already.
+        if (from == to && !day.IsSubmitted
+            && day.AuditTrail?.Contains($" to {to.ToString("dd/MM/yyyy", CultureInfo.InvariantCulture)} by ", StringComparison.Ordinal) == true)
+            return new EndOfDayReassigned(await shared.DtoAsync(day, cancellationToken), from, 0);
+        await shared.CheckSequenceAsync(to, cancellationToken);
+
+        if (await days.GetByDateAsync(to, cancellationToken) is { } there && there.Id != day.Id)
+        {
+            if (there.IsSubmitted || there.HasEntries || there.Notes is not null)
+                throw new DomainException(
+                    $"{to.ToString("ddd d MMM yyyy", CultureInfo.InvariantCulture)} has entries of its own: hand them in, or take them off, before moving another day onto it. " +
+                    "· لهذا اليوم بيانات مسجلة: لا تُدمج الأيام.");
+            days.Remove(there);
+        }
+
+        // The day first: its reason and that it is a draft checked before anything else moves.
+        day.MoveTo(to, request.StaffName, request.AuditReason);
+
+        var moved = 0;
+        // The draft invoices paid out of the day's takings (its drawer): the drawer is the new day's.
+        foreach (var invoice in (await invoices.GetByStatusAsync(Costing.Domain.Purchases.PurchaseInvoiceStatus.Draft, cancellationToken))
+            .Where(i => i.PaymentMethod == Costing.Domain.Purchases.PurchasePaymentMethod.DayRevenue && i.RevenueDate == from))
+        {
+            await requests.EnsureNotPendingAsync(invoice.Id, cancellationToken);
+            var tracked = await invoices.GetByIdAsync(invoice.Id, cancellationToken) ?? invoice;
+            if (tracked.MoveDay(from, to))
+                moved++;
+        }
+
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+        return new EndOfDayReassigned(await shared.DtoAsync(day, cancellationToken), from, moved);
     }
 }
 

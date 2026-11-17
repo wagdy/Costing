@@ -380,6 +380,9 @@ public sealed class EndOfDayStore : ListStore<EndOfDayReport>, IEndOfDayReposito
     private readonly Dictionary<Guid, byte[]> _photos = new();
 
     public Task<EndOfDayReport?> GetByDateAsync(DateOnly date, CancellationToken cancellationToken = default) => Task.FromResult(All.SingleOrDefault(d => d.Date == date));
+    public Task<IReadOnlyList<EndOfDayReport>> GetDraftsAfterAsync(DateOnly date, CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyList<EndOfDayReport>>(All.Where(d => !d.IsSubmitted && d.Date > date).OrderBy(d => d.Date).ToList());
+    public void Remove(EndOfDayReport report) => All.Remove(report);
     public Task<DateOnly?> LastSubmittedDateAsync(CancellationToken cancellationToken = default) =>
         Task.FromResult(All.Where(d => d.IsSubmitted).Select(d => (DateOnly?)d.Date).Max());
     public Task<IReadOnlyList<EndOfDayReport>> GetBetweenAsync(DateOnly from, DateOnly to, CancellationToken cancellationToken = default) =>

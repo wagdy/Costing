@@ -181,6 +181,23 @@ public sealed class EndOfDayController(ISender sender) : ControllerBase
     public Task<EndOfDayUndone> VoidLast(VoidLastEndOfDayRequest request, CancellationToken cancellationToken) =>
         sender.Send(new UndoLastEndOfDayCommand(request.Date, request.Reason, StaffName, StaffId), cancellationToken);
 
+    // A day the restaurant did not trade (تسجيل يوم إغلاق أو صيانة): the day to close next, closed with
+    // nothing on it and why (required), so the next one can be closed.
+    [HttpPost("mark-closed-day")]
+    [HttpPost("/api/costing/end-of-day/mark-closed-day")]
+    [CostingTab(CostingTabs.EndOfDay)]
+    public Task<EndOfDayDto> MarkClosedDay(MarkClosedDayRequest request, CancellationToken cancellationToken) =>
+        sender.Send(new MarkClosedDayCommand(request.TargetDate, request.Reason, StaffName), cancellationToken);
+
+    // A manager's: a draft entered under the wrong date moved to the day to close next (targetDate),
+    // with the reason (auditReason, required), written into its notes and audit trail.
+    [HttpPost("{id:guid}/reassign-date")]
+    [HttpPost("/api/costing/end-of-day/{id:guid}/reassign-date")]
+    [CostingTab(CostingTabs.EndOfDay)]
+    [Authorize(Policy = Permissions.ApprovalDecide)]
+    public Task<EndOfDayReassigned> ReassignDate(Guid id, ReassignEndOfDayDateRequest request, CancellationToken cancellationToken) =>
+        sender.Send(new ReassignEndOfDayDateCommand(id, request.TargetDate, request.AuditReason, StaffName), cancellationToken);
+
     // Reopening a day is undoing it: only the last closed one.
     [HttpPost("{date}/reopen")]
     [CostingTab(Readers)]
@@ -255,6 +272,10 @@ public sealed class EndOfDayPayoutForm
 }
 
 public sealed record SubmitEndOfDayRequest(bool ZeroSales = false);
+
+public sealed record MarkClosedDayRequest(DateOnly TargetDate, string? Reason);
+
+public sealed record ReassignEndOfDayDateRequest(DateOnly TargetDate, string? AuditReason);
 
 public sealed record VoidLastEndOfDayRequest(DateOnly? Date = null, string? Reason = null);
 

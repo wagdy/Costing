@@ -137,6 +137,21 @@ public sealed class PurchaseInvoice : AggregateRoot
         ClosesPurchaseOrder = original.ClosesPurchaseOrder;
     }
 
+    // Its end of day moved to another date (the draft entered under the wrong day): paid out of that
+    // day's takings, it is paid out of the new day's; dated that day, it is dated the new one. A draft
+    // alone: what is posted is corrected instead.
+    public bool MoveDay(DateOnly from, DateOnly to)
+    {
+        if (Status != PurchaseInvoiceStatus.Draft)
+            throw new DomainException("Only a draft invoice moves with its day: correct a posted one instead.");
+        var moved = false;
+        if (PaymentMethod == PurchasePaymentMethod.DayRevenue && RevenueDate == from)
+            (RevenueDate, moved) = (to, true);
+        if (InvoiceDate == from)
+            (InvoiceDate, moved) = (to, true);
+        return moved;
+    }
+
     // The purchase order this draft delivers, or none; closes: the order closed with what came.
     public void Delivers(Guid? purchaseOrderId, bool closes)
     {

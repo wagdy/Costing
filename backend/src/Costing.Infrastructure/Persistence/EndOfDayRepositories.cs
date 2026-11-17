@@ -15,6 +15,11 @@ internal sealed class EndOfDayRepository(CostingDbContext db) : IEndOfDayReposit
     public Task<EndOfDayReport?> GetByDateAsync(DateOnly date, CancellationToken cancellationToken = default) =>
         WithInvoices.SingleOrDefaultAsync(d => d.Date == date, cancellationToken);
 
+    public async Task<IReadOnlyList<EndOfDayReport>> GetDraftsAfterAsync(DateOnly date, CancellationToken cancellationToken = default) =>
+        await WithInvoices.Where(d => d.Status == EndOfDayStatus.Draft && d.Date > date).OrderBy(d => d.Date).ToListAsync(cancellationToken);
+
+    public void Remove(EndOfDayReport report) => db.EndOfDayReports.Remove(report);
+
     public Task<DateOnly?> LastSubmittedDateAsync(CancellationToken cancellationToken = default) =>
         db.EndOfDayReports.Where(d => d.Status == EndOfDayStatus.Submitted).MaxAsync(d => (DateOnly?)d.Date, cancellationToken);
 

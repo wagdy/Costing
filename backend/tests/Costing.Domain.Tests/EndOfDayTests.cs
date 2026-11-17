@@ -122,6 +122,68 @@ public class EndOfDayTests
     }
 
     [Fact]
+    public void A_day_with_no_trade_is_closed_with_why_and_nothing_on_it_and_undone_as_any_day()
+    {
+        var day = new EndOfDayReport(Guid.NewGuid(), Day, "Ali");
+        Assert.StartsWith("Say why the restaurant was closed", Assert.Throws<DomainException>(() => day.MarkClosed("Ali", "  ")).Message);
+        Assert.StartsWith("Keep the reason under 300", Assert.Throws<DomainException>(() => day.MarkClosed("Ali", new string('x', 301))).Message);
+        // Anything on it: handed in with it instead.
+        var invoice = day.AddInvoice(Guid.NewGuid(), EndOfDayInvoiceKind.Cash, Guid.NewGuid(), 50, null, Photo, "Ali");
+        Assert.Contains("has entries handed in", Assert.Throws<DomainException>(() => day.MarkClosed("Ali", "Plumbing")).Message);
+        day.RemoveInvoice(invoice.Id, "Ali");
+        day.RecordSales(null, null, null, null, "Shut all day", "Ali", openingFloat: 0);
+        Assert.False(day.HasEntries);
+
+        day.MarkClosed("Ali", " Restaurant closed for plumbing maintenance ");
+        Assert.Equal((EndOfDayStatus.Submitted, true, "Restaurant closed for plumbing maintenance", "Ali"),
+            (day.Status, day.IsClosedDay, day.ClosedDayReason, day.SubmittedBy));
+        Assert.EndsWith("UTC · Marked as a closed day by Ali: Restaurant closed for plumbing maintenance", day.AuditTrail);
+        Assert.Throws<DomainException>(() => day.MarkClosed("Ali", "Again"));
+
+        // Undone, a draft as any day: no longer closed, the trail keeps both.
+        day.Undo("Boss", "It did open in the evening");
+        Assert.Equal((EndOfDayStatus.Draft, false, (string?)null), (day.Status, day.IsClosedDay, day.ClosedDayReason));
+        Assert.Equal(2, day.AuditTrail!.Split('\n').Length);
+        Assert.EndsWith("Closed day undone by Boss: It did open in the evening", day.AuditTrail);
+    }
+
+    [Fact]
+    public void A_draft_moves_to_another_date_with_why_written_into_its_notes_its_invoices_and_its_trail()
+    {
+        var day = new EndOfDayReport(Guid.NewGuid(), Day, "Ali");
+        var noted = day.AddInvoice(Guid.NewGuid(), EndOfDayInvoiceKind.Cash, Guid.NewGuid(), 50, "Gas", Photo, "Ali");
+        var bare = day.AddInvoice(Guid.NewGuid(), EndOfDayInvoiceKind.Credit, Guid.NewGuid(), 80, null, Photo, "Ali");
+        var paid = day.AddPayout(Guid.NewGuid(), EndOfDayPayoutKind.SupplierPayment, Guid.NewGuid(), 30, "Bread", Photo, "Ali");
+        day.RecordSales(900, 100, 140, null, "Busy lunch", "Ali");
+        var earlier = Day.AddDays(-1);
+
+        Assert.StartsWith("Give the reason for moving", Assert.Throws<DomainException>(() => day.MoveTo(earlier, "Boss", null)).Message);
+        Assert.StartsWith("It is dated Wed 4 Nov 2026 already", Assert.Throws<DomainException>(() => day.MoveTo(Day, "Boss", "Typo")).Message);
+
+        day.MoveTo(earlier, "Boss", "wrong initial entry");
+        const string line = "System Audit: Migrated from 04/11/2026 to 03/11/2026 by Boss due to: wrong initial entry";
+        Assert.Equal(earlier, day.Date);
+        Assert.Equal($"Busy lunch\n{line}", day.Notes);
+        Assert.Equal(($"Gas\n{line}", line), (noted.Note, bare.Note));
+        Assert.EndsWith($"UTC · {line}", day.AuditTrail);
+        // Everything else on it as it was; the payments' notes are their own.
+        Assert.Equal((1_000m, 2, "Bread"), (day.NetSales, day.Invoices.Count, paid.Note));
+
+        // Handed in, it stays where it is.
+        day.Submit("Ali");
+        Assert.Throws<DomainException>(() => day.MoveTo(Day, "Boss", "Typo"));
+    }
+
+    [Fact]
+    public void A_day_whose_notes_cannot_take_the_audit_line_is_not_moved()
+    {
+        var day = new EndOfDayReport(Guid.NewGuid(), Day, "Ali");
+        day.RecordSales(10, null, null, null, new string('n', EndOfDayReport.MaxDayNotes - 20), "Ali");
+        Assert.StartsWith("The day's notes are too long", Assert.Throws<DomainException>(() => day.MoveTo(Day.AddDays(-1), "Boss", "Typo")).Message);
+        Assert.Equal(Day, day.Date);
+    }
+
+    [Fact]
     public void Days_are_closed_in_exact_order_never_ahead_nor_in_the_locked_books()
     {
         var today = new DateOnly(2026, 11, 17);

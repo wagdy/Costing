@@ -354,6 +354,10 @@
 
 @@file frontend/src/app/features/costing/end-of-day-page.ts
 
+**يوم مغلق ومسودة عالقة:** على صفحة اليوم التالي الفارغة زر **Mark as Closed/Off Day** (`canMarkClosed`: لا فواتير ولا دفعات ولا أرقام مكتوبة) يفتح `ClosedDayDialog` (السبب إجباري) ثم ينتقل لليوم الذي بعده. ومسودة بتاريخ بعد اليوم التالي (`stranded`) تظهر بشريط تحذير وزر **Migrate Data to …** للمدير (`canMigrate`) يفتح `ReassignDateDialog` (سبب التعديل الإجباري) ثم `reassignDate` ويفتح الصفحة على اليوم الصحيح؛ وصفحة اليوم التالي تشير لكل مسودة عالقة ("Open it"). سجل التدقيق (`auditLines`) يظهر تحت التاريخ.
+
+@@file frontend/src/app/features/costing/end-of-day-reasons.ts
+
 `EndOfDayUndo` خدمة مشتركة بين الصفحة وملخصات الأيام: نافذة خطر (`EndOfDayUndoDialog`) تعرض ما سيُلغى من المعاينة (التوريد، ملخص المبيعات وتقارير Z، الفواتير المرحلة، المدفوعات) وتأخذ السبب، ثم `voidLast(date, reason)`، و `undoneSummary` تلخص ما أُلغي في سطر.
 
 @@file frontend/src/app/features/costing/end-of-day-undo.ts

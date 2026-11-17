@@ -10505,7 +10505,7 @@ export class CostingReportsShell {
 ```
 
 
-> 📄 **`frontend/src/app/features/costing/daily-summaries-page.ts`** — 324 سطر
+> 📄 **`frontend/src/app/features/costing/daily-summaries-page.ts`** — 332 سطر
 
 ```ts
 import { DatePipe } from '@angular/common';
@@ -10630,6 +10630,10 @@ import { EndOfDayUndo } from './end-of-day-undo';
                   <span class="tag" [class.ok]="d.status === 'Submitted'" [class.warn]="d.status === 'Draft'">
                     {{ statusLabels[d.status].en }}<span class="ar">{{ statusLabels[d.status].ar }}</span>
                   </span>
+                  @if (d.isClosedDay) {
+                    <span class="tag closed-day">Closed day<span class="ar">يوم مغلق</span></span>
+                    <div class="small muted">{{ d.closedDayReason }}</div>
+                  }
                   @if (d.status === 'Submitted') {
                     <div class="small muted">by {{ d.submittedBy }}, {{ d.submittedAtUtc | date: 'd MMM, HH:mm' }}</div>
                   } @else if (d.reopenedBy) {
@@ -10710,6 +10714,10 @@ import { EndOfDayUndo } from './end-of-day-undo';
     }
     .small {
       font-size: 0.85em;
+    }
+    .tag.closed-day {
+      margin-inline-start: 4px;
+      background: var(--mat-sys-surface-container-high);
     }
     tr.last td {
       background: color-mix(in srgb, var(--mat-sys-primary) 5%, transparent);

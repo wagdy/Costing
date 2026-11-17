@@ -68,7 +68,7 @@ describe('the daily summaries', () => {
     api.sequence.mockReturnValue(of(sequence()));
     api.days.mockReturnValue(of([
       closed('2026-11-04'),
-      closed('2026-11-03', { takingsEntered: null }),
+      closed('2026-11-03', { takingsEntered: null, isClosedDay: true, closedDayReason: 'Plumbing maintenance' }),
       closed('2026-11-02', { status: 'Draft', submittedBy: null, submittedAtUtc: null, reopenedBy: 'Boss', reopenReason: 'Visa typed as cash' }),
     ]));
   });
@@ -81,6 +81,7 @@ describe('the daily summaries', () => {
     expect(rows.map((r) => text(r.querySelector('td')!))).toEqual(['Wed 4 Nov 2026Last closed · آخر يوم مُقفل', 'Tue 3 Nov 2026', 'Mon 2 Nov 2026']);
     expect(text(rows[0].querySelector('td:nth-child(8)')!)).toBe('L.E 1,560.00');
     expect(text(rows[1].querySelector('td:nth-child(8)')!)).toBe('—');
+    expect(text(rows[1].querySelector('td:nth-child(2)')!)).toContain('Closed dayيوم مغلقPlumbing maintenance');
     expect(text(rows[2].querySelector('td:nth-child(2)')!)).toBe('Draftمسودةundone by Boss: Visa typed as cash');
     expect(rows[0].querySelector('a')!.getAttribute('href')).toBe('/costing/end-of-day?date=2026-11-04');
   });
