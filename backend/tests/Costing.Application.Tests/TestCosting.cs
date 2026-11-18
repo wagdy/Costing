@@ -44,6 +44,8 @@ public sealed class TestCosting
     public BranchStore Branches { get; } = new();
     public LocationStore Locations { get; } = new();
     public BranchStub CurrentBranch { get; } = new();
+    public TransferStore Transfers { get; } = new();
+    public BalanceStore Balances { get; }
     public StationStore Stations { get; } = new();
     public PurchaseOrderStore PurchaseOrders { get; } = new();
     public SalesStore Sales { get; } = new();
@@ -63,6 +65,7 @@ public sealed class TestCosting
 
     public TestCosting()
     {
+        Balances = new BalanceStore(Inventory.Movements);
         var services = new ServiceCollection();
         services.AddSingleton(typeof(ILogger<>), typeof(NullLogger<>));
         services.AddSingleton(TimeProvider.System);
@@ -74,6 +77,8 @@ public sealed class TestCosting
         services.AddSingleton<Costing.Domain.Company.IBranchRepository>(Branches);
         services.AddSingleton<Costing.Domain.Company.IInventoryLocationRepository>(Locations);
         services.AddSingleton<Costing.Application.Company.ICurrentBranch>(CurrentBranch);
+        services.AddSingleton<Costing.Domain.Stock.IInternalTransferRepository>(Transfers);
+        services.AddSingleton<Costing.Application.Stock.IStockBalances>(Balances);
         services.AddSingleton<Costing.Domain.Stations.IKitchenStationRepository>(Stations);
         services.AddSingleton<IRawMaterialRepository>(Inventory);
         services.AddSingleton<IRecipeRepository>(Inventory.Recipes);
@@ -171,6 +176,43 @@ public sealed class TestCalendar : IBusinessCalendar
         var start = businessDate.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
         return (start, start.AddDays(1));
     }
+}
+
+// The internal transfers made.
+public sealed class TransferStore : ListStore<Costing.Domain.Stock.InternalTransfer>, Costing.Domain.Stock.IInternalTransferRepository
+{
+    public Task<IReadOnlyList<Costing.Domain.Stock.InternalTransfer>> GetBetweenAsync(Guid branchId, DateOnly from, DateOnly to, CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyList<Costing.Domain.Stock.InternalTransfer>>(
+            All.Where(t => t.BranchId == branchId && t.TransferDate >= from && t.TransferDate <= to).ToList());
+
+    public Task<int> CountInYearAsync(int year, CancellationToken cancellationToken = default) =>
+        Task.FromResult(All.Count(t => t.Number.StartsWith($"TR-{year}-", StringComparison.Ordinal)));
+}
+
+// What each location has: the sum of its entries, as the database's; an entry without a branch or
+// a location (none given, as an open-space shop's) is the first branch's Main Store's.
+public sealed class BalanceStore(MovementStore movements) : Costing.Application.Stock.IStockBalances
+{
+    public Dictionary<(Guid Material, Guid Branch), decimal?> Costs { get; } = [];
+
+    private static Guid BranchOf(StockMovement m) => m.BranchId == Guid.Empty ? Costing.Domain.Company.Branch.DefaultId : m.BranchId;
+
+    private static Guid LocationOf(StockMovement m) => m.LocationId == Guid.Empty ? Costing.Domain.Company.InventoryLocation.DefaultId : m.LocationId;
+
+    public Task<IReadOnlyDictionary<Guid, decimal>> OnHandAsync(Guid branchId, Guid? locationId, CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlyDictionary<Guid, decimal>>(movements.All
+            .Where(m => BranchOf(m) == branchId && (locationId == null || LocationOf(m) == locationId))
+            .GroupBy(m => m.RawMaterialId).ToDictionary(g => g.Key, g => g.Sum(m => m.Quantity)));
+
+    public Task<IReadOnlyList<Costing.Application.Stock.LocationStock>> ByLocationAsync(Guid branchId, CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlyList<Costing.Application.Stock.LocationStock>>(movements.All
+            .Where(m => BranchOf(m) == branchId)
+            .GroupBy(m => (m.RawMaterialId, LocationOf(m)))
+            .Select(g => new Costing.Application.Stock.LocationStock(g.Key.RawMaterialId, g.Key.Item2, g.Sum(m => m.Quantity)))
+            .Where(s => s.Quantity != 0).ToList());
+
+    public Task<IReadOnlyDictionary<Guid, decimal?>> BranchCostsAsync(Guid branchId, CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlyDictionary<Guid, decimal?>>(Costs.Where(c => c.Key.Branch == branchId).ToDictionary(c => c.Key.Material, c => c.Value));
 }
 
 // The company's branches: the first, as the migration makes it.

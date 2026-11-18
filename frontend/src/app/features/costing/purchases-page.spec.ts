@@ -209,6 +209,7 @@ describe('entering a supplier invoice', () => {
         { itemType: 'Inventory', rawMaterialId: 'bun', expenseItemId: null, enteredQuantity: 50, unitLabel: 'piece', unitSize: 1, cost: null, discount: 0 },
       ],
       discount: 0,
+      locationId: null,
     });
     expect(postPurchaseInvoice).not.toHaveBeenCalled();
     expect(page['review']()).toMatchObject({ id, status: 'Draft', total: 1900, supplierName: 'Delta Oils' });

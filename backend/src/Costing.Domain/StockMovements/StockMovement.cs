@@ -13,6 +13,14 @@ public sealed class StockMovement : AggregateRoot, IBranchOwned
 
     public void AssignBranch(Guid branchId) => BranchId = branchId;
 
+    // Where in its branch the stock moved (موقع المخزون): given by what moved it (the receiving
+    // location of an invoice, a count's, a transfer's), or, left empty, routed as it is saved (the
+    // location serving the material's station for what the kitchen uses, the branch's main store
+    // otherwise). An open-space shop's every entry is its one Main Store's.
+    public Guid LocationId { get; private set; }
+
+    public void AssignLocation(Guid locationId) => LocationId = locationId;
+
     private StockMovement() { }
 
     // Internal: entries are created only by RawMaterial, together with the balance change

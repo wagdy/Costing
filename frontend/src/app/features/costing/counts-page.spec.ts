@@ -5,6 +5,8 @@ import { AuthService } from '../../core/auth/auth.service';
 import { Permissions } from '../../core/auth/permissions';
 import { CostingApi, CountPresets, StockCountSummary } from '../../core/costing/costing.api';
 import { NotifyService } from '../../core/ui/notify.service';
+import { StockApi } from '../../core/costing/stock.api';
+import { Company } from '../../core/settings/company';
 import { CountsPage } from './counts-page';
 
 const text = (el: Element) => el.textContent!.replace(/\s+/g, ' ').trim();
@@ -29,10 +31,19 @@ describe('the stock counts', () => {
   const saveStockCount = vi.fn();
   let permissions: string[] = [Permissions.InventoryManage, Permissions.CostingView];
 
-  async function render(counts: StockCountSummary[]) {
+  async function render(counts: StockCountSummary[], subStores = false) {
     TestBed.configureTestingModule({
       providers: [
         provideRouter([]),
+        {
+          provide: StockApi,
+          useValue: {
+            locations: () => of({ mode: 'SingleBranch_WithSubStores', branchId: 'b1', locations: [
+              { id: 'main', branchId: 'b1', name: 'Main Store', nameAr: null, kind: 'MainStore', isActive: true, isDefault: true },
+              { id: 'kitchen', branchId: 'b1', name: 'Hot Kitchen', nameAr: null, kind: 'Kitchen', isActive: true, isDefault: false },
+            ] }),
+          },
+        },
         {
           provide: CostingApi,
           useValue: {
@@ -43,7 +54,12 @@ describe('the stock counts', () => {
         { provide: NotifyService, useValue: { info: vi.fn(), error: vi.fn() } },
       ],
     });
+    if (subStores) {
+      TestBed.inject(Company).settings.update((s) => ({ ...s, operatingMode: 'SingleBranch_WithSubStores' }));
+    }
     const fixture = TestBed.createComponent(CountsPage);
+    await fixture.whenStable();
+    fixture.detectChanges();
     await fixture.whenStable();
     fixture.detectChanges();
     const el = fixture.nativeElement as HTMLElement;
@@ -103,8 +119,30 @@ describe('the stock counts', () => {
     await vi.waitFor(() => expect(navigate).toHaveBeenCalled());
     expect(saveStockCount).toHaveBeenCalledWith(expect.any(String), [], 'Periodic', {
       scope: 'Spot', scopeMaterialIds: ['beef', 'cheese'], scopeLabel: 'Daily critical items',
-    });
+    }, false, null);
     expect(navigate).toHaveBeenCalledWith(['/costing/counts', saveStockCount.mock.lastCall![0]]);
+  });
+
+  it('counts nowhere in particular in an open-space shop, and the whole branch or one of its locations with sub-stores', async () => {
+    const openSpace = await render([count('w1', 'Periodic')]);
+    expect(openSpace.el.querySelector('app-location-select mat-select')).toBeNull();
+    openSpace.buttons()[0].click();
+    expect(openSpace.navigate).toHaveBeenCalledWith(['/costing/counts', expect.any(String)], { queryParams: { kind: 'Periodic' } });
+    TestBed.resetTestingModule();
+
+    const { el, page, navigate, buttons } = await render([count('w1', 'Periodic')], true);
+    expect(el.querySelector('[aria-label="Count where"]')).not.toBeNull();
+    // The whole branch until a location is chosen.
+    expect(page['countAt']()).toBe('(whole-branch)');
+    buttons().find((b) => text(b).includes('Full count'))!.click();
+    expect(navigate).toHaveBeenCalledWith(['/costing/counts', expect.any(String)], { queryParams: { kind: 'Periodic' } });
+
+    page['countAt'].set('kitchen');
+    buttons().find((b) => text(b).includes('Full count'))!.click();
+    expect(navigate).toHaveBeenLastCalledWith(['/costing/counts', expect.any(String)], { queryParams: { kind: 'Periodic', location: 'kitchen' } });
+    page['startCategory']('dairy');
+    await vi.waitFor(() => expect(saveStockCount).toHaveBeenCalled());
+    expect(saveStockCount.mock.lastCall!.slice(4)).toEqual([false, 'kitchen']);
   });
 
   it('starts a spot count of one category', async () => {

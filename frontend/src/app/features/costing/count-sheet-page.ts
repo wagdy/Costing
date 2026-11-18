@@ -32,6 +32,7 @@ import { NotifyService } from '../../core/ui/notify.service';
 import { InfoTip } from './info-tip';
 import { NoStation, Stations } from './stations';
 import { MatSelectModule } from '@angular/material/select';
+import { StockPlaces } from '../../core/costing/stock.api';
 
 interface Section {
   category: string;
@@ -229,6 +230,13 @@ const blindKey = 'costing.blindCount';
         </p>
       }
     } @else {
+      @if (places.shown()) {
+        <p class="scope-line location-line">
+          <span class="scope-badge"><mat-icon>inventory_2</mat-icon> Counted in · مكان الجرد</span>
+          <strong>{{ countedIn() }}</strong>
+          <app-info-tip tip="stockLocation" />
+        </p>
+      }
       @if (isSpot()) {
         <p class="scope-line">
           <span class="scope-badge"><mat-icon>bolt</mat-icon> {{ scopeLabels.Spot.en }} · {{ scopeLabels.Spot.ar }}</span>
@@ -703,6 +711,9 @@ export class CountSheetPage {
   readonly id = input.required<string>();
   // From the query: the kind a new count starts as (?kind=Opening).
   readonly kindParam = input<string | undefined>(undefined, { alias: 'kind' });
+  // The location a new count is counted in, as the counts page chose it; none: the whole branch.
+  readonly locationQuery = input<string | undefined>(undefined, { alias: 'location' });
+  protected readonly places = inject(StockPlaces);
   protected readonly kind = signal<StockCountKind>('Periodic');
 
   // Who does not see the costs counts blind, always; anyone else when they choose to.
@@ -739,6 +750,11 @@ export class CountSheetPage {
   // Posted, or voided since: either way read-only.
   protected readonly posted = computed(() => (this.count() && this.count()!.status !== 'Draft' ? this.count() : null));
   protected readonly isSpot = computed(() => this.count()?.scope === 'Spot');
+  // Where it is counted: its location, or the whole branch.
+  protected readonly countedIn = computed(() => {
+    const id = this.count()?.locationId ?? this.locationQuery() ?? null;
+    return id ? this.places.name(id) || 'Location' : 'Whole branch · كل الفرع';
+  });
 
   protected readonly countedCount = computed(() => Object.values(this.counted()).filter((v) => this.valid(v)).length);
   protected readonly recountCount = computed(() => (this.count()?.lines ?? []).filter((l) => l.recountRequested).length);
@@ -883,6 +899,7 @@ export class CountSheetPage {
 
   constructor() {
     void this.stations.load();
+    void this.places.load();
     effect(() => {
       const id = this.id();
       untracked(() => void this.load(id));
@@ -1154,7 +1171,9 @@ export class CountSheetPage {
     this.dirty = false;
     this.saveState.set('Saving…');
     try {
-      const saved = await firstValueFrom(this.api.saveStockCount(this.id(), lines, this.kind(), undefined, this.blind()));
+      const saved = await firstValueFrom(
+        this.api.saveStockCount(this.id(), lines, this.kind(), undefined, this.blind(), this.count() ? null : (this.locationQuery() ?? null)),
+      );
       // The records' figures as they stand now, for the reviewer; the review as it stands.
       if (saved) {
         this.count.set(saved);

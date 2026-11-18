@@ -105,6 +105,13 @@ internal sealed class ReinstateFixedAssetDays(IFixedAssetRepository assets) : IB
         await assets.GetByIdAsync(request.AssetId, cancellationToken) is { } asset ? [asset.DisposalDate] : [];
 }
 
+// A transfer voided: the day it was made.
+internal sealed class VoidInternalTransferDays(Costing.Domain.Stock.IInternalTransferRepository transfers) : IBooksDays<Stock.VoidInternalTransferCommand>
+{
+    public async Task<IEnumerable<DateOnly?>> DaysAsync(Stock.VoidInternalTransferCommand request, CancellationToken cancellationToken) =>
+        await transfers.GetByIdAsync(request.Id, cancellationToken) is { } transfer ? [transfer.TransferDate] : [];
+}
+
 // A deletion, asked for or done at once: the record's own day.
 internal sealed class RequestDeletionDays(DeletionTargets deletions) : IBooksDays<RequestDeletionCommand>
 {

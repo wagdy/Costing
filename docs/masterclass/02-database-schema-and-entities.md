@@ -486,7 +486,7 @@ public enum UnitOfMeasure
 - **المخزون يُسمح أن يصبح سالبًا**: البيع حدث فعلًا؛ رفض الخصم لن "يلغي البيع" بل سيضيّع السجل. الرصيد السالب **إشارة**: فاتورة لم تُسجل أو وصفة خاطئة، والجرد يصححه.
 - **`Archive`**: لا حذف؛ أرشفة فقط ورصيده صفر، حتى لا تختفي قيمته من الدفاتر.
 
-> 📄 **`backend/src/Costing.Domain/RawMaterials/RawMaterial.cs`** — 360 سطر
+> 📄 **`backend/src/Costing.Domain/RawMaterials/RawMaterial.cs`** — 388 سطر
 
 ```csharp
 using Costing.Domain.Common;
@@ -661,19 +661,43 @@ public sealed class RawMaterial : AggregateRoot
     public static decimal ValidYield(decimal percent) =>
         percent is > 0 and <= 100 ? percent : throw new DomainException("Yield is more than 0% and at most 100%.");
 
+    // The stock and cost where the request works, once the company keeps more than one place: the
+    // quantity at a location (or across a branch) and the branch's own average cost. Set by whoever
+    // loads it (IStockBalances); never kept. Unset, the company's figures, as always.
+    public decimal? StockHere { get; private set; }
+    public decimal? CostHere { get; private set; }
+
+    public void View(decimal? stockHere, decimal? costHere)
+    {
+        StockHere = stockHere;
+        CostHere = costHere;
+    }
+
+    // What is on the shelf where it is counted, and what a unit of it is worth there.
+    public decimal BookQuantity => StockHere ?? QuantityOnHand;
+    public decimal? UnitCostHere => CostHere ?? AverageCost;
+
+    // The company's average, as its branches' make it up (several branches: their stock at each
+    // one's own average). Null leaves it as it is.
+    public void AdoptAverage(decimal? average)
+    {
+        if (average is { } value && value >= 0)
+            AverageCost = value;
+    }
+
     // Each method below changes QuantityOnHand and returns the ledger entry that explains the
     // change. The caller adds it to IStockMovementRepository in the same unit of work.
     // StockMovement has no public constructor, so every entry in the ledger was produced here.
 
     public StockMovement RecordSale(decimal quantity, Guid orderItemId) =>
-        Move(-Positive(quantity), StockMovementReason.Sale, orderItemId, AverageCost);
+        Move(-Positive(quantity), StockMovementReason.Sale, orderItemId, UnitCostHere);
 
     // station: where the dish was made (its recipe's station), whose waste it is; its own otherwise.
     public StockMovement RecordWaste(decimal quantity, Guid orderItemId, Guid? station = null) =>
-        Move(-Positive(quantity), StockMovementReason.Waste, orderItemId, AverageCost, responsibleStationId: station ?? KitchenStationId);
+        Move(-Positive(quantity), StockMovementReason.Waste, orderItemId, UnitCostHere, responsibleStationId: station ?? KitchenStationId);
 
     public StockMovement RecordVoidReturn(decimal quantity, Guid orderItemId) =>
-        Move(Positive(quantity), StockMovementReason.VoidReturn, orderItemId, AverageCost);
+        Move(Positive(quantity), StockMovementReason.VoidReturn, orderItemId, UnitCostHere);
 
     // lineCost: what this line of the delivery cost in all, when the invoice is entered. It moves
     // the average cost, weighted by quantity against what is on the shelf; stock below zero
@@ -684,7 +708,7 @@ public sealed class RawMaterial : AggregateRoot
             throw new DomainException($"{Name} is made in the kitchen, not bought: make it with a production order.");
         Positive(quantity);
         if (lineCost is not { } cost)
-            return Move(quantity, StockMovementReason.Purchase, purchaseId, AverageCost);
+            return Move(quantity, StockMovementReason.Purchase, purchaseId, UnitCostHere);
         if (cost < 0)
             throw new DomainException("A purchase cannot cost less than nothing.");
 
@@ -695,7 +719,7 @@ public sealed class RawMaterial : AggregateRoot
 
     // Taken to make a prep item, at the average cost now: what it adds to the batch's cost.
     public StockMovement UseInProduction(decimal quantity, Guid productionOrderId) =>
-        Move(-Positive(quantity), StockMovementReason.ProductionInput, productionOrderId, AverageCost);
+        Move(-Positive(quantity), StockMovementReason.ProductionInput, productionOrderId, UnitCostHere);
 
     // A batch of this prep item made. batchCost is what its ingredients cost; it moves the
     // average exactly as a delivery's price moves a bought material's.
@@ -722,7 +746,7 @@ public sealed class RawMaterial : AggregateRoot
             throw new DomainException("Say why it was thrown away.");
         if (reason.Trim().Length > 200)
             throw new DomainException("Keep the reason under 200 characters.");
-        return Move(-Positive(quantity), StockMovementReason.Spoilage, spoilageId, AverageCost, reason.Trim(), recordedBy,
+        return Move(-Positive(quantity), StockMovementReason.Spoilage, spoilageId, UnitCostHere, reason.Trim(), recordedBy,
             responsibleStationId: responsibleStation ?? KitchenStationId);
     }
 
@@ -735,14 +759,15 @@ public sealed class RawMaterial : AggregateRoot
         var said = string.IsNullOrWhiteSpace(note) ? null : note.Trim();
         if (said?.Length > 200)
             throw new DomainException("Keep the note under 200 characters.");
-        return Move(-Positive(quantity), reason, entryId, AverageCost, said, recordedBy);
+        return Move(-Positive(quantity), reason, entryId, UnitCostHere, said, recordedBy);
     }
 
     public StockMovement AdjustToCount(decimal countedQuantity, Guid stockCountId)
     {
         if (countedQuantity < 0)
             throw new DomainException("A counted quantity cannot be negative.");
-        return Move(countedQuantity - QuantityOnHand, StockMovementReason.CountAdjustment, stockCountId, AverageCost);
+        // Against what is on the shelf where it was counted: a location's, a branch's, or the company's.
+        return Move(countedQuantity - BookQuantity, StockMovementReason.CountAdjustment, stockCountId, UnitCostHere);
     }
 
     // Its stock as found when costing starts (جرد افتتاحي): set to what was counted, at the cost it
@@ -752,24 +777,36 @@ public sealed class RawMaterial : AggregateRoot
     {
         if (countedQuantity < 0)
             throw new DomainException("A counted quantity cannot be negative.");
-        if (unitCost is { } cost && (AverageCost ?? 0) == 0)
+        if (unitCost is { } cost && (UnitCostHere ?? 0) == 0)
         {
             if (cost < 0)
                 throw new DomainException("A cost cannot be negative.");
-            AverageCost = cost;
+            if ((AverageCost ?? 0) == 0)
+                AverageCost = cost;
+            if (CostHere is not null)
+                CostHere = cost;
         }
-        return Move(countedQuantity - QuantityOnHand, StockMovementReason.OpeningStock, stockCountId, AverageCost);
+        return Move(countedQuantity - BookQuantity, StockMovementReason.OpeningStock, stockCountId, UnitCostHere);
+    }
+
+    // Moved from one location of its branch to another (تحويل داخلي): out of one, into the other,
+    // at its average cost there; nothing gained or lost, the branch's stock and cost as they were.
+    public (StockMovement Out, StockMovement In) Transfer(decimal quantity, Guid transferId, Guid fromLocationId, Guid toLocationId, string recordedBy)
+    {
+        Positive(quantity);
+        if (fromLocationId == toLocationId)
+            throw new DomainException("Move it from one location to another: the two are the same. · اختر موقعين مختلفين.");
+        var cost = UnitCostHere;
+        var taken = Move(-quantity, StockMovementReason.TransferOut, transferId, cost, recordedBy: recordedBy);
+        taken.AssignLocation(fromLocationId);
+        var put = Move(quantity, StockMovementReason.TransferIn, transferId, cost, recordedBy: recordedBy);
+        put.AssignLocation(toLocationId);
+        return (taken, put);
     }
 
     // Weighted by quantity against what is on the shelf; stock below zero counts as none, since
     // nothing is left to average with.
-    private void AverageWith(decimal quantity, decimal unitCost)
-    {
-        var onShelf = Math.Max(QuantityOnHand, 0);
-        AverageCost = AverageCost is { } average && onShelf > 0
-            ? (onShelf * average + quantity * unitCost) / (onShelf + quantity)
-            : unitCost;
-    }
+    private void AverageWith(decimal quantity, decimal unitCost) => AverageCost = Stock.MovingAverage.With(AverageCost, QuantityOnHand, quantity, unitCost);
 
     // Stock is allowed to go negative. Deduction runs after the sale has already happened, so
     // refusing it would not un-sell the dish; it would only lose the record. A negative
@@ -789,25 +826,16 @@ public sealed class RawMaterial : AggregateRoot
         if (original.Reason is StockMovementReason.Purchase or StockMovementReason.ProductionOutput && original.Quantity > 0)
             UnaverageWith(original.Quantity, original.UnitCost);
         var reversal = Move(-original.Quantity, original.Reason, original.SourceId, original.UnitCost, "Voided", reversedBy, original.Id, original.ResponsibleStationId);
-        // Undone in the branch it was entered in, whichever the reversal is made from.
+        // Undone in the branch and the location it was entered in, whichever the reversal is made from.
         reversal.AssignBranch(original.BranchId);
+        reversal.AssignLocation(original.LocationId);
         return reversal;
     }
 
     // The average as if `quantity` bought at `unitCost` had never come in: the value of the
     // stock on the shelf less theirs, over what is left. With nothing left, or the delivery
     // already used up past knowing what it cost, the average stays where it is.
-    private void UnaverageWith(decimal quantity, decimal? unitCost)
-    {
-        if (AverageCost is not { } average || unitCost is not { } cost)
-            return;
-        var left = QuantityOnHand - quantity;
-        if (left <= 0)
-            return;
-        var value = Math.Max(QuantityOnHand, 0) * average - quantity * cost;
-        if (value >= 0)
-            AverageCost = value / left;
-    }
+    private void UnaverageWith(decimal quantity, decimal? unitCost) => AverageCost = Stock.MovingAverage.Without(AverageCost, QuantityOnHand, quantity, unitCost);
 
     // Taken off the lists: no new purchases, recipes or counts name it. Kept, with its ledger,
     // for the invoices, counts and reports that already do. Only with no stock on hand, so its
@@ -1374,7 +1402,7 @@ public interface ISupplierRepository : IRepository<Supplier>
 
 ## 5. دفتر المخزون
 
-> 📄 **`backend/src/Costing.Domain/StockMovements/StockMovementReason.cs`** — 51 سطر
+> 📄 **`backend/src/Costing.Domain/StockMovements/StockMovementReason.cs`** — 56 سطر
 
 ```csharp
 namespace Costing.Domain.StockMovements;
@@ -1417,6 +1445,11 @@ public enum StockMovementReason
 
     // Used trying or testing a recipe (تجارب واختبار وصفات): development, not loss.
     RecipeTasting = 12,
+
+    // Moved out of one location of a branch into another (التحويلات الداخلية): the pair nets to
+    // nothing for the branch, at its average cost; no cost of the period.
+    TransferOut = 13,
+    TransferIn = 14,
 }
 
 public static class StaffConsumption
@@ -1431,7 +1464,7 @@ public static class StaffConsumption
 ```
 
 
-> 📄 **`backend/src/Costing.Domain/StockMovements/StockMovement.cs`** — 71 سطر
+> 📄 **`backend/src/Costing.Domain/StockMovements/StockMovement.cs`** — 79 سطر
 
 ```csharp
 using Costing.Domain.Common;
@@ -1448,6 +1481,14 @@ public sealed class StockMovement : AggregateRoot, IBranchOwned
     public Guid BranchId { get; private set; }
 
     public void AssignBranch(Guid branchId) => BranchId = branchId;
+
+    // Where in its branch the stock moved (موقع المخزون): given by what moved it (the receiving
+    // location of an invoice, a count's, a transfer's), or, left empty, routed as it is saved (the
+    // location serving the material's station for what the kitchen uses, the branch's main store
+    // otherwise). An open-space shop's every entry is its one Main Store's.
+    public Guid LocationId { get; private set; }
+
+    public void AssignLocation(Guid locationId) => LocationId = locationId;
 
     private StockMovement() { }
 
@@ -2152,7 +2193,7 @@ public interface IPrepRecipeRepository : IRepository<PrepRecipe>
 ```
 
 
-> 📄 **`backend/src/Costing.Domain/Production/ProductionOrder.cs`** — 168 سطر
+> 📄 **`backend/src/Costing.Domain/Production/ProductionOrder.cs`** — 177 سطر
 
 ```csharp
 using Costing.Domain.Common;
@@ -2200,6 +2241,10 @@ public sealed class ProductionOrder : AggregateRoot
 
     public Guid PrepItemId { get; private set; }
 
+    // Where it was made; none: routed as its entries are saved (the prep item's station's location,
+    // or the branch's main store).
+    public Guid? LocationId { get; private set; }
+
     // In the prep item's unit. Planned sets the ingredients; produced is what came out, and what
     // the batch's cost is shared over: 9.6 kg from a 10 kg batch carries the lost 0.4 kg's cost.
     public decimal PlannedQuantity { get; private set; }
@@ -2244,7 +2289,8 @@ public sealed class ProductionOrder : AggregateRoot
         string producedBy,
         string? notes = null,
         string? approvedBy = null,
-        Guid? revisionOf = null)
+        Guid? revisionOf = null,
+        Guid? locationId = null)
     {
         if (recipe.PrepItemId != prepItem.Id)
             throw new DomainException("That recipe is for another prep item.");
@@ -2260,7 +2306,7 @@ public sealed class ProductionOrder : AggregateRoot
         var requirements = recipe.RequirementsFor(planned)
             .Select(r => (Material: materials.GetValueOrDefault(r.RawMaterialId) ?? throw new NotFoundException(nameof(RawMaterial), r.RawMaterialId), r.Quantity))
             .ToList();
-        var unpriced = requirements.Where(r => r.Material.AverageCost is null).Select(r => r.Material.Name).ToList();
+        var unpriced = requirements.Where(r => r.Material.UnitCostHere is null).Select(r => r.Material.Name).ToList();
         if (unpriced.Count > 0)
             throw new DomainException($"{string.Join(", ", unpriced)} {(unpriced.Count == 1 ? "has" : "have")} no cost yet, so the batch's cost cannot be worked out. "
                 + "Enter it on Raw materials, or post the invoice it came on.");
@@ -2270,7 +2316,7 @@ public sealed class ProductionOrder : AggregateRoot
         var movements = new List<StockMovement>();
         foreach (var (material, quantity) in requirements.Where(r => r.Quantity > 0))
         {
-            var unitCost = material.AverageCost!.Value;
+            var unitCost = material.UnitCostHere!.Value;
             order._lines.Add(new ProductionOrderLine(id, material.Id, quantity, unitCost));
             movements.Add(material.UseInProduction(quantity, id));
         }
@@ -2278,6 +2324,10 @@ public sealed class ProductionOrder : AggregateRoot
         order.TotalCost = order._lines.Sum(l => l.Cost);
         order.UnitCost = order.TotalCost / produced;
         movements.Add(prepItem.ReceiveProduction(produced, id, order.TotalCost));
+        // Made where it was made: its ingredients taken from there, the batch put there.
+        order.LocationId = locationId;
+        if (locationId is { } location)
+            movements.ForEach(m => m.AssignLocation(location));
         return (order, movements);
     }
 
@@ -3044,7 +3094,7 @@ public interface ISalesReceiptRepository : IRepository<SalesReceipt>
 
 `PurchaseInvoice`: مسودة ⇐ مرحّلة (`Posted`) ⇐ ملغاة (`Voided`). البند: خامة (يدخل المخزون) أو مصروف. `LineTotal` كما كُتب على الورقة، و `Discount` البند، و **`DiscountShare`** حصته من خصم الفاتورة (توزيع بالقرش، الفصل 05)، و `Cost` = الصافي الذي يدخل المتوسط. والدفع: نقدي من الخزنة، أو من إيراد يوم، أو آجل.
 
-> 📄 **`backend/src/Costing.Domain/Purchases/PurchaseInvoice.cs`** — 426 سطر
+> 📄 **`backend/src/Costing.Domain/Purchases/PurchaseInvoice.cs`** — 433 سطر
 
 ```csharp
 using Costing.Domain.Common;
@@ -3152,6 +3202,11 @@ public sealed class PurchaseInvoice : AggregateRoot, IBranchOwned
     // and whether what did not come is not expected any more (ClosesPurchaseOrder: the order closed
     // with what was received) or stays open as a backorder.
     public Guid? PurchaseOrderId { get; private set; }
+
+    // Where the delivery is put away (موقع الاستلام): the branch's main store when none is said.
+    public Guid? LocationId { get; private set; }
+
+    public void ReceiveAt(Guid? locationId) => LocationId = locationId;
     public bool ClosesPurchaseOrder { get; private set; }
 
     // The attached photo or scan, described; its bytes are kept apart.
@@ -3296,6 +3351,8 @@ public sealed class PurchaseInvoice : AggregateRoot, IBranchOwned
             .Select(l => (materials.GetValueOrDefault(l.RawMaterialId!.Value) ?? throw new NotFoundException(nameof(RawMaterial), l.RawMaterialId))
                 .ReceivePurchase(l.Quantity, Id, l.Cost))
             .ToList();
+        if (LocationId is { } location)
+            movements.ForEach(m => m.AssignLocation(location));
         Status = PurchaseInvoiceStatus.Posted;
         PostedAtUtc = DateTime.UtcNow;
         PostedBy = postedBy;
@@ -3527,7 +3584,7 @@ public interface IPurchaseAttachmentStore
 
 `StockCount`: مسودة تُحفظ أثناء العد (العد قد يستغرق ساعة والتابلت قد ينام)، ثم تُرحّل. **النوع**: `Opening` (افتتاحي: بداية القيم، لا يُعتبر فرقًا) أو `Periodic` (دوري: الفرق = عجز/زيادة). **النطاق** `Scope`: `Full` (جرد شامل) أو `Spot` (جرد يومي سريع / جزئي) بقائمة `ScopeMaterialIds` (عمود `uuid[]`) واسمها `ScopeLabel`. **المراجعة** `Review`: `Counting` ثم `Submitted` (سُلّم للمراجعة) أو `RecountRequested` (مطلوب إعادة جرد، على سطور بعينها `RecountRequested` مع ملاحظة المراجِع)، والترحيل يمسح علامات إعادة الجرد ويبقى اسم من سلّمه. ولكل سطر ملاحظة العادّ `Note`. وعلى `RawMaterial` علم `IsSpotCheckItem`: صنف يُجرد يوميًا. الشرح المحاسبي في الفصل 05.
 
-> 📄 **`backend/src/Costing.Domain/StockCounts/StockCount.cs`** — 334 سطر
+> 📄 **`backend/src/Costing.Domain/StockCounts/StockCount.cs`** — 347 سطر
 
 ```csharp
 using Costing.Domain.Common;
@@ -3644,6 +3701,17 @@ public sealed class StockCount : AggregateRoot, IBranchOwned
     // ("Daily critical items", "Class A", "Dairy").
     public StockCountScope Scope { get; private set; } = StockCountScope.Full;
     public Guid[] ScopeMaterialIds { get; private set; } = [];
+
+    // The location counted (جرد موقع); none: the whole branch, its differences put right in its
+    // main store. An open-space shop has one place: none.
+    public Guid? LocationId { get; private set; }
+
+    public void CountAt(Guid? locationId)
+    {
+        if (Status != StockCountStatus.Draft)
+            throw new DomainException("A posted count keeps the location it was counted in.");
+        LocationId = locationId;
+    }
     public string? ScopeLabel { get; private set; }
     public bool IsSpot => Scope == StockCountScope.Spot;
 
@@ -3782,20 +3850,22 @@ public sealed class StockCount : AggregateRoot, IBranchOwned
         {
             var material = materials.GetValueOrDefault(line.RawMaterialId)
                 ?? throw new NotFoundException(nameof(RawMaterial), line.RawMaterialId);
-            var book = material.QuantityOnHand;
+            var book = material.BookQuantity;
             if (IsOpening)
             {
                 var byRecipe = costs?.Of(material.Id) is { ByRecipe: true, PerUnit: { } perUnit } ? perUnit : (decimal?)null;
                 movements.Add(material.OpenStock(line.CountedQuantity, Id, byRecipe));
-                line.Close(book, material.AverageCost);
+                line.Close(book, material.UnitCostHere);
             }
             else
             {
-                line.Close(book, material.AverageCost);
+                line.Close(book, material.UnitCostHere);
                 movements.Add(material.AdjustToCount(line.CountedQuantity, Id));
             }
         }
 
+        if (LocationId is { } location)
+            movements.ForEach(m => m.AssignLocation(location));
         foreach (var line in _lines)
             line.Recount(false);
         Status = StockCountStatus.Posted;
@@ -5714,7 +5784,7 @@ public static class DatabaseConnection
 - `ConfigureConventions`: كل `decimal` بدقة (10,2) افتراضيًا (والكميات تتجاوزه صراحة بـ `IsQuantity()`).
 - `SaveChangesAsync`: `TouchRootsOfChangedChildren` (تعديل ابن يعلّم أباه معدّلًا ليُفحص `xmin` الخاص به)، وترجمة أخطاء EF/Npgsql (تزامن، تكرار فريد، مفتاح أجنبي) إلى `ConflictException`، فلا تعرف الطبقات العليا شيئًا عن EF.
 
-> 📄 **`backend/src/Costing.Infrastructure/Persistence/CostingDbContext.cs`** — 175 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Persistence/CostingDbContext.cs`** — 177 سطر
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
@@ -5792,6 +5862,8 @@ public sealed class CostingDbContext(DbContextOptions<CostingDbContext> options)
     public DbSet<Domain.Security.SecurityAuditLog> SecurityAuditLogs => Set<Domain.Security.SecurityAuditLog>();
     public DbSet<Domain.Company.Branch> Branches => Set<Domain.Company.Branch>();
     public DbSet<Domain.Company.InventoryLocation> InventoryLocations => Set<Domain.Company.InventoryLocation>();
+    public DbSet<Domain.Stock.MaterialBranchStock> MaterialBranchStocks => Set<Domain.Stock.MaterialBranchStock>();
+    public DbSet<Domain.Stock.InternalTransfer> InternalTransfers => Set<Domain.Stock.InternalTransfer>();
     public DbSet<FinancialSettings> FinancialSettings => Set<FinancialSettings>();
     public DbSet<SharedCost> SharedCosts => Set<SharedCost>();
     public DbSet<MonthlyExpenses> MonthlyExpenses => Set<MonthlyExpenses>();
@@ -7100,7 +7172,7 @@ internal sealed class FinancialSettingsConfiguration : IEntityTypeConfiguration<
 
 قراءات العرض `AsNoTracking`، وقراءات التعديل متتبَّعة؛ ودوال بأسماء دقيقة بدل `IQueryable` يتسرب للأعلى.
 
-> 📄 **`backend/src/Costing.Infrastructure/Persistence/InventoryRepositories.cs`** — 474 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Persistence/InventoryRepositories.cs`** — 493 سطر
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
@@ -7122,25 +7194,44 @@ using Costing.Infrastructure.Common;
 
 namespace Costing.Infrastructure.Persistence;
 
-internal sealed class RawMaterialRepository(CostingDbContext db) : IRawMaterialRepository
+// With several branches, each material is seen at the cost of the branch worked in (what it is
+// used and moved at there); with one, the company's, as always.
+internal sealed class RawMaterialRepository(CostingDbContext db, Costing.Application.Common.ICompanyProfile profile, Costing.Application.Company.ICurrentBranch branch)
+    : IRawMaterialRepository
 {
-    public Task<RawMaterial?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default) =>
-        db.RawMaterials.SingleOrDefaultAsync(m => m.Id == id, cancellationToken);
+    public async Task<RawMaterial?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default) =>
+        await db.RawMaterials.SingleOrDefaultAsync(m => m.Id == id, cancellationToken) is { } found
+            ? (await SeenAsync([found], cancellationToken))[0]
+            : null;
 
     public void Add(RawMaterial aggregate) => db.RawMaterials.Add(aggregate);
 
     public async Task<IReadOnlyList<RawMaterial>> GetAllAsync(CancellationToken cancellationToken = default) =>
-        await db.RawMaterials.OrderBy(m => m.Name).ToListAsync(cancellationToken);
+        await SeenAsync(await db.RawMaterials.OrderBy(m => m.Name).ToListAsync(cancellationToken), cancellationToken);
 
     public async Task<IReadOnlyList<RawMaterial>> GetByIdsAsync(IEnumerable<Guid> ids, CancellationToken cancellationToken = default)
     {
         var idList = ids.ToList();
-        return await db.RawMaterials.Where(m => idList.Contains(m.Id)).ToListAsync(cancellationToken);
+        return await SeenAsync(await db.RawMaterials.Where(m => idList.Contains(m.Id)).ToListAsync(cancellationToken), cancellationToken);
     }
 
     // Spelled out rather than RawMaterial.NeedsReorder, which is computed in C#.
     public async Task<IReadOnlyList<RawMaterial>> GetNeedingReorderAsync(CancellationToken cancellationToken = default) =>
-        await db.RawMaterials.Where(m => m.QuantityOnHand <= m.ReorderLevel).OrderBy(m => m.Name).ToListAsync(cancellationToken);
+        await SeenAsync(await db.RawMaterials.Where(m => m.QuantityOnHand <= m.ReorderLevel).OrderBy(m => m.Name).ToListAsync(cancellationToken),
+            cancellationToken);
+
+    private async Task<List<RawMaterial>> SeenAsync(List<RawMaterial> loaded, CancellationToken cancellationToken)
+    {
+        if (!Costing.Domain.Company.OperatingModes.IsMultiBranch(profile.Current.OperatingMode) || loaded.Count == 0)
+            return loaded;
+        var here = await branch.BranchIdAsync(cancellationToken);
+        var ids = loaded.Select(m => m.Id).ToList();
+        var costs = await db.MaterialBranchStocks.AsNoTracking().Where(s => s.BranchId == here && ids.Contains(s.RawMaterialId))
+            .ToDictionaryAsync(s => s.RawMaterialId, s => s.AverageCost, cancellationToken);
+        foreach (var material in loaded)
+            material.View(material.StockHere, costs.GetValueOrDefault(material.Id) ?? material.CostHere);
+        return loaded;
+    }
 }
 
 internal sealed class RecipeRepository(CostingDbContext db) : IRecipeRepository
@@ -7862,6 +7953,7 @@ dotnet ef migrations add <Name> \
 | 18 | `20261118092632_AddKitchenStations` | Add Kitchen Stations |
 | 19 | `20261118122831_AddPeriodLockAndSecurityAudit` | Add Period Lock And Security Audit |
 | 20 | `20261118131754_AddCompanyStructure` | Add Company Structure |
+| 21 | `20261118184431_AddStockLocations` | Add Stock Locations |
 
 
 ### 14.1 `UnifySafeTakings`: migration تحوّل بيانات لا شكلًا فقط

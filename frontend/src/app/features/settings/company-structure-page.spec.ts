@@ -130,6 +130,6 @@ describe('the company structure', () => {
     api.saveLocation.mockReturnValue(of({}));
     el.querySelector<HTMLButtonElement>('[aria-label="Save Kitchen"]')!.click();
     await settle();
-    expect(api.saveLocation.mock.calls[0][1]).toEqual({ branchId: 'b-1', name: 'Kitchen', nameAr: null, kind: 'Kitchen', isActive: true });
+    expect(api.saveLocation.mock.calls[0][1]).toEqual({ branchId: 'b-1', name: 'Kitchen', nameAr: null, kind: 'Kitchen', isActive: true, stationIds: [] });
   });
 });

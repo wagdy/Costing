@@ -43,6 +43,10 @@ public sealed class ProductionOrder : AggregateRoot
 
     public Guid PrepItemId { get; private set; }
 
+    // Where it was made; none: routed as its entries are saved (the prep item's station's location,
+    // or the branch's main store).
+    public Guid? LocationId { get; private set; }
+
     // In the prep item's unit. Planned sets the ingredients; produced is what came out, and what
     // the batch's cost is shared over: 9.6 kg from a 10 kg batch carries the lost 0.4 kg's cost.
     public decimal PlannedQuantity { get; private set; }
@@ -87,7 +91,8 @@ public sealed class ProductionOrder : AggregateRoot
         string producedBy,
         string? notes = null,
         string? approvedBy = null,
-        Guid? revisionOf = null)
+        Guid? revisionOf = null,
+        Guid? locationId = null)
     {
         if (recipe.PrepItemId != prepItem.Id)
             throw new DomainException("That recipe is for another prep item.");
@@ -103,7 +108,7 @@ public sealed class ProductionOrder : AggregateRoot
         var requirements = recipe.RequirementsFor(planned)
             .Select(r => (Material: materials.GetValueOrDefault(r.RawMaterialId) ?? throw new NotFoundException(nameof(RawMaterial), r.RawMaterialId), r.Quantity))
             .ToList();
-        var unpriced = requirements.Where(r => r.Material.AverageCost is null).Select(r => r.Material.Name).ToList();
+        var unpriced = requirements.Where(r => r.Material.UnitCostHere is null).Select(r => r.Material.Name).ToList();
         if (unpriced.Count > 0)
             throw new DomainException($"{string.Join(", ", unpriced)} {(unpriced.Count == 1 ? "has" : "have")} no cost yet, so the batch's cost cannot be worked out. "
                 + "Enter it on Raw materials, or post the invoice it came on.");
@@ -113,7 +118,7 @@ public sealed class ProductionOrder : AggregateRoot
         var movements = new List<StockMovement>();
         foreach (var (material, quantity) in requirements.Where(r => r.Quantity > 0))
         {
-            var unitCost = material.AverageCost!.Value;
+            var unitCost = material.UnitCostHere!.Value;
             order._lines.Add(new ProductionOrderLine(id, material.Id, quantity, unitCost));
             movements.Add(material.UseInProduction(quantity, id));
         }
@@ -121,6 +126,10 @@ public sealed class ProductionOrder : AggregateRoot
         order.TotalCost = order._lines.Sum(l => l.Cost);
         order.UnitCost = order.TotalCost / produced;
         movements.Add(prepItem.ReceiveProduction(produced, id, order.TotalCost));
+        // Made where it was made: its ingredients taken from there, the batch put there.
+        order.LocationId = locationId;
+        if (locationId is { } location)
+            movements.ForEach(m => m.AssignLocation(location));
         return (order, movements);
     }
 

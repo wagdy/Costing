@@ -41,6 +41,7 @@ import { paperIcon, viewInvoicePaper } from './invoice-paper';
 import { SupplierPaymentEntry, SupplierPaymentFields, newSupplierPayment, paymentProblems } from './supplier-payment-fields';
 import { PickRow } from '../shared/pick-row';
 import { ThreeWayMatchPanel, fillFromOrder } from './three-way-match';
+import { LocationSelect, locationParam } from './location-select';
 
 // One invoice of the batch: its id, made here; its supplier, number and lines, entered as on the
 // invoice screen; and the photo or scan of its paper, sent once the invoice is posted. On credit
@@ -117,7 +118,7 @@ const storageKey = 'otantik-till.purchase-batch';
 @Component({
   selector: 'app-purchase-batch-page',
   providers: [PurchaseCatalog],
-  imports: [PickRow,
+  imports: [LocationSelect, PickRow,
     DatePipe,
     FormsModule,
     InvoiceLinesTable,
@@ -262,6 +263,7 @@ const storageKey = 'otantik-till.purchase-batch';
             [errorStateMatcher]="checks.field('Invoice date')" />
           <mat-error>{{ checks.message('Invoice date') }}</mat-error>
         </mat-form-field>
+        <app-location-select [(value)]="location" label="Receiving location · موقع الاستلام" ariaLabel="Receiving location" />
         <mat-form-field subscriptSizing="dynamic" class="payment">
           <mat-label>Paid · طريقة الدفع</mat-label>
           <mat-select [(ngModel)]="paymentMethod" (ngModelChange)="changed()" aria-label="How they are paid" required
@@ -715,6 +717,8 @@ export class PurchaseBatchPage {
   protected readonly owedSuppliers = computed(() => this.balances().filter((b) => b.balance > 0));
 
   protected invoiceDate = PurchaseBatchPage.today();
+  // Where the day's deliveries are put away: the main store unless another is chosen (with locations only).
+  protected readonly location = signal<string | null>(null);
   protected paymentMethod: PurchasePaymentMethod | null = null;
   protected revenueDate = PurchaseBatchPage.today();
   protected today = PurchaseBatchPage.today();
@@ -982,6 +986,7 @@ export class PurchaseBatchPage {
     try {
       const made = await firstValueFrom(
         this.api.postPurchaseBatch({
+          locationId: locationParam(this.location()),
           invoiceDate: this.invoiceDate,
           paymentMethod: this.paymentMethod,
           revenueDate: this.paymentMethod === 'DayRevenue' ? this.revenueDate : null,

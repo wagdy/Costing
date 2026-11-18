@@ -41,6 +41,7 @@ import { InvoiceView } from './invoice-view';
 import { SupplierPaymentEntry, SupplierPaymentFields, newSupplierPayment, paymentProblems } from './supplier-payment-fields';
 import { ThreeWayMatchPanel, fillFromOrder } from './three-way-match';
 import { PickRow } from '../shared/pick-row';
+import { LocationSelect, locationParam } from './location-select';
 
 // A supplier's invoice, in two steps. Entered as it is written (who from, their number and date,
 // each line in the unit billed, and a photo of the paper), then saved as a draft and reviewed;
@@ -63,7 +64,7 @@ import { PickRow } from '../shared/pick-row';
 @Component({
   selector: 'app-purchases-page',
   providers: [PurchaseCatalog],
-  imports: [PickRow, 
+  imports: [LocationSelect, PickRow, 
     DatePipe,
     FormsModule,
     InvoiceLinesTable,
@@ -227,6 +228,7 @@ import { PickRow } from '../shared/pick-row';
           <mat-label>Invoice date · تاريخ الفاتورة</mat-label>
           <input matInput type="date" [(ngModel)]="invoiceDate" />
         </mat-form-field>
+        <app-location-select [(value)]="location" label="Receiving location · موقع الاستلام" ariaLabel="Receiving location" />
         @if (paymentMethod === 'BeforeTreasury') {
           <span class="muted before-treasury">Before the treasury · قبل الخزنة: no cash, no supplier's account</span>
         } @else {
@@ -518,6 +520,8 @@ export class PurchasesPage {
   }
   protected supplierInvoiceNumber = '';
   protected invoiceDate: string = PurchasesPage.today();
+  // Where it is put away: the main store unless another location is chosen (with locations only).
+  protected readonly location = signal<string | null>(null);
   // How it is paid: required to post. From a day's takings names the day: the till's business
   // day to begin with (after midnight, still the night before), and none later.
   protected paymentMethod: PurchasePaymentMethod | null = null;
@@ -1014,6 +1018,7 @@ export class PurchasesPage {
     this.invoiceDate = invoice.invoiceDate ?? PurchasesPage.today();
     this.paymentMethod = invoice.paymentMethod === 'BeforeTreasury' ? null : invoice.paymentMethod;
     this.revenueDate = invoice.revenueDate ?? this.today;
+    this.location.set(invoice.locationId ?? null);
     this.paper.set(invoice.attachment?.fileName ?? null);
     this.review.set(null);
     this.orderId.set(invoice.purchaseOrder?.purchaseOrderId ?? null);
@@ -1051,6 +1056,7 @@ export class PurchasesPage {
       discount: this.editor.discountToSave(partial),
       // Against a purchase order: which, and whether it closes it with what came.
       ...(this.orderId() ? { purchaseOrderId: this.orderId(), closesPurchaseOrder: this.closes() } : {}),
+      locationId: locationParam(this.location()),
     };
   }
 

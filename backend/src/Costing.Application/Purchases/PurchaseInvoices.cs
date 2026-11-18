@@ -78,7 +78,9 @@ public sealed record PurchaseInvoiceDto(
     // The purchase order it delivers: a draft's set against it item by item (the 3-way match), a
     // posted one's named. AwaitingApproval: its posting waits for a manager to sign off what is over the order.
     PurchaseOrderMatchDto? PurchaseOrder = null,
-    bool AwaitingApproval = false);
+    bool AwaitingApproval = false,
+    // Where it is put away; none: the branch's main store.
+    Guid? LocationId = null);
 
 // What an invoice's lines are named and filed under, read together for a DTO; with Receiver, the
 // purchase order it delivers too.
@@ -126,6 +128,7 @@ internal sealed record InvoiceReading(
         {
             PaymentStatus = await InvoicePayments.StatusAsync(invoice, Safe, Requests, cancellationToken),
             PurchaseOrder = order,
+            LocationId = invoice.LocationId,
             AwaitingApproval = awaiting,
         };
     }
@@ -260,7 +263,9 @@ public sealed record SavePurchaseInvoiceCommand(
     decimal Discount = 0,
     // The purchase order it delivers, and whether it closes it with what came (no backorder).
     Guid? PurchaseOrderId = null,
-    bool ClosesPurchaseOrder = false) : IRequest<PurchaseInvoiceDto>, IBooksEntry
+    bool ClosesPurchaseOrder = false,
+    // Where it is put away; none: the branch's main store.
+    Guid? LocationId = null) : IRequest<PurchaseInvoiceDto>, IBooksEntry
 {
     IEnumerable<DateOnly?> IBooksEntry.BooksDays => [InvoiceDate, RevenueDate];
 }
@@ -268,7 +273,8 @@ public sealed record SavePurchaseInvoiceCommand(
 // The checks and the recording of an invoice as entered, for a draft saved on its own and for each
 // invoice of a daily batch alike. Tracked, for the caller to save.
 internal sealed class InvoiceRecorder(
-    IPurchaseInvoiceRepository invoices, IRawMaterialRepository materials, IExpenseItemRepository expenses, ISupplierRepository suppliers)
+    IPurchaseInvoiceRepository invoices, IRawMaterialRepository materials, IExpenseItemRepository expenses, ISupplierRepository suppliers,
+    Stock.StockPlaces places)
 {
     public async Task<PurchaseInvoice> RecordAsync(SavePurchaseInvoiceCommand request, CancellationToken cancellationToken)
     {
@@ -276,6 +282,7 @@ internal sealed class InvoiceRecorder(
         if (invoice is null)
             invoices.Add(invoice = new PurchaseInvoice(request.InvoiceId, request.StaffName));
         await FillAsync(invoice, request, invoice, cancellationToken);
+        invoice.ReceiveAt(await places.CheckAsync(request.LocationId, cancellationToken));
         return invoice;
     }
 
@@ -290,6 +297,8 @@ internal sealed class InvoiceRecorder(
         var invoice = new PurchaseInvoice(request.InvoiceId, request.StaffName);
         invoice.Corrects(original);
         await FillAsync(invoice, request, original, cancellationToken);
+        // Put away where the invoice it replaces was.
+        invoice.ReceiveAt(original.LocationId);
         if (track)
             invoices.Add(invoice);
         return invoice;

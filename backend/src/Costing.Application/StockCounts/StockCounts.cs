@@ -57,7 +57,9 @@ public sealed record StockCountDto(
     DateTime? ReviewedAtUtc = null,
     string? ReviewNote = null,
     // Shown blind: the records' figures and the costs left out.
-    bool Blind = false)
+    bool Blind = false,
+    // The location counted; none: the whole branch (an open-space shop: its one store).
+    Guid? LocationId = null)
 {
     // live: the draft's materials as they stand, for the records' figures now. Blind, none at all.
     public static StockCountDto From(StockCount count, bool blind = false, IReadOnlyDictionary<Guid, RawMaterial>? live = null) => new(
@@ -66,19 +68,23 @@ public sealed record StockCountDto(
         {
             var (book, cost) = blind ? (null, null)
                 : count.Status == StockCountStatus.Draft
-                    ? (live?.GetValueOrDefault(l.RawMaterialId)?.QuantityOnHand, live?.GetValueOrDefault(l.RawMaterialId)?.AverageCost)
+                    ? (live?.GetValueOrDefault(l.RawMaterialId)?.BookQuantity, live?.GetValueOrDefault(l.RawMaterialId)?.UnitCostHere)
                     : (l.BookQuantity, l.UnitCost);
             return new StockCountLineDto(l.RawMaterialId, l.CountedQuantity, book, cost, l.Note, l.RecountRequested);
         }).ToList(),
         count.VoidedAtUtc, count.VoidedBy, count.Kind, count.Scope, count.ScopeMaterialIds, count.ScopeLabel, count.Review, count.SubmittedBy,
-        count.SubmittedAtUtc, count.ReviewedBy, count.ReviewedAtUtc, count.ReviewNote, blind);
+        count.SubmittedAtUtc, count.ReviewedBy, count.ReviewedAtUtc, count.ReviewNote, blind, count.LocationId);
 
     // As the caller may see it: a draft not blind with the records' figures now.
-    public static async Task<StockCountDto> ShowAsync(StockCount count, bool blind, IRawMaterialRepository materials, CancellationToken cancellationToken)
+    public static async Task<StockCountDto> ShowAsync(
+        StockCount count, bool blind, IRawMaterialRepository materials, CancellationToken cancellationToken, Stock.StockPlaces? places = null)
     {
         if (blind || count.Status != StockCountStatus.Draft || count.Lines.Count == 0)
             return From(count, blind);
         var live = (await materials.GetByIdsAsync(count.Lines.Select(l => l.RawMaterialId).ToList(), cancellationToken)).ToDictionary(m => m.Id);
+        // The records' figures where it is counted: a location's, or the branch's.
+        if (places is not null)
+            await places.ViewAsync(live.Values, count.LocationId, cancellationToken);
         return From(count, blind, live);
     }
 }
@@ -111,11 +117,12 @@ internal sealed class GetStockCountsQueryHandler(IStockCountRepository counts, I
 // Blind: as its counter sees it, without the records' figures or the costs.
 public sealed record GetStockCountQuery(Guid StockCountId, bool Blind = false) : IRequest<StockCountDto?>;
 
-internal sealed class GetStockCountQueryHandler(IStockCountRepository counts, IRawMaterialRepository materials) : IRequestHandler<GetStockCountQuery, StockCountDto?>
+internal sealed class GetStockCountQueryHandler(IStockCountRepository counts, IRawMaterialRepository materials,
+    Stock.StockPlaces places) : IRequestHandler<GetStockCountQuery, StockCountDto?>
 {
     public async Task<StockCountDto?> Handle(GetStockCountQuery request, CancellationToken cancellationToken) =>
         await counts.GetByIdAsync(request.StockCountId, cancellationToken) is { } count
-            ? await StockCountDto.ShowAsync(count, request.Blind, materials, cancellationToken)
+            ? await StockCountDto.ShowAsync(count, request.Blind, materials, cancellationToken, places)
             : null;
 }
 
@@ -130,12 +137,15 @@ public sealed record SaveStockCountCommand(
     StockCountScope? Scope = null,
     IReadOnlyList<Guid>? ScopeMaterialIds = null,
     string? ScopeLabel = null,
-    bool Blind = false)
+    bool Blind = false,
+    // The location counted, as it starts; none: the whole branch.
+    Guid? LocationId = null)
     : IRequest<StockCountDto>;
 
 internal sealed class SaveStockCountCommandHandler(
     IStockCountRepository counts,
     IRawMaterialRepository materials,
+    Stock.StockPlaces places,
     IUnitOfWork unitOfWork) : IRequestHandler<SaveStockCountCommand, StockCountDto>
 {
     public async Task<StockCountDto> Handle(SaveStockCountCommand request, CancellationToken cancellationToken)
@@ -154,6 +164,7 @@ internal sealed class SaveStockCountCommandHandler(
             count = new StockCount(
                 request.StockCountId, request.StaffName, request.Kind ?? StockCountKind.Periodic, request.Scope ?? StockCountScope.Full,
                 request.ScopeMaterialIds, request.ScopeLabel);
+            count.CountAt(await places.CheckAsync(request.LocationId, cancellationToken));
             counts.Add(count);
         }
         else
@@ -166,7 +177,7 @@ internal sealed class SaveStockCountCommandHandler(
 
         count.Record(request.Lines.Select(l => (l.RawMaterialId, l.CountedQuantity, l.Note)).ToList());
         await unitOfWork.SaveChangesAsync(cancellationToken);
-        return await StockCountDto.ShowAsync(count, request.Blind, materials, cancellationToken);
+        return await StockCountDto.ShowAsync(count, request.Blind, materials, cancellationToken, places);
     }
 }
 
@@ -174,7 +185,8 @@ internal sealed class SaveStockCountCommandHandler(
 // against the records and post: a counter who counts blind never posts.
 public sealed record SubmitStockCountCommand(Guid StockCountId, string StaffName = "", bool Blind = false) : IRequest<StockCountDto>;
 
-internal sealed class SubmitStockCountCommandHandler(IStockCountRepository counts, IRawMaterialRepository materials, IUnitOfWork unitOfWork)
+internal sealed class SubmitStockCountCommandHandler(IStockCountRepository counts, IRawMaterialRepository materials, IUnitOfWork unitOfWork,
+    Stock.StockPlaces places)
     : IRequestHandler<SubmitStockCountCommand, StockCountDto>
 {
     public async Task<StockCountDto> Handle(SubmitStockCountCommand request, CancellationToken cancellationToken)
@@ -182,7 +194,7 @@ internal sealed class SubmitStockCountCommandHandler(IStockCountRepository count
         var count = await counts.GetRequiredAsync(request.StockCountId, cancellationToken);
         count.Submit(request.StaffName);
         await unitOfWork.SaveChangesAsync(cancellationToken);
-        return await StockCountDto.ShowAsync(count, request.Blind, materials, cancellationToken);
+        return await StockCountDto.ShowAsync(count, request.Blind, materials, cancellationToken, places);
     }
 }
 
@@ -191,7 +203,8 @@ internal sealed class SubmitStockCountCommandHandler(IStockCountRepository count
 public sealed record RequestStockCountRecountCommand(Guid StockCountId, IReadOnlyList<Guid> RawMaterialIds, string? Note, string StaffName = "")
     : IRequest<StockCountDto>;
 
-internal sealed class RequestStockCountRecountCommandHandler(IStockCountRepository counts, IRawMaterialRepository materials, IUnitOfWork unitOfWork)
+internal sealed class RequestStockCountRecountCommandHandler(IStockCountRepository counts, IRawMaterialRepository materials, IUnitOfWork unitOfWork,
+    Stock.StockPlaces places)
     : IRequestHandler<RequestStockCountRecountCommand, StockCountDto>
 {
     public async Task<StockCountDto> Handle(RequestStockCountRecountCommand request, CancellationToken cancellationToken)
@@ -199,7 +212,7 @@ internal sealed class RequestStockCountRecountCommandHandler(IStockCountReposito
         var count = await counts.GetRequiredAsync(request.StockCountId, cancellationToken);
         count.RequestRecount(request.RawMaterialIds ?? [], request.Note, request.StaffName);
         await unitOfWork.SaveChangesAsync(cancellationToken);
-        return await StockCountDto.ShowAsync(count, blind: false, materials, cancellationToken);
+        return await StockCountDto.ShowAsync(count, blind: false, materials, cancellationToken, places);
     }
 }
 
@@ -271,6 +284,7 @@ internal sealed class PostStockCountCommandHandler(
     IPrepRecipeRepository prepRecipes,
     IStockMovementRepository movements,
     IBusinessCalendar clock,
+    Stock.StockPlaces places,
     IUnitOfWork unitOfWork) : IRequestHandler<PostStockCountCommand, StockCountDto>
 {
     public async Task<StockCountDto> Handle(PostStockCountCommand request, CancellationToken cancellationToken)
@@ -283,6 +297,8 @@ internal sealed class PostStockCountCommandHandler(
             ? new Dictionary<Guid, RawMaterial>()
             : await materials.GetRequiredByIdsAsync(count.Lines.Select(l => l.RawMaterialId).ToList(), cancellationToken);
         var costs = await CountPosting.CheckAsync(count, byId, counts, materials, prepRecipes, clock, cancellationToken);
+        // Set against what is on the shelves where it was counted.
+        await places.ViewAsync(byId.Values, count.LocationId, cancellationToken);
         foreach (var movement in count.Post(byId, request.StaffName, costs))
             movements.Add(movement);
 
@@ -345,7 +361,7 @@ internal sealed class DiscardStockCountCommandHandler(IStockCountRepository coun
 // A whole count in one request: recorded and posted at once. For a quick count of a few
 // materials, and for scripts; the screens use a draft.
 public sealed record RecordStockCountCommand(
-    Guid StockCountId, IReadOnlyList<StockCountLine> Lines, string StaffName = "", StockCountKind Kind = StockCountKind.Periodic)
+    Guid StockCountId, IReadOnlyList<StockCountLine> Lines, string StaffName = "", StockCountKind Kind = StockCountKind.Periodic, Guid? LocationId = null)
     : IRequest<IReadOnlyList<RawMaterialDto>>, IRetryOnConflict, IBooksEntry
 {
     bool IBooksEntry.WritesToday => true;
@@ -358,6 +374,7 @@ internal sealed class RecordStockCountCommandHandler(
     IStockMovementRepository movements,
     IPurchaseCategoryRepository categories,
     IBusinessCalendar clock,
+    Stock.StockPlaces places,
     IUnitOfWork unitOfWork) : IRequestHandler<RecordStockCountCommand, IReadOnlyList<RawMaterialDto>>
 {
     public async Task<IReadOnlyList<RawMaterialDto>> Handle(RecordStockCountCommand request, CancellationToken cancellationToken)
@@ -368,8 +385,10 @@ internal sealed class RecordStockCountCommandHandler(
         if (await counts.GetByIdAsync(request.StockCountId, cancellationToken) is null)
         {
             var count = new StockCount(request.StockCountId, request.StaffName, request.Kind);
+            count.CountAt(await places.CheckAsync(request.LocationId, cancellationToken));
             count.Record(request.Lines.Select(l => (l.RawMaterialId, l.CountedQuantity)).ToList());
             var costs = await CountPosting.CheckAsync(count, byId, counts, materials, prepRecipes, clock, cancellationToken);
+            await places.ViewAsync(byId.Values, count.LocationId, cancellationToken);
             counts.Add(count);
             foreach (var movement in count.Post(byId, request.StaffName, costs))
                 movements.Add(movement);

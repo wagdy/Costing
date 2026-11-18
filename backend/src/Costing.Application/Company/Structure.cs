@@ -44,9 +44,11 @@ public sealed record BranchDto(Guid Id, string Name, string? NameAr, BranchType 
     public static BranchDto From(Branch b, int locations) => new(b.Id, b.Name, b.NameAr, b.Type, b.IsActive, b.IsDefault, locations);
 }
 
-public sealed record InventoryLocationDto(Guid Id, Guid BranchId, string Name, string? NameAr, LocationKind Kind, bool IsActive, bool IsDefault)
+// StationIds: the kitchen stations it serves, whose materials the kitchen takes from here.
+public sealed record InventoryLocationDto(
+    Guid Id, Guid BranchId, string Name, string? NameAr, LocationKind Kind, bool IsActive, bool IsDefault, IReadOnlyList<Guid>? StationIds = null)
 {
-    public static InventoryLocationDto From(InventoryLocation l) => new(l.Id, l.BranchId, l.Name, l.NameAr, l.Kind, l.IsActive, l.IsDefault);
+    public static InventoryLocationDto From(InventoryLocation l) => new(l.Id, l.BranchId, l.Name, l.NameAr, l.Kind, l.IsActive, l.IsDefault, l.StationIds);
 }
 
 public sealed record CompanyStructureDto(SystemOperatingMode Mode, IReadOnlyList<BranchDto> Branches, IReadOnlyList<InventoryLocationDto> Locations);
@@ -60,7 +62,9 @@ public sealed record ChangeOperatingModeCommand(SystemOperatingMode Mode, string
 public sealed record SaveBranchCommand(Guid Id, string Name, string? NameAr, BranchType Type, bool IsActive = true) : IRequest<BranchDto>;
 
 // A location added or changed: added only once the structure has locations.
-public sealed record SaveInventoryLocationCommand(Guid Id, Guid BranchId, string Name, string? NameAr, LocationKind Kind, bool IsActive = true)
+// StationIds: the stations it serves (none changes nothing; empty: none).
+public sealed record SaveInventoryLocationCommand(
+    Guid Id, Guid BranchId, string Name, string? NameAr, LocationKind Kind, bool IsActive = true, IReadOnlyList<Guid>? StationIds = null)
     : IRequest<InventoryLocationDto>;
 
 // The branches in use, for the branch selector; the structure with them.
@@ -162,6 +166,14 @@ internal sealed class SaveInventoryLocationHandler(
         else
         {
             location.Change(request.Name!, request.NameAr, request.Kind, request.IsActive);
+        }
+        if (request.StationIds is { } stations)
+        {
+            // A station is served from one location of a branch.
+            if (all.FirstOrDefault(l => l.Id != location.Id && l.BranchId == branchId && l.StationIds.Intersect(stations).Any()) is { } other)
+                throw new DomainException(
+                    $"{other.Name} serves one of those stations already: a station takes its stock from one location. · القسم مرتبط بموقع آخر.");
+            location.Serve(stations);
         }
         await unitOfWork.SaveChangesAsync(cancellationToken);
         return InventoryLocationDto.From(location);

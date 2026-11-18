@@ -29,7 +29,8 @@ public sealed class CompanyStructureController(ISender sender) : ControllerBase
 
     [HttpPut("api/settings/locations/{id:guid}")]
     public Task<InventoryLocationDto> SaveLocation(Guid id, LocationRequest request, CancellationToken cancellationToken) =>
-        sender.Send(new SaveInventoryLocationCommand(id, request.BranchId, request.Name, request.NameAr, request.Kind, request.IsActive), cancellationToken);
+        sender.Send(new SaveInventoryLocationCommand(id, request.BranchId, request.Name, request.NameAr, request.Kind, request.IsActive, request.StationIds),
+            cancellationToken);
 }
 
 // The branches in use and the company's structure, for the branch selector: anyone signed in.
@@ -46,4 +47,6 @@ public sealed record OperatingModeRequest(SystemOperatingMode Mode);
 
 public sealed record BranchRequest(string Name, string? NameAr, BranchType Type = BranchType.Restaurant, bool IsActive = true);
 
-public sealed record LocationRequest(Guid BranchId, string Name, string? NameAr, LocationKind Kind = LocationKind.Other, bool IsActive = true);
+// StationIds: the kitchen stations it serves; none leaves them as they are.
+public sealed record LocationRequest(
+    Guid BranchId, string Name, string? NameAr, LocationKind Kind = LocationKind.Other, bool IsActive = true, IReadOnlyList<Guid>? StationIds = null);

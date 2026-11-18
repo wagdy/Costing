@@ -24,6 +24,7 @@ import {
 } from '../../core/settings/company-structure';
 import { NotifyService } from '../../core/ui/notify.service';
 import { InfoTip } from '../costing/info-tip';
+import { Stations, stationName } from '../costing/stations';
 import { InfoTipKey } from '../costing/info-tips';
 import { SubNav } from '../shared/sub-nav';
 import { settingsTabs } from './settings-tabs';
@@ -46,12 +47,12 @@ const modes: readonly ModeCard[] = [
   },
   {
     mode: 'SingleBranch_WithSubStores', icon: 'warehouse', en: 'Single branch with sub-stores', ar: 'فرع واحد يحتوي على مخزن ومناطق تشغيل',
-    tip: 'structureSubStores', does: ['One branch', 'Inventory locations: Main Store, Kitchen, Bar…'], soon: 'Stock per location and internal transfers',
+    tip: 'structureSubStores', does: ['One branch', 'Inventory locations: Main Store, Kitchen, Bar…', 'Stock per location and internal transfers'],
   },
   {
     mode: 'MultiBranch_Independent', icon: 'store', en: 'Several independent branches', ar: 'فروع متعددة تشتري وتعمل بشكل مستقل',
-    tip: 'structureIndependent', does: ['Branches, each with its own locations', 'Branch selector at the top of the screen', 'Records kept and listed by branch'],
-    soon: 'Stock and cost per branch',
+    tip: 'structureIndependent',
+    does: ['Branches, each with its own locations', 'Branch selector at the top of the screen', 'Records kept and listed by branch', 'Stock and average cost per branch'],
   },
   {
     mode: 'MultiBranch_CentralKitchen', icon: 'soup_kitchen', en: 'Branches with a central kitchen', ar: 'فروع متعددة يدعمها مطبخ مركزي',
@@ -80,6 +81,8 @@ interface LocationRow {
   isActive: boolean;
   isDefault: boolean;
   isNew: boolean;
+  // The kitchen or bar stations whose sales take their ingredients from it.
+  stationIds: string[];
 }
 
 // Settings → Company structure (هيكل الشركة), a manager's. How the business is built, as four
@@ -209,7 +212,11 @@ interface LocationRow {
         @if (!locationsShown()) {
           <p class="muted">An open-space shop keeps everything in one place, its Main Store: there is nothing to choose. · المخزن الرئيسي فقط.</p>
         } @else {
-          <p class="muted">Where each branch keeps its stock: its main store, the kitchen, the bar. Stock per location follows in the next release.</p>
+          <p class="muted">
+            Where each branch keeps its stock: its main store, the kitchen, the bar, each with its own quantity, moved between them by internal
+            transfer. A station's sales take their ingredients from the location that serves it, else from the main store.
+            <span class="inline-ar">لكل موقع رصيده؛ ويُسحب استهلاك القسم من الموقع الذي يخدمه، وإلا من المخزن الرئيسي.</span>
+          </p>
           <div class="table-wrap">
             <table>
               <thead>
@@ -220,6 +227,7 @@ interface LocationRow {
                   <th>Name · الاسم</th>
                   <th>Arabic name · الاسم بالعربي</th>
                   <th>Kind · النوع</th>
+                  <th>Stations served · الأقسام <app-info-tip tip="locationStations" /></th>
                   <th>In use · مفعّل</th>
                   <th><span class="visually-hidden">Save</span></th>
                 </tr>
@@ -246,6 +254,15 @@ interface LocationRow {
                       <mat-select class="cell-select" [(ngModel)]="l.kind" [disabled]="l.isDefault" [aria-label]="'Kind of ' + (l.name || 'the new location')">
                         @for (k of locationKinds; track k) {
                           <mat-option [value]="k">{{ locationKindLabels[k].en }} · {{ locationKindLabels[k].ar }}</mat-option>
+                        }
+                      </mat-select>
+                    </td>
+                    <td>
+                      <mat-select class="cell-select stations" multiple [(ngModel)]="l.stationIds" placeholder="None · لا شيء" [panelWidth]="null"
+                        [aria-label]="'Stations served by ' + (l.name || 'the new location')">
+                        <mat-select-trigger>{{ stationNames(l.stationIds) }}</mat-select-trigger>
+                        @for (s of servingStations(); track s.id) {
+                          <mat-option [value]="s.id">{{ stationLabel(s) }}</mat-option>
                         }
                       </mat-select>
                     </td>
@@ -429,6 +446,9 @@ interface LocationRow {
     .cell-select {
       min-width: 160px;
     }
+    .cell-select.stations {
+      width: 200px;
+    }
     .actions {
       width: 48px;
     }
@@ -439,6 +459,15 @@ export class CompanyStructurePage implements OnInit {
   private readonly notify = inject(NotifyService);
   private readonly company = inject(Company);
   private readonly branchContext = inject(BranchContext);
+  private readonly stations = inject(Stations);
+  // The stations a location may serve: the kitchen and bar ones in use, not the shared one.
+  protected readonly servingStations = computed(() => this.stations.active().filter((s) => !s.isShared));
+  protected readonly stationLabel = stationName;
+
+  // A location's stations as its closed list says them: their names, short.
+  protected stationNames(ids: string[]): string {
+    return ids.map((id) => this.stations.list().find((s) => s.id === id)?.name ?? '').filter(Boolean).join(', ');
+  }
 
   protected readonly tabs = settingsTabs;
   protected readonly modes = modes;
@@ -466,6 +495,7 @@ export class CompanyStructurePage implements OnInit {
 
   ngOnInit(): void {
     void this.load();
+    void this.stations.load();
   }
 
   protected label(mode: OperatingMode): string {
@@ -478,7 +508,7 @@ export class CompanyStructurePage implements OnInit {
       return 'Locations and the branch selector are hidden; everything works as one store.';
     }
     if (mode === 'SingleBranch_WithSubStores') {
-      return 'Inventory locations can be added for your one branch.';
+      return 'Inventory locations can be added for your one branch, each with its own stock, and stock moved between them by internal transfer.';
     }
     return 'Branches can be added, and a branch selector appears at the top of the screen for whoever works every branch.';
   }
@@ -513,7 +543,7 @@ export class CompanyStructurePage implements OnInit {
     const first = this.branches().find((b) => b.isDefault)?.id ?? '';
     this.locations.update((rows) => [
       ...rows,
-      { id: crypto.randomUUID(), branchId: first, name: '', nameAr: '', kind: 'Kitchen', isActive: true, isDefault: false, isNew: true },
+      { id: crypto.randomUUID(), branchId: first, name: '', nameAr: '', kind: 'Kitchen', isActive: true, isDefault: false, isNew: true, stationIds: [] },
     ]);
   }
 
@@ -536,6 +566,7 @@ export class CompanyStructurePage implements OnInit {
     try {
       await firstValueFrom(this.api.saveLocation(row.id, {
         branchId: row.branchId, name: row.name.trim(), nameAr: row.nameAr.trim() || null, kind: row.kind, isActive: row.isActive,
+        stationIds: row.stationIds,
       }));
       this.notify.info(`${row.name.trim()} saved. · تم حفظ الموقع.`);
       await this.load();
@@ -550,7 +581,7 @@ export class CompanyStructurePage implements OnInit {
     this.structure.set(s);
     this.selected.set(s.mode);
     this.branches.set(s.branches.map((b) => ({ ...b, nameAr: b.nameAr ?? '', isNew: false })));
-    this.locations.set(s.locations.map((l) => ({ ...l, nameAr: l.nameAr ?? '', isNew: false })));
+    this.locations.set(s.locations.map((l) => ({ ...l, nameAr: l.nameAr ?? '', isNew: false, stationIds: [...(l.stationIds ?? [])] })));
   }
 
   private async load(): Promise<void> {

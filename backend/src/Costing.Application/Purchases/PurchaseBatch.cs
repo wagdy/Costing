@@ -71,7 +71,9 @@ public sealed record PostPurchaseBatchCommand(
     string StaffId = "",
     bool CanApprove = true,
     IReadOnlyList<BatchPayment>? Payments = null,
-    IReadOnlyList<BatchAdvance>? Advances = null) : IRequest<PurchaseBatchResult>, IRetryOnConflict, IBooksEntry
+    IReadOnlyList<BatchAdvance>? Advances = null,
+    // Where the day's deliveries are put away; none: the branch's main store.
+    Guid? LocationId = null) : IRequest<PurchaseBatchResult>, IRetryOnConflict, IBooksEntry
 {
     IEnumerable<DateOnly?> IBooksEntry.BooksDays => [InvoiceDate, RevenueDate];
 }
@@ -152,7 +154,7 @@ internal sealed class PostPurchaseBatchHandler(
                     new SavePurchaseInvoiceCommand(
                         entry.InvoiceId, entry.SupplierId, entry.SupplierInvoiceNumber, request.InvoiceDate, entry.Lines, request.StaffName,
                         method, method == PurchasePaymentMethod.DayRevenue ? request.RevenueDate : null, entry.Discount,
-                        entry.PurchaseOrderId ?? day?.Invoice(entry.EndOfDayInvoiceId!.Value).PurchaseOrderId, entry.ClosesPurchaseOrder),
+                        entry.PurchaseOrderId ?? day?.Invoice(entry.EndOfDayInvoiceId!.Value).PurchaseOrderId, entry.ClosesPurchaseOrder, request.LocationId),
                     cancellationToken);
                 // Over its purchase order, anyone else's waits for a manager, a draft until then.
                 await poster.PostOrAskAsync(invoice, request.StaffName, request.StaffId, request.CanApprove, cancellationToken);

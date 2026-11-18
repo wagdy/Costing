@@ -170,19 +170,43 @@ public sealed class RawMaterial : AggregateRoot
     public static decimal ValidYield(decimal percent) =>
         percent is > 0 and <= 100 ? percent : throw new DomainException("Yield is more than 0% and at most 100%.");
 
+    // The stock and cost where the request works, once the company keeps more than one place: the
+    // quantity at a location (or across a branch) and the branch's own average cost. Set by whoever
+    // loads it (IStockBalances); never kept. Unset, the company's figures, as always.
+    public decimal? StockHere { get; private set; }
+    public decimal? CostHere { get; private set; }
+
+    public void View(decimal? stockHere, decimal? costHere)
+    {
+        StockHere = stockHere;
+        CostHere = costHere;
+    }
+
+    // What is on the shelf where it is counted, and what a unit of it is worth there.
+    public decimal BookQuantity => StockHere ?? QuantityOnHand;
+    public decimal? UnitCostHere => CostHere ?? AverageCost;
+
+    // The company's average, as its branches' make it up (several branches: their stock at each
+    // one's own average). Null leaves it as it is.
+    public void AdoptAverage(decimal? average)
+    {
+        if (average is { } value && value >= 0)
+            AverageCost = value;
+    }
+
     // Each method below changes QuantityOnHand and returns the ledger entry that explains the
     // change. The caller adds it to IStockMovementRepository in the same unit of work.
     // StockMovement has no public constructor, so every entry in the ledger was produced here.
 
     public StockMovement RecordSale(decimal quantity, Guid orderItemId) =>
-        Move(-Positive(quantity), StockMovementReason.Sale, orderItemId, AverageCost);
+        Move(-Positive(quantity), StockMovementReason.Sale, orderItemId, UnitCostHere);
 
     // station: where the dish was made (its recipe's station), whose waste it is; its own otherwise.
     public StockMovement RecordWaste(decimal quantity, Guid orderItemId, Guid? station = null) =>
-        Move(-Positive(quantity), StockMovementReason.Waste, orderItemId, AverageCost, responsibleStationId: station ?? KitchenStationId);
+        Move(-Positive(quantity), StockMovementReason.Waste, orderItemId, UnitCostHere, responsibleStationId: station ?? KitchenStationId);
 
     public StockMovement RecordVoidReturn(decimal quantity, Guid orderItemId) =>
-        Move(Positive(quantity), StockMovementReason.VoidReturn, orderItemId, AverageCost);
+        Move(Positive(quantity), StockMovementReason.VoidReturn, orderItemId, UnitCostHere);
 
     // lineCost: what this line of the delivery cost in all, when the invoice is entered. It moves
     // the average cost, weighted by quantity against what is on the shelf; stock below zero
@@ -193,7 +217,7 @@ public sealed class RawMaterial : AggregateRoot
             throw new DomainException($"{Name} is made in the kitchen, not bought: make it with a production order.");
         Positive(quantity);
         if (lineCost is not { } cost)
-            return Move(quantity, StockMovementReason.Purchase, purchaseId, AverageCost);
+            return Move(quantity, StockMovementReason.Purchase, purchaseId, UnitCostHere);
         if (cost < 0)
             throw new DomainException("A purchase cannot cost less than nothing.");
 
@@ -204,7 +228,7 @@ public sealed class RawMaterial : AggregateRoot
 
     // Taken to make a prep item, at the average cost now: what it adds to the batch's cost.
     public StockMovement UseInProduction(decimal quantity, Guid productionOrderId) =>
-        Move(-Positive(quantity), StockMovementReason.ProductionInput, productionOrderId, AverageCost);
+        Move(-Positive(quantity), StockMovementReason.ProductionInput, productionOrderId, UnitCostHere);
 
     // A batch of this prep item made. batchCost is what its ingredients cost; it moves the
     // average exactly as a delivery's price moves a bought material's.
@@ -231,7 +255,7 @@ public sealed class RawMaterial : AggregateRoot
             throw new DomainException("Say why it was thrown away.");
         if (reason.Trim().Length > 200)
             throw new DomainException("Keep the reason under 200 characters.");
-        return Move(-Positive(quantity), StockMovementReason.Spoilage, spoilageId, AverageCost, reason.Trim(), recordedBy,
+        return Move(-Positive(quantity), StockMovementReason.Spoilage, spoilageId, UnitCostHere, reason.Trim(), recordedBy,
             responsibleStationId: responsibleStation ?? KitchenStationId);
     }
 
@@ -244,14 +268,15 @@ public sealed class RawMaterial : AggregateRoot
         var said = string.IsNullOrWhiteSpace(note) ? null : note.Trim();
         if (said?.Length > 200)
             throw new DomainException("Keep the note under 200 characters.");
-        return Move(-Positive(quantity), reason, entryId, AverageCost, said, recordedBy);
+        return Move(-Positive(quantity), reason, entryId, UnitCostHere, said, recordedBy);
     }
 
     public StockMovement AdjustToCount(decimal countedQuantity, Guid stockCountId)
     {
         if (countedQuantity < 0)
             throw new DomainException("A counted quantity cannot be negative.");
-        return Move(countedQuantity - QuantityOnHand, StockMovementReason.CountAdjustment, stockCountId, AverageCost);
+        // Against what is on the shelf where it was counted: a location's, a branch's, or the company's.
+        return Move(countedQuantity - BookQuantity, StockMovementReason.CountAdjustment, stockCountId, UnitCostHere);
     }
 
     // Its stock as found when costing starts (جرد افتتاحي): set to what was counted, at the cost it
@@ -261,24 +286,36 @@ public sealed class RawMaterial : AggregateRoot
     {
         if (countedQuantity < 0)
             throw new DomainException("A counted quantity cannot be negative.");
-        if (unitCost is { } cost && (AverageCost ?? 0) == 0)
+        if (unitCost is { } cost && (UnitCostHere ?? 0) == 0)
         {
             if (cost < 0)
                 throw new DomainException("A cost cannot be negative.");
-            AverageCost = cost;
+            if ((AverageCost ?? 0) == 0)
+                AverageCost = cost;
+            if (CostHere is not null)
+                CostHere = cost;
         }
-        return Move(countedQuantity - QuantityOnHand, StockMovementReason.OpeningStock, stockCountId, AverageCost);
+        return Move(countedQuantity - BookQuantity, StockMovementReason.OpeningStock, stockCountId, UnitCostHere);
+    }
+
+    // Moved from one location of its branch to another (تحويل داخلي): out of one, into the other,
+    // at its average cost there; nothing gained or lost, the branch's stock and cost as they were.
+    public (StockMovement Out, StockMovement In) Transfer(decimal quantity, Guid transferId, Guid fromLocationId, Guid toLocationId, string recordedBy)
+    {
+        Positive(quantity);
+        if (fromLocationId == toLocationId)
+            throw new DomainException("Move it from one location to another: the two are the same. · اختر موقعين مختلفين.");
+        var cost = UnitCostHere;
+        var taken = Move(-quantity, StockMovementReason.TransferOut, transferId, cost, recordedBy: recordedBy);
+        taken.AssignLocation(fromLocationId);
+        var put = Move(quantity, StockMovementReason.TransferIn, transferId, cost, recordedBy: recordedBy);
+        put.AssignLocation(toLocationId);
+        return (taken, put);
     }
 
     // Weighted by quantity against what is on the shelf; stock below zero counts as none, since
     // nothing is left to average with.
-    private void AverageWith(decimal quantity, decimal unitCost)
-    {
-        var onShelf = Math.Max(QuantityOnHand, 0);
-        AverageCost = AverageCost is { } average && onShelf > 0
-            ? (onShelf * average + quantity * unitCost) / (onShelf + quantity)
-            : unitCost;
-    }
+    private void AverageWith(decimal quantity, decimal unitCost) => AverageCost = Stock.MovingAverage.With(AverageCost, QuantityOnHand, quantity, unitCost);
 
     // Stock is allowed to go negative. Deduction runs after the sale has already happened, so
     // refusing it would not un-sell the dish; it would only lose the record. A negative
@@ -298,25 +335,16 @@ public sealed class RawMaterial : AggregateRoot
         if (original.Reason is StockMovementReason.Purchase or StockMovementReason.ProductionOutput && original.Quantity > 0)
             UnaverageWith(original.Quantity, original.UnitCost);
         var reversal = Move(-original.Quantity, original.Reason, original.SourceId, original.UnitCost, "Voided", reversedBy, original.Id, original.ResponsibleStationId);
-        // Undone in the branch it was entered in, whichever the reversal is made from.
+        // Undone in the branch and the location it was entered in, whichever the reversal is made from.
         reversal.AssignBranch(original.BranchId);
+        reversal.AssignLocation(original.LocationId);
         return reversal;
     }
 
     // The average as if `quantity` bought at `unitCost` had never come in: the value of the
     // stock on the shelf less theirs, over what is left. With nothing left, or the delivery
     // already used up past knowing what it cost, the average stays where it is.
-    private void UnaverageWith(decimal quantity, decimal? unitCost)
-    {
-        if (AverageCost is not { } average || unitCost is not { } cost)
-            return;
-        var left = QuantityOnHand - quantity;
-        if (left <= 0)
-            return;
-        var value = Math.Max(QuantityOnHand, 0) * average - quantity * cost;
-        if (value >= 0)
-            AverageCost = value / left;
-    }
+    private void UnaverageWith(decimal quantity, decimal? unitCost) => AverageCost = Stock.MovingAverage.Without(AverageCost, QuantityOnHand, quantity, unitCost);
 
     // Taken off the lists: no new purchases, recipes or counts name it. Kept, with its ledger,
     // for the invoices, counts and reports that already do. Only with no stock on hand, so its

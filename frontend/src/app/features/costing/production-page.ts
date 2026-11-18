@@ -19,6 +19,7 @@ import { NotifyService } from '../../core/ui/notify.service';
 import { Approvals, pendingLabel } from './approvals';
 import { showProductionOrder } from './production-order-dialog';
 import { ItemPicker, PickItem } from '../shared/item-picker';
+import { LocationSelect, locationParam } from './location-select';
 
 const baseLabels: Record<UnitOfMeasure, string> = { Gram: 'g', Millilitre: 'ml', Piece: 'pc' };
 
@@ -33,6 +34,7 @@ const baseLabels: Record<UnitOfMeasure, string> = { Gram: 'g', Millilitre: 'ml',
 @Component({
   selector: 'app-production-page',
   imports: [
+    LocationSelect,
     ItemPicker,
     DatePipe,
     DecimalPipe,
@@ -83,6 +85,7 @@ const baseLabels: Record<UnitOfMeasure, string> = { Gram: 'g', Millilitre: 'ml',
               <app-item-picker [items]="prepChoices()" [value]="prepItemId" (valueChange)="prepItemId = $event; changed()" label="Prep item"
                 [disabled]="!!editing()" />
             </div>
+            <app-location-select [(value)]="location" label="Made in · موقع التشغيل" ariaLabel="Made in" />
             <mat-form-field>
               <mat-label>Planned · الكمية المخططة</mat-label>
               <input matInput type="number" min="0" step="any" [(ngModel)]="planned" (ngModelChange)="plannedChanged()" aria-label="Planned" />
@@ -373,6 +376,8 @@ export class ProductionPage {
   protected prepItemId: string | null = null;
   // In the prep item's display unit: 10 (kg).
   protected planned: number | null = null;
+  // Where it is made: its ingredients taken from there, the batch put there (with locations only).
+  protected readonly location = signal<string | null>(null);
   protected produced: number | null = null;
   protected notes = '';
   // Why a correction, for the manager.
@@ -480,7 +485,9 @@ export class ProductionPage {
         }
       } else {
         const made = await firstValueFrom(
-          this.api.makeProductionOrder(this.orderId, { ...quantities, prepItemId: item.id, requestId: this.requestId }),
+          this.api.makeProductionOrder(this.orderId, {
+            ...quantities, prepItemId: item.id, requestId: this.requestId, locationId: locationParam(this.location()),
+          }),
         );
         if (isRequested(made)) {
           await this.approvals.requested(made);

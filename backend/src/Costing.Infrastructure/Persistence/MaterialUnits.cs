@@ -57,6 +57,12 @@ internal sealed class MaterialUnits(CostingDbContext db) : IMaterialUnits
         await db.Set<ProductionOrderLine>().Where(l => l.RawMaterialId == id).ExecuteUpdateAsync(s => s
             .SetProperty(l => l.Quantity, l => Math.Round(l.Quantity / r, 3))
             .SetProperty(l => l.UnitCost, l => l.UnitCost * r), cancellationToken);
+        // Each branch's cost, and what was moved between locations, in the new unit too.
+        await db.MaterialBranchStocks.Where(b => b.RawMaterialId == id).ExecuteUpdateAsync(s => s
+            .SetProperty(b => b.AverageCost, b => b.AverageCost * r), cancellationToken);
+        await db.Set<Domain.Stock.InternalTransferLine>().Where(l => l.RawMaterialId == id).ExecuteUpdateAsync(s => s
+            .SetProperty(l => l.Quantity, l => Math.Round(l.Quantity / r, 3))
+            .SetProperty(l => l.UnitCostSnapshot, l => l.UnitCostSnapshot * r), cancellationToken);
 
         await db.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);

@@ -1,6 +1,8 @@
 import { Component, computed, inject } from '@angular/core';
 import { RouterOutlet } from '@angular/router';
 import { AuthService } from '../../core/auth/auth.service';
+import { Company } from '../../core/settings/company';
+import { hasLocations } from '../../core/settings/company-structure';
 import { Permissions } from '../../core/auth/permissions';
 import { CostingAccess, costingGroups, costingTabs } from '../../core/costing/costing-tabs';
 import { SideLayout, SideSection } from '../shared/side-layout';
@@ -27,11 +29,21 @@ export class CostingShell {
   private readonly access = inject(CostingAccess);
   private readonly auth = inject(AuthService);
   private readonly approvals = inject(Approvals);
+  private readonly company = inject(Company);
 
   protected readonly sections = computed<SideSection[]>(() => {
     const waiting = this.approvals.pending().length;
+    const tabs: SideSection[] = costingTabs.filter((t) => this.access.has(t.tab));
+    // Internal transfers, once the company keeps stock in more than one place: after the counts, for
+    // whoever counts or keeps the raw materials.
+    if (hasLocations(this.company.mode()) && (this.access.has('Counts') || this.access.has('Materials'))) {
+      const after = tabs.findIndex((t) => t.path === (this.access.has('Counts') ? 'counts' : 'waste'));
+      tabs.splice(after < 0 ? tabs.length : after + 1, 0, {
+        path: 'internal-transfers', en: 'Internal transfers', ar: 'التحويلات الداخلية', icon: 'move_down', group: costingGroups.operations,
+      });
+    }
     return [
-      ...costingTabs.filter((t) => this.access.has(t.tab)),
+      ...tabs,
       ...(this.auth.can(Permissions.InventoryManage)
         ? [{
             path: 'approvals', en: 'Approvals', ar: 'طلبات معلقة', icon: 'pending_actions', group: costingGroups.finance,

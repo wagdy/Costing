@@ -46,8 +46,10 @@ public static class DependencyInjection
         services.TryAddSingleton(TimeProvider.System);
 
         // Each new record given its branch as it is saved (BranchStampInterceptor).
+        // Each new record given its branch, then each stock entry its location and each branch its
+        // cost, as it is saved (BranchStampInterceptor, then StockLedgerInterceptor).
         services.AddDbContext<CostingDbContext>((sp, o) =>
-            o.UseNpgsql(connectionString, CostingDbContext.ConfigureNpgsql).AddInterceptors(new BranchStampInterceptor(sp)));
+            o.UseNpgsql(connectionString, CostingDbContext.ConfigureNpgsql).AddInterceptors(new BranchStampInterceptor(sp), new StockLedgerInterceptor(sp)));
         services.AddScoped<IUnitOfWork>(sp => sp.GetRequiredService<CostingDbContext>());
         services.AddTransient(typeof(IPipelineBehavior<,>), typeof(RetryOnConflictBehavior<,>));
 
@@ -108,6 +110,10 @@ public static class DependencyInjection
         services.AddScoped<Domain.Company.IInventoryLocationRepository, InventoryLocationRepository>();
         services.AddScoped<Costing.Application.Company.ICurrentBranch, CurrentBranch>();
         services.TryAddScoped<Costing.Application.Company.IBranchRequest, NoBranchRequest>();
+        // Stock by location, cost by branch, and the transfers between a branch's locations.
+        services.AddScoped<Costing.Application.Stock.IStockBalances, StockBalances>();
+        services.AddScoped<Domain.Stock.IMaterialBranchStockRepository, MaterialBranchStockRepository>();
+        services.AddScoped<Domain.Stock.IInternalTransferRepository, InternalTransferRepository>();
         services.AddScoped<IExpenseItemRepository, ExpenseItemRepository>();
         services.AddScoped<IPrepRecipeRepository, PrepRecipeRepository>();
         services.AddScoped<IProductionOrderRepository, ProductionOrderRepository>();

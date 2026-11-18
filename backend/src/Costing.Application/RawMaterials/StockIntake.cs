@@ -69,7 +69,8 @@ internal sealed class ReceivePurchaseCommandHandler(
 
 // Thrown-away raw stock, as a manager records it. SpoilageId works as PurchaseId does, and
 // RecordedBy is set by the API from who is signed in.
-public sealed record RecordSpoilageCommand(Guid SpoilageId, IReadOnlyList<SpoilageLine> Lines, string RecordedBy = "")
+// LocationId: where it was thrown away; none: the location serving its station, or the main store.
+public sealed record RecordSpoilageCommand(Guid SpoilageId, IReadOnlyList<SpoilageLine> Lines, string RecordedBy = "", Guid? LocationId = null)
     : IRequest<IReadOnlyList<RawMaterialDto>>, IRetryOnConflict, IBooksEntry
 {
     bool IBooksEntry.WritesToday => true;
@@ -85,7 +86,8 @@ internal sealed class RecordSpoilageCommandHandler(
     IStockMovementRepository movements,
     IPurchaseCategoryRepository categories,
     Costing.Domain.Stations.IKitchenStationRepository stations,
-    IUnitOfWork unitOfWork) : IRequestHandler<RecordSpoilageCommand, IReadOnlyList<RawMaterialDto>>
+    IUnitOfWork unitOfWork,
+    Stock.StockPlaces places) : IRequestHandler<RecordSpoilageCommand, IReadOnlyList<RawMaterialDto>>
 {
     public async Task<IReadOnlyList<RawMaterialDto>> Handle(RecordSpoilageCommand request, CancellationToken cancellationToken)
     {
@@ -97,9 +99,14 @@ internal sealed class RecordSpoilageCommandHandler(
             foreach (var station in request.Lines.Select(l => l.ResponsibleStationId).OfType<Guid>().Distinct())
                 if (await stations.GetByIdAsync(station, cancellationToken) is null)
                     throw new DomainException("That station is no longer on the list: choose another. · هذا القسم غير موجود.");
+            var location = await places.CheckAsync(request.LocationId, cancellationToken);
             foreach (var line in request.Lines)
-                movements.Add(byId[line.RawMaterialId].RecordSpoilage(
-                    line.Quantity, request.SpoilageId, line.Reason, request.RecordedBy, line.ResponsibleStationId));
+            {
+                var entry = byId[line.RawMaterialId].RecordSpoilage(line.Quantity, request.SpoilageId, line.Reason, request.RecordedBy, line.ResponsibleStationId);
+                if (location is { } at)
+                    entry.AssignLocation(at);
+                movements.Add(entry);
+            }
 
             await unitOfWork.SaveChangesAsync(cancellationToken);
         }

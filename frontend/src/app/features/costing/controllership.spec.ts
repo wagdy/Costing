@@ -171,7 +171,7 @@ describe('staff meals & hospitality (وجبات العاملين والضياف�
     page['change'](0, { quantity: 2 });
     await page['record']();
     expect(recordStaffMeal).toHaveBeenCalledWith({
-      entryId: expect.any(String), kind: 'Hospitality', note: null,
+      entryId: expect.any(String), kind: 'Hospitality', note: null, locationId: null,
       lines: [{ rawMaterialId: null, recipeId: 'r1', quantity: 2 }, { rawMaterialId: 'patty', recipeId: null, quantity: 1 }],
     });
   });

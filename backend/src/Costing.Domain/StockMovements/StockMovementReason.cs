@@ -38,6 +38,11 @@ public enum StockMovementReason
 
     // Used trying or testing a recipe (تجارب واختبار وصفات): development, not loss.
     RecipeTasting = 12,
+
+    // Moved out of one location of a branch into another (التحويلات الداخلية): the pair nets to
+    // nothing for the branch, at its average cost; no cost of the period.
+    TransferOut = 13,
+    TransferIn = 14,
 }
 
 public static class StaffConsumption

@@ -101,7 +101,9 @@ public sealed record ProductionPreviewDto(
 
 // A batch as entered, held by a request until a manager approves it: which prep item, how much,
 // and the id it is made under (for a correction, the new batch's).
-public sealed record ProductionChange(Guid OrderId, Guid PrepItemId, decimal PlannedQuantity, decimal ProducedQuantity, string? Notes);
+// LocationId: where it is made (its ingredients taken from there, the batch put there); none: the
+// prep item's station's location, or the branch's main store.
+public sealed record ProductionChange(Guid OrderId, Guid PrepItemId, decimal PlannedQuantity, decimal ProducedQuantity, string? Notes, Guid? LocationId = null);
 
 // Makes, voids and corrects batches, for a manager's own action and for an approval alike. What
 // it makes and reverses is added to the orders and the ledger, for the caller to save.
@@ -110,7 +112,8 @@ internal sealed class ProductionWriter(
     IPrepRecipeRepository recipes,
     IRawMaterialRepository materials,
     IStockMovementRepository movements,
-    IRecordDescriptions descriptions)
+    IRecordDescriptions descriptions,
+    Stock.StockPlaces places)
 {
     private static readonly CultureInfo Invariant = CultureInfo.InvariantCulture;
 
@@ -183,7 +186,8 @@ internal sealed class ProductionWriter(
             : (await materials.GetByIdsAsync(recipe.Ingredients.Select(i => i.RawMaterialId).ToList(), cancellationToken)).ToDictionary(m => m.Id);
 
         var (order, ledger) = ProductionOrder.Make(
-            change.OrderId, item, recipe, ingredients, change.PlannedQuantity, change.ProducedQuantity, producedBy, change.Notes, approvedBy, revisionOf);
+            change.OrderId, item, recipe, ingredients, change.PlannedQuantity, change.ProducedQuantity, producedBy, change.Notes, approvedBy, revisionOf,
+            await places.CheckAsync(change.LocationId, cancellationToken));
         orders.Add(order);
         foreach (var movement in ledger)
             movements.Add(movement);
@@ -218,7 +222,8 @@ internal sealed class ProductionWriter(
         if (change.PrepItemId != original.PrepItemId)
             throw new DomainException("A correction makes the same prep item; void the batch and make the other instead.");
         await VoidAsync(original, by, change.OrderId, cancellationToken);
-        return await MakeAsync(change, original.ProducedBy, approvedBy, cancellationToken, original.Id);
+        // Made again where the batch it corrects was made.
+        return await MakeAsync(change with { LocationId = change.LocationId ?? original.LocationId }, original.ProducedBy, approvedBy, cancellationToken, original.Id);
     }
 
     // "Batch of Pizza dough made 8 Oct 2026 by Omar · 9.6 kg · L.E 123.40"
@@ -279,7 +284,7 @@ internal sealed class PreviewProductionQueryHandler(ProductionWriter production)
 // Makes the batch, for a manager. Posting again, after an answer was lost, returns the order and
 // changes nothing.
 public sealed record MakeProductionOrderCommand(
-    Guid OrderId, Guid PrepItemId, decimal PlannedQuantity, decimal ProducedQuantity, string? Notes = null, string StaffName = "")
+    Guid OrderId, Guid PrepItemId, decimal PlannedQuantity, decimal ProducedQuantity, string? Notes = null, string StaffName = "", Guid? LocationId = null)
     : IRequest<ProductionOrderDto>, IRetryOnConflict, IBooksEntry
 {
     bool IBooksEntry.WritesToday => true;
@@ -297,7 +302,7 @@ internal sealed class MakeProductionOrderCommandHandler(
         if (order is null)
         {
             order = await production.MakeAsync(
-                new ProductionChange(request.OrderId, request.PrepItemId, request.PlannedQuantity, request.ProducedQuantity, request.Notes),
+                new ProductionChange(request.OrderId, request.PrepItemId, request.PlannedQuantity, request.ProducedQuantity, request.Notes, request.LocationId),
                 request.StaffName, null, cancellationToken);
             await unitOfWork.SaveChangesAsync(cancellationToken);
         }
@@ -317,7 +322,8 @@ public sealed record RequestProductionOrderCommand(
     string? Notes,
     string? Reason,
     string StaffId,
-    string StaffName) : IRequest<ApprovalResultDto>, IRetryOnConflict;
+    string StaffName,
+    Guid? LocationId = null) : IRequest<ApprovalResultDto>, IRetryOnConflict;
 
 internal sealed class RequestProductionOrderHandler(
     IApprovalRequestRepository requests,
@@ -336,7 +342,7 @@ internal sealed class RequestProductionOrderHandler(
 
         var change = new ProductionChange(
             request.OrderId, request.PrepItemId, request.PlannedQuantity, request.ProducedQuantity,
-            string.IsNullOrWhiteSpace(request.Notes) ? null : request.Notes.Trim());
+            string.IsNullOrWhiteSpace(request.Notes) ? null : request.Notes.Trim(), request.LocationId);
         await production.CheckAsync(change, cancellationToken);
         var (summary, changes) = await production.DescribeAsync(change, null, cancellationToken);
         var asked = ApprovalRequest.AskToChange(

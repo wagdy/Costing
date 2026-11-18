@@ -160,7 +160,7 @@ public sealed class InventoryController(ISender sender) : ControllerBase
     public Task<PurchaseInvoiceDto> SavePurchaseInvoice(Guid invoiceId, SavePurchaseInvoiceRequest request, CancellationToken cancellationToken) =>
         sender.Send(new SavePurchaseInvoiceCommand(
             invoiceId, request.SupplierId, request.SupplierInvoiceNumber, request.InvoiceDate, request.Lines, StaffName,
-            request.PaymentMethod, request.RevenueDate, request.Discount, request.PurchaseOrderId, request.ClosesPurchaseOrder), cancellationToken);
+            request.PaymentMethod, request.RevenueDate, request.Discount, request.PurchaseOrderId, request.ClosesPurchaseOrder, request.LocationId), cancellationToken);
 
     // Step two, after the review: the stock goes in, and it is paid as chosen: on credit, owed to
     // the supplier; in cash, paid for a manager and waiting for one's approval for anyone else
@@ -181,7 +181,7 @@ public sealed class InventoryController(ISender sender) : ControllerBase
     public Task<PurchaseBatchResult> PostPurchaseBatch(PurchaseBatchRequest request, CancellationToken cancellationToken) =>
         sender.Send(new PostPurchaseBatchCommand(
             request.InvoiceDate, request.PaymentMethod, request.RevenueDate, request.Invoices, StaffName, StaffId, CanApprove, request.Payments ?? [],
-            request.Advances ?? []),
+            request.Advances ?? [], request.LocationId),
             cancellationToken);
 
     // A posted invoice corrected (تعديل فاتورة): voided and posted again as it should have been, as a
@@ -527,10 +527,10 @@ public sealed class InventoryController(ISender sender) : ControllerBase
     {
         if (CanApprove)
             return Ok(await sender.Send(new MakeProductionOrderCommand(
-                orderId, request.PrepItemId, request.PlannedQuantity, request.ProducedQuantity, request.Notes, StaffName), cancellationToken));
+                orderId, request.PrepItemId, request.PlannedQuantity, request.ProducedQuantity, request.Notes, StaffName, request.LocationId), cancellationToken));
         return Accepted(await sender.Send(new RequestProductionOrderCommand(
             request.RequestId ?? Guid.NewGuid(), orderId, request.PrepItemId, request.PlannedQuantity, request.ProducedQuantity, request.Notes,
-            request.Reason, StaffId, StaffName), cancellationToken));
+            request.Reason, StaffId, StaffName, request.LocationId), cancellationToken));
     }
 
     // Corrects a batch: reversed and made again with these quantities, at the averages now, as
@@ -605,7 +605,8 @@ public sealed class InventoryController(ISender sender) : ControllerBase
     [Authorize(Policy = Permissions.InventoryManage)]
     public Task<StockCountDto> SaveStockCount(Guid stockCountId, SaveStockCountRequest request, [FromQuery] bool blind, CancellationToken cancellationToken) =>
         sender.Send(new SaveStockCountCommand(
-            stockCountId, request.Lines ?? [], StaffName, request.Kind, request.Scope, request.ScopeMaterialIds, request.ScopeLabel, Blind(blind)), cancellationToken);
+            stockCountId, request.Lines ?? [], StaffName, request.Kind, request.Scope, request.ScopeMaterialIds, request.ScopeLabel, Blind(blind),
+            request.LocationId), cancellationToken);
 
     // Handed in for review by its counter: anyone who counts may.
     [HttpPost("stock-counts/{stockCountId:guid}/submit")]
@@ -799,7 +800,8 @@ public sealed record SaveStockCountRequest(
     Costing.Domain.StockCounts.StockCountKind? Kind = null,
     Costing.Domain.StockCounts.StockCountScope? Scope = null,
     IReadOnlyList<Guid>? ScopeMaterialIds = null,
-    string? ScopeLabel = null);
+    string? ScopeLabel = null,
+    Guid? LocationId = null);
 
 public sealed record StockCountRecountRequest(IReadOnlyList<Guid> RawMaterialIds, string? Note = null);
 
@@ -827,13 +829,15 @@ public sealed record SavePurchaseInvoiceRequest(
     decimal Discount = 0,
     // The purchase order it delivers, and whether it closes it with what came.
     Guid? PurchaseOrderId = null,
-    bool ClosesPurchaseOrder = false);
+    bool ClosesPurchaseOrder = false,
+    Guid? LocationId = null);
 
 public sealed record PayPurchaseInvoiceRequest(Guid RequestId, PurchasePaymentMethod Method, DateOnly? RevenueDate = null);
 
 public sealed record PurchaseBatchRequest(
     DateOnly InvoiceDate, PurchasePaymentMethod PaymentMethod, IReadOnlyList<BatchInvoice> Invoices, DateOnly? RevenueDate = null,
-    IReadOnlyList<BatchPayment>? Payments = null, IReadOnlyList<BatchAdvance>? Advances = null);
+    IReadOnlyList<BatchPayment>? Payments = null, IReadOnlyList<BatchAdvance>? Advances = null,
+    Guid? LocationId = null);
 
 public sealed record SavePrepItemRequest(
     string Name,
@@ -883,7 +887,8 @@ public sealed record SaveRecipeCategoryRequest(string Name, string? NameAr = nul
 public sealed record RestoreRecipeRequest(string? Name);
 
 public sealed record MakeProductionOrderRequest(
-    Guid PrepItemId, decimal PlannedQuantity, decimal ProducedQuantity, string? Notes = null, Guid? RequestId = null, string? Reason = null);
+    Guid PrepItemId, decimal PlannedQuantity, decimal ProducedQuantity, string? Notes = null, Guid? RequestId = null, string? Reason = null,
+    Guid? LocationId = null);
 
 public sealed record ReviseProductionOrderRequest(
     Guid RequestId, Guid NewOrderId, decimal PlannedQuantity, decimal ProducedQuantity, string? Notes = null, string? Reason = null);

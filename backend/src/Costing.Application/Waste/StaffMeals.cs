@@ -29,7 +29,7 @@ public sealed record StaffConsumptionLine(Guid? RawMaterialId, Guid? RecipeId, d
 // EntryId works as a spoilage's: made by the screen, so a retry records it once. RecordedBy is
 // set by the API from who is signed in.
 public sealed record RecordStaffConsumptionCommand(
-    Guid EntryId, StaffConsumptionKind Kind, IReadOnlyList<StaffConsumptionLine> Lines, string? Note = null, string RecordedBy = "")
+    Guid EntryId, StaffConsumptionKind Kind, IReadOnlyList<StaffConsumptionLine> Lines, string? Note = null, string RecordedBy = "", Guid? LocationId = null)
     : IRequest<Guid>, IRetryOnConflict, IBooksEntry
 {
     bool IBooksEntry.WritesToday => true;
@@ -47,7 +47,8 @@ public static class StaffConsumptionKinds
 }
 
 internal sealed class RecordStaffConsumptionHandler(
-    IRawMaterialRepository materials, IRecipeRepository recipes, IMenuRepository menu, IStockMovementRepository movements, IUnitOfWork unitOfWork)
+    IRawMaterialRepository materials, IRecipeRepository recipes, IMenuRepository menu, IStockMovementRepository movements, IUnitOfWork unitOfWork,
+    Stock.StockPlaces places)
     : IRequestHandler<RecordStaffConsumptionCommand, Guid>
 {
     public async Task<Guid> Handle(RecordStaffConsumptionCommand request, CancellationToken cancellationToken)
@@ -93,8 +94,14 @@ internal sealed class RecordStaffConsumptionHandler(
         var byId = await materials.GetRequiredByIdsAsync(taken.Select(t => t.Material).Distinct().ToList(), cancellationToken);
         if (byId.Values.FirstOrDefault(m => m.IsArchived) is { } archived)
             throw new DomainException($"{archived.Name} has been deleted from the raw materials.");
+        var location = await places.CheckAsync(request.LocationId, cancellationToken);
         foreach (var (material, quantity, said) in taken)
-            movements.Add(byId[material].RecordConsumption(quantity, request.EntryId, reason, said, request.RecordedBy));
+        {
+            var entry = byId[material].RecordConsumption(quantity, request.EntryId, reason, said, request.RecordedBy);
+            if (location is { } at)
+                entry.AssignLocation(at);
+            movements.Add(entry);
+        }
         await unitOfWork.SaveChangesAsync(cancellationToken);
         return request.EntryId;
     }

@@ -112,6 +112,17 @@ public sealed class StockCount : AggregateRoot, IBranchOwned
     // ("Daily critical items", "Class A", "Dairy").
     public StockCountScope Scope { get; private set; } = StockCountScope.Full;
     public Guid[] ScopeMaterialIds { get; private set; } = [];
+
+    // The location counted (جرد موقع); none: the whole branch, its differences put right in its
+    // main store. An open-space shop has one place: none.
+    public Guid? LocationId { get; private set; }
+
+    public void CountAt(Guid? locationId)
+    {
+        if (Status != StockCountStatus.Draft)
+            throw new DomainException("A posted count keeps the location it was counted in.");
+        LocationId = locationId;
+    }
     public string? ScopeLabel { get; private set; }
     public bool IsSpot => Scope == StockCountScope.Spot;
 
@@ -250,20 +261,22 @@ public sealed class StockCount : AggregateRoot, IBranchOwned
         {
             var material = materials.GetValueOrDefault(line.RawMaterialId)
                 ?? throw new NotFoundException(nameof(RawMaterial), line.RawMaterialId);
-            var book = material.QuantityOnHand;
+            var book = material.BookQuantity;
             if (IsOpening)
             {
                 var byRecipe = costs?.Of(material.Id) is { ByRecipe: true, PerUnit: { } perUnit } ? perUnit : (decimal?)null;
                 movements.Add(material.OpenStock(line.CountedQuantity, Id, byRecipe));
-                line.Close(book, material.AverageCost);
+                line.Close(book, material.UnitCostHere);
             }
             else
             {
-                line.Close(book, material.AverageCost);
+                line.Close(book, material.UnitCostHere);
                 movements.Add(material.AdjustToCount(line.CountedQuantity, Id));
             }
         }
 
+        if (LocationId is { } location)
+            movements.ForEach(m => m.AssignLocation(location));
         foreach (var line in _lines)
             line.Recount(false);
         Status = StockCountStatus.Posted;

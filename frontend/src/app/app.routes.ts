@@ -178,6 +178,12 @@ const costingChildren: Routes = [
     loadComponent: () => import('./features/costing/count-sheet-page').then((m) => m.CountSheetPage),
   },
   {
+    // Stock moved between a branch's locations, and what each holds: for whoever counts or keeps the stock.
+    path: 'internal-transfers',
+    canActivate: [costingTabGuard('Counts', 'Materials')],
+    loadComponent: () => import('./features/costing/internal-transfers-page').then((m) => m.InternalTransfersPage),
+  },
+  {
     // Waste: spoilage and breakage (?spoilage= opens an entry), and staff meals & hospitality apart.
     path: 'waste',
     canActivate: [costingTabGuard('Waste')],

@@ -1114,6 +1114,50 @@ export const infoTips = {
       ar: 'تُجمع الصفوف حسب التاريخ وتُستورد من الأقدم. يبدأ الملف من أول يوم بعد آخر يوم مُقفل لم تُسجل مبيعاته، والأيام متتالية (يوم الإغلاق يُسجل أولاً من تقفيل اليوم)، ولا يوم في المستقبل. تُعرض معاينة أولاً، ثم تُسجل كل الأيام مع مسودة تقفيل لكل يوم، أو لا يُسجل شيء.',
     },
   ),
+  stockLocation: tip(
+    { en: 'Stock location', ar: 'موقع المخزون' },
+    {
+      en: 'Where in the branch the stock is put or taken: the main store, the kitchen, the bar. Each location keeps its own quantity; the branch keeps one average cost for all of them.',
+      ar: 'مكان المخزون داخل الفرع: المخزن الرئيسي أو المطبخ أو البار. لكل موقع رصيده، وللفرع متوسط تكلفة واحد لكل مواقعه.',
+    },
+    {
+      en: 'A location’s stock is the sum of its entries. Left as the main store, a delivery is put away there; what the kitchen uses comes from the location serving the material’s station.',
+      ar: 'رصيد الموقع هو مجموع حركاته. الاستلام في المخزن الرئيسي ما لم يُختر غيره، وما يستهلكه المطبخ يُصرف من الموقع المرتبط بقسم الخامة.',
+    },
+  ),
+  internalTransfer: tip(
+    { en: 'Internal transfer', ar: 'التحويل الداخلي' },
+    {
+      en: 'Stock moved from one location of the branch to another, the main store to the kitchen or the bar. Nothing is bought, used or lost: only where it is changes.',
+      ar: 'نقل المخزون من موقع لآخر داخل الفرع، من المخزن الرئيسي للمطبخ أو البار. لا شراء ولا استهلاك ولا هالك: يتغير المكان فقط.',
+    },
+    {
+      en: 'Out of one location and into the other at the branch’s average cost: no cost of the period. Only what the location it leaves has can be moved. Voided, both sides go back.',
+      ar: 'يُصرف من موقع ويُضاف لآخر بمتوسط تكلفة الفرع، بلا أثر على التكلفة. لا يُحوَّل أكثر من رصيد موقع الصرف، والإلغاء يعيد الطرفين.',
+    },
+  ),
+  locationStock: tip(
+    { en: 'Stock by location', ar: 'الرصيد حسب الموقع' },
+    {
+      en: 'What each location of the branch holds of each material, with the branch’s total and its value.',
+      ar: 'رصيد كل خامة في كل موقع من مواقع الفرع، مع إجمالي الفرع وقيمته.',
+    },
+    {
+      en: 'Each figure is the sum of the location’s entries: deliveries, transfers in and out, use, waste and counts. Value: the total at the branch’s average cost.',
+      ar: 'كل رقم هو مجموع حركات الموقع: الاستلام والتحويل والاستهلاك والهالك والجرد. القيمة: الإجمالي بمتوسط تكلفة الفرع.',
+    },
+  ),
+  locationStations: tip(
+    { en: 'Stations served', ar: 'الأقسام المخدومة' },
+    {
+      en: 'The kitchen or bar stations that take their stock from this location: what their dishes use when sold comes off its shelves.',
+      ar: 'أقسام المطبخ أو البار التي تسحب من هذا الموقع: ما تستهلكه أصنافها عند البيع يُخصم من رصيده.',
+    },
+    {
+      en: 'A station is served by one location of a branch. A material whose station no location serves is taken from the main store.',
+      ar: 'يخدم القسمَ موقعٌ واحد في الفرع. والخامة التي لا يخدم قسمَها أي موقع تُصرف من المخزن الرئيسي.',
+    },
+  ),
   structureOpenSpace: tip(
     { en: 'Single branch, open space', ar: 'فرع واحد بمساحة مفتوحة' },
     {

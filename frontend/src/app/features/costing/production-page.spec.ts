@@ -210,7 +210,7 @@ describe('making a batch', () => {
     await page['confirm']();
     const [first, retry] = makeProductionOrder.mock.calls;
     expect(retry[0]).toBe(first[0]);
-    expect(first[1]).toEqual({ prepItemId: 'dough', plannedQuantity: 10_000, producedQuantity: 9_600, notes: 'Morning', requestId: expect.any(String) });
+    expect(first[1]).toEqual({ prepItemId: 'dough', plannedQuantity: 10_000, producedQuantity: 9_600, notes: 'Morning', requestId: expect.any(String), locationId: null });
     expect(retry[1].requestId).toBe(first[1].requestId);
     expect(notify.info).toHaveBeenCalledWith('Made 9.6 kg of Pizza dough, at L.E 12.50 a kg.');
     expect([page['planned'], page['produced'], page['preview']()]).toEqual([null, null, null]);

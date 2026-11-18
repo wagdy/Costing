@@ -3117,7 +3117,7 @@ internal sealed class BooksLockBehavior<TRequest, TResponse>(BooksGuard guard, I
 ```
 
 
-> 📄 **`backend/src/Costing.Application/Books/BooksDays.cs`** — 159 سطر
+> 📄 **`backend/src/Costing.Application/Books/BooksDays.cs`** — 166 سطر
 
 ```csharp
 using Costing.Application.Approvals;
@@ -3225,6 +3225,13 @@ internal sealed class ReinstateFixedAssetDays(IFixedAssetRepository assets) : IB
 {
     public async Task<IEnumerable<DateOnly?>> DaysAsync(ReinstateFixedAssetCommand request, CancellationToken cancellationToken) =>
         await assets.GetByIdAsync(request.AssetId, cancellationToken) is { } asset ? [asset.DisposalDate] : [];
+}
+
+// A transfer voided: the day it was made.
+internal sealed class VoidInternalTransferDays(Costing.Domain.Stock.IInternalTransferRepository transfers) : IBooksDays<Stock.VoidInternalTransferCommand>
+{
+    public async Task<IEnumerable<DateOnly?>> DaysAsync(Stock.VoidInternalTransferCommand request, CancellationToken cancellationToken) =>
+        await transfers.GetByIdAsync(request.Id, cancellationToken) is { } transfer ? [transfer.TransferDate] : [];
 }
 
 // A deletion, asked for or done at once: the record's own day.
@@ -3442,7 +3449,7 @@ public sealed record UnlockBooksRequest(DateOnly? Until, string? Reason);
 
 ### 7.1 الفكرة
 
-النظام يتكيف مع حجم المكان الفعلي: محل بمساحة مفتوحة لا يرى شيئًا من الفروع أو المواقع، وسلسلة فروع بمطبخ مركزي ترى اختيار الفرع وتسجيل كل حركة باسم فرعها. أربعة أنماط (`SystemOperatingMode`) على إعدادات الشركة، والافتراضي `SingleBranch_OpenSpace`: النظام كما كان تمامًا (رصيد واحد ومتوسط تكلفة واحد لكل خامة). هذه **المرحلة الأولى** فقط: الأرصدة والتكلفة لكل فرع، ثم المطبخ المركزي، ثم الأرباح والخسائر لكل فرع مع الحذف، في إصدارات تالية.
+النظام يتكيف مع حجم المكان الفعلي: محل بمساحة مفتوحة لا يرى شيئًا من الفروع أو المواقع، وسلسلة فروع بمطبخ مركزي ترى اختيار الفرع وتسجيل كل حركة باسم فرعها. أربعة أنماط (`SystemOperatingMode`) على إعدادات الشركة، والافتراضي `SingleBranch_OpenSpace`: النظام كما كان تمامًا (رصيد واحد ومتوسط تكلفة واحد لكل خامة). المرحلة الأولى هنا (7.1–7.5)، والثانية (الأرصدة حسب الموقع والتكلفة حسب الفرع والتحويلات الداخلية) في القسم 8؛ ثم المطبخ المركزي، ثم الأرباح والخسائر لكل فرع مع الحذف، في إصدارات تالية.
 
 ### 7.2 الدومين: الأنماط والفروع والمواقع
 
@@ -3450,7 +3457,7 @@ public sealed record UnlockBooksRequest(DateOnly? Until, string? Reason);
 - `CompanySettings.ChangeOperatingMode`: الرجوع لفرع واحد فقط بعد إيقاف الفروع الأخرى.
 - `IBranchOwned`: كل سجل (فاتورة، قيد خزنة، تقرير Z، بيع، حركة مخزون، كسر، جرد) له `BranchId`؛ والعكس (`Reverse`، `Void`) يأخذ فرع الأصل.
 
-> 📄 **`backend/src/Costing.Domain/Company/CompanyStructure.cs`** — 153 سطر
+> 📄 **`backend/src/Costing.Domain/Company/CompanyStructure.cs`** — 159 سطر
 
 ```csharp
 using Costing.Domain.Common;
@@ -3568,6 +3575,12 @@ public sealed class InventoryLocation : AggregateRoot
 
     public bool IsDefault => Id == DefaultId;
 
+    // The kitchen stations it serves (الأقسام التي يخدمها): what the kitchen uses of their
+    // materials (sales, waste, staff meals) is taken from here. One location a station, in a branch.
+    public Guid[] StationIds { get; private set; } = [];
+
+    public void Serve(IEnumerable<Guid> stationIds) => StationIds = stationIds.Distinct().ToArray();
+
     public void Change(string name, string? nameAr, LocationKind kind, bool isActive)
     {
         var trimmed = name?.Trim() ?? string.Empty;
@@ -3620,7 +3633,7 @@ POS و HR (بالمفتاح)       ⇐ الفرع الأول
 
 `BranchScope.NarrowAsync`: يضيّق قائمة السجلات لفرع الطلب (فقط مع عدة فروع).
 
-> 📄 **`backend/src/Costing.Application/Company/Structure.cs`** — 169 سطر
+> 📄 **`backend/src/Costing.Application/Company/Structure.cs`** — 181 سطر
 
 ```csharp
 using MediatR;
@@ -3669,9 +3682,11 @@ public sealed record BranchDto(Guid Id, string Name, string? NameAr, BranchType 
     public static BranchDto From(Branch b, int locations) => new(b.Id, b.Name, b.NameAr, b.Type, b.IsActive, b.IsDefault, locations);
 }
 
-public sealed record InventoryLocationDto(Guid Id, Guid BranchId, string Name, string? NameAr, LocationKind Kind, bool IsActive, bool IsDefault)
+// StationIds: the kitchen stations it serves, whose materials the kitchen takes from here.
+public sealed record InventoryLocationDto(
+    Guid Id, Guid BranchId, string Name, string? NameAr, LocationKind Kind, bool IsActive, bool IsDefault, IReadOnlyList<Guid>? StationIds = null)
 {
-    public static InventoryLocationDto From(InventoryLocation l) => new(l.Id, l.BranchId, l.Name, l.NameAr, l.Kind, l.IsActive, l.IsDefault);
+    public static InventoryLocationDto From(InventoryLocation l) => new(l.Id, l.BranchId, l.Name, l.NameAr, l.Kind, l.IsActive, l.IsDefault, l.StationIds);
 }
 
 public sealed record CompanyStructureDto(SystemOperatingMode Mode, IReadOnlyList<BranchDto> Branches, IReadOnlyList<InventoryLocationDto> Locations);
@@ -3685,7 +3700,9 @@ public sealed record ChangeOperatingModeCommand(SystemOperatingMode Mode, string
 public sealed record SaveBranchCommand(Guid Id, string Name, string? NameAr, BranchType Type, bool IsActive = true) : IRequest<BranchDto>;
 
 // A location added or changed: added only once the structure has locations.
-public sealed record SaveInventoryLocationCommand(Guid Id, Guid BranchId, string Name, string? NameAr, LocationKind Kind, bool IsActive = true)
+// StationIds: the stations it serves (none changes nothing; empty: none).
+public sealed record SaveInventoryLocationCommand(
+    Guid Id, Guid BranchId, string Name, string? NameAr, LocationKind Kind, bool IsActive = true, IReadOnlyList<Guid>? StationIds = null)
     : IRequest<InventoryLocationDto>;
 
 // The branches in use, for the branch selector; the structure with them.
@@ -3787,6 +3804,14 @@ internal sealed class SaveInventoryLocationHandler(
         else
         {
             location.Change(request.Name!, request.NameAr, request.Kind, request.IsActive);
+        }
+        if (request.StationIds is { } stations)
+        {
+            // A station is served from one location of a branch.
+            if (all.FirstOrDefault(l => l.Id != location.Id && l.BranchId == branchId && l.StationIds.Intersect(stations).Any()) is { } other)
+                throw new DomainException(
+                    $"{other.Name} serves one of those stations already: a station takes its stock from one location. · القسم مرتبط بموقع آخر.");
+            location.Serve(stations);
         }
         await unitOfWork.SaveChangesAsync(cancellationToken);
         return InventoryLocationDto.From(location);
@@ -4023,7 +4048,7 @@ public sealed class HttpBranchRequest(IHttpContextAccessor http) : IBranchReques
 ```
 
 
-> 📄 **`backend/src/Costing.Api/Controllers/CompanyStructureController.cs`** — 49 سطر
+> 📄 **`backend/src/Costing.Api/Controllers/CompanyStructureController.cs`** — 52 سطر
 
 ```csharp
 using MediatR;
@@ -4057,7 +4082,8 @@ public sealed class CompanyStructureController(ISender sender) : ControllerBase
 
     [HttpPut("api/settings/locations/{id:guid}")]
     public Task<InventoryLocationDto> SaveLocation(Guid id, LocationRequest request, CancellationToken cancellationToken) =>
-        sender.Send(new SaveInventoryLocationCommand(id, request.BranchId, request.Name, request.NameAr, request.Kind, request.IsActive), cancellationToken);
+        sender.Send(new SaveInventoryLocationCommand(id, request.BranchId, request.Name, request.NameAr, request.Kind, request.IsActive, request.StationIds),
+            cancellationToken);
 }
 
 // The branches in use and the company's structure, for the branch selector: anyone signed in.
@@ -4074,7 +4100,964 @@ public sealed record OperatingModeRequest(SystemOperatingMode Mode);
 
 public sealed record BranchRequest(string Name, string? NameAr, BranchType Type = BranchType.Restaurant, bool IsActive = true);
 
-public sealed record LocationRequest(Guid BranchId, string Name, string? NameAr, LocationKind Kind = LocationKind.Other, bool IsActive = true);
+// StationIds: the kitchen stations it serves; none leaves them as they are.
+public sealed record LocationRequest(
+    Guid BranchId, string Name, string? NameAr, LocationKind Kind = LocationKind.Other, bool IsActive = true, IReadOnlyList<Guid>? StationIds = null);
+```
+
+
+## 8. المخزون حسب الموقع والتكلفة حسب الفرع والتحويلات الداخلية (المرحلة الثانية)
+
+### 8.1 الفكرة: لا رقم يُحفظ مرتين
+
+```text
+رصيد الشركة للخامة      = RawMaterials.QuantityOnHand  (كما كان، بلا تغيير)
+رصيد الموقع للخامة       = مجموع StockMovements.Quantity حيث LocationId = الموقع   (مشتق، لا ينحرف)
+متوسط تكلفة الفرع        = MaterialBranchStocks.AverageCost   (صف لكل خامة وفرع)
+متوسط تكلفة الشركة       = فرع واحد: هو نفسه؛ عدة فروع: رصيد كل فرع × متوسطه ÷ الإجمالي
+```
+
+لماذا رصيد الموقع **مشتق** من الحركات وليس جدولًا منفصلًا؟ لأن جدولًا ثانيًا للكمية يمكن أن يختلف عن الدفتر (حركة حُفظت ولم يُحدَّث الرصيد)، أما المجموع فهو الدفتر نفسه. وتغيير وحدة الخامة يعيد قياس الحركات فيعيد قياس كل موقع معها. وفي **المساحة المفتوحة** كل هذا لا يعمل: كل حركة لمخزنها الرئيسي الوحيد، وصف تكلفة الفرع مرآة لمتوسط الشركة، فالنظام كما كان حرفيًا.
+
+### 8.2 الدومين: التحويل ومتوسط الفرع
+
+- `RawMaterial.View(stockHere, costHere)`: "منظر" مؤقت (غير محفوظ) للخامة في مكان: `BookQuantity` و `UnitCostHere`. كل حركة خارجة (بيع، هالك، جرد، إنتاج) تُقيَّم بـ `UnitCostHere`، فطنطا تستهلك بمتوسط طنطا. بلا منظر: أرقام الشركة كما كانت.
+- `RawMaterial.Transfer`: حركتان، `TransferOut` من موقع و `TransferIn` لآخر بنفس التكلفة؛ رصيد الشركة وتكلفتها لا يتغيران، ولا أثر على الأرباح والخسائر.
+- `MovingAverage.With / Without`: نفس حساب المتوسط المتحرك، لكن على رصيد الفرع (والرصيد السالب يُعامل كصفر).
+- `InternalTransfer.Post`: يرفض الموقع نفسه، وموقعين من فرعين، وموقعًا موقوفًا، وبلا سطور، وخامة مرتين، وأكثر مما في موقع الصرف (`Main Store has 3000 Gram of Flour: not enough to move 3500`). الرقم `TR-2026-0001` بالسنة، والإلغاء مرة واحدة.
+
+> 📄 **`backend/src/Costing.Domain/Stock/MaterialBranchStock.cs`** — 71 سطر
+
+```csharp
+using Costing.Domain.Common;
+
+namespace Costing.Domain.Stock;
+
+// A material's cost basis in one branch (المتوسط المرجح للفرع): the moving average of what the
+// branch bought and made, so each branch is costed by its own prices. Its stock is the sum of its
+// locations' (the ledger's entries, never a figure of its own that could drift). With one branch
+// it is the company's average, kept the same; with several, each branch's moves on its own.
+public sealed class MaterialBranchStock
+{
+    private MaterialBranchStock() { }
+
+    public MaterialBranchStock(Guid rawMaterialId, Guid branchId, decimal? averageCost)
+    {
+        Id = Guid.NewGuid();
+        RawMaterialId = rawMaterialId;
+        BranchId = branchId;
+        AverageCost = averageCost;
+    }
+
+    public Guid Id { get; private set; }
+    public Guid RawMaterialId { get; private set; }
+    public Guid BranchId { get; private set; }
+    public decimal? AverageCost { get; private set; }
+
+    public void Mirror(decimal? companyAverage) => AverageCost = companyAverage;
+
+    // A delivery or a batch in: weighted by quantity against what the branch has on its shelves
+    // (stock below zero counts as none), as the company's average is.
+    public void AverageWith(decimal onHand, decimal quantity, decimal unitCost) =>
+        AverageCost = MovingAverage.With(AverageCost, onHand, quantity, unitCost);
+
+    // One taken back out (a voided delivery or batch), as far as the stock left can carry it.
+    public void UnaverageWith(decimal onHand, decimal quantity, decimal? unitCost) =>
+        AverageCost = MovingAverage.Without(AverageCost, onHand, quantity, unitCost);
+
+    // Its first cost, from an opening count, when it has none.
+    public void Open(decimal? unitCost)
+    {
+        if ((AverageCost ?? 0) == 0 && unitCost is { } cost and >= 0)
+            AverageCost = cost;
+    }
+}
+
+// The moving average's arithmetic: the company's (RawMaterial) and each branch's alike.
+public static class MovingAverage
+{
+    public static decimal With(decimal? average, decimal onHand, decimal quantity, decimal unitCost)
+    {
+        var onShelf = Math.Max(onHand, 0);
+        return average is { } current && onShelf > 0 ? (onShelf * current + quantity * unitCost) / (onShelf + quantity) : unitCost;
+    }
+
+    public static decimal? Without(decimal? average, decimal onHand, decimal quantity, decimal? unitCost)
+    {
+        if (average is not { } current || unitCost is not { } cost)
+            return average;
+        var left = onHand - quantity;
+        if (left <= 0)
+            return average;
+        var value = Math.Max(onHand, 0) * current - quantity * cost;
+        return value >= 0 ? value / left : average;
+    }
+}
+
+public interface IMaterialBranchStockRepository
+{
+    Task<MaterialBranchStock?> GetAsync(Guid rawMaterialId, Guid branchId, CancellationToken cancellationToken = default);
+
+    void Add(MaterialBranchStock stock);
+}
+```
+
+
+> 📄 **`backend/src/Costing.Domain/Stock/InternalTransfer.cs`** — 140 سطر
+
+```csharp
+using System.Globalization;
+using Costing.Domain.Common;
+using Costing.Domain.Company;
+using Costing.Domain.RawMaterials;
+using Costing.Domain.StockMovements;
+
+namespace Costing.Domain.Stock;
+
+public enum InternalTransferStatus
+{
+    Posted = 1,
+    Voided = 2,
+}
+
+// An internal transfer (تحويل داخلي): stock moved from one location of a branch to another (the
+// main store to the kitchen, the kitchen to the bar), posted as it is made. Each line at the
+// branch's average cost then: nothing bought, sold or spent, so no cost of the period, only where
+// the stock is. Numbered TR-2026-0001 by the year it is made in. Voided, both sides go back.
+public sealed class InternalTransfer : AggregateRoot, IBranchOwned
+{
+    public const int MaxNotes = 500;
+    public const int MaxLines = 200;
+
+    private readonly List<InternalTransferLine> _lines = [];
+
+    private InternalTransfer() { }
+
+    public Guid BranchId { get; private set; }
+
+    public void AssignBranch(Guid branchId) => BranchId = branchId;
+
+    public string Number { get; private set; } = string.Empty;
+    public DateOnly TransferDate { get; private set; }
+    public Guid FromLocationId { get; private set; }
+    public Guid ToLocationId { get; private set; }
+    public InternalTransferStatus Status { get; private set; } = InternalTransferStatus.Posted;
+    public string? Notes { get; private set; }
+    public string CreatedBy { get; private set; } = string.Empty;
+    public string? CreatedByUserId { get; private set; }
+    public DateTime CreatedAtUtc { get; private set; }
+    public DateTime? VoidedAtUtc { get; private set; }
+    public string? VoidedBy { get; private set; }
+    public IReadOnlyList<InternalTransferLine> Lines => _lines;
+    public decimal TotalCost => _lines.Sum(l => l.LineTotalCost);
+
+    public static string NumberFor(int year, int sequence) => string.Create(CultureInfo.InvariantCulture, $"TR-{year}-{sequence:0000}");
+
+    // Posted as it is made: each line moved out of `from` and into `to`, both in the branch; what
+    // `from` has on its shelves (onHand) is enough for every line. Returns the entries to add.
+    public static (InternalTransfer Transfer, IReadOnlyList<StockMovement> Movements) Post(
+        Guid id, string number, Guid branchId, DateOnly date, InventoryLocation from, InventoryLocation to,
+        IReadOnlyList<(RawMaterial Material, decimal Quantity)> lines, IReadOnlyDictionary<Guid, decimal> onHand, string? notes, string by, string? byUserId)
+    {
+        if (from.Id == to.Id)
+            throw new DomainException("Move it from one location to another: the two are the same. · اختر موقعين مختلفين.");
+        if (from.BranchId != branchId || to.BranchId != branchId)
+            throw new DomainException("Both locations are the branch's own: a transfer moves stock inside one branch. · التحويل داخل الفرع نفسه.");
+        if (!from.IsActive || !to.IsActive)
+            throw new DomainException($"{(!from.IsActive ? from.Name : to.Name)} is not in use: choose a location in use.");
+        if (lines.Count == 0)
+            throw new DomainException("Add at least one material to move. · أضف خامة واحدة على الأقل.");
+        if (lines.Count > MaxLines)
+            throw new DomainException($"A transfer moves {MaxLines} materials at most.");
+        if (lines.GroupBy(l => l.Material.Id).FirstOrDefault(g => g.Count() > 1) is { } twice)
+            throw new DomainException($"{twice.First().Material.Name} is on the transfer twice: put it on one line.");
+        var said = string.IsNullOrWhiteSpace(notes) ? null : notes.Trim();
+        if (said?.Length > MaxNotes)
+            throw new DomainException($"Keep the notes to {MaxNotes} characters.");
+        foreach (var (material, quantity) in lines)
+        {
+            if (quantity <= 0)
+                throw new DomainException($"{material.Name}: move more than nothing.");
+            var there = onHand.GetValueOrDefault(material.Id);
+            if (quantity > there)
+                throw new DomainException(
+                    $"{from.Name} has {there.ToString("0.###", CultureInfo.InvariantCulture)} {material.Unit} of {material.Name}: not enough to move "
+                    + $"{quantity.ToString("0.###", CultureInfo.InvariantCulture)}. · الرصيد في الموقع لا يكفي.");
+        }
+
+        var transfer = new InternalTransfer
+        {
+            Id = id, Number = number, BranchId = branchId, TransferDate = date, FromLocationId = from.Id, ToLocationId = to.Id, Notes = said,
+            CreatedBy = by, CreatedByUserId = byUserId, CreatedAtUtc = DateTime.UtcNow,
+        };
+        var movements = new List<StockMovement>();
+        foreach (var (material, quantity) in lines)
+        {
+            var (taken, put) = material.Transfer(quantity, id, from.Id, to.Id, by);
+            taken.AssignBranch(branchId);
+            put.AssignBranch(branchId);
+            movements.Add(taken);
+            movements.Add(put);
+            transfer._lines.Add(new InternalTransferLine(id, material.Id, quantity, material.Unit.ToString(), taken.UnitCost ?? 0));
+        }
+        return (transfer, movements);
+    }
+
+    // Voided: both sides of each line go back (the caller reverses its entries). Again: nothing.
+    public void Void(string by)
+    {
+        if (Status == InternalTransferStatus.Voided)
+            throw new DomainException("This transfer has already been voided. · تم إلغاء هذا التحويل بالفعل.");
+        Status = InternalTransferStatus.Voided;
+        VoidedAtUtc = DateTime.UtcNow;
+        VoidedBy = by;
+    }
+}
+
+// A material moved, in its own unit, at the branch's average cost then.
+public sealed class InternalTransferLine
+{
+    private InternalTransferLine() { }
+
+    internal InternalTransferLine(Guid transferId, Guid rawMaterialId, decimal quantity, string unit, decimal unitCostSnapshot)
+    {
+        Id = Guid.NewGuid();
+        InternalTransferId = transferId;
+        RawMaterialId = rawMaterialId;
+        Quantity = quantity;
+        Unit = unit;
+        UnitCostSnapshot = unitCostSnapshot;
+        LineTotalCost = Math.Round(quantity * unitCostSnapshot, 2, MidpointRounding.AwayFromZero);
+    }
+
+    public Guid Id { get; private set; }
+    public Guid InternalTransferId { get; private set; }
+    public Guid RawMaterialId { get; private set; }
+    public decimal Quantity { get; private set; }
+    public string Unit { get; private set; } = string.Empty;
+    public decimal UnitCostSnapshot { get; private set; }
+    public decimal LineTotalCost { get; private set; }
+}
+
+public interface IInternalTransferRepository : IRepository<InternalTransfer>
+{
+    Task<IReadOnlyList<InternalTransfer>> GetBetweenAsync(Guid branchId, DateOnly from, DateOnly to, CancellationToken cancellationToken = default);
+
+    // How many the year has had: the next is one more.
+    Task<int> CountInYearAsync(int year, CancellationToken cancellationToken = default);
+}
+```
+
+
+### 8.3 التطبيق: أين تذهب الحركة، والتحويلات
+
+`StockPlaces.CheckAsync`: الموقع المطلوب يجب أن يكون من مواقع الفرع ومفعّلًا؛ وفي المساحة المفتوحة يُتجاهل (null). و `ViewAsync` يضع رصيد الموقع (أو الفرع كله للجرد الشامل) على الخامات قبل الجرد أو التحويل. التحويل `IBooksEntry` (إقفال الفترة: اليوم عند الإنشاء، ويوم التحويل عند الإلغاء) و `IRetryOnConflict`، ومعرّفه من الواجهة فإعادة الإرسال لا تكرره. ومن لا يرى التكاليف (`SeeCosts = false`) يرى الكميات فقط.
+
+> 📄 **`backend/src/Costing.Application/Stock/StockPlaces.cs`** — 62 سطر
+
+```csharp
+using Costing.Application.Common;
+using Costing.Application.Company;
+using Costing.Domain.Common;
+using Costing.Domain.Company;
+using Costing.Domain.RawMaterials;
+
+namespace Costing.Application.Stock;
+
+// Stock kept by location (المخزون حسب الموقع): what each location of a branch has, the sum of its
+// ledger entries, so it never drifts from them; and each branch's own average cost.
+public sealed record LocationStock(Guid RawMaterialId, Guid LocationId, decimal Quantity);
+
+public interface IStockBalances
+{
+    // Each material's quantity at a location; across the branch's locations with none.
+    Task<IReadOnlyDictionary<Guid, decimal>> OnHandAsync(Guid branchId, Guid? locationId, CancellationToken cancellationToken);
+
+    // Every material's quantity at each of the branch's locations (none where it has nothing).
+    Task<IReadOnlyList<LocationStock>> ByLocationAsync(Guid branchId, CancellationToken cancellationToken);
+
+    // The branch's own average cost of each material it has one for.
+    Task<IReadOnlyDictionary<Guid, decimal?>> BranchCostsAsync(Guid branchId, CancellationToken cancellationToken);
+}
+
+// Where a request keeps or takes its stock, checked; and materials seen as they stand there. An
+// open-space shop has one place, its Main Store, so nothing here changes anything for it.
+public sealed class StockPlaces(ICompanyProfile profile, ICurrentBranch branch, IInventoryLocationRepository locations, IStockBalances balances)
+{
+    public bool HasLocations => profile.Current.OperatingMode.HasLocations();
+
+    public Task<Guid> BranchIdAsync(CancellationToken cancellationToken) => branch.BranchIdAsync(cancellationToken);
+
+    // A location asked for: none in an open-space shop (its one store); otherwise one in use, of
+    // the branch worked in. None asked: none (the branch's main store, or the station's location).
+    public async Task<Guid?> CheckAsync(Guid? locationId, CancellationToken cancellationToken)
+    {
+        if (!HasLocations || locationId is not { } id)
+            return null;
+        var location = await locations.GetByIdAsync(id, cancellationToken)
+            ?? throw new DomainException("That location is no longer there: choose one from the list. · الموقع غير موجود.");
+        if (location.BranchId != await branch.BranchIdAsync(cancellationToken))
+            throw new DomainException($"{location.Name} is another branch's: choose one of this branch's locations. · الموقع تابع لفرع آخر.");
+        if (!location.IsActive)
+            throw new DomainException($"{location.Name} is not in use: choose a location in use. · الموقع غير مفعّل.");
+        return id;
+    }
+
+    // Materials as they stand where the request works: their stock at the location (or across the
+    // branch), their cost the branch's own. Nothing in an open-space shop: the company's figures.
+    public async Task ViewAsync(IEnumerable<RawMaterial> materials, Guid? locationId, CancellationToken cancellationToken)
+    {
+        if (!HasLocations)
+            return;
+        var here = await branch.BranchIdAsync(cancellationToken);
+        var onHand = await balances.OnHandAsync(here, locationId, cancellationToken);
+        var costs = profile.Current.OperatingMode.IsMultiBranch()
+            ? await balances.BranchCostsAsync(here, cancellationToken)
+            : new Dictionary<Guid, decimal?>();
+        foreach (var material in materials)
+            material.View(onHand.GetValueOrDefault(material.Id), costs.TryGetValue(material.Id, out var cost) ? cost : material.CostHere);
+    }
+}
+```
+
+
+> 📄 **`backend/src/Costing.Application/Stock/InternalTransfers.cs`** — 236 سطر
+
+```csharp
+using MediatR;
+using Costing.Application.Books;
+using Costing.Application.Common;
+using Costing.Application.Company;
+using Costing.Domain.Common;
+using Costing.Domain.Company;
+using Costing.Domain.RawMaterials;
+using Costing.Domain.Stock;
+using Costing.Domain.StockMovements;
+
+namespace Costing.Application.Stock;
+
+// Internal transfers (التحويلات الداخلية بين المخزن والأقسام): stock moved between the locations of
+// a branch, the main store to the kitchen or the bar, at the branch's average cost, posted as it
+// is made and voided whole. Only once the company keeps stock in more than one place; and what
+// each location has, for whoever moves or counts it.
+
+public sealed record InternalTransferLineDto(Guid RawMaterialId, string Material, string? Code, decimal Quantity, string Unit, decimal? UnitCost, decimal? LineTotal);
+
+public sealed record InternalTransferDto(
+    Guid Id,
+    string Number,
+    DateOnly TransferDate,
+    Guid FromLocationId,
+    string FromLocation,
+    string? FromLocationAr,
+    Guid ToLocationId,
+    string ToLocation,
+    string? ToLocationAr,
+    InternalTransferStatus Status,
+    string? Notes,
+    string CreatedBy,
+    DateTime CreatedAtUtc,
+    DateTime? VoidedAtUtc,
+    string? VoidedBy,
+    // Null for whoever does not see the costs.
+    decimal? TotalCost,
+    IReadOnlyList<InternalTransferLineDto> Lines);
+
+public sealed record TransferLineInput(Guid RawMaterialId, decimal Quantity);
+
+// Posted as it is made, today, in the branch worked in. Its id is made by the app: sent again, the
+// one there is comes back.
+public sealed record PostInternalTransferCommand(
+    Guid Id, Guid FromLocationId, Guid ToLocationId, IReadOnlyList<TransferLineInput> Lines, string? Notes, string StaffId, string StaffName,
+    bool SeeCosts = true) : IRequest<InternalTransferDto>, IRetryOnConflict, IBooksEntry
+{
+    bool IBooksEntry.WritesToday => true;
+}
+
+// Voided: both sides of each line go back, now; on the books of the day it was made.
+public sealed record VoidInternalTransferCommand(Guid Id, string StaffName, bool SeeCosts = true) : IRequest<InternalTransferDto>, IBooksEntry;
+
+public sealed record GetInternalTransfersQuery(DateOnly From, DateOnly To, bool SeeCosts = true) : IRequest<IReadOnlyList<InternalTransferDto>>;
+
+public sealed record GetInternalTransferQuery(Guid Id, bool SeeCosts = true) : IRequest<InternalTransferDto>;
+
+// The locations of the branch worked in, for the screens that take or put stock somewhere.
+public sealed record StockLocationsDto(SystemOperatingMode Mode, Guid BranchId, IReadOnlyList<InventoryLocationDto> Locations);
+
+public sealed record GetStockLocationsQuery : IRequest<StockLocationsDto>;
+
+// What each location of the branch has (الرصيد حسب الموقع): a row a material, a column a location.
+public sealed record LocationColumnDto(Guid Id, string Name, string? NameAr, LocationKind Kind, bool IsActive);
+
+public sealed record LocationStockRowDto(
+    Guid RawMaterialId, string Material, string? Code, UnitOfMeasure Unit, bool IsPrepItem, IReadOnlyDictionary<Guid, decimal> ByLocation, decimal Total,
+    decimal? AverageCost, decimal? Value);
+
+public sealed record LocationStockDto(Guid BranchId, IReadOnlyList<LocationColumnDto> Locations, IReadOnlyList<LocationStockRowDto> Rows);
+
+public sealed record GetLocationStockQuery(bool SeeCosts = true) : IRequest<LocationStockDto>;
+
+internal sealed class TransferReading(IInventoryLocationRepository locations, IRawMaterialRepository materials)
+{
+    public async Task<IReadOnlyList<InternalTransferDto>> DtosAsync(IReadOnlyList<InternalTransfer> transfers, bool seeCosts, CancellationToken cancellationToken)
+    {
+        var places = (await locations.GetAllAsync(cancellationToken)).ToDictionary(l => l.Id);
+        var ids = transfers.SelectMany(t => t.Lines.Select(l => l.RawMaterialId)).Distinct().ToList();
+        var names = ids.Count == 0 ? new Dictionary<Guid, RawMaterial>() : (await materials.GetByIdsAsync(ids, cancellationToken)).ToDictionary(m => m.Id);
+        return transfers.Select(t =>
+        {
+            var from = places.GetValueOrDefault(t.FromLocationId);
+            var to = places.GetValueOrDefault(t.ToLocationId);
+            return new InternalTransferDto(
+                t.Id, t.Number, t.TransferDate, t.FromLocationId, from?.Name ?? "—", from?.NameAr, t.ToLocationId, to?.Name ?? "—", to?.NameAr, t.Status, t.Notes,
+                t.CreatedBy, t.CreatedAtUtc, t.VoidedAtUtc, t.VoidedBy, seeCosts ? t.TotalCost : null,
+                t.Lines.Select(l => new InternalTransferLineDto(
+                    l.RawMaterialId, names.GetValueOrDefault(l.RawMaterialId)?.Name ?? "—", names.GetValueOrDefault(l.RawMaterialId)?.Code, l.Quantity, l.Unit,
+                    seeCosts ? l.UnitCostSnapshot : null, seeCosts ? l.LineTotalCost : null)).ToList());
+        }).ToList();
+    }
+
+    public async Task<InternalTransferDto> DtoAsync(InternalTransfer transfer, bool seeCosts, CancellationToken cancellationToken) =>
+        (await DtosAsync([transfer], seeCosts, cancellationToken))[0];
+}
+
+internal sealed class PostInternalTransferHandler(
+    IInternalTransferRepository transfers,
+    IInventoryLocationRepository locations,
+    IRawMaterialRepository materials,
+    IStockMovementRepository movements,
+    IStockBalances balances,
+    StockPlaces places,
+    BooksGuard books,
+    TransferReading reading,
+    IUnitOfWork unitOfWork) : IRequestHandler<PostInternalTransferCommand, InternalTransferDto>
+{
+    public async Task<InternalTransferDto> Handle(PostInternalTransferCommand request, CancellationToken cancellationToken)
+    {
+        if (await transfers.GetByIdAsync(request.Id, cancellationToken) is { } already)
+            return await reading.DtoAsync(already, request.SeeCosts, cancellationToken);
+        if (!places.HasLocations)
+            throw new DomainException(
+                "An open-space shop keeps its stock in one place: choose a structure with locations on Company structure first. · لا توجد مواقع للتحويل بينها.");
+
+        var branch = await places.BranchIdAsync(cancellationToken);
+        var from = await locations.GetByIdAsync(request.FromLocationId, cancellationToken)
+            ?? throw new DomainException("Choose where the stock is moved from. · اختر موقع الصرف.");
+        var to = await locations.GetByIdAsync(request.ToLocationId, cancellationToken)
+            ?? throw new DomainException("Choose where the stock is moved to. · اختر موقع الاستلام.");
+        var lines = request.Lines ?? [];
+        var byId = lines.Count == 0
+            ? new Dictionary<Guid, RawMaterial>()
+            : (await materials.GetByIdsAsync(lines.Select(l => l.RawMaterialId).Distinct().ToList(), cancellationToken)).ToDictionary(m => m.Id);
+        var chosen = lines.Select(l =>
+        {
+            var material = byId.GetValueOrDefault(l.RawMaterialId) ?? throw new NotFoundException(nameof(RawMaterial), l.RawMaterialId);
+            if (material.IsArchived)
+                throw new DomainException($"{material.Name} has been archived: it is not moved any more.");
+            return (material, l.Quantity);
+        }).ToList();
+
+        // At the branch's average cost; checked against what the location it leaves has.
+        await places.ViewAsync(byId.Values, from.Id, cancellationToken);
+        var onHand = await balances.OnHandAsync(branch, from.Id, cancellationToken);
+        var today = books.Today;
+        var number = InternalTransfer.NumberFor(today.Year, await transfers.CountInYearAsync(today.Year, cancellationToken) + 1);
+        var (transfer, ledger) = InternalTransfer.Post(
+            request.Id, number, branch, today, from, to, chosen, onHand, request.Notes, request.StaffName, request.StaffId);
+        transfers.Add(transfer);
+        foreach (var movement in ledger)
+            movements.Add(movement);
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+        return await reading.DtoAsync(transfer, request.SeeCosts, cancellationToken);
+    }
+}
+
+internal sealed class VoidInternalTransferHandler(
+    IInternalTransferRepository transfers,
+    IRawMaterialRepository materials,
+    IStockMovementRepository movements,
+    TransferReading reading,
+    IUnitOfWork unitOfWork) : IRequestHandler<VoidInternalTransferCommand, InternalTransferDto>
+{
+    public async Task<InternalTransferDto> Handle(VoidInternalTransferCommand request, CancellationToken cancellationToken)
+    {
+        var transfer = await transfers.GetByIdAsync(request.Id, cancellationToken) ?? throw new NotFoundException(nameof(InternalTransfer), request.Id);
+        transfer.Void(request.StaffName);
+        var originals = (await movements.GetBySourceAsync(transfer.Id, StockMovementReason.TransferOut, cancellationToken))
+            .Concat(await movements.GetBySourceAsync(transfer.Id, StockMovementReason.TransferIn, cancellationToken))
+            .Where(m => !m.IsReversal)
+            .ToList();
+        var byId = (await materials.GetByIdsAsync(originals.Select(m => m.RawMaterialId).Distinct().ToList(), cancellationToken)).ToDictionary(m => m.Id);
+        // Each side back where it was: the reversal keeps its original's branch and location.
+        foreach (var original in originals)
+            movements.Add(byId[original.RawMaterialId].Reverse(original, request.StaffName));
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+        return await reading.DtoAsync(transfer, request.SeeCosts, cancellationToken);
+    }
+}
+
+internal sealed class GetInternalTransfersHandler(IInternalTransferRepository transfers, ICurrentBranch branch, TransferReading reading)
+    : IRequestHandler<GetInternalTransfersQuery, IReadOnlyList<InternalTransferDto>>
+{
+    public async Task<IReadOnlyList<InternalTransferDto>> Handle(GetInternalTransfersQuery request, CancellationToken cancellationToken)
+    {
+        if (request.To < request.From)
+            throw new DomainException("The period ends before it starts.");
+        if (request.To.DayNumber - request.From.DayNumber > 366)
+            throw new DomainException("Show a year of transfers at most.");
+        var listed = await transfers.GetBetweenAsync(await branch.BranchIdAsync(cancellationToken), request.From, request.To, cancellationToken);
+        return await reading.DtosAsync(listed.OrderByDescending(t => t.TransferDate).ThenByDescending(t => t.Number, StringComparer.Ordinal).ToList(),
+            request.SeeCosts, cancellationToken);
+    }
+}
+
+internal sealed class GetInternalTransferHandler(IInternalTransferRepository transfers, TransferReading reading)
+    : IRequestHandler<GetInternalTransferQuery, InternalTransferDto>
+{
+    public async Task<InternalTransferDto> Handle(GetInternalTransferQuery request, CancellationToken cancellationToken) =>
+        await reading.DtoAsync(
+            await transfers.GetByIdAsync(request.Id, cancellationToken) ?? throw new NotFoundException(nameof(InternalTransfer), request.Id),
+            request.SeeCosts, cancellationToken);
+}
+
+internal sealed class GetStockLocationsHandler(ICompanyProfile profile, ICurrentBranch branch, IInventoryLocationRepository locations)
+    : IRequestHandler<GetStockLocationsQuery, StockLocationsDto>
+{
+    public async Task<StockLocationsDto> Handle(GetStockLocationsQuery request, CancellationToken cancellationToken)
+    {
+        var here = await branch.BranchIdAsync(cancellationToken);
+        var mode = profile.Current.OperatingMode;
+        var listed = mode.HasLocations()
+            ? (await locations.GetAllAsync(cancellationToken)).Where(l => l.BranchId == here && l.IsActive).Select(InventoryLocationDto.From).ToList()
+            : [];
+        return new StockLocationsDto(mode, here, listed);
+    }
+}
+
+internal sealed class GetLocationStockHandler(
+    ICompanyProfile profile, ICurrentBranch branch, IInventoryLocationRepository locations, IRawMaterialRepository materials, IStockBalances balances)
+    : IRequestHandler<GetLocationStockQuery, LocationStockDto>
+{
+    public async Task<LocationStockDto> Handle(GetLocationStockQuery request, CancellationToken cancellationToken)
+    {
+        var here = await branch.BranchIdAsync(cancellationToken);
+        var columns = (await locations.GetAllAsync(cancellationToken)).Where(l => l.BranchId == here).ToList();
+        var stock = await balances.ByLocationAsync(here, cancellationToken);
+        var costs = profile.Current.OperatingMode.IsMultiBranch() ? await balances.BranchCostsAsync(here, cancellationToken) : null;
+        var held = stock.GroupBy(s => s.RawMaterialId).ToDictionary(g => g.Key, g => g.ToDictionary(s => s.LocationId, s => s.Quantity));
+        var rows = (await materials.GetAllAsync(cancellationToken))
+            .Where(m => !m.IsArchived || held.ContainsKey(m.Id))
+            .Select(m =>
+            {
+                var at = held.GetValueOrDefault(m.Id) ?? new Dictionary<Guid, decimal>();
+                var total = at.Values.Sum();
+                var cost = costs is null ? m.AverageCost : costs.GetValueOrDefault(m.Id) ?? m.AverageCost;
+                return new LocationStockRowDto(m.Id, m.Name, m.Code, m.Unit, m.IsPrepItem, at, total,
+                    request.SeeCosts ? cost : null, request.SeeCosts && cost is { } c ? Math.Round(total * c, 2, MidpointRounding.AwayFromZero) : null);
+            })
+            .ToList();
+        return new LocationStockDto(
+            here, columns.Select(l => new LocationColumnDto(l.Id, l.Name, l.NameAr, l.Kind, l.IsActive)).ToList(), rows);
+    }
+}
+```
+
+
+### 8.4 الحفظ: `StockLedgerInterceptor`
+
+بعد ختم الفرع، كل حركة جديدة بلا موقع تأخذ موقعها:
+
+```text
+مساحة مفتوحة                              ⇐ المخزن الرئيسي الوحيد دائمًا
+بيع / هالك / وجبة عاملين / ضيافة / تذوق   ⇐ الموقع الذي يخدم قسم الخامة (أو القسم المسؤول) في فرع الحركة
+غير ذلك، أو لا موقع يخدم القسم            ⇐ المخزن الرئيسي للفرع
+```
+
+ثم يحدّث `MaterialBranchStocks`: مرآة لمتوسط الشركة مع فرع واحد، أو متوسط الفرع بحركات الشراء والإنتاج مع عدة فروع (والإلغاء يُخرج سعره)، ومتوسط الشركة = قيمة الفروع ÷ رصيدها. والـ migration `AddStockLocations` تضيف الأعمدة بقيمة افتراضية (المخزن الرئيسي) وتملأ صف تكلفة لكل خامة في الفرع الأول بمتوسطها.
+
+> 📄 **`backend/src/Costing.Infrastructure/Persistence/StockPersistence.cs`** — 300 سطر
+
+```csharp
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.EntityFrameworkCore.Metadata.Builders;
+using Microsoft.Extensions.DependencyInjection;
+using Costing.Application.Common;
+using Costing.Application.Stock;
+using Costing.Domain.Company;
+using Costing.Domain.Production;
+using Costing.Domain.Purchases;
+using Costing.Domain.RawMaterials;
+using Costing.Domain.Stock;
+using Costing.Domain.StockCounts;
+using Costing.Domain.StockMovements;
+using Costing.Infrastructure.Persistence.Configurations;
+
+namespace Costing.Infrastructure.Persistence;
+
+// Stock by location and cost by branch (عزل المخزون والمتوسط المرجح): each ledger entry's location;
+// each branch's average cost; the internal transfers between a branch's locations. A location's
+// stock is the sum of its entries, never a figure of its own.
+internal sealed class StockLocationsConfiguration :
+    IEntityTypeConfiguration<StockMovement>, IEntityTypeConfiguration<PurchaseInvoice>, IEntityTypeConfiguration<StockCount>,
+    IEntityTypeConfiguration<ProductionOrder>, IEntityTypeConfiguration<InventoryLocation>, IEntityTypeConfiguration<RawMaterial>
+{
+    // Every entry before was the one store's: the first branch's Main Store, the column's default.
+    public void Configure(EntityTypeBuilder<StockMovement> builder)
+    {
+        builder.Property(m => m.LocationId).HasDefaultValue(InventoryLocation.DefaultId).HasSentinel(Guid.Empty);
+        builder.HasOne<InventoryLocation>().WithMany().HasForeignKey(m => m.LocationId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasIndex(m => new { m.RawMaterialId, m.LocationId });
+    }
+
+    public void Configure(EntityTypeBuilder<PurchaseInvoice> builder) =>
+        builder.HasOne<InventoryLocation>().WithMany().HasForeignKey(i => i.LocationId).OnDelete(DeleteBehavior.Restrict);
+
+    public void Configure(EntityTypeBuilder<StockCount> builder) =>
+        builder.HasOne<InventoryLocation>().WithMany().HasForeignKey(c => c.LocationId).OnDelete(DeleteBehavior.Restrict);
+
+    public void Configure(EntityTypeBuilder<ProductionOrder> builder) =>
+        builder.HasOne<InventoryLocation>().WithMany().HasForeignKey(o => o.LocationId).OnDelete(DeleteBehavior.Restrict);
+
+    public void Configure(EntityTypeBuilder<InventoryLocation> builder) =>
+        builder.Property(l => l.StationIds).HasDefaultValueSql("'{}'::uuid[]");
+
+    // Where a request sees it from: never kept.
+    public void Configure(EntityTypeBuilder<RawMaterial> builder)
+    {
+        builder.Ignore(m => m.StockHere);
+        builder.Ignore(m => m.CostHere);
+    }
+}
+
+internal sealed class MaterialBranchStockConfiguration : IEntityTypeConfiguration<MaterialBranchStock>
+{
+    public void Configure(EntityTypeBuilder<MaterialBranchStock> builder)
+    {
+        builder.ToTable("MaterialBranchStocks", CostingDbContext.CostingSchema);
+        builder.HasKey(s => s.Id);
+        builder.Property(s => s.Id).ValueGeneratedNever();
+        builder.Property(s => s.AverageCost).IsUnitCost();
+        builder.HasIndex(s => new { s.RawMaterialId, s.BranchId }).IsUnique();
+        builder.HasOne<RawMaterial>().WithMany().HasForeignKey(s => s.RawMaterialId).OnDelete(DeleteBehavior.Cascade);
+        builder.HasOne<Branch>().WithMany().HasForeignKey(s => s.BranchId).OnDelete(DeleteBehavior.Restrict);
+    }
+}
+
+internal sealed class InternalTransferConfiguration : IEntityTypeConfiguration<InternalTransfer>, IEntityTypeConfiguration<InternalTransferLine>
+{
+    public void Configure(EntityTypeBuilder<InternalTransfer> builder)
+    {
+        builder.ToTable("InternalTransfers", CostingDbContext.CostingSchema);
+        builder.Property(t => t.Number).HasMaxLength(20);
+        builder.HasIndex(t => t.Number).IsUnique();
+        builder.Property(t => t.Status).IsEnumName();
+        builder.Property(t => t.Notes).HasMaxLength(InternalTransfer.MaxNotes);
+        builder.Property(t => t.CreatedBy).HasMaxLength(200);
+        builder.Property(t => t.CreatedByUserId).HasMaxLength(100);
+        builder.Property(t => t.VoidedBy).HasMaxLength(200);
+        builder.Ignore(t => t.TotalCost);
+        builder.HasIndex(t => new { t.BranchId, t.TransferDate });
+        builder.HasOne<Branch>().WithMany().HasForeignKey(t => t.BranchId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne<InventoryLocation>().WithMany().HasForeignKey(t => t.FromLocationId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne<InventoryLocation>().WithMany().HasForeignKey(t => t.ToLocationId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasMany(t => t.Lines).WithOne().HasForeignKey(l => l.InternalTransferId).OnDelete(DeleteBehavior.Cascade);
+        builder.Navigation(t => t.Lines).HasField("_lines").UsePropertyAccessMode(PropertyAccessMode.Field);
+    }
+
+    public void Configure(EntityTypeBuilder<InternalTransferLine> builder)
+    {
+        builder.ToTable("InternalTransferLines", CostingDbContext.CostingSchema);
+        builder.HasKey(l => l.Id);
+        builder.Property(l => l.Id).ValueGeneratedNever();
+        builder.Property(l => l.Quantity).IsQuantity();
+        builder.Property(l => l.Unit).HasMaxLength(20);
+        builder.Property(l => l.UnitCostSnapshot).HasPrecision(18, 6);
+        builder.Property(l => l.LineTotalCost).HasPrecision(18, 2);
+        builder.HasOne<RawMaterial>().WithMany().HasForeignKey(l => l.RawMaterialId).OnDelete(DeleteBehavior.Restrict);
+    }
+}
+
+internal sealed class MaterialBranchStockRepository(CostingDbContext db) : IMaterialBranchStockRepository
+{
+    public Task<MaterialBranchStock?> GetAsync(Guid rawMaterialId, Guid branchId, CancellationToken cancellationToken = default) =>
+        db.MaterialBranchStocks.SingleOrDefaultAsync(s => s.RawMaterialId == rawMaterialId && s.BranchId == branchId, cancellationToken);
+
+    public void Add(MaterialBranchStock stock) => db.MaterialBranchStocks.Add(stock);
+}
+
+internal sealed class InternalTransferRepository(CostingDbContext db) : IInternalTransferRepository
+{
+    public Task<InternalTransfer?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default) =>
+        db.InternalTransfers.Include(t => t.Lines).SingleOrDefaultAsync(t => t.Id == id, cancellationToken);
+
+    public void Add(InternalTransfer aggregate) => db.InternalTransfers.Add(aggregate);
+
+    public async Task<IReadOnlyList<InternalTransfer>> GetBetweenAsync(Guid branchId, DateOnly from, DateOnly to, CancellationToken cancellationToken = default) =>
+        await db.InternalTransfers.AsNoTracking().Include(t => t.Lines)
+            .Where(t => t.BranchId == branchId && t.TransferDate >= from && t.TransferDate <= to)
+            .ToListAsync(cancellationToken);
+
+    public Task<int> CountInYearAsync(int year, CancellationToken cancellationToken = default)
+    {
+        var prefix = $"TR-{year}-";
+        return db.InternalTransfers.CountAsync(t => t.Number.StartsWith(prefix), cancellationToken);
+    }
+}
+
+internal sealed class StockBalances(CostingDbContext db) : IStockBalances
+{
+    public async Task<IReadOnlyDictionary<Guid, decimal>> OnHandAsync(Guid branchId, Guid? locationId, CancellationToken cancellationToken) =>
+        await db.StockMovements.AsNoTracking()
+            .Where(m => m.BranchId == branchId && (locationId == null || m.LocationId == locationId))
+            .GroupBy(m => m.RawMaterialId)
+            .Select(g => new { g.Key, Quantity = g.Sum(m => m.Quantity) })
+            .ToDictionaryAsync(g => g.Key, g => g.Quantity, cancellationToken);
+
+    public async Task<IReadOnlyList<LocationStock>> ByLocationAsync(Guid branchId, CancellationToken cancellationToken) =>
+        (await db.StockMovements.AsNoTracking()
+            .Where(m => m.BranchId == branchId)
+            .GroupBy(m => new { m.RawMaterialId, m.LocationId })
+            .Select(g => new { g.Key.RawMaterialId, g.Key.LocationId, Quantity = g.Sum(m => m.Quantity) })
+            .ToListAsync(cancellationToken))
+            .Where(s => s.Quantity != 0)
+            .Select(s => new LocationStock(s.RawMaterialId, s.LocationId, s.Quantity))
+            .ToList();
+
+    public async Task<IReadOnlyDictionary<Guid, decimal?>> BranchCostsAsync(Guid branchId, CancellationToken cancellationToken) =>
+        await db.MaterialBranchStocks.AsNoTracking().Where(s => s.BranchId == branchId)
+            .ToDictionaryAsync(s => s.RawMaterialId, s => s.AverageCost, cancellationToken);
+}
+
+// Each new ledger entry kept in its place and each branch's cost kept up, as it is saved (after
+// its branch is given). Its location: what moved it said; otherwise, for what the kitchen uses (a
+// sale, waste, a staff meal), the location serving the material's station in its branch, and for
+// anything else, the branch's main store. An open-space shop: its one Main Store, always.
+//
+// Each branch's average: with one branch it is the company's, kept the same; with several, a
+// delivery or a batch moves its own branch's average (the same arithmetic as the company's, on the
+// branch's stock), one taken back out takes its price back out, and the company's becomes its
+// branches' stock at their own averages.
+internal sealed class StockLedgerInterceptor(IServiceProvider services) : SaveChangesInterceptor
+{
+    private static readonly StockMovementReason[] UsedByTheKitchen =
+    [
+        StockMovementReason.Sale, StockMovementReason.Waste, StockMovementReason.VoidReturn, StockMovementReason.Spoilage,
+        StockMovementReason.StaffMeal, StockMovementReason.Hospitality, StockMovementReason.RecipeTasting,
+    ];
+
+    public override async ValueTask<InterceptionResult<int>> SavingChangesAsync(
+        DbContextEventData eventData, InterceptionResult<int> result, CancellationToken cancellationToken = default)
+    {
+        if (eventData.Context is CostingDbContext db)
+            await KeepAsync(db, cancellationToken);
+        return result;
+    }
+
+    public override InterceptionResult<int> SavingChanges(DbContextEventData eventData, InterceptionResult<int> result)
+    {
+        if (eventData.Context is CostingDbContext db)
+            KeepAsync(db, CancellationToken.None).GetAwaiter().GetResult();
+        return result;
+    }
+
+    private async Task KeepAsync(CostingDbContext db, CancellationToken cancellationToken)
+    {
+        var added = db.ChangeTracker.Entries<StockMovement>().Where(e => e.State == EntityState.Added).Select(e => e.Entity).ToList();
+        var changed = db.ChangeTracker.Entries<RawMaterial>()
+            .Where(e => e.State is EntityState.Added or EntityState.Modified)
+            .Select(e => e.Entity)
+            .ToDictionary(m => m.Id);
+        if (added.Count == 0 && changed.Count == 0)
+            return;
+        var mode = services.GetRequiredService<ICompanyProfile>().Current.OperatingMode;
+        var materials = new Dictionary<Guid, RawMaterial>(changed);
+        foreach (var id in added.Select(m => m.RawMaterialId).Distinct().Where(id => !materials.ContainsKey(id)).ToList())
+        {
+            if (await db.RawMaterials.FindAsync([id], cancellationToken) is { } material)
+                materials[id] = material;
+        }
+
+        await PlaceAsync(db, added, materials, mode, cancellationToken);
+        if (mode.IsMultiBranch())
+            await CostByBranchAsync(db, added, materials, cancellationToken);
+        else
+            await MirrorAsync(db, materials.Values, cancellationToken);
+    }
+
+    private static async Task PlaceAsync(
+        CostingDbContext db, List<StockMovement> added, Dictionary<Guid, RawMaterial> materials, SystemOperatingMode mode, CancellationToken cancellationToken)
+    {
+        var unplaced = added.Where(m => m.LocationId == Guid.Empty).ToList();
+        if (unplaced.Count == 0)
+            return;
+        if (!mode.HasLocations())
+        {
+            unplaced.ForEach(m => m.AssignLocation(InventoryLocation.DefaultId));
+            return;
+        }
+        var locations = await db.InventoryLocations.AsNoTracking().Where(l => l.IsActive).ToListAsync(cancellationToken);
+        foreach (var movement in unplaced)
+        {
+            var branch = movement.BranchId == Guid.Empty ? Branch.DefaultId : movement.BranchId;
+            var inBranch = locations.Where(l => l.BranchId == branch).ToList();
+            InventoryLocation? serving = null;
+            if (UsedByTheKitchen.Contains(movement.Reason)
+                && (movement.ResponsibleStationId ?? materials.GetValueOrDefault(movement.RawMaterialId)?.KitchenStationId) is { } station)
+                serving = inBranch.FirstOrDefault(l => l.StationIds.Contains(station));
+            var main = inBranch.Where(l => l.Kind == LocationKind.MainStore).OrderByDescending(l => l.IsDefault).FirstOrDefault();
+            movement.AssignLocation(serving?.Id ?? main?.Id ?? inBranch.FirstOrDefault()?.Id ?? InventoryLocation.DefaultId);
+        }
+    }
+
+    // One branch: its cost is the company's.
+    private static async Task MirrorAsync(CostingDbContext db, IEnumerable<RawMaterial> materials, CancellationToken cancellationToken)
+    {
+        var touched = materials.ToList();
+        if (touched.Count == 0)
+            return;
+        var ids = touched.Select(m => m.Id).ToList();
+        var rows = await db.MaterialBranchStocks.Where(s => s.BranchId == Branch.DefaultId && ids.Contains(s.RawMaterialId))
+            .ToDictionaryAsync(s => s.RawMaterialId, cancellationToken);
+        foreach (var material in touched)
+        {
+            if (rows.TryGetValue(material.Id, out var row))
+                row.Mirror(material.AverageCost);
+            else
+                db.MaterialBranchStocks.Add(new MaterialBranchStock(material.Id, Branch.DefaultId, material.AverageCost));
+        }
+    }
+
+    // Several branches: each branch's own average, from its own stock; the company's from theirs.
+    private static async Task CostByBranchAsync(
+        CostingDbContext db, List<StockMovement> added, Dictionary<Guid, RawMaterial> materials, CancellationToken cancellationToken)
+    {
+        if (added.Count == 0)
+            return;
+        var ids = added.Select(m => m.RawMaterialId).Distinct().ToList();
+        var onHand = (await db.StockMovements.AsNoTracking()
+                .Where(m => ids.Contains(m.RawMaterialId))
+                .GroupBy(m => new { m.RawMaterialId, m.BranchId })
+                .Select(g => new { g.Key.RawMaterialId, g.Key.BranchId, Quantity = g.Sum(m => m.Quantity) })
+                .ToListAsync(cancellationToken))
+            .ToDictionary(s => (s.RawMaterialId, s.BranchId), s => s.Quantity);
+        var rows = (await db.MaterialBranchStocks.Where(s => ids.Contains(s.RawMaterialId)).ToListAsync(cancellationToken))
+            .ToDictionary(s => (s.RawMaterialId, s.BranchId));
+
+        foreach (var movement in added)
+        {
+            var key = (movement.RawMaterialId, movement.BranchId);
+            if (!rows.TryGetValue(key, out var row))
+            {
+                // A branch's first: at the material's cost (the company's) until it buys its own.
+                row = new MaterialBranchStock(movement.RawMaterialId, movement.BranchId, materials.GetValueOrDefault(movement.RawMaterialId)?.AverageCost);
+                db.MaterialBranchStocks.Add(row);
+                rows[key] = row;
+            }
+            var before = onHand.GetValueOrDefault(key);
+            var inbound = movement.Reason is StockMovementReason.Purchase or StockMovementReason.ProductionOutput;
+            if (inbound && !movement.IsReversal && movement.Quantity > 0 && movement.UnitCost is { } cost)
+                row.AverageWith(before, movement.Quantity, cost);
+            else if (inbound && movement.IsReversal && movement.Quantity < 0)
+                row.UnaverageWith(before, -movement.Quantity, movement.UnitCost);
+            else if (movement.Reason == StockMovementReason.OpeningStock)
+                row.Open(movement.UnitCost);
+            onHand[key] = before + movement.Quantity;
+        }
+
+        // The company's average: its branches' stock, each at its own branch's average.
+        foreach (var id in ids)
+        {
+            var held = rows.Where(r => r.Key.RawMaterialId == id && r.Value.AverageCost is not null)
+                .Select(r => (Quantity: Math.Max(onHand.GetValueOrDefault(r.Key), 0), Cost: r.Value.AverageCost!.Value))
+                .Where(h => h.Quantity > 0)
+                .ToList();
+            var quantity = held.Sum(h => h.Quantity);
+            if (quantity > 0 && materials.GetValueOrDefault(id) is { } material)
+                material.AdoptAverage(held.Sum(h => h.Quantity * h.Cost) / quantity);
+        }
+    }
+}
+```
+
+
+### 8.5 الـ API
+
+`api/inventory/internal-transfers` (قائمة بفترة، واحد، ورقة Excel، إنشاء، إلغاء)، و `stock-locations`، و `location-stock`: لمن يعمل في "الجرد" أو "الخامات"، والإنشاء والإلغاء بـ `inventory.manage`، والتكاليف لمن له `costing.view`.
+
+> 📄 **`backend/src/Costing.Api/Controllers/InternalTransfersController.cs`** — 70 سطر
+
+```csharp
+using MediatR;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using Costing.Api.Auth;
+using Costing.Application.Stock;
+using Costing.Domain.Access;
+using Costing.Infrastructure.Excel;
+
+namespace Costing.Api.Controllers;
+
+// Internal transfers (التحويلات الداخلية) between the locations of the branch worked in, for
+// whoever keeps the stock (Stock counts or Raw materials); their costs for whoever sees costs.
+// And the locations and what each has, for the screens that take or put stock somewhere.
+[ApiController]
+[Route("api/inventory")]
+[CostingTab(CostingTabs.Counts | CostingTabs.Materials)]
+public sealed class InternalTransfersController(ISender sender, Costing.Application.Common.IBusinessCalendar calendar) : ControllerBase
+{
+    [HttpGet("internal-transfers")]
+    [Authorize(Policy = Permissions.InventoryView)]
+    public Task<IReadOnlyList<InternalTransferDto>> GetAll([FromQuery] DateOnly? from, [FromQuery] DateOnly? to, CancellationToken cancellationToken)
+    {
+        var today = calendar.BusinessDateOf(DateTime.UtcNow);
+        return sender.Send(new GetInternalTransfersQuery(from ?? today.AddDays(-30), to ?? today, SeesCosts), cancellationToken);
+    }
+
+    [HttpGet("internal-transfers/sheet")]
+    [Authorize(Policy = Permissions.InventoryView)]
+    public async Task<IActionResult> GetSheet([FromQuery] DateOnly? from, [FromQuery] DateOnly? to, CancellationToken cancellationToken)
+    {
+        var today = calendar.BusinessDateOf(DateTime.UtcNow);
+        var (start, end) = (from ?? today.AddDays(-30), to ?? today);
+        var transfers = await sender.Send(new GetInternalTransfersQuery(start, end, SeesCosts), cancellationToken);
+        return File(InternalTransferWorkbook.Build(transfers, start, end), SheetFiles.ContentType, $"internal-transfers-{start:yyyy-MM-dd}-{end:yyyy-MM-dd}.xlsx");
+    }
+
+    [HttpGet("internal-transfers/{id:guid}")]
+    [Authorize(Policy = Permissions.InventoryView)]
+    public Task<InternalTransferDto> Get(Guid id, CancellationToken cancellationToken) =>
+        sender.Send(new GetInternalTransferQuery(id, SeesCosts), cancellationToken);
+
+    // Posted as it is made; its id made by the app, so sent again it comes back as it is.
+    [HttpPost("internal-transfers")]
+    [Authorize(Policy = Permissions.InventoryManage)]
+    public Task<InternalTransferDto> Post(PostTransferRequest request, CancellationToken cancellationToken) =>
+        sender.Send(new PostInternalTransferCommand(
+            request.Id, request.FromLocationId, request.ToLocationId, request.Lines ?? [], request.Notes, UserClaims.IdOf(User) ?? string.Empty,
+            UserClaims.NameOf(User), SeesCosts), cancellationToken);
+
+    [HttpPost("internal-transfers/{id:guid}/void")]
+    [Authorize(Policy = Permissions.InventoryManage)]
+    public Task<InternalTransferDto> Void(Guid id, CancellationToken cancellationToken) =>
+        sender.Send(new VoidInternalTransferCommand(id, UserClaims.NameOf(User), SeesCosts), cancellationToken);
+
+    // The branch's locations in use, and the structure: the screens' location lists.
+    [HttpGet("stock-locations")]
+    [CostingTab(CostingTabs.All)]
+    [Authorize(Policy = Permissions.InventoryView)]
+    public Task<StockLocationsDto> GetLocations(CancellationToken cancellationToken) => sender.Send(new GetStockLocationsQuery(), cancellationToken);
+
+    // What each location of the branch has.
+    [HttpGet("location-stock")]
+    [Authorize(Policy = Permissions.InventoryView)]
+    public Task<LocationStockDto> GetLocationStock(CancellationToken cancellationToken) =>
+        sender.Send(new GetLocationStockQuery(SeesCosts), cancellationToken);
+
+    private bool SeesCosts => UserClaims.RoleOf(User) is { } role && RolePermissions.Has(role, Permissions.CostingView);
+}
+
+public sealed record PostTransferRequest(Guid Id, Guid FromLocationId, Guid ToLocationId, IReadOnlyList<TransferLineInput>? Lines, string? Notes);
 ```
 
 

@@ -26,6 +26,7 @@ import { SortControl } from '../shared/sort-control';
 import { GridKeys } from '../shared/grid-keys';
 import { MaterialPicker } from './material-picker';
 import { InfoTip } from './info-tip';
+import { LocationSelect, locationParam } from './location-select';
 
 type WasteSort = 'date' | 'worth';
 
@@ -51,6 +52,7 @@ interface Line {
 @Component({
   selector: 'app-waste-page',
   imports: [
+    LocationSelect,
     InfoTip,
     FilterSelect,
     GridKeys,
@@ -150,6 +152,7 @@ interface Line {
         </table>
       </div>
       <div class="toolbar actions">
+        <app-location-select [(value)]="location" label="Thrown away from · موقع الهالك" ariaLabel="Thrown away from" />
         <span class="spacer"></span>
         <button mat-flat-button (click)="save()" [disabled]="!ready() || saving()"><mat-icon>delete_sweep</mat-icon> Record waste</button>
       </div>
@@ -384,6 +387,8 @@ export class WastePage {
   protected readonly recent = signal<SpoilageEntry[]>([]);
   protected readonly loading = signal(true);
   protected readonly saving = signal(false);
+  // Where it was thrown away (with locations only).
+  protected readonly location = signal<string | null>(null);
   protected readonly error = signal<string | null>(null);
   protected readonly lines = signal<Line[]>([this.blank()]);
 
@@ -501,7 +506,7 @@ export class WastePage {
         reason: this.reasonOf(l),
         responsibleStationId: this.stationFor(l) || null,
       }));
-      await firstValueFrom(this.api.recordSpoilage(this.spoilageId, lines));
+      await firstValueFrom(this.api.recordSpoilage(this.spoilageId, lines, locationParam(this.location())));
       this.notify.info('Waste recorded.');
       this.lines.set([this.blank()]);
       this.spoilageId = crypto.randomUUID();

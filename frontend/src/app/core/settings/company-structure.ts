@@ -29,6 +29,8 @@ export interface InventoryLocation {
   isActive: boolean;
   // The first branch's main store: an open-space shop's one implicit store.
   isDefault: boolean;
+  // The kitchen stations it serves: what the kitchen uses of their materials is taken from here.
+  stationIds?: string[];
 }
 
 export interface CompanyStructure {
@@ -56,6 +58,7 @@ export interface LocationInput {
   nameAr: string | null;
   kind: LocationKind;
   isActive: boolean;
+  stationIds?: string[];
 }
 
 export function isMultiBranch(mode: OperatingMode | undefined): boolean {

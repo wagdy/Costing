@@ -705,7 +705,7 @@ internal sealed class ApplicationExceptionHandler(
 
 طبقة التطبيق: MediatR يجد الـ Handlers تلقائيًا، والخدمات الداخلية المشتركة (`TreasuryWriter`, `InvoicePoster`, `HrOutbox`, …) بعمر `Scoped`.
 
-> 📄 **`backend/src/Costing.Application/DependencyInjection.cs`** — 48 سطر
+> 📄 **`backend/src/Costing.Application/DependencyInjection.cs`** — 50 سطر
 
 ```csharp
 using Microsoft.Extensions.DependencyInjection;
@@ -727,6 +727,8 @@ public static class DependencyInjection
         services.AddScoped<Books.BooksGuard>();
         services.AddScoped<Books.PeriodLockReader>();
         services.AddScoped<Company.CompanyStructureReader>();
+        services.AddScoped<Stock.StockPlaces>();
+        services.AddScoped<Stock.TransferReading>();
         // The days of the records each request names.
         foreach (var lookup in typeof(DependencyInjection).Assembly.GetTypes()
                      .Where(t => t is { IsClass: true, IsAbstract: false } && !t.IsGenericTypeDefinition))
@@ -761,7 +763,7 @@ public static class DependencyInjection
 
 البنية التحتية: كل "منفذ" يُربط بتطبيقه. `Singleton` للساعة وملف الشركة والتشفير؛ `Scoped` لكل ما يلمس `CostingDbContext`؛ `RetryOnConflictBehavior` يلف كل أمر؛ و `AddHttpClient` + `AddHostedService<HrSyncWorker>` للربط مع HR.
 
-> 📄 **`backend/src/Costing.Infrastructure/DependencyInjection.cs`** — 137 سطر
+> 📄 **`backend/src/Costing.Infrastructure/DependencyInjection.cs`** — 143 سطر
 
 ```csharp
 using MediatR;
@@ -812,8 +814,10 @@ public static class DependencyInjection
         services.TryAddSingleton(TimeProvider.System);
 
         // Each new record given its branch as it is saved (BranchStampInterceptor).
+        // Each new record given its branch, then each stock entry its location and each branch its
+        // cost, as it is saved (BranchStampInterceptor, then StockLedgerInterceptor).
         services.AddDbContext<CostingDbContext>((sp, o) =>
-            o.UseNpgsql(connectionString, CostingDbContext.ConfigureNpgsql).AddInterceptors(new BranchStampInterceptor(sp)));
+            o.UseNpgsql(connectionString, CostingDbContext.ConfigureNpgsql).AddInterceptors(new BranchStampInterceptor(sp), new StockLedgerInterceptor(sp)));
         services.AddScoped<IUnitOfWork>(sp => sp.GetRequiredService<CostingDbContext>());
         services.AddTransient(typeof(IPipelineBehavior<,>), typeof(RetryOnConflictBehavior<,>));
 
@@ -874,6 +878,10 @@ public static class DependencyInjection
         services.AddScoped<Domain.Company.IInventoryLocationRepository, InventoryLocationRepository>();
         services.AddScoped<Costing.Application.Company.ICurrentBranch, CurrentBranch>();
         services.TryAddScoped<Costing.Application.Company.IBranchRequest, NoBranchRequest>();
+        // Stock by location, cost by branch, and the transfers between a branch's locations.
+        services.AddScoped<Costing.Application.Stock.IStockBalances, StockBalances>();
+        services.AddScoped<Domain.Stock.IMaterialBranchStockRepository, MaterialBranchStockRepository>();
+        services.AddScoped<Domain.Stock.IInternalTransferRepository, InternalTransferRepository>();
         services.AddScoped<IExpenseItemRepository, ExpenseItemRepository>();
         services.AddScoped<IPrepRecipeRepository, PrepRecipeRepository>();
         services.AddScoped<IProductionOrderRepository, ProductionOrderRepository>();
@@ -1475,6 +1483,7 @@ Costing/
                     FixedAssetsController.cs
                     HrIntegrationController.cs
                     IntelligenceController.cs
+                    InternalTransfersController.cs
                     InventoryController.cs
                     MenuSalesController.cs
                     PeriodLockController.cs
@@ -1565,6 +1574,9 @@ Costing/
                     Staff.cs
                 Stations/
                     Stations.cs
+                Stock/
+                    InternalTransfers.cs
+                    StockPlaces.cs
                 StockCounts/
                     StockCounts.cs
                 Suppliers/
@@ -1640,6 +1652,9 @@ Costing/
                     StaffMember.cs
                 Stations/
                     KitchenStation.cs
+                Stock/
+                    InternalTransfer.cs
+                    MaterialBranchStock.cs
                 StockCounts/
                     IStockCountRepository.cs
                     StockCount.cs
@@ -1713,12 +1728,14 @@ Costing/
                         20261118092632_AddKitchenStations.cs
                         20261118122831_AddPeriodLockAndSecurityAudit.cs
                         20261118131754_AddCompanyStructure.cs
+                        20261118184431_AddStockLocations.cs
                         CostingDbContextModelSnapshot.cs
                     PosIntegrationPersistence.cs
                     PurchaseOrderPersistence.cs
                     RetryOnConflictBehavior.cs
                     SecurityPersistence.cs
                     StationPersistence.cs
+                    StockPersistence.cs
                 Reports/
                     BreakEvenService.cs
                     BurdenedCostService.cs
@@ -1755,6 +1772,7 @@ Costing/
                 DailyBreakEvenApiTests.cs
                 FixedAssetsApiTests.cs
                 HrIntegrationApiTests.cs
+                InternalTransfersApiTests.cs
                 PeriodLockApiTests.cs
                 PosIntegrationApiTests.cs
                 PurchaseOrdersApiTests.cs
@@ -1782,6 +1800,7 @@ Costing/
                 RawMaterialImportTests.cs
                 RecipeSheetTests.cs
                 RecipesToMenuTests.cs
+                StockLocationTests.cs
                 TestCosting.cs
                 TreasuryTests.cs
             Costing.Domain.Tests/
@@ -1805,6 +1824,7 @@ Costing/
                 RecipeCostsTests.cs
                 RecipeTests.cs
                 StockCountTests.cs
+                StockLocationTests.cs
                 StockRequirementsTests.cs
                 SupplierTests.cs
                 TreasuryTests.cs
@@ -1826,6 +1846,7 @@ Costing/
                 PurchaseOrdersTests.cs
                 StaffMealsAndInflationTests.cs
                 StationVarianceTests.cs
+                StockLocationTests.cs
                 SupplierAccountsTests.cs
                 TestSystem.cs
                 Till.cs
@@ -1875,6 +1896,7 @@ Costing/
                         intelligence.api.ts
                         menu-sales.api.ts
                         staff.ts
+                        stock.api.ts
                     http/
                         error-message.spec.ts
                         error-message.ts
@@ -1974,6 +1996,8 @@ Costing/
                         info-tips.ts
                         intelligence-shell.ts
                         intelligence.spec.ts
+                        internal-transfers-page.spec.ts
+                        internal-transfers-page.ts
                         invoice-lines.spec.ts
                         invoice-lines.ts
                         invoice-page.spec.ts
@@ -1986,6 +2010,7 @@ Costing/
                         invoices-page.ts
                         kpis-page.spec.ts
                         kpis-page.ts
+                        location-select.ts
                         material-dialog.spec.ts
                         material-dialog.ts
                         material-history-dialog.spec.ts

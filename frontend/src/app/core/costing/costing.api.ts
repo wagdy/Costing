@@ -125,7 +125,9 @@ export type StockMovementReason =
   | 'OpeningStock'
   | 'StaffMeal'
   | 'Hospitality'
-  | 'RecipeTasting';
+  | 'RecipeTasting'
+  | 'TransferOut'
+  | 'TransferIn';
 
 export const stockCardTypes: { type: StockCardMovementType; en: string; ar: string }[] = [
   { type: 'Opening', en: 'Opening', ar: 'افتتاحي' },
@@ -747,6 +749,8 @@ export interface StockCountLine {
 }
 
 export interface StockCount {
+  // The location counted; none: the whole branch.
+  locationId?: string | null;
   id: string;
   status: StockCountStatus;
   startedAtUtc: string;
@@ -959,6 +963,8 @@ export interface PurchaseAttachment {
 }
 
 export interface PurchaseInvoice {
+  // Where it is put away; none: the main store.
+  locationId?: string | null;
   id: string;
   status: PurchaseInvoiceStatus;
   supplierId: string | null;
@@ -1268,6 +1274,8 @@ export interface ProductionPreview {
 }
 
 export interface MakeProductionOrder {
+  // Where it is made; none: the prep item's station's location, or the main store.
+  locationId?: string | null;
   prepItemId: string;
   plannedQuantity: number;
   producedQuantity: number;
@@ -1316,6 +1324,8 @@ export interface SaveSupplier {
 export type SupplierRemoval = 'Deleted' | 'Archived';
 
 export interface SavePurchaseInvoice {
+  // Where it is put away; none: the main store.
+  locationId?: string | null;
   supplierId: string | null;
   supplierInvoiceNumber: string | null;
   invoiceDate: string | null;
@@ -1507,6 +1517,8 @@ export interface PurchaseOrderPlan {
 // are owed (سداد مورد), no invoice and no stock, and employees' advances (سلفة). A payment's or an
 // advance's transactionId is made here, once.
 export interface PurchaseBatch {
+  // Where the day's deliveries are put away; none: the main store.
+  locationId?: string | null;
   invoiceDate: string;
   paymentMethod: PurchasePaymentMethod;
   revenueDate: string | null;
@@ -2317,8 +2329,10 @@ export class CostingApi {
     kind?: StockCountKind,
     scope?: CountScopeInput,
     blind = false,
+    // The location counted, as the count starts; none: the whole branch.
+    locationId: string | null = null,
   ): Observable<StockCount> {
-    return this.http.put<StockCount>(`/api/inventory/stock-counts/${id}`, { lines, ...(kind ? { kind } : {}), ...(scope ?? {}) }, {
+    return this.http.put<StockCount>(`/api/inventory/stock-counts/${id}`, { lines, ...(kind ? { kind } : {}), ...(scope ?? {}), ...(locationId ? { locationId } : {}) }, {
       params: blind ? { blind: 'true' } : {},
     });
   }
@@ -2379,8 +2393,9 @@ export class CostingApi {
   }
 
   // spoilageId is made here, once per entry, as purchaseId is.
-  recordSpoilage(spoilageId: string, lines: SpoilageLine[]): Observable<unknown> {
-    return this.http.post('/api/inventory/spoilage', { spoilageId, lines });
+  // locationId: where it was thrown away; none: the location serving its station, or the main store.
+  recordSpoilage(spoilageId: string, lines: SpoilageLine[], locationId: string | null = null): Observable<unknown> {
+    return this.http.post('/api/inventory/spoilage', { spoilageId, lines, ...(locationId ? { locationId } : {}) });
   }
 
   spoilage(days = 30): Observable<SpoilageEntry[]> {
@@ -3496,6 +3511,8 @@ export const staffMealKindLabels: Record<StaffMealKind, { en: string; ar: string
 
 // A line: a material or prep item (quantity in its own unit: g, ml, pieces) or a recipe (whole plates).
 export interface RecordStaffMeal {
+  // Where it was taken from; none: the location serving its station, or the main store.
+  locationId?: string | null;
   entryId: string;
   kind: StaffMealKind;
   lines: { rawMaterialId: string | null; recipeId: string | null; quantity: number }[];

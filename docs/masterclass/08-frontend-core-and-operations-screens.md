@@ -444,7 +444,7 @@ export const appConfig: ApplicationConfig = {
 
 كل قسم بـ `canActivate: [costingTabGuard('Materials')]` و `loadComponent` كسول، والأقسام الفرعية (الوصفات، المشتريات، الماليات، التقارير، التحليلات) كأبناء لـ Shell خاص بها، والمسار الفارغ يفتح أول قسم يملكه المستخدم.
 
-> 📄 **`frontend/src/app/app.routes.ts`** — 336 سطر
+> 📄 **`frontend/src/app/app.routes.ts`** — 342 سطر
 
 ```ts
 import { Routes } from '@angular/router';
@@ -625,6 +625,12 @@ const costingChildren: Routes = [
     path: 'counts/:id',
     canActivate: [costingTabGuard('Counts')],
     loadComponent: () => import('./features/costing/count-sheet-page').then((m) => m.CountSheetPage),
+  },
+  {
+    // Stock moved between a branch's locations, and what each holds: for whoever counts or keeps the stock.
+    path: 'internal-transfers',
+    canActivate: [costingTabGuard('Counts', 'Materials')],
+    loadComponent: () => import('./features/costing/internal-transfers-page').then((m) => m.InternalTransfersPage),
   },
   {
     // Waste: spoilage and breakage (?spoilage= opens an entry), and staff meals & hospitality apart.
@@ -1437,7 +1443,7 @@ function insert(field: HTMLInputElement, text: string): void {
 
 `costing.api.ts`: أكبر ملف: كل الأنواع والنداءات لـ `api/costing` و `api/inventory` و `api/financials` (الخامات، التكاليف، الوصفات، المصنعات، الإنتاج، المشتريات، الجرد، الهالك، الخزنة، التقارير، الموافقات…). الأنواع تطابق DTOs الـ API، والـ enums كـ union types، وقواميس التسميات ثنائية اللغة (`Record<Kind, { en; ar }>`) تجبر TypeScript على تسمية كل حالة.
 
-> 📄 **`frontend/src/app/core/costing/costing.api.ts`** — 3526 سطر
+> 📄 **`frontend/src/app/core/costing/costing.api.ts`** — 3543 سطر
 
 ```ts
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
@@ -1567,7 +1573,9 @@ export type StockMovementReason =
   | 'OpeningStock'
   | 'StaffMeal'
   | 'Hospitality'
-  | 'RecipeTasting';
+  | 'RecipeTasting'
+  | 'TransferOut'
+  | 'TransferIn';
 
 export const stockCardTypes: { type: StockCardMovementType; en: string; ar: string }[] = [
   { type: 'Opening', en: 'Opening', ar: 'افتتاحي' },
@@ -2189,6 +2197,8 @@ export interface StockCountLine {
 }
 
 export interface StockCount {
+  // The location counted; none: the whole branch.
+  locationId?: string | null;
   id: string;
   status: StockCountStatus;
   startedAtUtc: string;
@@ -2401,6 +2411,8 @@ export interface PurchaseAttachment {
 }
 
 export interface PurchaseInvoice {
+  // Where it is put away; none: the main store.
+  locationId?: string | null;
   id: string;
   status: PurchaseInvoiceStatus;
   supplierId: string | null;
@@ -2710,6 +2722,8 @@ export interface ProductionPreview {
 }
 
 export interface MakeProductionOrder {
+  // Where it is made; none: the prep item's station's location, or the main store.
+  locationId?: string | null;
   prepItemId: string;
   plannedQuantity: number;
   producedQuantity: number;
@@ -2758,6 +2772,8 @@ export interface SaveSupplier {
 export type SupplierRemoval = 'Deleted' | 'Archived';
 
 export interface SavePurchaseInvoice {
+  // Where it is put away; none: the main store.
+  locationId?: string | null;
   supplierId: string | null;
   supplierInvoiceNumber: string | null;
   invoiceDate: string | null;
@@ -2949,6 +2965,8 @@ export interface PurchaseOrderPlan {
 // are owed (سداد مورد), no invoice and no stock, and employees' advances (سلفة). A payment's or an
 // advance's transactionId is made here, once.
 export interface PurchaseBatch {
+  // Where the day's deliveries are put away; none: the main store.
+  locationId?: string | null;
   invoiceDate: string;
   paymentMethod: PurchasePaymentMethod;
   revenueDate: string | null;
@@ -3759,8 +3777,10 @@ export class CostingApi {
     kind?: StockCountKind,
     scope?: CountScopeInput,
     blind = false,
+    // The location counted, as the count starts; none: the whole branch.
+    locationId: string | null = null,
   ): Observable<StockCount> {
-    return this.http.put<StockCount>(`/api/inventory/stock-counts/${id}`, { lines, ...(kind ? { kind } : {}), ...(scope ?? {}) }, {
+    return this.http.put<StockCount>(`/api/inventory/stock-counts/${id}`, { lines, ...(kind ? { kind } : {}), ...(scope ?? {}), ...(locationId ? { locationId } : {}) }, {
       params: blind ? { blind: 'true' } : {},
     });
   }
@@ -3821,8 +3841,9 @@ export class CostingApi {
   }
 
   // spoilageId is made here, once per entry, as purchaseId is.
-  recordSpoilage(spoilageId: string, lines: SpoilageLine[]): Observable<unknown> {
-    return this.http.post('/api/inventory/spoilage', { spoilageId, lines });
+  // locationId: where it was thrown away; none: the location serving its station, or the main store.
+  recordSpoilage(spoilageId: string, lines: SpoilageLine[], locationId: string | null = null): Observable<unknown> {
+    return this.http.post('/api/inventory/spoilage', { spoilageId, lines, ...(locationId ? { locationId } : {}) });
   }
 
   spoilage(days = 30): Observable<SpoilageEntry[]> {
@@ -4938,6 +4959,8 @@ export const staffMealKindLabels: Record<StaffMealKind, { en: string; ar: string
 
 // A line: a material or prep item (quantity in its own unit: g, ml, pieces) or a recipe (whole plates).
 export interface RecordStaffMeal {
+  // Where it was taken from; none: the location serving its station, or the main store.
+  locationId?: string | null;
   entryId: string;
   kind: StaffMealKind;
   lines: { rawMaterialId: string | null; recipeId: string | null; quantity: number }[];
@@ -8896,7 +8919,7 @@ export class InfoTip implements OnDestroy {
 ```
 
 
-> 📄 **`frontend/src/app/features/costing/info-tips.ts`** — 1241 سطر
+> 📄 **`frontend/src/app/features/costing/info-tips.ts`** — 1285 سطر
 
 ```ts
 // What each figure on the costing screens is, and how it is worked out, in Arabic and English: the
@@ -10015,6 +10038,50 @@ export const infoTips = {
       ar: 'تُجمع الصفوف حسب التاريخ وتُستورد من الأقدم. يبدأ الملف من أول يوم بعد آخر يوم مُقفل لم تُسجل مبيعاته، والأيام متتالية (يوم الإغلاق يُسجل أولاً من تقفيل اليوم)، ولا يوم في المستقبل. تُعرض معاينة أولاً، ثم تُسجل كل الأيام مع مسودة تقفيل لكل يوم، أو لا يُسجل شيء.',
     },
   ),
+  stockLocation: tip(
+    { en: 'Stock location', ar: 'موقع المخزون' },
+    {
+      en: 'Where in the branch the stock is put or taken: the main store, the kitchen, the bar. Each location keeps its own quantity; the branch keeps one average cost for all of them.',
+      ar: 'مكان المخزون داخل الفرع: المخزن الرئيسي أو المطبخ أو البار. لكل موقع رصيده، وللفرع متوسط تكلفة واحد لكل مواقعه.',
+    },
+    {
+      en: 'A location’s stock is the sum of its entries. Left as the main store, a delivery is put away there; what the kitchen uses comes from the location serving the material’s station.',
+      ar: 'رصيد الموقع هو مجموع حركاته. الاستلام في المخزن الرئيسي ما لم يُختر غيره، وما يستهلكه المطبخ يُصرف من الموقع المرتبط بقسم الخامة.',
+    },
+  ),
+  internalTransfer: tip(
+    { en: 'Internal transfer', ar: 'التحويل الداخلي' },
+    {
+      en: 'Stock moved from one location of the branch to another, the main store to the kitchen or the bar. Nothing is bought, used or lost: only where it is changes.',
+      ar: 'نقل المخزون من موقع لآخر داخل الفرع، من المخزن الرئيسي للمطبخ أو البار. لا شراء ولا استهلاك ولا هالك: يتغير المكان فقط.',
+    },
+    {
+      en: 'Out of one location and into the other at the branch’s average cost: no cost of the period. Only what the location it leaves has can be moved. Voided, both sides go back.',
+      ar: 'يُصرف من موقع ويُضاف لآخر بمتوسط تكلفة الفرع، بلا أثر على التكلفة. لا يُحوَّل أكثر من رصيد موقع الصرف، والإلغاء يعيد الطرفين.',
+    },
+  ),
+  locationStock: tip(
+    { en: 'Stock by location', ar: 'الرصيد حسب الموقع' },
+    {
+      en: 'What each location of the branch holds of each material, with the branch’s total and its value.',
+      ar: 'رصيد كل خامة في كل موقع من مواقع الفرع، مع إجمالي الفرع وقيمته.',
+    },
+    {
+      en: 'Each figure is the sum of the location’s entries: deliveries, transfers in and out, use, waste and counts. Value: the total at the branch’s average cost.',
+      ar: 'كل رقم هو مجموع حركات الموقع: الاستلام والتحويل والاستهلاك والهالك والجرد. القيمة: الإجمالي بمتوسط تكلفة الفرع.',
+    },
+  ),
+  locationStations: tip(
+    { en: 'Stations served', ar: 'الأقسام المخدومة' },
+    {
+      en: 'The kitchen or bar stations that take their stock from this location: what their dishes use when sold comes off its shelves.',
+      ar: 'أقسام المطبخ أو البار التي تسحب من هذا الموقع: ما تستهلكه أصنافها عند البيع يُخصم من رصيده.',
+    },
+    {
+      en: 'A station is served by one location of a branch. A material whose station no location serves is taken from the main store.',
+      ar: 'يخدم القسمَ موقعٌ واحد في الفرع. والخامة التي لا يخدم قسمَها أي موقع تُصرف من المخزن الرئيسي.',
+    },
+  ),
   structureOpenSpace: tip(
     { en: 'Single branch, open space', ar: 'فرع واحد بمساحة مفتوحة' },
     {
@@ -10143,12 +10210,14 @@ export type InfoTipKey = keyof typeof infoTips;
 ```
 
 
-> 📄 **`frontend/src/app/features/costing/costing-shell.ts`** — 50 سطر
+> 📄 **`frontend/src/app/features/costing/costing-shell.ts`** — 62 سطر
 
 ```ts
 import { Component, computed, inject } from '@angular/core';
 import { RouterOutlet } from '@angular/router';
 import { AuthService } from '../../core/auth/auth.service';
+import { Company } from '../../core/settings/company';
+import { hasLocations } from '../../core/settings/company-structure';
 import { Permissions } from '../../core/auth/permissions';
 import { CostingAccess, costingGroups, costingTabs } from '../../core/costing/costing-tabs';
 import { SideLayout, SideSection } from '../shared/side-layout';
@@ -10175,11 +10244,21 @@ export class CostingShell {
   private readonly access = inject(CostingAccess);
   private readonly auth = inject(AuthService);
   private readonly approvals = inject(Approvals);
+  private readonly company = inject(Company);
 
   protected readonly sections = computed<SideSection[]>(() => {
     const waiting = this.approvals.pending().length;
+    const tabs: SideSection[] = costingTabs.filter((t) => this.access.has(t.tab));
+    // Internal transfers, once the company keeps stock in more than one place: after the counts, for
+    // whoever counts or keeps the raw materials.
+    if (hasLocations(this.company.mode()) && (this.access.has('Counts') || this.access.has('Materials'))) {
+      const after = tabs.findIndex((t) => t.path === (this.access.has('Counts') ? 'counts' : 'waste'));
+      tabs.splice(after < 0 ? tabs.length : after + 1, 0, {
+        path: 'internal-transfers', en: 'Internal transfers', ar: 'التحويلات الداخلية', icon: 'move_down', group: costingGroups.operations,
+      });
+    }
     return [
-      ...costingTabs.filter((t) => this.access.has(t.tab)),
+      ...tabs,
       ...(this.auth.can(Permissions.InventoryManage)
         ? [{
             path: 'approvals', en: 'Approvals', ar: 'طلبات معلقة', icon: 'pending_actions', group: costingGroups.finance,
@@ -17501,7 +17580,7 @@ export class PrepItemPage {
 
 `ProductionPage`: اختر المصنّع، المخطط (يحدد المكونات بوصفته)، والمنتج فعلًا؛ راجع ما ستأخذه مقابل السجلات وتكلفتها بمتوسط اليوم؛ ثم سجّل (مدير) أو اطلب. و `ProductionOrderDialog`: دفعة كما صُنعت، للقراءة.
 
-> 📄 **`frontend/src/app/features/costing/production-page.ts`** — 568 سطر
+> 📄 **`frontend/src/app/features/costing/production-page.ts`** — 575 سطر
 
 ```ts
 import { DatePipe, DecimalPipe } from '@angular/common';
@@ -17525,6 +17604,7 @@ import { NotifyService } from '../../core/ui/notify.service';
 import { Approvals, pendingLabel } from './approvals';
 import { showProductionOrder } from './production-order-dialog';
 import { ItemPicker, PickItem } from '../shared/item-picker';
+import { LocationSelect, locationParam } from './location-select';
 
 const baseLabels: Record<UnitOfMeasure, string> = { Gram: 'g', Millilitre: 'ml', Piece: 'pc' };
 
@@ -17539,6 +17619,7 @@ const baseLabels: Record<UnitOfMeasure, string> = { Gram: 'g', Millilitre: 'ml',
 @Component({
   selector: 'app-production-page',
   imports: [
+    LocationSelect,
     ItemPicker,
     DatePipe,
     DecimalPipe,
@@ -17589,6 +17670,7 @@ const baseLabels: Record<UnitOfMeasure, string> = { Gram: 'g', Millilitre: 'ml',
               <app-item-picker [items]="prepChoices()" [value]="prepItemId" (valueChange)="prepItemId = $event; changed()" label="Prep item"
                 [disabled]="!!editing()" />
             </div>
+            <app-location-select [(value)]="location" label="Made in · موقع التشغيل" ariaLabel="Made in" />
             <mat-form-field>
               <mat-label>Planned · الكمية المخططة</mat-label>
               <input matInput type="number" min="0" step="any" [(ngModel)]="planned" (ngModelChange)="plannedChanged()" aria-label="Planned" />
@@ -17879,6 +17961,8 @@ export class ProductionPage {
   protected prepItemId: string | null = null;
   // In the prep item's display unit: 10 (kg).
   protected planned: number | null = null;
+  // Where it is made: its ingredients taken from there, the batch put there (with locations only).
+  protected readonly location = signal<string | null>(null);
   protected produced: number | null = null;
   protected notes = '';
   // Why a correction, for the manager.
@@ -17986,7 +18070,9 @@ export class ProductionPage {
         }
       } else {
         const made = await firstValueFrom(
-          this.api.makeProductionOrder(this.orderId, { ...quantities, prepItemId: item.id, requestId: this.requestId }),
+          this.api.makeProductionOrder(this.orderId, {
+            ...quantities, prepItemId: item.id, requestId: this.requestId, locationId: locationParam(this.location()),
+          }),
         );
         if (isRequested(made)) {
           await this.approvals.requested(made);
@@ -20202,7 +20288,7 @@ export class InvoiceLinesTable {
 ```
 
 
-> 📄 **`frontend/src/app/features/costing/purchases-page.ts`** — 1089 سطر
+> 📄 **`frontend/src/app/features/costing/purchases-page.ts`** — 1095 سطر
 
 ```ts
 import { DatePipe } from '@angular/common';
@@ -20248,6 +20334,7 @@ import { InvoiceView } from './invoice-view';
 import { SupplierPaymentEntry, SupplierPaymentFields, newSupplierPayment, paymentProblems } from './supplier-payment-fields';
 import { ThreeWayMatchPanel, fillFromOrder } from './three-way-match';
 import { PickRow } from '../shared/pick-row';
+import { LocationSelect, locationParam } from './location-select';
 
 // A supplier's invoice, in two steps. Entered as it is written (who from, their number and date,
 // each line in the unit billed, and a photo of the paper), then saved as a draft and reviewed;
@@ -20270,7 +20357,7 @@ import { PickRow } from '../shared/pick-row';
 @Component({
   selector: 'app-purchases-page',
   providers: [PurchaseCatalog],
-  imports: [PickRow, 
+  imports: [LocationSelect, PickRow, 
     DatePipe,
     FormsModule,
     InvoiceLinesTable,
@@ -20434,6 +20521,7 @@ import { PickRow } from '../shared/pick-row';
           <mat-label>Invoice date · تاريخ الفاتورة</mat-label>
           <input matInput type="date" [(ngModel)]="invoiceDate" />
         </mat-form-field>
+        <app-location-select [(value)]="location" label="Receiving location · موقع الاستلام" ariaLabel="Receiving location" />
         @if (paymentMethod === 'BeforeTreasury') {
           <span class="muted before-treasury">Before the treasury · قبل الخزنة: no cash, no supplier's account</span>
         } @else {
@@ -20725,6 +20813,8 @@ export class PurchasesPage {
   }
   protected supplierInvoiceNumber = '';
   protected invoiceDate: string = PurchasesPage.today();
+  // Where it is put away: the main store unless another location is chosen (with locations only).
+  protected readonly location = signal<string | null>(null);
   // How it is paid: required to post. From a day's takings names the day: the till's business
   // day to begin with (after midnight, still the night before), and none later.
   protected paymentMethod: PurchasePaymentMethod | null = null;
@@ -21221,6 +21311,7 @@ export class PurchasesPage {
     this.invoiceDate = invoice.invoiceDate ?? PurchasesPage.today();
     this.paymentMethod = invoice.paymentMethod === 'BeforeTreasury' ? null : invoice.paymentMethod;
     this.revenueDate = invoice.revenueDate ?? this.today;
+    this.location.set(invoice.locationId ?? null);
     this.paper.set(invoice.attachment?.fileName ?? null);
     this.review.set(null);
     this.orderId.set(invoice.purchaseOrder?.purchaseOrderId ?? null);
@@ -21258,6 +21349,7 @@ export class PurchasesPage {
       discount: this.editor.discountToSave(partial),
       // Against a purchase order: which, and whether it closes it with what came.
       ...(this.orderId() ? { purchaseOrderId: this.orderId(), closesPurchaseOrder: this.closes() } : {}),
+      locationId: locationParam(this.location()),
     };
   }
 
@@ -21301,7 +21393,7 @@ export class PurchasesPage {
 
 فاتورة لكل مورد بمعرّف يُصنع هنا، نقدي/آجل لكل فاتورة، **الفواتير المسلّمة في تقفيل اليوم** تفتح جاهزة مع صورتها للنسخ ("مسلّمة"/"مطابقة")، والصور تُرسل بعد الترحيل، وما لم يُرسل يعرض "أعد المحاولة". والمسودة محفوظة محليًا (بلا الصور) حتى لا يضيع العمل.
 
-> 📄 **`frontend/src/app/features/costing/purchase-batch-page.ts`** — 1306 سطر
+> 📄 **`frontend/src/app/features/costing/purchase-batch-page.ts`** — 1311 سطر
 
 ```ts
 import { DatePipe } from '@angular/common';
@@ -21347,6 +21439,7 @@ import { paperIcon, viewInvoicePaper } from './invoice-paper';
 import { SupplierPaymentEntry, SupplierPaymentFields, newSupplierPayment, paymentProblems } from './supplier-payment-fields';
 import { PickRow } from '../shared/pick-row';
 import { ThreeWayMatchPanel, fillFromOrder } from './three-way-match';
+import { LocationSelect, locationParam } from './location-select';
 
 // One invoice of the batch: its id, made here; its supplier, number and lines, entered as on the
 // invoice screen; and the photo or scan of its paper, sent once the invoice is posted. On credit
@@ -21423,7 +21516,7 @@ const storageKey = 'otantik-till.purchase-batch';
 @Component({
   selector: 'app-purchase-batch-page',
   providers: [PurchaseCatalog],
-  imports: [PickRow,
+  imports: [LocationSelect, PickRow,
     DatePipe,
     FormsModule,
     InvoiceLinesTable,
@@ -21568,6 +21661,7 @@ const storageKey = 'otantik-till.purchase-batch';
             [errorStateMatcher]="checks.field('Invoice date')" />
           <mat-error>{{ checks.message('Invoice date') }}</mat-error>
         </mat-form-field>
+        <app-location-select [(value)]="location" label="Receiving location · موقع الاستلام" ariaLabel="Receiving location" />
         <mat-form-field subscriptSizing="dynamic" class="payment">
           <mat-label>Paid · طريقة الدفع</mat-label>
           <mat-select [(ngModel)]="paymentMethod" (ngModelChange)="changed()" aria-label="How they are paid" required
@@ -22021,6 +22115,8 @@ export class PurchaseBatchPage {
   protected readonly owedSuppliers = computed(() => this.balances().filter((b) => b.balance > 0));
 
   protected invoiceDate = PurchaseBatchPage.today();
+  // Where the day's deliveries are put away: the main store unless another is chosen (with locations only).
+  protected readonly location = signal<string | null>(null);
   protected paymentMethod: PurchasePaymentMethod | null = null;
   protected revenueDate = PurchaseBatchPage.today();
   protected today = PurchaseBatchPage.today();
@@ -22288,6 +22384,7 @@ export class PurchaseBatchPage {
     try {
       const made = await firstValueFrom(
         this.api.postPurchaseBatch({
+          locationId: locationParam(this.location()),
           invoiceDate: this.invoiceDate,
           paymentMethod: this.paymentMethod,
           revenueDate: this.paymentMethod === 'DayRevenue' ? this.revenueDate : null,
@@ -31631,7 +31728,7 @@ export class DailySalesImportDialog {
 
 `CountsPage`: المسودة الحالية (إن وجدت) والجرود المرحّلة، وزرّان للبدء: افتتاحي وجرد شامل، وقوائم الجرد اليومي السريع بنقرة واحدة (الأصناف المحددة بالنجمة، الفئة A، الأكثر انحرافًا، حسب الفئة) من `count-presets`، وأنواع الجرد بشرح (ⓘ) لكلٍّ. و `CountSheetPage`: ورقة العد بالأقسام، **حفظ تلقائي** بعد آخر إدخال بمهلة قصيرة ("طويلة بما يكفي لكتابة رقم، قصيرة بما لا يضيع شيء إن وُضع التابلت")، وتغيير النوع، وقيمة المسودة بأسعار اليوم، والترحيل. وفيها **وضع الجرد الأعمى**: مفروض على من لا يرى التكاليف، ومفتاح لغيره، يخفي الدفتري والفرق والتكلفة ويترك الكمية والملاحظة، وطباعة كشف جرد أعمى، ثم **مراجعة الفروقات** للمراجِع (الأكبر قيمة أولًا، أحمر للعجز وكهرماني للزيادة خارج النسبة المسموحة) وإرسال سطور لإعادة الجرد. والنجمة على صفحتي الخامات والمصنّعات تضيف الصنف للجرد اليومي.
 
-> 📄 **`frontend/src/app/features/costing/counts-page.ts`** — 496 سطر
+> 📄 **`frontend/src/app/features/costing/counts-page.ts`** — 506 سطر
 
 ```ts
 import { DatePipe } from '@angular/common';
@@ -31665,6 +31762,7 @@ import { FilterOption, FilterSelect } from '../shared/filter-select';
 import { SearchField } from '../shared/search-field';
 import { SortOption, SortState, smartMatch, sortItems } from '../shared/smart-search';
 import { SortControl } from '../shared/sort-control';
+import { LocationSelect, locationParam } from './location-select';
 
 type CountSort = 'date' | 'materials';
 
@@ -31684,6 +31782,7 @@ const countSorts: SortOption<CountSort>[] = [
 @Component({
   selector: 'app-counts-page',
   imports: [
+    LocationSelect,
     DatePipe,
     FilterSelect,
     InfoTip,
@@ -31738,9 +31837,11 @@ const countSorts: SortOption<CountSort>[] = [
             {{ d.review === 'Submitted' && canReconcile ? 'Review the count · مراجعة الجرد' : 'Continue the count' }}
           </a>
         } @else if (posted().length === 0) {
+          <app-location-select [(value)]="countAt" [wholeBranch]="true" label="Count where · مكان الجرد" ariaLabel="Count where" />
           <button mat-flat-button (click)="start('Opening')"><mat-icon>inventory</mat-icon> Opening stock <span class="inline-ar">جرد افتتاحي</span></button>
           <button mat-stroked-button (click)="start('Periodic')"><mat-icon>add</mat-icon> Full count <span class="inline-ar">جرد شامل</span></button>
         } @else {
+          <app-location-select [(value)]="countAt" [wholeBranch]="true" label="Count where · مكان الجرد" ariaLabel="Count where" />
           <button mat-flat-button (click)="start('Periodic')"><mat-icon>add</mat-icon> Full count <span class="inline-ar">جرد شامل</span></button>
           <button mat-stroked-button (click)="start('Opening')" matTooltip="For materials never counted yet: a material is opened once">
             <mat-icon>inventory</mat-icon> Opening stock <span class="inline-ar">جرد افتتاحي</span>
@@ -32054,9 +32155,13 @@ export class CountsPage {
     void this.load();
   }
 
+  // Where the next count is counted: a location of the branch, or the whole branch (with locations only).
+  protected readonly countAt = signal<string | null>(null);
+
   // A new count's id is made here; it is saved, of its kind, on its first entry.
   protected start(kind: StockCountKind): void {
-    void this.router.navigate(['/costing/counts', crypto.randomUUID()], { queryParams: { kind } });
+    const location = locationParam(this.countAt());
+    void this.router.navigate(['/costing/counts', crypto.randomUUID()], { queryParams: { kind, ...(location ? { location } : {}) } });
   }
 
   // A spot count started here, with what it covers, then counted on its sheet.
@@ -32067,7 +32172,9 @@ export class CountsPage {
     this.starting.set(true);
     const id = crypto.randomUUID();
     try {
-      await firstValueFrom(this.api.saveStockCount(id, [], 'Periodic', { scope: 'Spot', scopeMaterialIds: materialIds, scopeLabel: label }));
+      await firstValueFrom(
+        this.api.saveStockCount(id, [], 'Periodic', { scope: 'Spot', scopeMaterialIds: materialIds, scopeLabel: label }, false, locationParam(this.countAt())),
+      );
       void this.router.navigate(['/costing/counts', id]);
     } catch (error) {
       this.notify.error(error, 'The spot count could not be started.');
@@ -32133,7 +32240,7 @@ export class CountsPage {
 ```
 
 
-> 📄 **`frontend/src/app/features/costing/count-sheet-page.ts`** — 1261 سطر
+> 📄 **`frontend/src/app/features/costing/count-sheet-page.ts`** — 1280 سطر
 
 ```ts
 import { DatePipe, DecimalPipe } from '@angular/common';
@@ -32170,6 +32277,7 @@ import { NotifyService } from '../../core/ui/notify.service';
 import { InfoTip } from './info-tip';
 import { NoStation, Stations } from './stations';
 import { MatSelectModule } from '@angular/material/select';
+import { StockPlaces } from '../../core/costing/stock.api';
 
 interface Section {
   category: string;
@@ -32367,6 +32475,13 @@ const blindKey = 'costing.blindCount';
         </p>
       }
     } @else {
+      @if (places.shown()) {
+        <p class="scope-line location-line">
+          <span class="scope-badge"><mat-icon>inventory_2</mat-icon> Counted in · مكان الجرد</span>
+          <strong>{{ countedIn() }}</strong>
+          <app-info-tip tip="stockLocation" />
+        </p>
+      }
       @if (isSpot()) {
         <p class="scope-line">
           <span class="scope-badge"><mat-icon>bolt</mat-icon> {{ scopeLabels.Spot.en }} · {{ scopeLabels.Spot.ar }}</span>
@@ -32841,6 +32956,9 @@ export class CountSheetPage {
   readonly id = input.required<string>();
   // From the query: the kind a new count starts as (?kind=Opening).
   readonly kindParam = input<string | undefined>(undefined, { alias: 'kind' });
+  // The location a new count is counted in, as the counts page chose it; none: the whole branch.
+  readonly locationQuery = input<string | undefined>(undefined, { alias: 'location' });
+  protected readonly places = inject(StockPlaces);
   protected readonly kind = signal<StockCountKind>('Periodic');
 
   // Who does not see the costs counts blind, always; anyone else when they choose to.
@@ -32877,6 +32995,11 @@ export class CountSheetPage {
   // Posted, or voided since: either way read-only.
   protected readonly posted = computed(() => (this.count() && this.count()!.status !== 'Draft' ? this.count() : null));
   protected readonly isSpot = computed(() => this.count()?.scope === 'Spot');
+  // Where it is counted: its location, or the whole branch.
+  protected readonly countedIn = computed(() => {
+    const id = this.count()?.locationId ?? this.locationQuery() ?? null;
+    return id ? this.places.name(id) || 'Location' : 'Whole branch · كل الفرع';
+  });
 
   protected readonly countedCount = computed(() => Object.values(this.counted()).filter((v) => this.valid(v)).length);
   protected readonly recountCount = computed(() => (this.count()?.lines ?? []).filter((l) => l.recountRequested).length);
@@ -33021,6 +33144,7 @@ export class CountSheetPage {
 
   constructor() {
     void this.stations.load();
+    void this.places.load();
     effect(() => {
       const id = this.id();
       untracked(() => void this.load(id));
@@ -33292,7 +33416,9 @@ export class CountSheetPage {
     this.dirty = false;
     this.saveState.set('Saving…');
     try {
-      const saved = await firstValueFrom(this.api.saveStockCount(this.id(), lines, this.kind(), undefined, this.blind()));
+      const saved = await firstValueFrom(
+        this.api.saveStockCount(this.id(), lines, this.kind(), undefined, this.blind(), this.count() ? null : (this.locationQuery() ?? null)),
+      );
       // The records' figures as they stand now, for the reviewer; the review as it stands.
       if (saved) {
         this.count.set(saved);
@@ -33402,11 +33528,932 @@ function escape(value: string): string {
 
 **حسب قسم المطبخ:** صفحة الجرد تبدأ جردًا جزئيًا لقسم (`startStation`) من `presets.stations`، وورقة الجرد لها فلتر "حسب قسم المطبخ" يقصر الأقسام المعروضة **وكشف الجرد الأعمى المطبوع** على القسم (`sections` هي ما يُطبع)، واسم القسم في عنوان الكشف. والخامات والمصنعات لها عمود قسم بقائمة في كل صف وفلتر، وزر "Station for the N shown" يعيّن القسم لكل المعروض. والهالك له "القسم المسؤول" يبدأ بقسم الخامة.
 
+### 13.1 المواقع والتحويلات الداخلية
+
+`StockPlaces` (خدمة واحدة للتطبيق): مواقع الفرع، و `shown` صحيحة فقط مع نمط له مواقع وموقع واحد على الأقل؛ ولا تطلب شيئًا من الـ API في المساحة المفتوحة (تصل لـ `StockApi` عبر `Injector` عند الحاجة فقط). و `<app-location-select>` لا يرسم شيئًا إن لم تظهر المواقع، ويبدأ بالمخزن الرئيسي (أو "كل الفرع" في الجرد)، و `locationParam` تحوّل "كل الفرع" إلى null. يظهر في: الفاتورة ("موقع الاستلام")، ويومية المشتريات، والإنتاج ("موقع التصنيع")، والهالك، ووجبات العاملين، وبدء الجرد ("مكان الجرد"، ويُرسل لورقة الجرد كـ `?location=` مع أول حفظ، واسمه أعلى الورقة).
+
+> 📄 **`frontend/src/app/core/costing/stock.api.ts`** — 155 سطر
+
+```ts
+import { HttpClient } from '@angular/common/http';
+import { Injectable, Injector, computed, inject, signal } from '@angular/core';
+import { Observable, firstValueFrom } from 'rxjs';
+import { Company } from '../settings/company';
+import { InventoryLocation, LocationKind, OperatingMode, hasLocations } from '../settings/company-structure';
+
+// Stock by location (المخزون حسب الموقع) and the internal transfers between a branch's locations
+// (التحويلات الداخلية), as the API keeps them: only once the company keeps stock in more than one place.
+
+export type InternalTransferStatus = 'Posted' | 'Voided';
+
+export interface InternalTransferLine {
+  rawMaterialId: string;
+  material: string;
+  code: string | null;
+  quantity: number;
+  unit: string;
+  // Null for whoever does not see the costs.
+  unitCost: number | null;
+  lineTotal: number | null;
+}
+
+export interface InternalTransfer {
+  id: string;
+  number: string;
+  transferDate: string;
+  fromLocationId: string;
+  fromLocation: string;
+  fromLocationAr: string | null;
+  toLocationId: string;
+  toLocation: string;
+  toLocationAr: string | null;
+  status: InternalTransferStatus;
+  notes: string | null;
+  createdBy: string;
+  createdAtUtc: string;
+  voidedAtUtc: string | null;
+  voidedBy: string | null;
+  totalCost: number | null;
+  lines: InternalTransferLine[];
+}
+
+export interface NewTransfer {
+  id: string;
+  fromLocationId: string;
+  toLocationId: string;
+  lines: { rawMaterialId: string; quantity: number }[];
+  notes: string | null;
+}
+
+export interface StockLocations {
+  mode: OperatingMode;
+  branchId: string;
+  locations: InventoryLocation[];
+}
+
+export interface LocationColumn {
+  id: string;
+  name: string;
+  nameAr: string | null;
+  kind: LocationKind;
+  isActive: boolean;
+}
+
+export interface LocationStockRow {
+  rawMaterialId: string;
+  material: string;
+  code: string | null;
+  unit: string;
+  isPrepItem: boolean;
+  // By location id; a location with none is not there.
+  byLocation: Record<string, number>;
+  total: number;
+  averageCost: number | null;
+  value: number | null;
+}
+
+export interface LocationStock {
+  branchId: string;
+  locations: LocationColumn[];
+  rows: LocationStockRow[];
+}
+
+@Injectable({ providedIn: 'root' })
+export class StockApi {
+  private readonly http = inject(HttpClient);
+
+  locations(): Observable<StockLocations> {
+    return this.http.get<StockLocations>('/api/inventory/stock-locations');
+  }
+
+  locationStock(): Observable<LocationStock> {
+    return this.http.get<LocationStock>('/api/inventory/location-stock');
+  }
+
+  transfers(from: string, to: string): Observable<InternalTransfer[]> {
+    return this.http.get<InternalTransfer[]>('/api/inventory/internal-transfers', { params: { from, to } });
+  }
+
+  transfer(id: string): Observable<InternalTransfer> {
+    return this.http.get<InternalTransfer>(`/api/inventory/internal-transfers/${id}`);
+  }
+
+  // Posted as it is made; its id made here, so sent again it comes back as it is.
+  post(transfer: NewTransfer): Observable<InternalTransfer> {
+    return this.http.post<InternalTransfer>('/api/inventory/internal-transfers', transfer);
+  }
+
+  void(id: string): Observable<InternalTransfer> {
+    return this.http.post<InternalTransfer>(`/api/inventory/internal-transfers/${id}/void`, {});
+  }
+
+  sheet(from: string, to: string): Observable<Blob> {
+    return this.http.get('/api/inventory/internal-transfers/sheet', { params: { from, to }, responseType: 'blob' });
+  }
+}
+
+// The branch's locations, once the company has them: what the screens that take or put stock
+// somewhere offer; nothing, and no list shown, for an open-space shop.
+@Injectable({ providedIn: 'root' })
+export class StockPlaces {
+  // The API reached only once there are locations to read: an open-space shop asks for nothing.
+  private readonly injector = inject(Injector);
+  private readonly company = inject(Company);
+
+  readonly locations = signal<InventoryLocation[]>([]);
+  readonly shown = computed(() => hasLocations(this.company.mode()) && this.locations().length > 0);
+  // The branch's main store: where what names no location goes.
+  readonly mainStore = computed(() => this.locations().find((l) => l.kind === 'MainStore') ?? this.locations()[0] ?? null);
+  private loaded = false;
+
+  async load(again = false): Promise<void> {
+    if (!hasLocations(this.company.mode())) {
+      this.locations.set([]);
+      return;
+    }
+    if (this.loaded && !again) {
+      return;
+    }
+    try {
+      this.locations.set((await firstValueFrom(this.injector.get(StockApi).locations())).locations);
+      this.loaded = true;
+    } catch {
+      this.locations.set([]);
+    }
+  }
+
+  name(id: string | null | undefined): string {
+    const found = this.locations().find((l) => l.id === id);
+    return found ? found.name : '';
+  }
+}
+
+// "Whole branch" in a count's location list: none for the API.
+export const wholeBranch = '(whole-branch)';
+```
+
+
+> 📄 **`frontend/src/app/features/costing/location-select.ts`** — 71 سطر
+
+```ts
+import { Component, OnInit, effect, inject, input, model } from '@angular/core';
+import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatSelectModule } from '@angular/material/select';
+import { StockPlaces, wholeBranch } from '../../core/costing/stock.api';
+import { InfoTip } from './info-tip';
+import { InfoTipKey } from './info-tips';
+
+// Where stock is put or taken (موقع المخزون), once the company keeps it in more than one place:
+// the branch's locations in use, the main store chosen until another is. Nothing at all in an
+// open-space shop, whose one store is every entry's. A count may take the whole branch.
+@Component({
+  selector: 'app-location-select',
+  imports: [InfoTip, MatFormFieldModule, MatSelectModule],
+  template: `
+    @if (places.shown()) {
+      <mat-form-field class="location-select" subscriptSizing="dynamic">
+        <mat-label>{{ label() }}</mat-label>
+        <mat-select [value]="value()" (selectionChange)="value.set($event.value)" [aria-label]="ariaLabel()">
+          @if (wholeBranch()) {
+            <mat-option [value]="whole">Whole branch · كل الفرع</mat-option>
+          }
+          @for (l of places.locations(); track l.id) {
+            <mat-option [value]="l.id">{{ l.name }}@if (l.nameAr) { · {{ l.nameAr }}}</mat-option>
+          }
+        </mat-select>
+      </mat-form-field>
+      @if (tip(); as key) {
+        <app-info-tip [tip]="key" />
+      }
+    }
+  `,
+  styles: `
+    :host {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .location-select {
+      min-width: 220px;
+    }
+  `,
+})
+export class LocationSelect implements OnInit {
+  protected readonly places = inject(StockPlaces);
+  protected readonly whole = wholeBranch;
+
+  readonly label = input('Location · الموقع');
+  readonly ariaLabel = input('Location');
+  readonly wholeBranch = input(false);
+  readonly tip = input<InfoTipKey | null>('stockLocation');
+  // The location chosen: an id, or wholeBranch; set to the main store (or the whole branch) once
+  // the locations are read, when nothing is chosen yet.
+  readonly value = model<string | null>(null);
+
+  constructor() {
+    effect(() => {
+      if (this.value() === null && this.places.shown()) {
+        this.value.set(this.wholeBranch() ? wholeBranch : (this.places.mainStore()?.id ?? null));
+      }
+    });
+  }
+
+  ngOnInit(): void {
+    void this.places.load();
+  }
+}
+
+// The location to send: none for the whole branch, or before any is chosen.
+export function locationParam(value: string | null | undefined): string | null {
+  return !value || value === wholeBranch ? null : value;
+}
+```
+
+
+`InternalTransfersPage` (`/costing/internal-transfers`، في القائمة بعد الجرد فقط مع المواقع): تحويل جديد (من، إلى، زر تبديل، سطور بوحدة العد مع رصيد موقع الصرف بجانب كل سطر، بالأحمر إن زاد)، ثم القائمة بفترة وبحث وفلاتر من/إلى/الحالة، وطباعة **إذن التحويل** في نافذة خاصة بتوقيعي المسلِّم والمستلِم، و Excel، والإلغاء بعد تأكيد؛ ثم **الرصيد حسب الموقع** (عمود لكل موقع). والتكاليف مخفية عمن لا يراها.
+
+> 📄 **`frontend/src/app/features/costing/internal-transfers-page.ts`** — 671 سطر
+
+```ts
+import { DatePipe, DecimalPipe } from '@angular/common';
+import { Component, computed, inject, signal } from '@angular/core';
+import { FormsModule } from '@angular/forms';
+import { MatButtonModule } from '@angular/material/button';
+import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatIconModule } from '@angular/material/icon';
+import { MatInputModule } from '@angular/material/input';
+import { MatProgressBarModule } from '@angular/material/progress-bar';
+import { MatSelectModule } from '@angular/material/select';
+import { MatTooltipModule } from '@angular/material/tooltip';
+import { firstValueFrom } from 'rxjs';
+import { AuthService } from '../../core/auth/auth.service';
+import { Permissions } from '../../core/auth/permissions';
+import { CostingApi, MaterialCost, UnitOfMeasure, countUnit } from '../../core/costing/costing.api';
+import { InternalTransfer, LocationStock, StockApi, StockPlaces } from '../../core/costing/stock.api';
+import { errorMessage } from '../../core/http/error-message';
+import { MoneyPipe } from '../../core/ui/money.pipe';
+import { NotifyService } from '../../core/ui/notify.service';
+import { saveBlob } from '../../core/ui/save-blob';
+import { Company } from '../../core/settings/company';
+import { FilterOption, FilterSelect } from '../shared/filter-select';
+import { GridKeys } from '../shared/grid-keys';
+import { SearchField } from '../shared/search-field';
+import { smartMatch } from '../shared/smart-search';
+import { isoDay } from './financials';
+import { InfoTip } from './info-tip';
+import { MaterialPicker } from './material-picker';
+
+interface Line {
+  rawMaterialId: string | null;
+  // In the unit it is counted in (kg, L, pc), as a count takes it.
+  quantity: number | null;
+}
+
+// Internal transfers (التحويلات الداخلية): stock moved between two locations of the branch, the main
+// store to the kitchen or the bar, at the branch's average cost; nothing bought, used or lost. Made by
+// whoever keeps the stock, posted as made and voided whole; each printed as a slip for the two to
+// sign, and all of a period sent as a workbook. Below, what each location holds. Only once the
+// company keeps stock in more than one place.
+@Component({
+  selector: 'app-internal-transfers-page',
+  imports: [
+    DatePipe,
+    DecimalPipe,
+    FilterSelect,
+    FormsModule,
+    GridKeys,
+    InfoTip,
+    MatButtonModule,
+    MatFormFieldModule,
+    MatIconModule,
+    MatInputModule,
+    MatProgressBarModule,
+    MatSelectModule,
+    MatTooltipModule,
+    MaterialPicker,
+    MoneyPipe,
+    SearchField,
+  ],
+  template: `
+    <p class="note">
+      <app-info-tip tip="internalTransfer" />
+      Move stock from one location of the branch to another: the main store to the kitchen or the bar. Only where it is changes.
+      <span class="inline-ar">انقل المخزون من موقع لآخر داخل الفرع؛ يتغير المكان فقط.</span>
+    </p>
+    @if (loading()) {
+      <mat-progress-bar mode="indeterminate" />
+    } @else if (error()) {
+      <p class="error">{{ error() }}</p>
+    } @else if (!places.shown()) {
+      <p class="muted">
+        The company keeps its stock in one place: there is nowhere to move it. Add a location in Settings, Company structure, once it keeps sub-stores.
+        <span class="inline-ar">المخزون في مكان واحد؛ أضف المواقع من إعدادات هيكل الشركة.</span>
+      </p>
+    } @else {
+      @if (canMove()) {
+        <section class="new-transfer" aria-label="New transfer">
+          <h2 class="section-title">New transfer <span class="inline-ar">تحويل جديد</span></h2>
+          <div class="toolbar">
+            <mat-form-field subscriptSizing="dynamic" class="place">
+              <mat-label>From · من</mat-label>
+              <mat-select [ngModel]="from()" (ngModelChange)="from.set($event)" aria-label="From location">
+                @for (l of places.locations(); track l.id) {
+                  <mat-option [value]="l.id">{{ l.name }}@if (l.nameAr) { · {{ l.nameAr }}}</mat-option>
+                }
+              </mat-select>
+            </mat-form-field>
+            <button mat-icon-button (click)="swap()" matTooltip="Swap · تبديل" aria-label="Swap from and to"><mat-icon>swap_horiz</mat-icon></button>
+            <mat-form-field subscriptSizing="dynamic" class="place">
+              <mat-label>To · إلى</mat-label>
+              <mat-select [ngModel]="to()" (ngModelChange)="to.set($event)" aria-label="To location">
+                @for (l of places.locations(); track l.id) {
+                  <mat-option [value]="l.id">{{ l.name }}@if (l.nameAr) { · {{ l.nameAr }}}</mat-option>
+                }
+              </mat-select>
+            </mat-form-field>
+          </div>
+          @if (from() && from() === to()) {
+            <p class="error" role="alert">Choose two different locations. · اختر موقعين مختلفين.</p>
+          }
+          <div class="table-wrap">
+            <table class="grid" appGridKeys (appGridKeysAppend)="add()" aria-label="Transfer lines">
+              <thead>
+                <tr>
+                  <th>Material<span class="ar">الخامة</span></th>
+                  <th class="num">Quantity<span class="ar">الكمية</span></th>
+                  <th class="num">At {{ places.name(from()) }}<span class="ar">الرصيد بالمصدر</span></th>
+                  @if (seesCosts()) {
+                    <th class="num">Worth<span class="ar">القيمة</span></th>
+                  }
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                @for (line of lines(); track $index; let i = $index) {
+                  <tr>
+                    <td>
+                      <app-material-picker class="material" [materials]="materials()" [value]="line.rawMaterialId"
+                        (valueChange)="change(i, { rawMaterialId: $event })" [label]="'Material, line ' + (i + 1)" />
+                    </td>
+                    <td class="num">
+                      <mat-form-field subscriptSizing="dynamic" class="small">
+                        <input matInput type="number" min="0" step="any" [ngModel]="line.quantity" (ngModelChange)="change(i, { quantity: $event })"
+                          [attr.aria-label]="'Quantity, line ' + (i + 1)" />
+                        <span matTextSuffix>&nbsp;{{ unitOf(line) }}</span>
+                      </mat-form-field>
+                    </td>
+                    <td class="num" [class.short]="isShort(line)">
+                      @if (line.rawMaterialId) {
+                        {{ available(line) | number: '1.0-3' }} {{ unitOf(line) }}
+                      }
+                    </td>
+                    @if (seesCosts()) {
+                      <td class="num">{{ worth(line) === null ? '' : (worth(line) | money) }}</td>
+                    }
+                    <td>
+                      <button mat-icon-button (click)="remove(i)" [disabled]="lines().length === 1" aria-label="Remove line"><mat-icon>delete</mat-icon></button>
+                    </td>
+                  </tr>
+                }
+              </tbody>
+              <tfoot>
+                <tr>
+                  <td><button mat-button (click)="add()"><mat-icon>add</mat-icon> Add line</button></td>
+                  <td colspan="2"></td>
+                  @if (seesCosts()) {
+                    <td class="num">{{ total() | money }}</td>
+                  }
+                  <td></td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+          <div class="toolbar actions">
+            <mat-form-field subscriptSizing="dynamic" class="notes">
+              <mat-label>Notes · ملاحظات</mat-label>
+              <input matInput maxlength="500" [ngModel]="notes()" (ngModelChange)="notes.set($event)" aria-label="Notes" />
+            </mat-form-field>
+            <span class="spacer"></span>
+            <button mat-flat-button (click)="post()" [disabled]="!ready() || saving()">
+              <mat-icon>move_down</mat-icon> Move stock <span class="inline-ar">تحويل</span>
+            </button>
+          </div>
+        </section>
+      }
+
+      <h2 class="section-title">Transfers <span class="inline-ar">التحويلات</span></h2>
+      <div class="toolbar">
+        <mat-form-field subscriptSizing="dynamic" class="day">
+          <mat-label>From day · من يوم</mat-label>
+          <input matInput type="date" [ngModel]="fromDay()" (ngModelChange)="setDays($event, toDay())" [max]="toDay()" aria-label="From day" />
+        </mat-form-field>
+        <mat-form-field subscriptSizing="dynamic" class="day">
+          <mat-label>To day · إلى يوم</mat-label>
+          <input matInput type="date" [ngModel]="toDay()" (ngModelChange)="setDays(fromDay(), $event)" [min]="fromDay()" aria-label="To day" />
+        </mat-form-field>
+        <span class="spacer"></span>
+        <button mat-stroked-button (click)="downloadSheet()" [disabled]="downloading()">
+          <mat-icon>download</mat-icon> Excel <span class="inline-ar">إكسل</span>
+        </button>
+      </div>
+      <div class="toolbar smart">
+        <app-search-field [(value)]="search" placeholder="Number, material or who made it · الرقم أو الخامة أو المسجل" />
+        <div class="pills">
+          <app-filter-select label="From · من" icon="logout" [options]="fromFilters()" [(value)]="fromFilter" />
+          <app-filter-select label="To · إلى" icon="login" [options]="toFilters()" [(value)]="toFilter" />
+          <app-filter-select label="Status · الحالة" icon="flag" [options]="statusFilters()" [(value)]="statusFilter" />
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table class="grid" aria-label="Transfers">
+          <thead>
+            <tr>
+              <th>Number<span class="ar">الرقم</span></th>
+              <th>Day<span class="ar">اليوم</span></th>
+              <th>From → To<span class="ar">من ← إلى</span></th>
+              <th>Materials<span class="ar">الخامات</span></th>
+              <th>By<span class="ar">بواسطة</span></th>
+              @if (seesCosts()) {
+                <th class="num">Worth<span class="ar">القيمة</span></th>
+              }
+              <th class="num"><span class="visually-hidden">Actions</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            @for (t of shown(); track t.id) {
+              <tr [class.voided]="t.status === 'Voided'">
+                <td class="nowrap"><strong>{{ t.number }}</strong>
+                  @if (t.status === 'Voided') {
+                    <div><span class="void-badge">Voided · ملغي</span></div>
+                  }
+                </td>
+                <td class="nowrap struck">{{ t.transferDate | date: 'd MMM yyyy' }}</td>
+                <td class="route struck">{{ t.fromLocation }} → {{ t.toLocation }}</td>
+                <td class="struck">
+                  @for (l of t.lines; track l.rawMaterialId; let last = $last) {
+                    <span class="nowrap">{{ l.material }} {{ shownQuantity(l.rawMaterialId, l.quantity, l.unit) }}</span>@if (!last) {, }
+                  }
+                  @if (t.notes) {
+                    <div class="muted tiny">{{ t.notes }}</div>
+                  }
+                </td>
+                <td class="muted tiny who">
+                  {{ t.createdBy }}
+                  @if (t.voidedBy) {
+                    <div>Voided by {{ t.voidedBy }} · ألغاه</div>
+                  }
+                </td>
+                @if (seesCosts()) {
+                  <td class="num struck">{{ t.totalCost === null ? '' : (t.totalCost | money) }}</td>
+                }
+                <td class="num nowrap">
+                  <button mat-icon-button (click)="printSlip(t)" matTooltip="Print slip · طباعة إذن التحويل" [attr.aria-label]="'Print the slip of ' + t.number">
+                    <mat-icon>print</mat-icon>
+                  </button>
+                  @if (canMove() && t.status === 'Posted') {
+                    <button mat-icon-button class="danger" (click)="voidTransfer(t)" matTooltip="Void · إلغاء" [attr.aria-label]="'Void ' + t.number">
+                      <mat-icon>undo</mat-icon>
+                    </button>
+                  }
+                </td>
+              </tr>
+            } @empty {
+              <tr><td [attr.colspan]="seesCosts() ? 7 : 6" class="muted">No transfers. · لا توجد تحويلات.</td></tr>
+            }
+          </tbody>
+        </table>
+      </div>
+
+      <h2 class="section-title">Stock by location <span class="inline-ar">الرصيد حسب الموقع</span> <app-info-tip tip="locationStock" /></h2>
+      <div class="toolbar smart">
+        <app-search-field [(value)]="stockSearch" placeholder="Material or code · الخامة أو الكود" />
+      </div>
+      @if (stock(); as s) {
+        <div class="table-wrap">
+          <table class="grid" aria-label="Stock by location">
+            <thead>
+              <tr>
+                <th>Material<span class="ar">الخامة</span></th>
+                @for (c of s.locations; track c.id) {
+                  <th class="num">{{ c.name }}@if (c.nameAr) {<span class="ar">{{ c.nameAr }}</span>}</th>
+                }
+                <th class="num">Total<span class="ar">الإجمالي</span></th>
+                @if (seesCosts()) {
+                  <th class="num">Value<span class="ar">القيمة</span></th>
+                }
+              </tr>
+            </thead>
+            <tbody>
+              @for (r of stockRows(); track r.rawMaterialId) {
+                <tr>
+                  <td>
+                    @if (r.code) {
+                      <span class="muted tiny">{{ r.code }}</span>
+                    }
+                    {{ r.material }}
+                  </td>
+                  @for (c of s.locations; track c.id) {
+                    <td class="num" [class.short]="r.byLocation[c.id] < 0">
+                      {{ r.byLocation[c.id] === undefined ? '—' : shownQuantity(r.rawMaterialId, r.byLocation[c.id], r.unit) }}
+                    </td>
+                  }
+                  <td class="num"><strong>{{ shownQuantity(r.rawMaterialId, r.total, r.unit) }}</strong></td>
+                  @if (seesCosts()) {
+                    <td class="num">{{ r.value === null ? '' : (r.value | money) }}</td>
+                  }
+                </tr>
+              } @empty {
+                <tr><td [attr.colspan]="s.locations.length + (seesCosts() ? 3 : 2)" class="muted">Nothing in stock. · لا يوجد رصيد.</td></tr>
+              }
+            </tbody>
+          </table>
+        </div>
+      }
+    }
+  `,
+  styleUrl: './costing.scss',
+  styles: `
+    .section-title {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin: 24px 0 8px;
+      font: var(--mat-sys-title-medium);
+    }
+    .place {
+      min-width: 220px;
+    }
+    .material {
+      min-width: 220px;
+      width: 100%;
+    }
+    .small {
+      width: 140px;
+    }
+    .notes {
+      min-width: 280px;
+      flex: 1 1 280px;
+    }
+    .day {
+      width: 170px;
+    }
+    .actions {
+      margin-top: 12px;
+    }
+    .tiny {
+      font-size: 0.85em;
+    }
+    .nowrap {
+      white-space: nowrap;
+    }
+    .route {
+      min-width: 180px;
+    }
+    .who {
+      min-width: 150px;
+    }
+    .short {
+      color: var(--mat-sys-error);
+      font-weight: 600;
+    }
+    tr.voided td {
+      color: var(--mat-sys-on-surface-variant);
+    }
+    tr.voided td.struck {
+      text-decoration: line-through;
+    }
+    .void-badge {
+      display: inline-block;
+      margin-top: 2px;
+      padding: 0 6px;
+      border-radius: 999px;
+      font-size: 0.8em;
+      color: var(--mat-sys-error);
+      background: color-mix(in srgb, var(--mat-sys-error) 10%, transparent);
+    }
+    .danger {
+      color: var(--mat-sys-error);
+    }
+    .visually-hidden {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip: rect(0 0 0 0);
+    }
+  `,
+})
+export class InternalTransfersPage {
+  private readonly api = inject(CostingApi);
+  private readonly stockApi = inject(StockApi);
+  private readonly notify = inject(NotifyService);
+  private readonly auth = inject(AuthService);
+  private readonly company = inject(Company);
+  protected readonly places = inject(StockPlaces);
+
+  protected readonly canMove = computed(() => this.auth.can(Permissions.InventoryManage));
+  // Costs for whoever sees them: a storekeeper moves the stock without its value.
+  protected readonly seesCosts = computed(() => this.auth.can(Permissions.CostingView));
+
+  protected readonly loading = signal(true);
+  protected readonly error = signal<string | null>(null);
+  protected readonly saving = signal(false);
+  protected readonly downloading = signal(false);
+  protected readonly materials = signal<MaterialCost[]>([]);
+  protected readonly transfers = signal<InternalTransfer[]>([]);
+  protected readonly stock = signal<LocationStock | null>(null);
+
+  // The new transfer: the main store to the first other location until chosen.
+  protected readonly from = signal<string | null>(null);
+  protected readonly to = signal<string | null>(null);
+  protected readonly notes = signal('');
+  protected readonly lines = signal<Line[]>([blank()]);
+  // One transfer, one id: sent again after a lost answer, it is made once. A new one after each.
+  private transferId = crypto.randomUUID();
+
+  // The list: the last 30 days until other days are chosen.
+  protected readonly toDay = signal(isoDay(new Date()));
+  protected readonly fromDay = signal(isoDay(new Date(Date.now() - 29 * 86_400_000)));
+  protected readonly search = signal('');
+  protected readonly fromFilter = signal('');
+  protected readonly toFilter = signal('');
+  protected readonly statusFilter = signal('');
+  protected readonly stockSearch = signal('');
+
+  protected readonly fromFilters = computed<FilterOption[]>(() => this.placeFilters((t) => t.fromLocationId));
+  protected readonly toFilters = computed<FilterOption[]>(() => this.placeFilters((t) => t.toLocationId));
+  protected readonly statusFilters = computed<FilterOption[]>(() => {
+    const all = this.transfers();
+    return [
+      { value: '', label: 'All · الكل', count: all.length },
+      { value: 'Posted', label: 'Posted · مرحل', count: all.filter((t) => t.status === 'Posted').length },
+      { value: 'Voided', label: 'Voided · ملغي', count: all.filter((t) => t.status === 'Voided').length },
+    ];
+  });
+
+  protected readonly shown = computed(() =>
+    this.transfers().filter(
+      (t) =>
+        (!this.fromFilter() || t.fromLocationId === this.fromFilter()) &&
+        (!this.toFilter() || t.toLocationId === this.toFilter()) &&
+        (!this.statusFilter() || t.status === this.statusFilter()) &&
+        smartMatch(this.search(), t.number, t.createdBy, t.notes ?? '', t.fromLocation, t.toLocation, ...t.lines.flatMap((l) => [l.material, l.code ?? ''])),
+    ),
+  );
+
+  protected readonly stockRows = computed(() =>
+    (this.stock()?.rows ?? []).filter((r) => smartMatch(this.stockSearch(), r.material, r.code ?? '')),
+  );
+
+  protected readonly total = computed(() => this.lines().reduce((sum, l) => sum + (this.worth(l) ?? 0), 0));
+
+  protected readonly ready = computed(() => {
+    const lines = this.lines();
+    const ids = lines.map((l) => l.rawMaterialId);
+    return (
+      !!this.from() && !!this.to() && this.from() !== this.to() &&
+      lines.every((l) => l.rawMaterialId && (l.quantity ?? 0) > 0 && !this.isShort(l)) && new Set(ids).size === ids.length
+    );
+  });
+
+  constructor() {
+    void this.load();
+  }
+
+  protected unitOf(line: Line): string {
+    const material = this.material(line.rawMaterialId);
+    return material ? countUnit(material.unit, material.purchaseUnitSize).label : '';
+  }
+
+  // What the location it leaves has of it, in the unit it is entered in.
+  protected available(line: Line): number {
+    const material = this.material(line.rawMaterialId);
+    const row = this.stock()?.rows.find((r) => r.rawMaterialId === line.rawMaterialId);
+    const held = row?.byLocation[this.from() ?? ''] ?? 0;
+    return material ? held / countUnit(material.unit, material.purchaseUnitSize).size : held;
+  }
+
+  protected isShort(line: Line): boolean {
+    return !!line.rawMaterialId && (line.quantity ?? 0) > 0 && (line.quantity ?? 0) > this.available(line) + 1e-9;
+  }
+
+  // At the branch's average cost, as the server will value it.
+  protected worth(line: Line): number | null {
+    const material = this.material(line.rawMaterialId);
+    if (!material || material.costPerUnit === null || !line.quantity) {
+      return null;
+    }
+    return line.quantity * countUnit(material.unit, material.purchaseUnitSize).size * material.costPerUnit;
+  }
+
+  // A quantity kept in grams, millilitres or pieces, as the material is counted: 4 kg, 250 ml.
+  protected shownQuantity(materialId: string, quantity: number, unit: UnitOfMeasure | string): string {
+    const material = this.material(materialId);
+    const counted = countUnit((material?.unit ?? unit) as UnitOfMeasure, material?.purchaseUnitSize ?? 1);
+    return `${(quantity / counted.size).toLocaleString('en-US', { maximumFractionDigits: 3 })} ${counted.label}`;
+  }
+
+  protected change(index: number, patch: Partial<Line>): void {
+    this.lines.update((lines) => lines.map((line, i) => (i === index ? { ...line, ...patch } : line)));
+  }
+
+  protected add(): void {
+    this.lines.update((lines) => [...lines, blank()]);
+  }
+
+  protected remove(index: number): void {
+    this.lines.update((lines) => lines.filter((_, i) => i !== index));
+  }
+
+  protected swap(): void {
+    const from = this.from();
+    this.from.set(this.to());
+    this.to.set(from);
+  }
+
+  protected setDays(from: string, to: string): void {
+    if (!from || !to || from > to) {
+      return;
+    }
+    this.fromDay.set(from);
+    this.toDay.set(to);
+    void this.loadTransfers();
+  }
+
+  protected async post(): Promise<void> {
+    if (!this.ready()) {
+      return;
+    }
+    this.saving.set(true);
+    try {
+      const moved = await firstValueFrom(
+        this.stockApi.post({
+          id: this.transferId,
+          fromLocationId: this.from()!,
+          toLocationId: this.to()!,
+          lines: this.lines().map((l) => {
+            const material = this.material(l.rawMaterialId)!;
+            return { rawMaterialId: l.rawMaterialId!, quantity: l.quantity! * countUnit(material.unit, material.purchaseUnitSize).size };
+          }),
+          notes: this.notes().trim() || null,
+        }),
+      );
+      this.notify.info(`${moved.number} posted: stock moved to ${moved.toLocation}.`);
+      this.lines.set([blank()]);
+      this.notes.set('');
+      this.transferId = crypto.randomUUID();
+      await Promise.all([this.loadTransfers(), this.loadStock()]);
+    } catch (error) {
+      this.notify.error(error, 'The stock could not be moved.');
+    } finally {
+      this.saving.set(false);
+    }
+  }
+
+  protected async voidTransfer(transfer: InternalTransfer): Promise<void> {
+    if (!confirm(`Void ${transfer.number}? Its stock goes back to ${transfer.fromLocation}. · إلغاء التحويل؟`)) {
+      return;
+    }
+    try {
+      await firstValueFrom(this.stockApi.void(transfer.id));
+      this.notify.info(`${transfer.number} voided.`);
+      await Promise.all([this.loadTransfers(), this.loadStock()]);
+    } catch (error) {
+      this.notify.error(error, 'The transfer could not be voided.');
+    }
+  }
+
+  protected async downloadSheet(): Promise<void> {
+    this.downloading.set(true);
+    try {
+      saveBlob(await firstValueFrom(this.stockApi.sheet(this.fromDay(), this.toDay())), `internal-transfers-${this.fromDay()}-to-${this.toDay()}.xlsx`);
+    } catch (error) {
+      this.notify.error(error, 'The workbook could not be made.');
+    } finally {
+      this.downloading.set(false);
+    }
+  }
+
+  // A transfer slip (إذن تحويل): what was moved, from where and to where, for the one handing it over
+  // and the one receiving it to sign. In its own window, so it prints as a slip and not as the screen.
+  protected printSlip(transfer: InternalTransfer): void {
+    const slip = window.open('', '_blank');
+    if (!slip) {
+      this.notify.error(null, 'The browser stopped the slip opening: allow pop-ups for this site, then print again.');
+      return;
+    }
+    const costs = this.seesCosts() && transfer.totalCost !== null;
+    const money = (n: number | null) => (n === null ? '' : this.company.money(n));
+    const rows = transfer.lines
+      .map((l) => {
+        const material = this.material(l.rawMaterialId);
+        const unit = countUnit((material?.unit ?? l.unit) as UnitOfMeasure, material?.purchaseUnitSize ?? 1);
+        return (
+          `<tr><td>${escape(l.code ?? '')}</td><td>${escape(l.material)}</td>` +
+          `<td class="num">${(l.quantity / unit.size).toLocaleString('en-US', { maximumFractionDigits: 3 })}</td><td>${escape(unit.label)}</td>` +
+          (costs ? `<td class="num">${escape(money(l.unitCost === null ? null : l.unitCost * unit.size))}</td><td class="num">${escape(money(l.lineTotal))}</td>` : '') +
+          `</tr>`
+        );
+      })
+      .join('');
+    const day = new Date(`${transfer.transferDate}T00:00:00`).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+    slip.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${escape(transfer.number)} · إذن تحويل</title><style>
+      body { font: 12px/1.4 system-ui, sans-serif; margin: 24px; color: #111; }
+      h1 { font-size: 18px; margin: 0 0 4px; } p { margin: 0 0 8px; color: #333; }
+      .void { color: #b00020; font-weight: 700; }
+      .head { display: grid; grid-template-columns: repeat(2, 1fr); gap: 4px 24px; margin: 12px 0 16px; }
+      table { width: 100%; border-collapse: collapse; } th, td { border: 1px solid #999; padding: 6px 8px; text-align: start; }
+      th { background: #eee; } td.num, th.num { text-align: end; }
+      tfoot td { font-weight: 600; }
+      .signatures { display: grid; grid-template-columns: repeat(2, 1fr); gap: 48px; margin-top: 48px; }
+      .signatures div { border-top: 1px solid #111; padding-top: 4px; }
+      @page { margin: 14mm; }
+    </style></head><body>
+      <h1>${escape(this.company.name())} — Transfer slip · إذن تحويل داخلي</h1>
+      ${transfer.status === 'Voided' ? `<p class="void">VOIDED · ملغي${transfer.voidedBy ? ' — ' + escape(transfer.voidedBy) : ''}</p>` : ''}
+      <div class="head">
+        <div><strong>Number · الرقم:</strong> ${escape(transfer.number)}</div>
+        <div><strong>Day · التاريخ:</strong> ${escape(day)}</div>
+        <div><strong>From · من:</strong> ${escape(transfer.fromLocation)}${transfer.fromLocationAr ? ' · ' + escape(transfer.fromLocationAr) : ''}</div>
+        <div><strong>To · إلى:</strong> ${escape(transfer.toLocation)}${transfer.toLocationAr ? ' · ' + escape(transfer.toLocationAr) : ''}</div>
+        <div><strong>Made by · بواسطة:</strong> ${escape(transfer.createdBy)}</div>
+        ${transfer.notes ? `<div><strong>Notes · ملاحظات:</strong> ${escape(transfer.notes)}</div>` : ''}
+      </div>
+      <table><thead><tr><th>Code · الكود</th><th>Material · الخامة</th><th class="num">Quantity · الكمية</th><th>Unit · الوحدة</th>
+        ${costs ? '<th class="num">Unit cost · تكلفة الوحدة</th><th class="num">Total · الإجمالي</th>' : ''}</tr></thead>
+        <tbody>${rows}</tbody>
+        ${costs ? `<tfoot><tr><td colspan="5">Total · الإجمالي</td><td class="num">${escape(money(transfer.totalCost))}</td></tr></tfoot>` : ''}
+      </table>
+      <div class="signatures"><div>Handed over by · المسلِّم</div><div>Received by · المستلِم</div></div>
+    </body></html>`);
+    slip.document.close();
+    slip.focus();
+    slip.print();
+  }
+
+  private placeFilters(of: (t: InternalTransfer) => string): FilterOption[] {
+    const all = this.transfers();
+    return [
+      { value: '', label: 'All · الكل', count: all.length },
+      ...this.places.locations().map((l) => ({ value: l.id, label: l.nameAr ? `${l.name} · ${l.nameAr}` : l.name, count: all.filter((t) => of(t) === l.id).length })),
+    ];
+  }
+
+  private material(id: string | null): MaterialCost | undefined {
+    return this.materials().find((m) => m.id === id);
+  }
+
+  private async load(): Promise<void> {
+    this.error.set(null);
+    try {
+      await this.places.load(true);
+      if (!this.places.shown()) {
+        return;
+      }
+      const main = this.places.mainStore();
+      this.from.set(main?.id ?? null);
+      this.to.set(this.places.locations().find((l) => l.id !== main?.id)?.id ?? null);
+      const [materials] = await Promise.all([firstValueFrom(this.api.materials()), this.loadTransfers(), this.loadStock()]);
+      this.materials.set(materials);
+    } catch (error) {
+      this.error.set(errorMessage(error, 'The transfers could not be loaded.'));
+    } finally {
+      this.loading.set(false);
+    }
+  }
+
+  private async loadTransfers(): Promise<void> {
+    try {
+      this.transfers.set(await firstValueFrom(this.stockApi.transfers(this.fromDay(), this.toDay())));
+    } catch (error) {
+      this.notify.error(error, 'The transfers could not be loaded.');
+    }
+  }
+
+  private async loadStock(): Promise<void> {
+    try {
+      this.stock.set(await firstValueFrom(this.stockApi.locationStock()));
+    } catch {
+      this.stock.set(null);
+    }
+  }
+}
+
+function blank(): Line {
+  return { rawMaterialId: null, quantity: null };
+}
+
+function escape(value: string): string {
+  return value.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
+}
+```
+
+
 ## 14. الهالك والكسر
 
 `WastePage`: الهالك (خامات تالفة بسبب: تخرج من المخزون) والكسر (مستهلكات: تكلفة على اليوم)، وإلغاؤهما بموافقة.
 
-> 📄 **`frontend/src/app/features/costing/waste-page.ts`** — 603 سطر
+> 📄 **`frontend/src/app/features/costing/waste-page.ts`** — 608 سطر
 
 ```ts
 import { DatePipe, DecimalPipe } from '@angular/common';
@@ -33437,6 +34484,7 @@ import { SortControl } from '../shared/sort-control';
 import { GridKeys } from '../shared/grid-keys';
 import { MaterialPicker } from './material-picker';
 import { InfoTip } from './info-tip';
+import { LocationSelect, locationParam } from './location-select';
 
 type WasteSort = 'date' | 'worth';
 
@@ -33462,6 +34510,7 @@ interface Line {
 @Component({
   selector: 'app-waste-page',
   imports: [
+    LocationSelect,
     InfoTip,
     FilterSelect,
     GridKeys,
@@ -33561,6 +34610,7 @@ interface Line {
         </table>
       </div>
       <div class="toolbar actions">
+        <app-location-select [(value)]="location" label="Thrown away from · موقع الهالك" ariaLabel="Thrown away from" />
         <span class="spacer"></span>
         <button mat-flat-button (click)="save()" [disabled]="!ready() || saving()"><mat-icon>delete_sweep</mat-icon> Record waste</button>
       </div>
@@ -33795,6 +34845,8 @@ export class WastePage {
   protected readonly recent = signal<SpoilageEntry[]>([]);
   protected readonly loading = signal(true);
   protected readonly saving = signal(false);
+  // Where it was thrown away (with locations only).
+  protected readonly location = signal<string | null>(null);
   protected readonly error = signal<string | null>(null);
   protected readonly lines = signal<Line[]>([this.blank()]);
 
@@ -33912,7 +34964,7 @@ export class WastePage {
         reason: this.reasonOf(l),
         responsibleStationId: this.stationFor(l) || null,
       }));
-      await firstValueFrom(this.api.recordSpoilage(this.spoilageId, lines));
+      await firstValueFrom(this.api.recordSpoilage(this.spoilageId, lines, locationParam(this.location())));
       this.notify.info('Waste recorded.');
       this.lines.set([this.blank()]);
       this.spoilageId = crypto.randomUUID();
@@ -34046,7 +35098,7 @@ export class WasteShell {
 
 `StaffMealsPage`: تسجيل بالطبق (أطباق كاملة من الوصفات) أو بالخامة (كمية × وحدة الجرد)، وجدول الأيام مقابل الحد اليومي (شارة "تجاوز الحد" بالمبلغ الزائد)، وجدول القيود وإلغاؤها بموافقة الهالك. و `?entry=` من كارتة الصنف يُبرز القيد.
 
-> 📄 **`frontend/src/app/features/costing/staff-meals-page.ts`** — 447 سطر
+> 📄 **`frontend/src/app/features/costing/staff-meals-page.ts`** — 453 سطر
 
 ```ts
 import { DatePipe } from '@angular/common';
@@ -34079,6 +35131,7 @@ import { Approvals } from './approvals';
 import { InfoTip } from './info-tip';
 import { MaterialPicker } from './material-picker';
 import { PeriodBar, periodDays } from './period-bar';
+import { LocationSelect, locationParam } from './location-select';
 
 // A line being written: a dish (its recipe, in plates) or a material (in the unit it is counted in).
 interface Line {
@@ -34097,6 +35150,7 @@ const kinds: StaffMealKind[] = ['StaffMeal', 'Hospitality', 'RecipeTasting'];
 @Component({
   selector: 'app-staff-meals-page',
   imports: [
+    LocationSelect,
     DatePipe,
     FormsModule,
     InfoTip,
@@ -34150,6 +35204,7 @@ const kinds: StaffMealKind[] = ['StaffMeal', 'Hospitality', 'RecipeTasting'];
             <mat-label>Note · ملاحظة</mat-label>
             <input matInput maxlength="120" [ngModel]="note()" (ngModelChange)="note.set($event)" aria-label="Note" placeholder="Lunch, the owner's guests…" />
           </mat-form-field>
+          <app-location-select [(value)]="location" label="Taken from · موقع الصرف" ariaLabel="Taken from" />
           <span class="spacer"></span>
           <button mat-flat-button (click)="record()" [disabled]="!valid() || saving()"><mat-icon>save</mat-icon> Log {{ labels[kind()].en.toLowerCase() }}</button>
         </div>
@@ -34370,6 +35425,8 @@ export class StaffMealsPage {
   protected readonly report = signal<StaffMealReport | null>(null);
   protected readonly loading = signal(false);
   protected readonly saving = signal(false);
+  // Where it was taken from (with locations only).
+  protected readonly location = signal<string | null>(null);
   protected readonly error = signal<string | null>(null);
 
   protected readonly kind = signal<StaffMealKind>('StaffMeal');
@@ -34439,6 +35496,7 @@ export class StaffMealsPage {
         this.api.recordStaffMeal({
           entryId: this.entryId,
           kind: this.kind(),
+          locationId: locationParam(this.location()),
           note: this.note().trim() || null,
           lines: this.lines().map((l) => {
             if (l.by === 'dish') {

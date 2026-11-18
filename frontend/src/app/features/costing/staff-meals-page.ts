@@ -28,6 +28,7 @@ import { Approvals } from './approvals';
 import { InfoTip } from './info-tip';
 import { MaterialPicker } from './material-picker';
 import { PeriodBar, periodDays } from './period-bar';
+import { LocationSelect, locationParam } from './location-select';
 
 // A line being written: a dish (its recipe, in plates) or a material (in the unit it is counted in).
 interface Line {
@@ -46,6 +47,7 @@ const kinds: StaffMealKind[] = ['StaffMeal', 'Hospitality', 'RecipeTasting'];
 @Component({
   selector: 'app-staff-meals-page',
   imports: [
+    LocationSelect,
     DatePipe,
     FormsModule,
     InfoTip,
@@ -99,6 +101,7 @@ const kinds: StaffMealKind[] = ['StaffMeal', 'Hospitality', 'RecipeTasting'];
             <mat-label>Note · ملاحظة</mat-label>
             <input matInput maxlength="120" [ngModel]="note()" (ngModelChange)="note.set($event)" aria-label="Note" placeholder="Lunch, the owner's guests…" />
           </mat-form-field>
+          <app-location-select [(value)]="location" label="Taken from · موقع الصرف" ariaLabel="Taken from" />
           <span class="spacer"></span>
           <button mat-flat-button (click)="record()" [disabled]="!valid() || saving()"><mat-icon>save</mat-icon> Log {{ labels[kind()].en.toLowerCase() }}</button>
         </div>
@@ -319,6 +322,8 @@ export class StaffMealsPage {
   protected readonly report = signal<StaffMealReport | null>(null);
   protected readonly loading = signal(false);
   protected readonly saving = signal(false);
+  // Where it was taken from (with locations only).
+  protected readonly location = signal<string | null>(null);
   protected readonly error = signal<string | null>(null);
 
   protected readonly kind = signal<StaffMealKind>('StaffMeal');
@@ -388,6 +393,7 @@ export class StaffMealsPage {
         this.api.recordStaffMeal({
           entryId: this.entryId,
           kind: this.kind(),
+          locationId: locationParam(this.location()),
           note: this.note().trim() || null,
           lines: this.lines().map((l) => {
             if (l.by === 'dish') {

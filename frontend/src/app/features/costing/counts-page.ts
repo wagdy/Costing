@@ -29,6 +29,7 @@ import { FilterOption, FilterSelect } from '../shared/filter-select';
 import { SearchField } from '../shared/search-field';
 import { SortOption, SortState, smartMatch, sortItems } from '../shared/smart-search';
 import { SortControl } from '../shared/sort-control';
+import { LocationSelect, locationParam } from './location-select';
 
 type CountSort = 'date' | 'materials';
 
@@ -48,6 +49,7 @@ const countSorts: SortOption<CountSort>[] = [
 @Component({
   selector: 'app-counts-page',
   imports: [
+    LocationSelect,
     DatePipe,
     FilterSelect,
     InfoTip,
@@ -102,9 +104,11 @@ const countSorts: SortOption<CountSort>[] = [
             {{ d.review === 'Submitted' && canReconcile ? 'Review the count · مراجعة الجرد' : 'Continue the count' }}
           </a>
         } @else if (posted().length === 0) {
+          <app-location-select [(value)]="countAt" [wholeBranch]="true" label="Count where · مكان الجرد" ariaLabel="Count where" />
           <button mat-flat-button (click)="start('Opening')"><mat-icon>inventory</mat-icon> Opening stock <span class="inline-ar">جرد افتتاحي</span></button>
           <button mat-stroked-button (click)="start('Periodic')"><mat-icon>add</mat-icon> Full count <span class="inline-ar">جرد شامل</span></button>
         } @else {
+          <app-location-select [(value)]="countAt" [wholeBranch]="true" label="Count where · مكان الجرد" ariaLabel="Count where" />
           <button mat-flat-button (click)="start('Periodic')"><mat-icon>add</mat-icon> Full count <span class="inline-ar">جرد شامل</span></button>
           <button mat-stroked-button (click)="start('Opening')" matTooltip="For materials never counted yet: a material is opened once">
             <mat-icon>inventory</mat-icon> Opening stock <span class="inline-ar">جرد افتتاحي</span>
@@ -418,9 +422,13 @@ export class CountsPage {
     void this.load();
   }
 
+  // Where the next count is counted: a location of the branch, or the whole branch (with locations only).
+  protected readonly countAt = signal<string | null>(null);
+
   // A new count's id is made here; it is saved, of its kind, on its first entry.
   protected start(kind: StockCountKind): void {
-    void this.router.navigate(['/costing/counts', crypto.randomUUID()], { queryParams: { kind } });
+    const location = locationParam(this.countAt());
+    void this.router.navigate(['/costing/counts', crypto.randomUUID()], { queryParams: { kind, ...(location ? { location } : {}) } });
   }
 
   // A spot count started here, with what it covers, then counted on its sheet.
@@ -431,7 +439,9 @@ export class CountsPage {
     this.starting.set(true);
     const id = crypto.randomUUID();
     try {
-      await firstValueFrom(this.api.saveStockCount(id, [], 'Periodic', { scope: 'Spot', scopeMaterialIds: materialIds, scopeLabel: label }));
+      await firstValueFrom(
+        this.api.saveStockCount(id, [], 'Periodic', { scope: 'Spot', scopeMaterialIds: materialIds, scopeLabel: label }, false, locationParam(this.countAt())),
+      );
       void this.router.navigate(['/costing/counts', id]);
     } catch (error) {
       this.notify.error(error, 'The spot count could not be started.');

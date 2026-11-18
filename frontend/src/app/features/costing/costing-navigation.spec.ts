@@ -9,6 +9,7 @@ import { CostingShell } from './costing-shell';
 import { CostingReportsShell } from './costing-reports-shell';
 import { AuthService } from '../../core/auth/auth.service';
 import { Treasury } from './financials';
+import { Company } from '../../core/settings/company';
 import { PurchasesShell } from './purchases-shell';
 
 // The route of that path, anywhere under these.
@@ -88,6 +89,35 @@ describe('the costing navigation', () => {
     // A storekeeper: the stock, and what they asked for; no Permissions.
     const storekeeper = await shell(['Materials', 'Purchases', 'Counts', 'Waste', 'Production'], (p) => p !== Permissions.UsersManage);
     expect(storekeeper.map((s) => s.path)).toEqual(['materials', 'production', 'purchases', 'counts', 'waste', 'approvals']);
+  });
+
+  it('lists Internal transfers after the counts only once the company keeps stock in more than one place', async () => {
+    const shell = async (mode: 'SingleBranch_OpenSpace' | 'SingleBranch_WithSubStores', tabs: CostingTab[]) => {
+      TestBed.resetTestingModule();
+      TestBed.configureTestingModule({
+        providers: [
+          provideRouter([]),
+          { provide: AuthService, useValue: { me: () => null, can: () => false } },
+          { provide: CostingAccess, useValue: { has: (t: CostingTab) => tabs.includes(t) } },
+          { provide: Approvals, useValue: { canApprove: () => false, pending: signal([]), refresh: vi.fn() } },
+        ],
+      });
+      TestBed.inject(Company).settings.update((s) => ({ ...s, operatingMode: mode }));
+      const fixture = TestBed.createComponent(CostingShell);
+      await fixture.whenStable();
+      return ((fixture.componentInstance as unknown as Record<string, any>)['sections']() as { path: string; en: string; ar: string }[]);
+    };
+
+    expect((await shell('SingleBranch_OpenSpace', ['Materials', 'Counts', 'Waste'])).map((s) => s.path)).toEqual(['materials', 'counts', 'waste']);
+    const subStores = await shell('SingleBranch_WithSubStores', ['Materials', 'Counts', 'Waste']);
+    expect(subStores.map((s) => s.path)).toEqual(['materials', 'counts', 'internal-transfers', 'waste']);
+    expect(subStores[2]).toMatchObject({ en: 'Internal transfers', ar: 'التحويلات الداخلية', icon: 'move_down' });
+    // Neither counting nor keeping the materials: not listed.
+    expect((await shell('SingleBranch_WithSubStores', ['Sales'])).map((s) => s.path)).toEqual(['sales']);
+
+    const route = find(routes, 'costing')!.children!.find((r) => r.path === 'internal-transfers')!;
+    expect(route.loadComponent).toBeDefined();
+    expect(route.canActivate).toHaveLength(1);
   });
 
   it('opens Reports on the spending analysis, then the food cost reports', async () => {

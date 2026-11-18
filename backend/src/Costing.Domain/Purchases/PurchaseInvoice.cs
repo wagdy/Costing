@@ -103,6 +103,11 @@ public sealed class PurchaseInvoice : AggregateRoot, IBranchOwned
     // and whether what did not come is not expected any more (ClosesPurchaseOrder: the order closed
     // with what was received) or stays open as a backorder.
     public Guid? PurchaseOrderId { get; private set; }
+
+    // Where the delivery is put away (موقع الاستلام): the branch's main store when none is said.
+    public Guid? LocationId { get; private set; }
+
+    public void ReceiveAt(Guid? locationId) => LocationId = locationId;
     public bool ClosesPurchaseOrder { get; private set; }
 
     // The attached photo or scan, described; its bytes are kept apart.
@@ -247,6 +252,8 @@ public sealed class PurchaseInvoice : AggregateRoot, IBranchOwned
             .Select(l => (materials.GetValueOrDefault(l.RawMaterialId!.Value) ?? throw new NotFoundException(nameof(RawMaterial), l.RawMaterialId))
                 .ReceivePurchase(l.Quantity, Id, l.Cost))
             .ToList();
+        if (LocationId is { } location)
+            movements.ForEach(m => m.AssignLocation(location));
         Status = PurchaseInvoiceStatus.Posted;
         PostedAtUtc = DateTime.UtcNow;
         PostedBy = postedBy;

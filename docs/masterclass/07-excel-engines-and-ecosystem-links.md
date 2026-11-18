@@ -3180,7 +3180,7 @@ public static class DailySalesWorkbook
 ```
 
 
-> 📄 **`backend/src/Costing.Infrastructure/Excel/ReportWorkbook.cs`** — 502 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Excel/ReportWorkbook.cs`** — 531 سطر
 
 ```csharp
 using ClosedXML.Excel;
@@ -3683,6 +3683,35 @@ public static class StockCardWorkbook
                 new ReportRow([card.To, "Closing balance · رصيد آخر المدة", null, null, card.TotalIn, card.TotalOut, card.ClosingBalance, null, card.ClosingValue,
                     card.ClosingAverageCost, null], ReportRowKind.Total),
             ])]);
+    }
+}
+
+// Internal transfers of a period: one row a transfer, then one row a line moved.
+public static class InternalTransferWorkbook
+{
+    public static Stream Build(IReadOnlyList<Costing.Application.Stock.InternalTransferDto> transfers, DateOnly from, DateOnly to)
+    {
+        static string Status(Costing.Domain.Stock.InternalTransferStatus s) =>
+            s == Costing.Domain.Stock.InternalTransferStatus.Voided ? "Voided · ملغى" : "Posted · مُرحّل";
+        return ReportWorkbook.Build([
+            new ReportSheet(
+                "Transfers", "Internal transfers · التحويلات الداخلية", $"{from:d MMM yyyy} – {to:d MMM yyyy}",
+                [
+                    new("Number · الرقم"), new("Date · التاريخ", ReportWorkbook.Date), new("From · من"), new("To · إلى"), new("Status · الحالة"),
+                    new("Lines · البنود", ReportWorkbook.Quantity), new("Value · القيمة", ReportWorkbook.Money), new("By · بواسطة"), new("Notes · ملاحظات"),
+                ],
+                [.. transfers.Select(t => new ReportRow(
+                    [t.Number, t.TransferDate, t.FromLocation, t.ToLocation, Status(t.Status), t.Lines.Count, t.TotalCost, t.CreatedBy, t.Notes ?? ""]))]),
+            new ReportSheet(
+                "Lines", "What was moved · البنود المحولة", $"{from:d MMM yyyy} – {to:d MMM yyyy}",
+                [
+                    new("Number · الرقم"), new("Date · التاريخ", ReportWorkbook.Date), new("From · من"), new("To · إلى"), new("Code · الكود"),
+                    new("Material · الخامة"), new("Quantity · الكمية", ReportWorkbook.Quantity), new("Unit · الوحدة"),
+                    new("Unit cost · تكلفة الوحدة", ReportWorkbook.Money), new("Line total · الإجمالي", ReportWorkbook.Money), new("Status · الحالة"),
+                ],
+                [.. transfers.SelectMany(t => t.Lines.Select(l => new ReportRow(
+                    [t.Number, t.TransferDate, t.FromLocation, t.ToLocation, l.Code ?? "", l.Material, l.Quantity, l.Unit, l.UnitCost, l.LineTotal, Status(t.Status)])))]),
+        ]);
     }
 }
 ```

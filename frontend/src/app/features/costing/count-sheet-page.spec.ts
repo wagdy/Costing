@@ -6,6 +6,8 @@ import { Permissions } from '../../core/auth/permissions';
 import { CostingApi, CountItem, MaterialCost, StockCount, countUnit } from '../../core/costing/costing.api';
 import { NotifyService } from '../../core/ui/notify.service';
 import { CountSheetPage } from './count-sheet-page';
+import { StockApi } from '../../core/costing/stock.api';
+import { Company } from '../../core/settings/company';
 
 const material = (id: string, unit: MaterialCost['unit'], purchaseUnitSize: number, category: string | null = null, costPerUnit: number | null = null) =>
   ({ id, name: id, code: null, category, unit, purchaseUnitSize, costPerUnit }) as MaterialCost;
@@ -42,10 +44,19 @@ describe('counting the stores', () => {
   let permissions: string[] = [Permissions.InventoryManage, Permissions.CostingView];
   let listed = all;
 
-  async function render(kind?: string) {
+  async function render(kind?: string, location?: string) {
     TestBed.configureTestingModule({
       providers: [
         provideRouter([]),
+        {
+          provide: StockApi,
+          useValue: {
+            locations: () => of({ mode: 'SingleBranch_WithSubStores', branchId: 'b1', locations: [
+              { id: 'main', branchId: 'b1', name: 'Main Store', nameAr: null, kind: 'MainStore', isActive: true, isDefault: true },
+              { id: 'kitchen', branchId: 'b1', name: 'Hot Kitchen', nameAr: null, kind: 'Kitchen', isActive: true, isDefault: false },
+            ] }),
+          },
+        },
         {
           provide: CostingApi,
           useValue: {
@@ -57,10 +68,16 @@ describe('counting the stores', () => {
         { provide: AuthService, useValue: { can: (p: string) => permissions.includes(p) } },
       ],
     });
+    if (location !== undefined) {
+      TestBed.inject(Company).settings.update((s) => ({ ...s, operatingMode: 'SingleBranch_WithSubStores' }));
+    }
     const fixture = TestBed.createComponent(CountSheetPage);
     fixture.componentRef.setInput('id', 'count-1');
     if (kind) {
       fixture.componentRef.setInput('kind', kind);
+    }
+    if (location) {
+      fixture.componentRef.setInput('location', location);
     }
     await fixture.whenStable();
     fixture.detectChanges();
@@ -123,6 +140,7 @@ describe('counting the stores', () => {
       'Periodic',
       undefined,
       false,
+      null,
     );
     expect(page['countedCount']()).toBe(3);
   });
@@ -133,7 +151,7 @@ describe('counting the stores', () => {
     page['enter']('beef', 10);
     await page['post']();
 
-    expect(saveStockCount).toHaveBeenCalledWith('count-1', [{ rawMaterialId: 'beef', countedQuantity: 10000 }], 'Periodic', undefined, false);
+    expect(saveStockCount).toHaveBeenCalledWith('count-1', [{ rawMaterialId: 'beef', countedQuantity: 10000 }], 'Periodic', undefined, false, null);
     expect(postStockCount).toHaveBeenCalledWith('count-1');
     expect(saveStockCount.mock.invocationCallOrder[0]).toBeLessThan(postStockCount.mock.invocationCallOrder[0]);
   });
@@ -329,6 +347,24 @@ describe('counting the stores', () => {
     open.mockRestore();
   });
 
+  it('counts in the location the counts page chose, sent with its first save and named at the top', async () => {
+    const { fixture, el, page } = await render(undefined, 'kitchen');
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(text(el.querySelector('.location-line strong')!)).toBe('Hot Kitchen');
+
+    page['enter']('beef', 10);
+    await page['post']();
+    expect(saveStockCount).toHaveBeenCalledWith('count-1', [{ rawMaterialId: 'beef', countedQuantity: 10000 }], 'Periodic', undefined, false, 'kitchen');
+  });
+
+  it('counts the whole branch when no location was chosen', async () => {
+    const { fixture, el } = await render(undefined, '');
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(text(el.querySelector('.location-line strong')!)).toBe('Whole branch · كل الفرع');
+  });
+
   describe('the opening stock', () => {
     it('starts as one when asked, says what it does, and shows what is counted is worth at today’s costs', async () => {
       const { fixture, el, page, button } = await render('Opening');
@@ -346,7 +382,7 @@ describe('counting the stores', () => {
       fixture.detectChanges();
       expect(text(el.querySelector('.sticky')!)).toContain('Open the stock of 3 materials at what was counted, with no shortage or surplus?');
       await page['post']();
-      expect(saveStockCount).toHaveBeenCalledWith('count-1', expect.any(Array), 'Opening', undefined, false);
+      expect(saveStockCount).toHaveBeenCalledWith('count-1', expect.any(Array), 'Opening', undefined, false, null);
       expect(postStockCount).toHaveBeenCalledWith('count-1');
     });
 
@@ -356,7 +392,7 @@ describe('counting the stores', () => {
       expect(page['kind']()).toBe('Periodic');
 
       page['chooseKind']('Opening');
-      await vi.waitFor(() => expect(saveStockCount).toHaveBeenCalledWith('count-1', [{ rawMaterialId: 'bun', countedQuantity: 40 }], 'Opening', undefined, false));
+      await vi.waitFor(() => expect(saveStockCount).toHaveBeenCalledWith('count-1', [{ rawMaterialId: 'bun', countedQuantity: 40 }], 'Opening', undefined, false, null));
     });
 
     it('posted, shows what each material opened at and its worth, with no difference beside it', async () => {

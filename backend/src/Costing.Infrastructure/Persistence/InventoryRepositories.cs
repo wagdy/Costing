@@ -17,25 +17,44 @@ using Costing.Infrastructure.Common;
 
 namespace Costing.Infrastructure.Persistence;
 
-internal sealed class RawMaterialRepository(CostingDbContext db) : IRawMaterialRepository
+// With several branches, each material is seen at the cost of the branch worked in (what it is
+// used and moved at there); with one, the company's, as always.
+internal sealed class RawMaterialRepository(CostingDbContext db, Costing.Application.Common.ICompanyProfile profile, Costing.Application.Company.ICurrentBranch branch)
+    : IRawMaterialRepository
 {
-    public Task<RawMaterial?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default) =>
-        db.RawMaterials.SingleOrDefaultAsync(m => m.Id == id, cancellationToken);
+    public async Task<RawMaterial?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default) =>
+        await db.RawMaterials.SingleOrDefaultAsync(m => m.Id == id, cancellationToken) is { } found
+            ? (await SeenAsync([found], cancellationToken))[0]
+            : null;
 
     public void Add(RawMaterial aggregate) => db.RawMaterials.Add(aggregate);
 
     public async Task<IReadOnlyList<RawMaterial>> GetAllAsync(CancellationToken cancellationToken = default) =>
-        await db.RawMaterials.OrderBy(m => m.Name).ToListAsync(cancellationToken);
+        await SeenAsync(await db.RawMaterials.OrderBy(m => m.Name).ToListAsync(cancellationToken), cancellationToken);
 
     public async Task<IReadOnlyList<RawMaterial>> GetByIdsAsync(IEnumerable<Guid> ids, CancellationToken cancellationToken = default)
     {
         var idList = ids.ToList();
-        return await db.RawMaterials.Where(m => idList.Contains(m.Id)).ToListAsync(cancellationToken);
+        return await SeenAsync(await db.RawMaterials.Where(m => idList.Contains(m.Id)).ToListAsync(cancellationToken), cancellationToken);
     }
 
     // Spelled out rather than RawMaterial.NeedsReorder, which is computed in C#.
     public async Task<IReadOnlyList<RawMaterial>> GetNeedingReorderAsync(CancellationToken cancellationToken = default) =>
-        await db.RawMaterials.Where(m => m.QuantityOnHand <= m.ReorderLevel).OrderBy(m => m.Name).ToListAsync(cancellationToken);
+        await SeenAsync(await db.RawMaterials.Where(m => m.QuantityOnHand <= m.ReorderLevel).OrderBy(m => m.Name).ToListAsync(cancellationToken),
+            cancellationToken);
+
+    private async Task<List<RawMaterial>> SeenAsync(List<RawMaterial> loaded, CancellationToken cancellationToken)
+    {
+        if (!Costing.Domain.Company.OperatingModes.IsMultiBranch(profile.Current.OperatingMode) || loaded.Count == 0)
+            return loaded;
+        var here = await branch.BranchIdAsync(cancellationToken);
+        var ids = loaded.Select(m => m.Id).ToList();
+        var costs = await db.MaterialBranchStocks.AsNoTracking().Where(s => s.BranchId == here && ids.Contains(s.RawMaterialId))
+            .ToDictionaryAsync(s => s.RawMaterialId, s => s.AverageCost, cancellationToken);
+        foreach (var material in loaded)
+            material.View(material.StockHere, costs.GetValueOrDefault(material.Id) ?? material.CostHere);
+        return loaded;
+    }
 }
 
 internal sealed class RecipeRepository(CostingDbContext db) : IRecipeRepository

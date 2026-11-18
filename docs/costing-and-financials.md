@@ -1610,16 +1610,17 @@ structures as cards, each with its bilingual **(!)** tip; a card chosen is appli
 | Structure (`SystemOperatingMode`) | What it is | What the system does |
 | --- | --- | --- |
 | `SingleBranch_OpenSpace` · فرع واحد بمساحة مفتوحة (**the default**) | All physical goods are in one place. No internal transfers needed. · كل البضاعة في مكان واحد ولا حاجة لأذونات صرف داخلية. | One branch and one implicit Main Store. No location lists, transfer screens or branch selector: one stock figure and one moving-average cost per material, exactly as before. |
-| `SingleBranch_WithSubStores` · فرع واحد يحتوي على مخزن ومناطق تشغيل | A single branch containing a locked main warehouse and kitchen operating locations. · فرع واحد يحتوي على مخزن رئيسي مغلق وعُهد تشغيل لأقسام المطبخ. | One branch; inventory locations (Main Store, Kitchen, Bar…) are added on the page. |
-| `MultiBranch_Independent` · فروع متعددة تشتري وتعمل بشكل مستقل | Multiple branches, each managing its own purchases and stock independently. · فروع متعددة، كل فرع يشتري الخامات ويحسب تكلفته بشكل مستقل. | Branches are added on the page; a branch selector at the top of the screen; records kept and listed by branch. |
+| `SingleBranch_WithSubStores` · فرع واحد يحتوي على مخزن ومناطق تشغيل | A single branch containing a locked main warehouse and kitchen operating locations. · فرع واحد يحتوي على مخزن رئيسي مغلق وعُهد تشغيل لأقسام المطبخ. | One branch; inventory locations (Main Store, Kitchen, Bar…) are added on the page, each with its own stock, moved between them by **internal transfer**. |
+| `MultiBranch_Independent` · فروع متعددة تشتري وتعمل بشكل مستقل | Multiple branches, each managing its own purchases and stock independently. · فروع متعددة، كل فرع يشتري الخامات ويحسب تكلفته بشكل مستقل. | Branches are added on the page; a branch selector at the top of the screen; records kept and listed by branch; stock and moving-average cost kept per branch. |
 | `MultiBranch_CentralKitchen` · فروع متعددة يدعمها مطبخ مركزي | A Central Kitchen/Warehouse purchases and preps items, then supplies/sells them to the restaurant branches. · مطبخ مركزي يشتري ويُصنع الخامات ثم يوردها ويبيعها لباقي الفروع. | Everything several branches have, with a branch of type Central kitchen or Central warehouse. |
 
-**This is the first phase.** What follows, each in its own release: stock and moving-average cost
-kept per branch and location, with internal transfers (sub-stores and up); the central kitchen's
-hub: branch requisitions, **Dispatch & Bill** with an internal sales invoice and **Receive** with an
-internal purchase invoice; and the P&L by branch or for the company as a whole, inter-branch sales
-and purchases eliminated. Until then, stock, average cost, the safe's balance and every report are
-the company's, whatever the structure; the cards mark what is still to come (*Soon · قريباً*).
+**Built so far:** the structures, branches and locations, the branch of each record (phase 1); stock
+kept by location and moving-average cost by branch, with internal transfers (phase 2, below). Still
+to come, each in its own release: the central kitchen's hub (branch requisitions, **Dispatch &
+Bill** with an internal sales invoice and **Receive** with an internal purchase invoice); and the
+P&L by branch or for the company as a whole, inter-branch sales and purchases eliminated. Until
+then the safe's balance and every report are the company's, whatever the structure; the cards mark
+what is still to come (*Soon · قريباً*).
 
 ### Branches and locations (الفروع ومواقع المخزون)
 
@@ -1631,8 +1632,10 @@ the company's, whatever the structure; the cards mark what is still to come (*So
   warehouse, in use) are added once the structure has several; each new branch gets its own
   **Main Store**. Names are unique. A branch is taken out of use, never deleted: its records stay.
 - **Locations** (`InventoryLocations`: branch, name, Arabic name, kind Main store, Kitchen, Bar or
-  Other, in use) are added once the structure has them (not in an open-space shop), unique by
-  name within their branch.
+  Other, in use, and the **stations it serves**) are added once the structure has them (not in an
+  open-space shop), unique by name within their branch. A kitchen or bar station is served by one
+  location of a branch (*a station takes its stock from one location*): what its dishes use when
+  sold comes off that location's shelves.
 - **Back to one branch** (either single-branch structure) only while the first branch is the one in
   use: *Take Tanta out of use first: a single-branch company works in its first branch alone.*
 
@@ -1674,6 +1677,83 @@ name, nameAr, type, isActive }`; `PUT /api/settings/locations/{id}` takes `{ bra
 nameAr, kind, isActive }` (all `settings.manage`). `GET /api/branches` gives the mode and the
 branches in use, to anyone signed in; `GET /api/settings` carries `operatingMode`; `POST /api/users`
 and `PUT /api/users/{id}` take `branchId`.
+
+### Stock by location and cost by branch (المخزون حسب الموقع والتكلفة حسب الفرع)
+
+**An open-space shop works exactly as before.** Every entry is its one Main Store's, there is no
+location to choose anywhere, the Internal transfers screen is not listed, and each material keeps
+one stock figure and one moving-average cost. Nothing below shows until the structure has
+locations.
+
+- **Stock is kept by location.** Each stock movement keeps the location it was put in or taken
+  from (`StockMovements.LocationId`; every movement before is the first branch's Main Store). A
+  location's stock of a material is the sum of its movements, never a figure kept apart, so it
+  cannot drift from the ledger; a unit restated rescales the movements, and with them every
+  location. The material's own stock (`RawMaterials.QuantityOnHand`) stays the company's total.
+- **Cost is kept by branch** (`MaterialBranchStocks`: material, branch, average cost; one row a
+  material and branch, the first branch's seeded with every material's average by the migration).
+  With one branch it is the company's average, kept the same. With several, a delivery or a batch
+  made moves its own branch's average, by the same arithmetic as before on the branch's stock; one
+  voided takes its price back out; and the company's average becomes the branches' stock at their
+  own averages. What a branch uses, throws away, counts or moves is valued at its own average
+  (Tanta's lettuce at Tanta's 0.05 a gram while the first branch's is 0.03). All the locations of a
+  branch share its one average.
+
+**Where each entry goes** (موقع الحركة), once there are locations:
+
+| Entry | Its location |
+| --- | --- |
+| A purchase invoice, the daily batch | **Receiving location · موقع الاستلام**, chosen on the invoice or the batch (the main store until another is); a correction keeps the original's |
+| A production batch | **Made in · موقع التصنيع**: its ingredients taken from there and the batch put there |
+| Spoilage, staff meals and hospitality | **Thrown away from · موقع الهالك**, **Taken from · موقع الصرف** |
+| A stock count | **Count where · مكان الجرد**: one location, its book figures that location's; or **Whole branch · كل الفرع**, the branch's total, its difference taken at the main store |
+| A sale (POS or entered), a void's waste | The location serving the material's station in the branch (or the waste's station held to account); else the branch's main store |
+| Anything else (opening stock, transfers' own) | What it says; else the branch's main store |
+
+A location named must be one of the branch's, in use (*Hot Kitchen is not in use*, *Tanta store is
+another branch's*); in an open-space shop whatever is named is ignored: its one Main Store.
+
+### Internal transfers (التحويلات الداخلية)
+
+**Operations & inventory → Internal transfers** (`/costing/internal-transfers`), listed after the
+counts once the structure has locations, for whoever works **Stock counts** or **Raw materials**;
+made and voided by whoever keeps the stock (`inventory.manage`), their costs only for whoever
+sees costs (a storekeeper moves the stock without its value).
+
+- **New transfer · تحويل جديد:** from and to (two locations of the branch; swapped with one click),
+  the materials with their quantities entered as they are counted (kg, L, pieces), what the
+  location it leaves has beside each, and notes. **Move stock · تحويل** posts it today, numbered by
+  its year, `TR-2026-0001`; its id is made by the screen, so sent again after a lost answer it is
+  made once.
+- **Refused:** the same location twice (*the two are the same*), two branches' (*inside one
+  branch*), a location not in use, no line, a material twice, or more than the location it leaves
+  has (*Main Store has 3000 Gram of Flour: not enough to move 3500*). An open-space shop has none
+  (*An open-space shop keeps its stock in one place*).
+- **Posted:** each line a **TransferOut** from the one location and a **TransferIn** to the other,
+  at the branch's average cost (`UnitCostSnapshot`, `LineTotalCost`): the company's stock and cost
+  as they were, nothing on the P&L. The material's stock card leaves transfers out (they move
+  nothing in or out of the company); the locations show them.
+- **Voided · إلغاء** (confirmed first): both sides of each line go back, on the books of the day it
+  was made (the period lock applies to both).
+- **The list:** a period (the last 30 days until others are chosen), searched by number, material,
+  notes or who made it, filtered by where it left, where it went and its status; each **printed as
+  a slip** (إذن تحويل: number, day, from, to, the materials, their costs for whoever sees them, and
+  *Handed over by · المسلِّم* / *Received by · المستلِم* to sign), and the period sent as a workbook
+  (**Excel**: *Transfers* and their *Lines*).
+- **Stock by location · الرصيد حسب الموقع:** a row a material, a column a location, the branch's
+  total and its value at the branch's average; searched by material or code.
+
+**Kept** in `StockMovements.LocationId`, `PurchaseInvoices.LocationId`, `StockCounts.LocationId`,
+`ProductionOrders.LocationId`, `InventoryLocations.StationIds`, `MaterialBranchStocks`,
+`InternalTransfers` and `InternalTransferLines` (migration `AddStockLocations`). `GET
+/api/inventory/stock-locations` gives the mode, the branch and its locations in use (any costing
+tab); `GET /api/inventory/location-stock` what each has; `GET /api/inventory/internal-transfers?from=&to=`
+(at most 366 days), `GET …/internal-transfers/{id}`, `GET …/internal-transfers/sheet?from=&to=`
+(`inventory.view`, Stock counts or Raw materials); `POST …/internal-transfers` takes `{ id,
+fromLocationId, toLocationId, lines: [{ rawMaterialId, quantity }], notes }` and `POST
+…/internal-transfers/{id}/void` (`inventory.manage`). The invoice, batch, production, spoilage,
+staff meal and count requests take `locationId`; `PUT /api/settings/locations/{id}` takes
+`stationIds`.
 
 ## Period lock and month-end close (إقفال الفترة المحاسبية وتجميد الدفاتر)
 
@@ -1730,6 +1810,7 @@ The ProblemDetails carries it as `detail` and `errors[0]` (what the screens show
 | Waste: spoilage, staff meals and hospitality; breakage | Today; breakage, its day |
 | Stock counts: posted, opening stock, voided | Today; a void, the day it was posted |
 | Production: a batch made, corrected, voided | Today; the batch replaced or voided, its own day |
+| Internal transfers: made, voided | Today; a void, the day it was made |
 | Fixed assets: registered, restated, written off, removed, reinstated | The purchase day (restated: only when its day, cost, life or salvage change, which its depreciation follows), the write-off day |
 | A month's figures: its expenses (Reports → KPIs), its manual sales sheet, HR's payroll run | The month's last day: a month is closed once its last day is |
 | A manager approving a request | The days of what it does |

@@ -127,8 +127,10 @@ public sealed class StockCardService(CostingDbContext db, IBusinessCalendar cloc
         var material = await db.RawMaterials.AsNoTracking().SingleOrDefaultAsync(m => m.Id == materialId, cancellationToken)
             ?? throw new NotFoundException("Raw material", materialId);
         // The whole ledger, to know the balance and the average at each step; only the period is shown.
+        // A move between two of a branch's locations nets to nothing for the company: not on its card.
         var movements = await db.StockMovements.AsNoTracking()
             .Where(m => m.RawMaterialId == materialId && m.OccurredAtUtc < toUtc)
+            .Where(m => m.Reason != StockMovementReason.TransferOut && m.Reason != StockMovementReason.TransferIn)
             .OrderBy(m => m.OccurredAtUtc).ThenBy(m => m.Id)
             .ToListAsync(cancellationToken);
 

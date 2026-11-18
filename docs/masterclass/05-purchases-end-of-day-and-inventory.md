@@ -46,7 +46,7 @@
 
 `PurchaseInvoices.cs`: `InvoiceRecorder` (حفظ المسودة: التحقق من البنود، الوحدات، المورد، الخصم)، و `InvoicePoster` (الترحيل: يُدخل المخزون بحركات `Purchase` ويحرك المتوسط، ويسجل الدفع: نقدي من الخزنة، أو من إيراد يوم، أو آجل على المورد)، والقراءة. المعرّف يصنعه "الـ till" (المتصفح).
 
-> 📄 **`backend/src/Costing.Application/Purchases/PurchaseInvoices.cs`** — 523 سطر
+> 📄 **`backend/src/Costing.Application/Purchases/PurchaseInvoices.cs`** — 532 سطر
 
 ```csharp
 using MediatR;
@@ -129,7 +129,9 @@ public sealed record PurchaseInvoiceDto(
     // The purchase order it delivers: a draft's set against it item by item (the 3-way match), a
     // posted one's named. AwaitingApproval: its posting waits for a manager to sign off what is over the order.
     PurchaseOrderMatchDto? PurchaseOrder = null,
-    bool AwaitingApproval = false);
+    bool AwaitingApproval = false,
+    // Where it is put away; none: the branch's main store.
+    Guid? LocationId = null);
 
 // What an invoice's lines are named and filed under, read together for a DTO; with Receiver, the
 // purchase order it delivers too.
@@ -177,6 +179,7 @@ internal sealed record InvoiceReading(
         {
             PaymentStatus = await InvoicePayments.StatusAsync(invoice, Safe, Requests, cancellationToken),
             PurchaseOrder = order,
+            LocationId = invoice.LocationId,
             AwaitingApproval = awaiting,
         };
     }
@@ -311,7 +314,9 @@ public sealed record SavePurchaseInvoiceCommand(
     decimal Discount = 0,
     // The purchase order it delivers, and whether it closes it with what came (no backorder).
     Guid? PurchaseOrderId = null,
-    bool ClosesPurchaseOrder = false) : IRequest<PurchaseInvoiceDto>, IBooksEntry
+    bool ClosesPurchaseOrder = false,
+    // Where it is put away; none: the branch's main store.
+    Guid? LocationId = null) : IRequest<PurchaseInvoiceDto>, IBooksEntry
 {
     IEnumerable<DateOnly?> IBooksEntry.BooksDays => [InvoiceDate, RevenueDate];
 }
@@ -319,7 +324,8 @@ public sealed record SavePurchaseInvoiceCommand(
 // The checks and the recording of an invoice as entered, for a draft saved on its own and for each
 // invoice of a daily batch alike. Tracked, for the caller to save.
 internal sealed class InvoiceRecorder(
-    IPurchaseInvoiceRepository invoices, IRawMaterialRepository materials, IExpenseItemRepository expenses, ISupplierRepository suppliers)
+    IPurchaseInvoiceRepository invoices, IRawMaterialRepository materials, IExpenseItemRepository expenses, ISupplierRepository suppliers,
+    Stock.StockPlaces places)
 {
     public async Task<PurchaseInvoice> RecordAsync(SavePurchaseInvoiceCommand request, CancellationToken cancellationToken)
     {
@@ -327,6 +333,7 @@ internal sealed class InvoiceRecorder(
         if (invoice is null)
             invoices.Add(invoice = new PurchaseInvoice(request.InvoiceId, request.StaffName));
         await FillAsync(invoice, request, invoice, cancellationToken);
+        invoice.ReceiveAt(await places.CheckAsync(request.LocationId, cancellationToken));
         return invoice;
     }
 
@@ -341,6 +348,8 @@ internal sealed class InvoiceRecorder(
         var invoice = new PurchaseInvoice(request.InvoiceId, request.StaffName);
         invoice.Corrects(original);
         await FillAsync(invoice, request, original, cancellationToken);
+        // Put away where the invoice it replaces was.
+        invoice.ReceiveAt(original.LocationId);
         if (track)
             invoices.Add(invoice);
         return invoice;
@@ -840,7 +849,7 @@ internal sealed class InvoiceCorrector(
 - صورة الورقة تُرفع بعد الترحيل (لا تُحفظ في `localStorage`)،
 - وسلف الموظفين من نفس الشاشة.
 
-> 📄 **`backend/src/Costing.Application/Purchases/PurchaseBatch.cs`** — 306 سطر
+> 📄 **`backend/src/Costing.Application/Purchases/PurchaseBatch.cs`** — 308 سطر
 
 ```csharp
 using System.Globalization;
@@ -916,7 +925,9 @@ public sealed record PostPurchaseBatchCommand(
     string StaffId = "",
     bool CanApprove = true,
     IReadOnlyList<BatchPayment>? Payments = null,
-    IReadOnlyList<BatchAdvance>? Advances = null) : IRequest<PurchaseBatchResult>, IRetryOnConflict, IBooksEntry
+    IReadOnlyList<BatchAdvance>? Advances = null,
+    // Where the day's deliveries are put away; none: the branch's main store.
+    Guid? LocationId = null) : IRequest<PurchaseBatchResult>, IRetryOnConflict, IBooksEntry
 {
     IEnumerable<DateOnly?> IBooksEntry.BooksDays => [InvoiceDate, RevenueDate];
 }
@@ -997,7 +1008,7 @@ internal sealed class PostPurchaseBatchHandler(
                     new SavePurchaseInvoiceCommand(
                         entry.InvoiceId, entry.SupplierId, entry.SupplierInvoiceNumber, request.InvoiceDate, entry.Lines, request.StaffName,
                         method, method == PurchasePaymentMethod.DayRevenue ? request.RevenueDate : null, entry.Discount,
-                        entry.PurchaseOrderId ?? day?.Invoice(entry.EndOfDayInvoiceId!.Value).PurchaseOrderId, entry.ClosesPurchaseOrder),
+                        entry.PurchaseOrderId ?? day?.Invoice(entry.EndOfDayInvoiceId!.Value).PurchaseOrderId, entry.ClosesPurchaseOrder, request.LocationId),
                     cancellationToken);
                 // Over its purchase order, anyone else's waits for a manager, a draft until then.
                 await poster.PostOrAskAsync(invoice, request.StaffName, request.StaffId, request.CanApprove, cancellationToken);
@@ -2308,7 +2319,7 @@ public sealed record CreatePurchaseOrdersRequest(IReadOnlyList<NewPurchaseOrder>
 
 `ReceivePurchaseCommand` (استلام بإذن) و `RecordSpoilageCommand` (هالك: يخرج المخزون بحركة `Spoilage` بالمتوسط). والمعرّف من المتصفح: الضغط مرتين على شبكة ضعيفة يجد الحركة نفسها ولا يكررها.
 
-> 📄 **`backend/src/Costing.Application/RawMaterials/StockIntake.cs`** — 109 سطر
+> 📄 **`backend/src/Costing.Application/RawMaterials/StockIntake.cs`** — 116 سطر
 
 ```csharp
 using MediatR;
@@ -2382,7 +2393,8 @@ internal sealed class ReceivePurchaseCommandHandler(
 
 // Thrown-away raw stock, as a manager records it. SpoilageId works as PurchaseId does, and
 // RecordedBy is set by the API from who is signed in.
-public sealed record RecordSpoilageCommand(Guid SpoilageId, IReadOnlyList<SpoilageLine> Lines, string RecordedBy = "")
+// LocationId: where it was thrown away; none: the location serving its station, or the main store.
+public sealed record RecordSpoilageCommand(Guid SpoilageId, IReadOnlyList<SpoilageLine> Lines, string RecordedBy = "", Guid? LocationId = null)
     : IRequest<IReadOnlyList<RawMaterialDto>>, IRetryOnConflict, IBooksEntry
 {
     bool IBooksEntry.WritesToday => true;
@@ -2398,7 +2410,8 @@ internal sealed class RecordSpoilageCommandHandler(
     IStockMovementRepository movements,
     IPurchaseCategoryRepository categories,
     Costing.Domain.Stations.IKitchenStationRepository stations,
-    IUnitOfWork unitOfWork) : IRequestHandler<RecordSpoilageCommand, IReadOnlyList<RawMaterialDto>>
+    IUnitOfWork unitOfWork,
+    Stock.StockPlaces places) : IRequestHandler<RecordSpoilageCommand, IReadOnlyList<RawMaterialDto>>
 {
     public async Task<IReadOnlyList<RawMaterialDto>> Handle(RecordSpoilageCommand request, CancellationToken cancellationToken)
     {
@@ -2410,9 +2423,14 @@ internal sealed class RecordSpoilageCommandHandler(
             foreach (var station in request.Lines.Select(l => l.ResponsibleStationId).OfType<Guid>().Distinct())
                 if (await stations.GetByIdAsync(station, cancellationToken) is null)
                     throw new DomainException("That station is no longer on the list: choose another. · هذا القسم غير موجود.");
+            var location = await places.CheckAsync(request.LocationId, cancellationToken);
             foreach (var line in request.Lines)
-                movements.Add(byId[line.RawMaterialId].RecordSpoilage(
-                    line.Quantity, request.SpoilageId, line.Reason, request.RecordedBy, line.ResponsibleStationId));
+            {
+                var entry = byId[line.RawMaterialId].RecordSpoilage(line.Quantity, request.SpoilageId, line.Reason, request.RecordedBy, line.ResponsibleStationId);
+                if (location is { } at)
+                    entry.AssignLocation(at);
+                movements.Add(entry);
+            }
 
             await unitOfWork.SaveChangesAsync(cancellationToken);
         }
@@ -4761,7 +4779,7 @@ internal sealed class GetSalesHandler(ISalesReceiptRepository sales, ICurrentBra
 
 **الجرد الأعمى (Blind):** `StockCountDto.ShowAsync(count, blind, …)` هو المكان الوحيد الذي يقرر ما يُعرض: في المسودة الرصيد الدفتري الحي (`QuantityOnHand`) والتكلفة (`AverageCost`) لمن يراجع، وفي الجرد المرحّل القيم المحفوظة، وفي الوضع الأعمى يُحذفان معًا. والـ API يفرضه: `Blind(asked) => asked || !costing.view`، فأمين المخزن لا يرى الدفتري ولو طلبه. لذلك الترحيل وطلب إعادة الجرد لمن يملك `costing.view` فقط، والعادّ الأعمى **يسلّم للمراجعة** (`SubmitStockCountCommand`). و `GetCountItemsQuery` يعطي ورقة العد الأصناف بلا رصيد ولا تكلفة.
 
-> 📄 **`backend/src/Costing.Application/StockCounts/StockCounts.cs`** — 382 سطر
+> 📄 **`backend/src/Costing.Application/StockCounts/StockCounts.cs`** — 401 سطر
 
 ```csharp
 using System.Globalization;
@@ -4823,7 +4841,9 @@ public sealed record StockCountDto(
     DateTime? ReviewedAtUtc = null,
     string? ReviewNote = null,
     // Shown blind: the records' figures and the costs left out.
-    bool Blind = false)
+    bool Blind = false,
+    // The location counted; none: the whole branch (an open-space shop: its one store).
+    Guid? LocationId = null)
 {
     // live: the draft's materials as they stand, for the records' figures now. Blind, none at all.
     public static StockCountDto From(StockCount count, bool blind = false, IReadOnlyDictionary<Guid, RawMaterial>? live = null) => new(
@@ -4832,19 +4852,23 @@ public sealed record StockCountDto(
         {
             var (book, cost) = blind ? (null, null)
                 : count.Status == StockCountStatus.Draft
-                    ? (live?.GetValueOrDefault(l.RawMaterialId)?.QuantityOnHand, live?.GetValueOrDefault(l.RawMaterialId)?.AverageCost)
+                    ? (live?.GetValueOrDefault(l.RawMaterialId)?.BookQuantity, live?.GetValueOrDefault(l.RawMaterialId)?.UnitCostHere)
                     : (l.BookQuantity, l.UnitCost);
             return new StockCountLineDto(l.RawMaterialId, l.CountedQuantity, book, cost, l.Note, l.RecountRequested);
         }).ToList(),
         count.VoidedAtUtc, count.VoidedBy, count.Kind, count.Scope, count.ScopeMaterialIds, count.ScopeLabel, count.Review, count.SubmittedBy,
-        count.SubmittedAtUtc, count.ReviewedBy, count.ReviewedAtUtc, count.ReviewNote, blind);
+        count.SubmittedAtUtc, count.ReviewedBy, count.ReviewedAtUtc, count.ReviewNote, blind, count.LocationId);
 
     // As the caller may see it: a draft not blind with the records' figures now.
-    public static async Task<StockCountDto> ShowAsync(StockCount count, bool blind, IRawMaterialRepository materials, CancellationToken cancellationToken)
+    public static async Task<StockCountDto> ShowAsync(
+        StockCount count, bool blind, IRawMaterialRepository materials, CancellationToken cancellationToken, Stock.StockPlaces? places = null)
     {
         if (blind || count.Status != StockCountStatus.Draft || count.Lines.Count == 0)
             return From(count, blind);
         var live = (await materials.GetByIdsAsync(count.Lines.Select(l => l.RawMaterialId).ToList(), cancellationToken)).ToDictionary(m => m.Id);
+        // The records' figures where it is counted: a location's, or the branch's.
+        if (places is not null)
+            await places.ViewAsync(live.Values, count.LocationId, cancellationToken);
         return From(count, blind, live);
     }
 }
@@ -4877,11 +4901,12 @@ internal sealed class GetStockCountsQueryHandler(IStockCountRepository counts, I
 // Blind: as its counter sees it, without the records' figures or the costs.
 public sealed record GetStockCountQuery(Guid StockCountId, bool Blind = false) : IRequest<StockCountDto?>;
 
-internal sealed class GetStockCountQueryHandler(IStockCountRepository counts, IRawMaterialRepository materials) : IRequestHandler<GetStockCountQuery, StockCountDto?>
+internal sealed class GetStockCountQueryHandler(IStockCountRepository counts, IRawMaterialRepository materials,
+    Stock.StockPlaces places) : IRequestHandler<GetStockCountQuery, StockCountDto?>
 {
     public async Task<StockCountDto?> Handle(GetStockCountQuery request, CancellationToken cancellationToken) =>
         await counts.GetByIdAsync(request.StockCountId, cancellationToken) is { } count
-            ? await StockCountDto.ShowAsync(count, request.Blind, materials, cancellationToken)
+            ? await StockCountDto.ShowAsync(count, request.Blind, materials, cancellationToken, places)
             : null;
 }
 
@@ -4896,12 +4921,15 @@ public sealed record SaveStockCountCommand(
     StockCountScope? Scope = null,
     IReadOnlyList<Guid>? ScopeMaterialIds = null,
     string? ScopeLabel = null,
-    bool Blind = false)
+    bool Blind = false,
+    // The location counted, as it starts; none: the whole branch.
+    Guid? LocationId = null)
     : IRequest<StockCountDto>;
 
 internal sealed class SaveStockCountCommandHandler(
     IStockCountRepository counts,
     IRawMaterialRepository materials,
+    Stock.StockPlaces places,
     IUnitOfWork unitOfWork) : IRequestHandler<SaveStockCountCommand, StockCountDto>
 {
     public async Task<StockCountDto> Handle(SaveStockCountCommand request, CancellationToken cancellationToken)
@@ -4920,6 +4948,7 @@ internal sealed class SaveStockCountCommandHandler(
             count = new StockCount(
                 request.StockCountId, request.StaffName, request.Kind ?? StockCountKind.Periodic, request.Scope ?? StockCountScope.Full,
                 request.ScopeMaterialIds, request.ScopeLabel);
+            count.CountAt(await places.CheckAsync(request.LocationId, cancellationToken));
             counts.Add(count);
         }
         else
@@ -4932,7 +4961,7 @@ internal sealed class SaveStockCountCommandHandler(
 
         count.Record(request.Lines.Select(l => (l.RawMaterialId, l.CountedQuantity, l.Note)).ToList());
         await unitOfWork.SaveChangesAsync(cancellationToken);
-        return await StockCountDto.ShowAsync(count, request.Blind, materials, cancellationToken);
+        return await StockCountDto.ShowAsync(count, request.Blind, materials, cancellationToken, places);
     }
 }
 
@@ -4940,7 +4969,8 @@ internal sealed class SaveStockCountCommandHandler(
 // against the records and post: a counter who counts blind never posts.
 public sealed record SubmitStockCountCommand(Guid StockCountId, string StaffName = "", bool Blind = false) : IRequest<StockCountDto>;
 
-internal sealed class SubmitStockCountCommandHandler(IStockCountRepository counts, IRawMaterialRepository materials, IUnitOfWork unitOfWork)
+internal sealed class SubmitStockCountCommandHandler(IStockCountRepository counts, IRawMaterialRepository materials, IUnitOfWork unitOfWork,
+    Stock.StockPlaces places)
     : IRequestHandler<SubmitStockCountCommand, StockCountDto>
 {
     public async Task<StockCountDto> Handle(SubmitStockCountCommand request, CancellationToken cancellationToken)
@@ -4948,7 +4978,7 @@ internal sealed class SubmitStockCountCommandHandler(IStockCountRepository count
         var count = await counts.GetRequiredAsync(request.StockCountId, cancellationToken);
         count.Submit(request.StaffName);
         await unitOfWork.SaveChangesAsync(cancellationToken);
-        return await StockCountDto.ShowAsync(count, request.Blind, materials, cancellationToken);
+        return await StockCountDto.ShowAsync(count, request.Blind, materials, cancellationToken, places);
     }
 }
 
@@ -4957,7 +4987,8 @@ internal sealed class SubmitStockCountCommandHandler(IStockCountRepository count
 public sealed record RequestStockCountRecountCommand(Guid StockCountId, IReadOnlyList<Guid> RawMaterialIds, string? Note, string StaffName = "")
     : IRequest<StockCountDto>;
 
-internal sealed class RequestStockCountRecountCommandHandler(IStockCountRepository counts, IRawMaterialRepository materials, IUnitOfWork unitOfWork)
+internal sealed class RequestStockCountRecountCommandHandler(IStockCountRepository counts, IRawMaterialRepository materials, IUnitOfWork unitOfWork,
+    Stock.StockPlaces places)
     : IRequestHandler<RequestStockCountRecountCommand, StockCountDto>
 {
     public async Task<StockCountDto> Handle(RequestStockCountRecountCommand request, CancellationToken cancellationToken)
@@ -4965,7 +4996,7 @@ internal sealed class RequestStockCountRecountCommandHandler(IStockCountReposito
         var count = await counts.GetRequiredAsync(request.StockCountId, cancellationToken);
         count.RequestRecount(request.RawMaterialIds ?? [], request.Note, request.StaffName);
         await unitOfWork.SaveChangesAsync(cancellationToken);
-        return await StockCountDto.ShowAsync(count, blind: false, materials, cancellationToken);
+        return await StockCountDto.ShowAsync(count, blind: false, materials, cancellationToken, places);
     }
 }
 
@@ -5037,6 +5068,7 @@ internal sealed class PostStockCountCommandHandler(
     IPrepRecipeRepository prepRecipes,
     IStockMovementRepository movements,
     IBusinessCalendar clock,
+    Stock.StockPlaces places,
     IUnitOfWork unitOfWork) : IRequestHandler<PostStockCountCommand, StockCountDto>
 {
     public async Task<StockCountDto> Handle(PostStockCountCommand request, CancellationToken cancellationToken)
@@ -5049,6 +5081,8 @@ internal sealed class PostStockCountCommandHandler(
             ? new Dictionary<Guid, RawMaterial>()
             : await materials.GetRequiredByIdsAsync(count.Lines.Select(l => l.RawMaterialId).ToList(), cancellationToken);
         var costs = await CountPosting.CheckAsync(count, byId, counts, materials, prepRecipes, clock, cancellationToken);
+        // Set against what is on the shelves where it was counted.
+        await places.ViewAsync(byId.Values, count.LocationId, cancellationToken);
         foreach (var movement in count.Post(byId, request.StaffName, costs))
             movements.Add(movement);
 
@@ -5111,7 +5145,7 @@ internal sealed class DiscardStockCountCommandHandler(IStockCountRepository coun
 // A whole count in one request: recorded and posted at once. For a quick count of a few
 // materials, and for scripts; the screens use a draft.
 public sealed record RecordStockCountCommand(
-    Guid StockCountId, IReadOnlyList<StockCountLine> Lines, string StaffName = "", StockCountKind Kind = StockCountKind.Periodic)
+    Guid StockCountId, IReadOnlyList<StockCountLine> Lines, string StaffName = "", StockCountKind Kind = StockCountKind.Periodic, Guid? LocationId = null)
     : IRequest<IReadOnlyList<RawMaterialDto>>, IRetryOnConflict, IBooksEntry
 {
     bool IBooksEntry.WritesToday => true;
@@ -5124,6 +5158,7 @@ internal sealed class RecordStockCountCommandHandler(
     IStockMovementRepository movements,
     IPurchaseCategoryRepository categories,
     IBusinessCalendar clock,
+    Stock.StockPlaces places,
     IUnitOfWork unitOfWork) : IRequestHandler<RecordStockCountCommand, IReadOnlyList<RawMaterialDto>>
 {
     public async Task<IReadOnlyList<RawMaterialDto>> Handle(RecordStockCountCommand request, CancellationToken cancellationToken)
@@ -5134,8 +5169,10 @@ internal sealed class RecordStockCountCommandHandler(
         if (await counts.GetByIdAsync(request.StockCountId, cancellationToken) is null)
         {
             var count = new StockCount(request.StockCountId, request.StaffName, request.Kind);
+            count.CountAt(await places.CheckAsync(request.LocationId, cancellationToken));
             count.Record(request.Lines.Select(l => (l.RawMaterialId, l.CountedQuantity)).ToList());
             var costs = await CountPosting.CheckAsync(count, byId, counts, materials, prepRecipes, clock, cancellationToken);
+            await places.ViewAsync(byId.Values, count.LocationId, cancellationToken);
             counts.Add(count);
             foreach (var movement in count.Post(byId, request.StaffName, costs))
                 movements.Add(movement);
@@ -5242,7 +5279,7 @@ internal static class BreakageDtos
 
 - **وجبات العاملين والضيافة وتجارب الوصفات:** ما يخرج من المخزون **عن قصد** ليس هالكًا ولا عجزًا. لكل نوع سبب حركة مستقل (`StaffMeal` و`Hospitality` و`RecipeTasting`، ومجموعتها `StaffConsumption.Reasons`)، فتقرير الاستهلاك والفروقات يخرجه من "غير المبرر" في عمود خاص. السطر إما خامة/مصنع بكميته بوحدته، أو **وصفة بأطباق كاملة** تأخذ مكوناتها كما يأخذها البيع (`RequirementsFor`: المصنعات من مخزونها، لا تُفكّ لخاماتها). و `EntryId` يجعل إعادة الإرسال تسجّل مرة واحدة، والإلغاء بنفس موافقة الهالك (`Deletions.cs` يبحث بسبب الهالك ثم أسباب العاملين ويعكس بسبب أول قيد). وجبة العاملين تذهب لتكلفة العمالة، والضيافة والتجارب لمصروفات مستقلة.
 
-> 📄 **`backend/src/Costing.Application/Waste/StaffMeals.cs`** — 101 سطر
+> 📄 **`backend/src/Costing.Application/Waste/StaffMeals.cs`** — 108 سطر
 
 ```csharp
 using MediatR;
@@ -5276,7 +5313,7 @@ public sealed record StaffConsumptionLine(Guid? RawMaterialId, Guid? RecipeId, d
 // EntryId works as a spoilage's: made by the screen, so a retry records it once. RecordedBy is
 // set by the API from who is signed in.
 public sealed record RecordStaffConsumptionCommand(
-    Guid EntryId, StaffConsumptionKind Kind, IReadOnlyList<StaffConsumptionLine> Lines, string? Note = null, string RecordedBy = "")
+    Guid EntryId, StaffConsumptionKind Kind, IReadOnlyList<StaffConsumptionLine> Lines, string? Note = null, string RecordedBy = "", Guid? LocationId = null)
     : IRequest<Guid>, IRetryOnConflict, IBooksEntry
 {
     bool IBooksEntry.WritesToday => true;
@@ -5294,7 +5331,8 @@ public static class StaffConsumptionKinds
 }
 
 internal sealed class RecordStaffConsumptionHandler(
-    IRawMaterialRepository materials, IRecipeRepository recipes, IMenuRepository menu, IStockMovementRepository movements, IUnitOfWork unitOfWork)
+    IRawMaterialRepository materials, IRecipeRepository recipes, IMenuRepository menu, IStockMovementRepository movements, IUnitOfWork unitOfWork,
+    Stock.StockPlaces places)
     : IRequestHandler<RecordStaffConsumptionCommand, Guid>
 {
     public async Task<Guid> Handle(RecordStaffConsumptionCommand request, CancellationToken cancellationToken)
@@ -5340,8 +5378,14 @@ internal sealed class RecordStaffConsumptionHandler(
         var byId = await materials.GetRequiredByIdsAsync(taken.Select(t => t.Material).Distinct().ToList(), cancellationToken);
         if (byId.Values.FirstOrDefault(m => m.IsArchived) is { } archived)
             throw new DomainException($"{archived.Name} has been deleted from the raw materials.");
+        var location = await places.CheckAsync(request.LocationId, cancellationToken);
         foreach (var (material, quantity, said) in taken)
-            movements.Add(byId[material].RecordConsumption(quantity, request.EntryId, reason, said, request.RecordedBy));
+        {
+            var entry = byId[material].RecordConsumption(quantity, request.EntryId, reason, said, request.RecordedBy);
+            if (location is { } at)
+                entry.AssignLocation(at);
+            movements.Add(entry);
+        }
         await unitOfWork.SaveChangesAsync(cancellationToken);
         return request.EntryId;
     }
@@ -5353,7 +5397,7 @@ internal sealed class RecordStaffConsumptionHandler(
 
 أكبر Controller: الخامات والوحدات، الوصفات والمصنعات، أوامر الإنتاج، الجرد، الهالك، الفواتير ويومية المشتريات وتعديلها وصورها، الفئات والمصروفات والموردون، و **طلبات الحذف** (`deletion-requests`). الصلاحيات على كل endpoint (لا تعتمد على السجل)، و `CanApprove` يقرر "200 تنفيذ" أم "202 طلب".
 
-> 📄 **`backend/src/Costing.Api/Controllers/InventoryController.cs`** — 930 سطر
+> 📄 **`backend/src/Costing.Api/Controllers/InventoryController.cs`** — 935 سطر
 
 ```csharp
 using MediatR;
@@ -5518,7 +5562,7 @@ public sealed class InventoryController(ISender sender) : ControllerBase
     public Task<PurchaseInvoiceDto> SavePurchaseInvoice(Guid invoiceId, SavePurchaseInvoiceRequest request, CancellationToken cancellationToken) =>
         sender.Send(new SavePurchaseInvoiceCommand(
             invoiceId, request.SupplierId, request.SupplierInvoiceNumber, request.InvoiceDate, request.Lines, StaffName,
-            request.PaymentMethod, request.RevenueDate, request.Discount, request.PurchaseOrderId, request.ClosesPurchaseOrder), cancellationToken);
+            request.PaymentMethod, request.RevenueDate, request.Discount, request.PurchaseOrderId, request.ClosesPurchaseOrder, request.LocationId), cancellationToken);
 
     // Step two, after the review: the stock goes in, and it is paid as chosen: on credit, owed to
     // the supplier; in cash, paid for a manager and waiting for one's approval for anyone else
@@ -5539,7 +5583,7 @@ public sealed class InventoryController(ISender sender) : ControllerBase
     public Task<PurchaseBatchResult> PostPurchaseBatch(PurchaseBatchRequest request, CancellationToken cancellationToken) =>
         sender.Send(new PostPurchaseBatchCommand(
             request.InvoiceDate, request.PaymentMethod, request.RevenueDate, request.Invoices, StaffName, StaffId, CanApprove, request.Payments ?? [],
-            request.Advances ?? []),
+            request.Advances ?? [], request.LocationId),
             cancellationToken);
 
     // A posted invoice corrected (تعديل فاتورة): voided and posted again as it should have been, as a
@@ -5885,10 +5929,10 @@ public sealed class InventoryController(ISender sender) : ControllerBase
     {
         if (CanApprove)
             return Ok(await sender.Send(new MakeProductionOrderCommand(
-                orderId, request.PrepItemId, request.PlannedQuantity, request.ProducedQuantity, request.Notes, StaffName), cancellationToken));
+                orderId, request.PrepItemId, request.PlannedQuantity, request.ProducedQuantity, request.Notes, StaffName, request.LocationId), cancellationToken));
         return Accepted(await sender.Send(new RequestProductionOrderCommand(
             request.RequestId ?? Guid.NewGuid(), orderId, request.PrepItemId, request.PlannedQuantity, request.ProducedQuantity, request.Notes,
-            request.Reason, StaffId, StaffName), cancellationToken));
+            request.Reason, StaffId, StaffName, request.LocationId), cancellationToken));
     }
 
     // Corrects a batch: reversed and made again with these quantities, at the averages now, as
@@ -5963,7 +6007,8 @@ public sealed class InventoryController(ISender sender) : ControllerBase
     [Authorize(Policy = Permissions.InventoryManage)]
     public Task<StockCountDto> SaveStockCount(Guid stockCountId, SaveStockCountRequest request, [FromQuery] bool blind, CancellationToken cancellationToken) =>
         sender.Send(new SaveStockCountCommand(
-            stockCountId, request.Lines ?? [], StaffName, request.Kind, request.Scope, request.ScopeMaterialIds, request.ScopeLabel, Blind(blind)), cancellationToken);
+            stockCountId, request.Lines ?? [], StaffName, request.Kind, request.Scope, request.ScopeMaterialIds, request.ScopeLabel, Blind(blind),
+            request.LocationId), cancellationToken);
 
     // Handed in for review by its counter: anyone who counts may.
     [HttpPost("stock-counts/{stockCountId:guid}/submit")]
@@ -6157,7 +6202,8 @@ public sealed record SaveStockCountRequest(
     Costing.Domain.StockCounts.StockCountKind? Kind = null,
     Costing.Domain.StockCounts.StockCountScope? Scope = null,
     IReadOnlyList<Guid>? ScopeMaterialIds = null,
-    string? ScopeLabel = null);
+    string? ScopeLabel = null,
+    Guid? LocationId = null);
 
 public sealed record StockCountRecountRequest(IReadOnlyList<Guid> RawMaterialIds, string? Note = null);
 
@@ -6185,13 +6231,15 @@ public sealed record SavePurchaseInvoiceRequest(
     decimal Discount = 0,
     // The purchase order it delivers, and whether it closes it with what came.
     Guid? PurchaseOrderId = null,
-    bool ClosesPurchaseOrder = false);
+    bool ClosesPurchaseOrder = false,
+    Guid? LocationId = null);
 
 public sealed record PayPurchaseInvoiceRequest(Guid RequestId, PurchasePaymentMethod Method, DateOnly? RevenueDate = null);
 
 public sealed record PurchaseBatchRequest(
     DateOnly InvoiceDate, PurchasePaymentMethod PaymentMethod, IReadOnlyList<BatchInvoice> Invoices, DateOnly? RevenueDate = null,
-    IReadOnlyList<BatchPayment>? Payments = null, IReadOnlyList<BatchAdvance>? Advances = null);
+    IReadOnlyList<BatchPayment>? Payments = null, IReadOnlyList<BatchAdvance>? Advances = null,
+    Guid? LocationId = null);
 
 public sealed record SavePrepItemRequest(
     string Name,
@@ -6241,7 +6289,8 @@ public sealed record SaveRecipeCategoryRequest(string Name, string? NameAr = nul
 public sealed record RestoreRecipeRequest(string? Name);
 
 public sealed record MakeProductionOrderRequest(
-    Guid PrepItemId, decimal PlannedQuantity, decimal ProducedQuantity, string? Notes = null, Guid? RequestId = null, string? Reason = null);
+    Guid PrepItemId, decimal PlannedQuantity, decimal ProducedQuantity, string? Notes = null, Guid? RequestId = null, string? Reason = null,
+    Guid? LocationId = null);
 
 public sealed record ReviseProductionOrderRequest(
     Guid RequestId, Guid NewOrderId, decimal PlannedQuantity, decimal ProducedQuantity, string? Notes = null, string? Reason = null);

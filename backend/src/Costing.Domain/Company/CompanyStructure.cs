@@ -113,6 +113,12 @@ public sealed class InventoryLocation : AggregateRoot
 
     public bool IsDefault => Id == DefaultId;
 
+    // The kitchen stations it serves (الأقسام التي يخدمها): what the kitchen uses of their
+    // materials (sales, waste, staff meals) is taken from here. One location a station, in a branch.
+    public Guid[] StationIds { get; private set; } = [];
+
+    public void Serve(IEnumerable<Guid> stationIds) => StationIds = stationIds.Distinct().ToArray();
+
     public void Change(string name, string? nameAr, LocationKind kind, bool isActive)
     {
         var trimmed = name?.Trim() ?? string.Empty;
