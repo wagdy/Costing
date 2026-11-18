@@ -70,7 +70,9 @@ public sealed record PrepItemDto(
     bool IsSpotCheckItem = false,
     // A batch's prep time (null: the ordinary 10 minutes) and complexity.
     decimal? PrepTimeMinutes = PlateActivity.DefaultPrepTimeMinutes,
-    decimal ComplexityWeight = PlateActivity.DefaultComplexityWeight);
+    decimal ComplexityWeight = PlateActivity.DefaultComplexityWeight,
+    // The kitchen or bar station that makes and keeps it.
+    Guid? KitchenStationId = null);
 
 public sealed record PrepIngredientEntry(Guid RawMaterialId, decimal Quantity, decimal? YieldPercent = null);
 
@@ -138,7 +140,8 @@ internal static class PrepItemCosting
             recipe?.RecipeCategoryId,
             item.IsSpotCheckItem,
             recipe is null ? PlateActivity.DefaultPrepTimeMinutes : recipe.PrepTimeMinutes,
-            recipe?.ComplexityWeight ?? PlateActivity.DefaultComplexityWeight);
+            recipe?.ComplexityWeight ?? PlateActivity.DefaultComplexityWeight,
+            item.KitchenStationId);
     }
 
     // Would `prepItemId` end up made from itself, through the ingredients given and the other

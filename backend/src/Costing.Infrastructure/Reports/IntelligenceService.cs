@@ -214,7 +214,9 @@ public sealed record ConsumptionRow(
     decimal? UnitCost,
     decimal? VarianceCost,
     VarianceEvaluation Evaluation,
-    decimal StaffMeals = 0);
+    decimal StaffMeals = 0,
+    // The kitchen or bar station that keeps it (none: the shared station's).
+    Guid? KitchenStationId = null);
 
 // WasteValue and StaffMealsValue: the logged spoilage and the staff meals, hospitality and tastings,
 // at the average cost now, each apart from the unexplained.
@@ -288,9 +290,15 @@ public sealed record CountCategoryPreset(Guid CategoryId, string Name, string? N
 // Critical: the daily critical items starred. ClassA: class A of the last 30 days (ABC). HighVariance:
 // what ran over its recipes in them (theoretical against actual, unfavourable) or came up short at the
 // last periodic count by more than the tolerance. And each category's materials.
-public sealed record CountPresets(DateOnly From, DateOnly To, decimal TolerancePercent, IReadOnlyList<CountPreset> Presets, IReadOnlyList<CountCategoryPreset> Categories);
+public sealed record CountPresets(
+    DateOnly From, DateOnly To, decimal TolerancePercent, IReadOnlyList<CountPreset> Presets, IReadOnlyList<CountCategoryPreset> Categories,
+    IReadOnlyList<CountStationPreset>? Stations = null);
 
-public sealed class IntelligenceService(CostingDbContext db, IBusinessCalendar clock, SalesLedger ledger)
+// A station's materials and prep items (حسب قسم المطبخ), for a count at its shift's close: the
+// shared station's takes those with none.
+public sealed record CountStationPreset(Guid StationId, string Name, string? NameAr, string? Code, IReadOnlyList<Guid> MaterialIds);
+
+public sealed partial class IntelligenceService(CostingDbContext db, IBusinessCalendar clock, SalesLedger ledger)
 {
     // The days a preset looks back over.
     public const int PresetDays = 30;
@@ -353,6 +361,10 @@ public sealed class IntelligenceService(CostingDbContext db, IBusinessCalendar c
 
         var categories = await db.PurchaseCategories.AsNoTracking().ToListAsync(cancellationToken);
         var byCategory = materials.ToLookup(m => m.CategoryId);
+        var stations = (await db.KitchenStations.AsNoTracking().ToListAsync(cancellationToken)).Where(s => s.IsActive).ToList();
+        var sharedStation = stations.Where(s => s.IsShared).Select(s => (Guid?)s.Id).FirstOrDefault();
+        var known = stations.Select(s => s.Id).ToHashSet();
+        var byStation = materials.ToLookup(m => m.KitchenStationId is { } id && known.Contains(id) ? id : sharedStation);
         return new CountPresets(
             from, to, tolerance,
             [
@@ -364,6 +376,11 @@ public sealed class IntelligenceService(CostingDbContext db, IBusinessCalendar c
                 .Where(c => byCategory[c.Id].Any())
                 .OrderBy(c => c.Name, StringComparer.CurrentCultureIgnoreCase)
                 .Select(c => new CountCategoryPreset(c.Id, c.Name, c.NameAr, byCategory[c.Id].OrderBy(m => m.Name).Select(m => m.Id).ToList()))
+                .ToList(),
+            stations
+                .Where(s => byStation[s.Id].Any())
+                .OrderBy(s => s.DisplayOrder).ThenBy(s => s.Name, StringComparer.CurrentCultureIgnoreCase)
+                .Select(s => new CountStationPreset(s.Id, s.Name, s.NameAr, s.Code, byStation[s.Id].OrderBy(m => m.Name).Select(m => m.Id).ToList()))
                 .ToList());
     }
 
@@ -728,7 +745,7 @@ public sealed class IntelligenceService(CostingDbContext db, IBusinessCalendar c
                 id, material.Code, material.Name, material.CategoryId, catalog.CategoryName(material.CategoryId), catalog.CategoryAr(material.CategoryId),
                 material.PurchaseUnit, Quantity(opening / size), Quantity(purchases / size), Quantity(waste / size), Quantity(closing / size),
                 Quantity(actual / size), Quantity(expected / size), Quantity(inPrep / size), Quantity(unexplained / size), percent,
-                Money(material.CostPerPurchaseUnit), Money(unexplained * material.AverageCost), evaluation, Quantity(staff / size)));
+                Money(material.CostPerPurchaseUnit), Money(unexplained * material.AverageCost), evaluation, Quantity(staff / size), material.KitchenStationId));
         }
 
         rows = rows.OrderBy(r => r.Evaluation == VarianceEvaluation.SharedCost).ThenByDescending(r => r.VarianceCost ?? 0).ThenBy(r => r.Material).ToList();

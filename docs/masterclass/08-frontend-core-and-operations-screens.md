@@ -443,7 +443,7 @@ export const appConfig: ApplicationConfig = {
 
 كل قسم بـ `canActivate: [costingTabGuard('Materials')]` و `loadComponent` كسول، والأقسام الفرعية (الوصفات، المشتريات، الماليات، التقارير، التحليلات) كأبناء لـ Shell خاص بها، والمسار الفارغ يفتح أول قسم يملكه المستخدم.
 
-> 📄 **`frontend/src/app/app.routes.ts`** — 318 سطر
+> 📄 **`frontend/src/app/app.routes.ts`** — 322 سطر
 
 ```ts
 import { Routes } from '@angular/router';
@@ -551,6 +551,8 @@ const costingChildren: Routes = [
       { path: 'prices', loadComponent: () => import('./features/costing/price-variance-page').then((m) => m.PriceVariancePage) },
       { path: 'orders', loadComponent: () => import('./features/costing/order-planner-page').then((m) => m.OrderPlannerPage) },
       { path: 'consumption', loadComponent: () => import('./features/costing/consumption-page').then((m) => m.ConsumptionPage) },
+      // Station-level variance: each kitchen and bar station held to its materials' use and its waste.
+      { path: 'stations', loadComponent: () => import('./features/costing/station-variance-page').then((m) => m.StationVariancePage) },
       { path: 'abc', loadComponent: () => import('./features/costing/abc-page').then((m) => m.AbcPage) },
       { path: 'menu', loadComponent: () => import('./features/costing/menu-engineering-page').then((m) => m.MenuEngineeringPage) },
       { path: 'burdened', loadComponent: () => import('./features/costing/burdened-cost-page').then((m) => m.BurdenedCostPage) },
@@ -680,6 +682,8 @@ const costingChildren: Routes = [
       },
       { path: 'kpis', loadComponent: () => import('./features/costing/kpis-page').then((m) => m.KpisPage) },
       { path: 'break-even', loadComponent: () => import('./features/costing/break-even-page').then((m) => m.BreakEvenPage) },
+      // Station-level variance, as on Material & demand intelligence.
+      { path: 'station-variance', loadComponent: () => import('./features/costing/station-variance-page').then((m) => m.StationVariancePage) },
       {
         // Each end of day handed in, and the manager's undo of the last one closed: for whoever reads
         // the end of day too.
@@ -1413,7 +1417,7 @@ function insert(field: HTMLInputElement, text: string): void {
 
 `costing.api.ts`: أكبر ملف: كل الأنواع والنداءات لـ `api/costing` و `api/inventory` و `api/financials` (الخامات، التكاليف، الوصفات، المصنعات، الإنتاج، المشتريات، الجرد، الهالك، الخزنة، التقارير، الموافقات…). الأنواع تطابق DTOs الـ API، والـ enums كـ union types، وقواميس التسميات ثنائية اللغة (`Record<Kind, { en; ar }>`) تجبر TypeScript على تسمية كل حالة.
 
-> 📄 **`frontend/src/app/core/costing/costing.api.ts`** — 3462 سطر
+> 📄 **`frontend/src/app/core/costing/costing.api.ts`** — 3530 سطر
 
 ```ts
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
@@ -1459,6 +1463,33 @@ export interface MaterialCost {
   recipeCostMissing?: string[];
   // Counted every day: in the daily critical items' spot count (جرد يومي سريع).
   isSpotCheckItem?: boolean;
+  // The kitchen or bar station that keeps it (null: the shared station's).
+  kitchenStationId?: string | null;
+}
+
+// A kitchen or bar station (قسم التشغيل): each material, prep item and dish is kept by one, and its
+// variance judged by its own tolerance (null: the costing settings'). The shared station takes what
+// has none.
+export interface KitchenStation {
+  id: string;
+  name: string;
+  nameAr: string | null;
+  code: string | null;
+  displayOrder: number;
+  targetVarianceTolerancePercent: number | null;
+  isActive: boolean;
+  isShared: boolean;
+  materials: number;
+  recipes: number;
+}
+
+export interface SaveKitchenStation {
+  name: string;
+  nameAr: string | null;
+  code: string | null;
+  displayOrder: number;
+  targetVarianceTolerancePercent: number | null;
+  isActive: boolean;
 }
 
 // What a recipe line is costed from, per unit: the material's average, or for a prep item never
@@ -1638,6 +1669,8 @@ export interface RecipeCostCard {
   complexityWeight?: number;
   // A combo offer sold under this number: costed by its dishes.
   comboOfferId?: string | null;
+  // The kitchen or bar station that makes it.
+  kitchenStationId?: string | null;
 }
 
 // The kitchen's own grouping of its recipes: Sauces, Staff meals, Catering orders.
@@ -2067,6 +2100,8 @@ export interface CountItem {
   isPrepItem: boolean;
   isSpotCheckItem: boolean;
   isArchived: boolean;
+  // The kitchen or bar station that keeps it, for a count of one station.
+  kitchenStationId?: string | null;
 }
 
 // A spot count's ready lists, by material id alone.
@@ -2084,12 +2119,22 @@ export interface CountCategoryPreset {
   materialIds: string[];
 }
 
+// A station's materials and prep items, for a count at its shift's close (حسب قسم المطبخ).
+export interface CountStationPreset {
+  stationId: string;
+  name: string;
+  nameAr: string | null;
+  code: string | null;
+  materialIds: string[];
+}
+
 export interface CountPresets {
   from: string;
   to: string;
   tolerancePercent: number;
   presets: CountPreset[];
   categories: CountCategoryPreset[];
+  stations?: CountStationPreset[];
 }
 
 export interface StockCountSummary {
@@ -2158,6 +2203,8 @@ export interface SpoilageLine {
   rawMaterialId: string;
   quantity: number;
   reason: string;
+  // The station held to account for it (القسم المسؤول): the material's own unless another is named.
+  responsibleStationId?: string | null;
 }
 
 export interface SpoilageEntry {
@@ -2172,6 +2219,7 @@ export interface SpoilageEntry {
     quantity: number;
     reason: string | null;
     value: number | null;
+    responsibleStationId?: string | null;
   }[];
   value: number | null;
 }
@@ -2558,6 +2606,8 @@ export interface PrepItem {
   // A batch's prep time (null: the ordinary 10 minutes) and how hard it is.
   prepTimeMinutes?: number | null;
   complexityWeight?: number;
+  // The kitchen or bar station that makes and keeps it.
+  kitchenStationId?: string | null;
 }
 
 export interface SavePrepItem {
@@ -3721,6 +3771,28 @@ export class CostingApi {
   }
 
   // Starred, or not, as a daily critical item.
+  // The kitchen and bar stations; a manager's to set.
+  stations(): Observable<KitchenStation[]> {
+    return this.http.get<KitchenStation[]>('/api/costing/stations');
+  }
+
+  saveStation(id: string, station: SaveKitchenStation): Observable<KitchenStation> {
+    return this.http.put<KitchenStation>(`/api/costing/stations/${id}`, station);
+  }
+
+  deleteStation(id: string): Observable<void> {
+    return this.http.delete<void>(`/api/costing/stations/${id}`);
+  }
+
+  // Materials and prep items given a station (null: none, the shared station's), one or many.
+  assignMaterialsStation(rawMaterialIds: string[], stationId: string | null): Observable<{ assigned: number; stationId: string | null }> {
+    return this.http.put<{ assigned: number; stationId: string | null }>('/api/inventory/raw-materials/station', { rawMaterialIds, stationId });
+  }
+
+  assignRecipeStation(recipeId: string, stationId: string | null): Observable<{ assigned: number; stationId: string | null }> {
+    return this.http.put<{ assigned: number; stationId: string | null }>(`/api/inventory/recipes/${recipeId}/station`, { stationId });
+  }
+
   setSpotCheck(id: string, isSpotCheckItem: boolean): Observable<{ isSpotCheckItem: boolean }> {
     return this.http.put<{ isSpotCheckItem: boolean }>(`/api/inventory/raw-materials/${id}/spot-check`, { isSpotCheckItem });
   }
@@ -8747,7 +8819,7 @@ export class InfoTip implements OnDestroy {
 ```
 
 
-> 📄 **`frontend/src/app/features/costing/info-tips.ts`** — 1119 سطر
+> 📄 **`frontend/src/app/features/costing/info-tips.ts`** — 1197 سطر
 
 ```ts
 // What each figure on the costing screens is, and how it is worked out, in Arabic and English: the
@@ -9866,6 +9938,84 @@ export const infoTips = {
       ar: 'تُجمع الصفوف حسب التاريخ وتُستورد من الأقدم. يبدأ الملف من أول يوم بعد آخر يوم مُقفل لم تُسجل مبيعاته، والأيام متتالية (يوم الإغلاق يُسجل أولاً من تقفيل اليوم)، ولا يوم في المستقبل. تُعرض معاينة أولاً، ثم تُسجل كل الأيام مع مسودة تقفيل لكل يوم، أو لا يُسجل شيء.',
     },
   ),
+  kitchenStation: tip(
+    { en: 'Kitchen station', ar: 'القسم التشغيلي' },
+    {
+      en: 'The kitchen or bar section that keeps this material or prep item, or makes this dish: its use and its waste are held against that station on Station variance. None: the shared station.',
+      ar: 'قسم المطبخ أو البار المسؤول عن الخامة أو المصنّع أو الطبق: يُحاسب القسم على استهلاكها وهالكها في انحراف الأقسام. بدون قسم: الخامات المشتركة.',
+    },
+    {
+      en: 'Set on Raw materials, Prep items (one or every one shown) and the recipe card, or by the Station column of the raw materials sheet. Stations are a manager’s to set on Cost settings.',
+      ar: 'يُحدد من الخامات والمصنعات (صنف أو كل المعروض) وكارت الوصفة أو عمود القسم في شيت الخامات، والأقسام يضبطها المدير من إعدادات التكاليف.',
+    },
+  ),
+  responsibleStation: tip(
+    { en: 'Station responsible', ar: 'القسم المسؤول' },
+    {
+      en: 'The station held to account for this waste: the material’s own unless another is chosen (the hot kitchen that spoiled a shared item).',
+      ar: 'القسم الذي يُحاسب على هذا الهالك: قسم الخامة إلا إذا اخترت غيره (كأن يُتلف المطبخ الساخن خامة مشتركة).',
+    },
+    {
+      en: 'Its worth, at the cost then, goes to that station’s logged waste on Station variance. A dish voided after the kitchen made it is the waste of the station that makes the dish.',
+      ar: 'قيمته بتكلفة وقتها تُضاف لهالك ذلك القسم في انحراف الأقسام، والطبق الملغى بعد التحضير هالك القسم الذي يحضّره.',
+    },
+  ),
+  stationTolerance: tip(
+    { en: 'Station tolerance', ar: 'نسبة السماح للقسم' },
+    {
+      en: 'How far its materials’ actual use may stray above what the sales should have taken before the station is High loss. Blank: the costing settings’ tolerance.',
+      ar: 'أقصى زيادة مسموحة لاستهلاك خامات القسم عن النظري قبل أن يُعد عجزًا مرتفعًا. فارغ: نسبة إعدادات التكاليف.',
+    },
+    {
+      en: 'Within target up to three quarters of it, Watch above that, High loss past it.',
+      ar: 'منضبط حتى ثلاثة أرباعها، تحت المراقبة بعد ذلك، وعجز مرتفع إذا تجاوزها.',
+    },
+  ),
+  stationTheoretical: tip(
+    { en: 'Theoretical cost', ar: 'التكلفة النظرية' },
+    {
+      en: 'What the dishes sold should have used of the station’s materials, by their recipes and through the prep items, with what is held in prep stock made from them.',
+      ar: 'ما كان يجب أن تستهلكه الأطباق المباعة من خامات القسم بوصفاتها ومن خلال المصنعات، مع ما بقي في مخزون المصنعات منها.',
+    },
+    { en: 'Σ theoretical usage × average cost now, over the station’s materials.', ar: 'مجموع (الاستهلاك النظري × متوسط التكلفة الحالي) لخامات القسم.' },
+  ),
+  stationActual: tip(
+    { en: 'Actual cost', ar: 'التكلفة الفعلية' },
+    { en: 'What the stores say the station’s materials were used for over the period.', ar: 'ما تقوله المخازن عن استهلاك خامات القسم في الفترة.' },
+    {
+      en: '(Opening + purchases − logged waste − staff meals & hospitality − closing) × average cost now, over its materials.',
+      ar: '(أول المدة + المشتريات − الهالك المسجل − وجبات العاملين والضيافة − آخر المدة) × متوسط التكلفة الحالي.',
+    },
+  ),
+  stationUnexplained: tip(
+    { en: 'Unexplained variance', ar: 'الانحراف غير المبرر' },
+    {
+      en: 'Used beyond what the sales, the logged waste and the staff meals account for: over-portioning, waste not logged, a recipe written too light, or stock walking out.',
+      ar: 'ما استُهلك زيادة عما تبرره المبيعات والهالك المسجل ووجبات العاملين: زيادة الحصص، هالك غير مسجل، وصفة أخف من الواقع، أو تسرب.',
+    },
+    { en: 'Actual cost − theoretical cost, over the station’s materials.', ar: 'التكلفة الفعلية − التكلفة النظرية لخامات القسم.' },
+  ),
+  stationPercent: tip(
+    { en: 'Variance %', ar: 'نسبة الانحراف' },
+    { en: 'The unexplained as a share of what should have been used.', ar: 'الانحراف غير المبرر كنسبة مما كان يجب استهلاكه.' },
+    { en: 'Unexplained ÷ theoretical × 100. None when nothing should have been used.', ar: 'الانحراف ÷ النظري × 100، ولا نسبة إذا كان النظري صفرًا.' },
+  ),
+  stationWaste: tip(
+    { en: 'Logged waste', ar: 'الهالك المسجل' },
+    {
+      en: 'Spoilage logged and dishes voided after the kitchen made them, held against the station responsible for each (not always the material’s own).',
+      ar: 'الهالك المسجل والأطباق الملغاة بعد التحضير، محسوبة على القسم المسؤول عن كل منها (وليس دائمًا قسم الخامة).',
+    },
+    { en: 'Σ quantity wasted × the cost then, less refunds put back.', ar: 'مجموع الكمية المهدرة × تكلفتها وقتها، ناقص المرتجعات.' },
+  ),
+  stationComparison: tip(
+    { en: 'Stations compared', ar: 'مقارنة الأقسام' },
+    {
+      en: 'Each station’s unexplained variance % against its own tolerance line: the bar past its line is the section bleeding food cost. Click a bar or a card for its materials.',
+      ar: 'نسبة الانحراف لكل قسم أمام خط السماح الخاص به: الشريط الذي يتجاوز خطه هو القسم الذي يستنزف التكلفة. اضغط على شريط أو بطاقة لعرض خاماته.',
+    },
+    { en: 'Bar: unexplained ÷ theoretical × 100. Line: the station’s tolerance, or the settings’.', ar: 'الشريط: الانحراف ÷ النظري × 100، والخط: نسبة السماح للقسم أو للإعدادات.' },
+  ),
 } satisfies Record<string, InfoTipContent>;
 
 export type InfoTipKey = keyof typeof infoTips;
@@ -10499,7 +10649,7 @@ export class PeriodBar {
 
 **`MaterialsPage`:** الخامات بتكاليفها: AP$ لكل وحدة شراء (المتوسط)، Yield الافتراضي، EP$، الرصيد وقيمته، وحد الطلب. بحث ذكي، فلتر الفئة والنوع، ترتيب، تصدير واستيراد. و `MaterialDialog`: الإنشاء والتعديل وتغيير وحدة العد (مع شرح ما سيُعاد صياغته). وفيه **حاسبة نسبة الصافي** (احسب من الوزن): نافذة منبثقة بوزنين، القائم والصافي بعد التنظيف، تحسب النسبة = الصافي ÷ القائم × 100 و EP$ = AP$ ÷ النسبة، و "استخدم النسبة" تضعها في الحقل؛ وتلميح الحقل يعرض EP$ الناتج دائمًا. و `MaterialHistoryDialog`: **سجل مشتريات الصنف** (كل بند فاتورة اشترى الخامة، الأحدث أولًا، والملغى مشطوب) لمطابقة الورق عند جرد مريب. و `StockCardDialog`: **كارتة الصنف** (الفصل 06): الفترة ونوع الحركة، شريط أول المدة والوارد والمنصرف وآخر المدة والمتوسط، ثم الدفتر سطرًا سطرًا، و Excel كما هو مفلتر. ومرجع كل سطر يفتح مصدره: الفاتورة فوق الكارتة وسطر الخامة فيها مُعلَّم مع طريق تصحيحها (تعديل الفاتورة يلغيها ويُعيد إدخالها)، والتشغيلة في نافذتها، والجرد في صفحته، ومبيعات اليوم في صفحة المبيعات على يومها والإيصال مُعلَّم (`?day=&receipt=`)، والتالف في سجل الهالك (`?spoilage=`)؛ وكل مرجع لا يُفتح إلا لمن يعمل تبويبه. و `StockCardButton` زر الكارتة بجانب اسم الخامة في جداول التحليلات. و `MaterialPicker` و `QuickMaterialDialog` لإضافة خامة سريعًا من سطر فاتورة.
 
-> 📄 **`frontend/src/app/features/costing/materials-page.ts`** — 420 سطر
+> 📄 **`frontend/src/app/features/costing/materials-page.ts`** — 477 سطر
 
 ```ts
 import { DatePipe, DecimalPipe } from '@angular/common';
@@ -10510,6 +10660,7 @@ import { MatDialog } from '@angular/material/dialog';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatIconModule } from '@angular/material/icon';
 import { MatInputModule } from '@angular/material/input';
+import { MatMenuModule } from '@angular/material/menu';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatSelectModule } from '@angular/material/select';
 import { MatTooltipModule } from '@angular/material/tooltip';
@@ -10530,6 +10681,7 @@ import { FilterOption, FilterSelect } from '../shared/filter-select';
 import { SearchField } from '../shared/search-field';
 import { SortOption, SortState, smartMatch, sortItems } from '../shared/smart-search';
 import { SortControl } from '../shared/sort-control';
+import { Stations } from './stations';
 
 type MaterialSort = 'name' | 'category' | 'cost' | 'stock' | 'value' | 'reorder';
 
@@ -10561,6 +10713,7 @@ const unitGroups: Record<UnitOfMeasure, string> = { Gram: 'Weight · وزن', Mi
     MatFormFieldModule,
     MatIconModule,
     MatInputModule,
+    MatMenuModule,
     MatProgressBarModule,
     MatSelectModule,
     MatTooltipModule,
@@ -10574,6 +10727,7 @@ const unitGroups: Record<UnitOfMeasure, string> = { Gram: 'Weight · وزن', Mi
       <div class="pills">
         <app-filter-select label="Category · القسم" icon="category" [options]="categoryFilters()" [(value)]="category" />
         <app-filter-select label="Unit · الوحدة" icon="straighten" [options]="unitFilters()" [(value)]="unitFilter" />
+        <app-filter-select label="Station · القسم التشغيلي" icon="soup_kitchen" [options]="stationFilters()" [(value)]="station" />
         <app-sort-control [options]="sorts" [(sort)]="sort" />
       </div>
     </div>
@@ -10581,6 +10735,17 @@ const unitGroups: Record<UnitOfMeasure, string> = { Gram: 'Weight · وزن', Mi
       <span class="muted shown-count">Showing {{ shown().length }} of {{ materials().length }}<span class="inline-ar">المعروض</span></span>
       <span class="spacer"></span>
       <span class="muted">Stock value · قيمة المخزون: <strong>{{ stockValue() | money }}</strong></span>
+      @if (stations.active().length) {
+        <button mat-stroked-button [matMenuTriggerFor]="stationMenu" [disabled]="busy() || !shown().length">
+          <mat-icon>soup_kitchen</mat-icon> Station for the {{ shown().length }} shown<span class="inline-ar">تعيين القسم للمعروض</span>
+        </button>
+        <mat-menu #stationMenu="matMenu">
+          @for (s of stations.active(); track s.id) {
+            <button mat-menu-item (click)="setStation(shown(), s.id)">{{ s.name }}{{ s.nameAr ? ' · ' + s.nameAr : '' }}</button>
+          }
+          <button mat-menu-item (click)="setStation(shown(), null)">None (shared) · بدون قسم</button>
+        </mat-menu>
+      }
       <button mat-stroked-button (click)="exportExcel()" [disabled]="busy()">
         <mat-icon>download</mat-icon> Export Excel<span class="inline-ar">تصدير إلى إكسل</span>
       </button>
@@ -10606,6 +10771,7 @@ const unitGroups: Record<UnitOfMeasure, string> = { Gram: 'Weight · وزن', Mi
               <th>Code<span class="ar">الكود</span></th>
               <th>Material<span class="ar">الخامة</span></th>
               <th>Category<span class="ar">الفئة</span></th>
+              <th>Station <app-info-tip tip="kitchenStation" /><span class="ar">القسم التشغيلي</span></th>
               <th>Bought by<span class="ar">وحدة الشراء</span></th>
               <th class="num">AP$ / unit <app-info-tip tip="apUnit" /><span class="ar">تكلفة الشراء</span></th>
               <th class="num">Yield % <app-info-tip tip="yieldPercent" /><span class="ar">نسبة الصافي</span></th>
@@ -10635,6 +10801,17 @@ const unitGroups: Record<UnitOfMeasure, string> = { Gram: 'Weight · وزن', Mi
                   @if (m.misplaced) {
                     <div class="misplaced" title="Filed in a general expenses category before the kinds were kept apart">In an expenses category: move it</div>
                   }
+                </td>
+                <td class="station" (click)="$event.stopPropagation()">
+                  <mat-select class="station-select" [value]="m.kitchenStationId ?? ''" (selectionChange)="setStation([m], $event.value || null)"
+                    [disabled]="busy()" [aria-label]="'Station of ' + m.name" panelWidth="auto">
+                    <mat-option value="">{{ stations.shared()?.name ?? 'Shared' }} (none)</mat-option>
+                    @for (s of stations.active(); track s.id) {
+                      @if (!s.isShared) {
+                        <mat-option [value]="s.id">{{ s.name }}</mat-option>
+                      }
+                    }
+                  </mat-select>
                 </td>
                 <td>{{ m.purchaseUnit }} <span class="muted">({{ m.purchaseUnitSize | number: '1.0-3' }} {{ unit(m) }})</span></td>
                 <td class="num">
@@ -10682,6 +10859,11 @@ const unitGroups: Record<UnitOfMeasure, string> = { Gram: 'Weight · وزن', Mi
   `,
   styleUrl: './costing.scss',
   styles: `
+    .station-select {
+      min-width: 120px;
+      max-width: 170px;
+      font-size: 13px;
+    }
     .star {
       color: var(--mat-sys-on-surface-variant);
 
@@ -10728,6 +10910,9 @@ export class MaterialsPage {
   // ('': all). The units they are counted in, the same way.
   protected readonly category = signal('');
   protected readonly unitFilter = signal('');
+  protected readonly station = signal('');
+  protected readonly stations = inject(Stations);
+  protected readonly stationFilters = computed<FilterOption[]>(() => this.stations.filter(this.materials(), (m) => m.kitchenStationId));
   protected readonly sorts = materialSorts;
   protected readonly sort = signal<SortState<MaterialSort>>({ key: 'name', direction: 1 });
   protected readonly categories = computed(() => {
@@ -10759,6 +10944,7 @@ export class MaterialsPage {
       (m) =>
         (!category || m.categoryId === category) &&
         (!unit || m.unit === unit) &&
+        this.stations.matches(this.station(), m.kitchenStationId) &&
         smartMatch(this.search(), m.name, m.code, m.category),
     );
     return sortItems(found, this.sort(), (m, key) => {
@@ -10784,6 +10970,27 @@ export class MaterialsPage {
 
   constructor() {
     void this.load();
+    void this.stations.load();
+  }
+
+  // Given a station (null: none, the shared station's), one or every material shown.
+  protected async setStation(materials: MaterialCost[], stationId: string | null): Promise<void> {
+    const ids = materials.map((m) => m.id);
+    if (!ids.length) {
+      return;
+    }
+    this.busy.set(true);
+    try {
+      await firstValueFrom(this.api.assignMaterialsStation(ids, stationId));
+      const chosen = new Set(ids);
+      this.materials.update((all) => all.map((m) => (chosen.has(m.id) ? { ...m, kitchenStationId: stationId } : m)));
+      this.notify.info(`${ids.length === 1 ? materials[0].name : `${ids.length} materials`}: ${this.stations.label(stationId)}.`);
+      void this.stations.load(true);
+    } catch (error) {
+      this.notify.error(error, 'The station could not be set.');
+    } finally {
+      this.busy.set(false);
+    }
   }
 
   protected unit(m: MaterialCost): string {
@@ -14625,10 +14832,11 @@ export function showComboDialog(dialog: MatDialog, data: ComboDialogData): Promi
 
 لكل سطر، كما في القالب الورقي: `EP$/وحدة = AP$/وحدة ÷ Yield`، وتكلفة السطر = كمية EP × EP$ (بوحدات الشراء). ثم تكلفة الحصة، سعر البيع، نسبة التكلفة، والحالة مقابل الهدف. المصنّع بلا دفعات يظهر "حسب وصفته". الربط بصنف/حجم/إضافة من المنيو، والأسطر بـ `GridKeys`.
 
-> 📄 **`frontend/src/app/features/costing/recipe-card-page.ts`** — 1070 سطر
+> 📄 **`frontend/src/app/features/costing/recipe-card-page.ts`** — 1109 سطر
 
 ```ts
 import { DatePipe, DecimalPipe } from '@angular/common';
+import { Stations } from './stations';
 import { Component, computed, effect, inject, input, signal, untracked } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
@@ -14789,6 +14997,22 @@ const linkKey = (kind: RecipeTargetKind | null, catalogItemId: number | null, va
                 @if (card()?.recipeCategoryAr) {
                   <span class="inline-ar">{{ card()!.recipeCategoryAr }}</span>
                 }
+              }
+              @if (!editing() && card()?.recipeId && !card()!.usesBaseRecipe) {
+                · <span class="station-pick">
+                  Station<span class="inline-ar">القسم</span> <app-info-tip tip="kitchenStation" />:
+                  @if (canEdit() && !card()!.isDeleted) {
+                    <mat-select class="station-select no-print" [value]="card()!.kitchenStationId ?? ''" (selectionChange)="setStation($event.value || null)"
+                      aria-label="Station that makes it" panelWidth="auto">
+                      <mat-option value="">None (its materials' own)</mat-option>
+                      @for (s of stations.active(); track s.id) {
+                        <mat-option [value]="s.id">{{ s.name }}{{ s.nameAr ? ' · ' + s.nameAr : '' }}</mat-option>
+                      }
+                    </mat-select>
+                  } @else {
+                    <strong>{{ card()!.kitchenStationId ? stations.label(card()!.kitchenStationId) : 'None' }}</strong>
+                  }
+                </span>
               }
             </div>
           </div>
@@ -15070,6 +15294,11 @@ const linkKey = (kind: RecipeTargetKind | null, catalogItemId: number | null, va
   `,
   styleUrl: './costing.scss',
   styles: `
+    .station-select {
+      display: inline-block;
+      width: 170px;
+      font-size: 13px;
+    }
     .by-recipe {
       font-size: 0.78em;
       color: var(--mat-sys-tertiary);
@@ -15296,6 +15525,22 @@ export class RecipeCardPage {
   protected readonly editing = computed(() => (this.mode() === 'edit' || this.mode() === 'new') && this.canEdit() && !this.pending());
 
   protected readonly card = signal<RecipeCostCard | null>(null);
+  protected readonly stations = inject(Stations);
+
+  // The station that makes the dish: a plate voided after the kitchen made it is its waste.
+  protected async setStation(stationId: string | null): Promise<void> {
+    const card = this.card();
+    if (!card?.recipeId) {
+      return;
+    }
+    try {
+      await firstValueFrom(this.api.assignRecipeStation(card.recipeId, stationId));
+      this.card.set({ ...card, kitchenStationId: stationId });
+      this.notify.info(`${this.title()}: ${stationId ? this.stations.label(stationId) : 'no station'}.`);
+    } catch (error) {
+      this.notify.error(error, 'The station could not be set.');
+    }
+  }
   // Every menu item, size and add-on, by the recipe it sells by: what can be linked.
   protected readonly menu = signal<RecipeCostCard[]>([]);
   protected readonly materials = signal<MaterialCost[]>([]);
@@ -15477,6 +15722,7 @@ export class RecipeCardPage {
   });
 
   constructor() {
+    void this.stations.load();
     effect(() => {
       const mode = this.mode();
       const recipeId = this.recipeId();
@@ -16060,7 +16306,7 @@ export class RecipeCategoryDialog {
 
 `PrepItemsPage` و `PrepItemPage`: المصنعات بتكلفتها بوصفتها اليوم وتكلفة دفعاتها على الرف ورصيدها، وصفحة وصفة الدفعة (EP للدفعة، وكمية الدفعة).
 
-> 📄 **`frontend/src/app/features/costing/prep-items-page.ts`** — 381 سطر
+> 📄 **`frontend/src/app/features/costing/prep-items-page.ts`** — 417 سطر
 
 ```ts
 import { DatePipe, DecimalPipe } from '@angular/common';
@@ -16092,6 +16338,7 @@ import { FilterOption, FilterSelect } from '../shared/filter-select';
 import { SearchField } from '../shared/search-field';
 import { SortOption, SortState, smartMatch, sortItems } from '../shared/smart-search';
 import { SortControl } from '../shared/sort-control';
+import { Stations } from './stations';
 
 type PrepSort = 'name' | 'category' | 'batchCost' | 'unitCost' | 'stock' | 'made';
 
@@ -16147,6 +16394,7 @@ const prepSorts: SortOption<PrepSort>[] = [
         <app-search-field [(value)]="search" />
         <div class="pills">
           <app-filter-select label="Category · القسم" icon="category" [options]="categoryFilters()" [(value)]="category" />
+          <app-filter-select label="Station · القسم التشغيلي" icon="soup_kitchen" [options]="stationFilters()" [(value)]="station" />
           <app-sort-control [options]="sorts" [(sort)]="sort" />
         </div>
       </div>
@@ -16176,6 +16424,7 @@ const prepSorts: SortOption<PrepSort>[] = [
           <thead>
             <tr>
               <th>Prep item<span class="ar">الصنف</span></th>
+              <th>Station <app-info-tip tip="kitchenStation" /><span class="ar">القسم التشغيلي</span></th>
               <th class="num">One batch<span class="ar">الدفعة</span></th>
               <th class="num">By its recipe <app-info-tip tip="prepStandard" /><span class="ar">التكلفة المعيارية</span></th>
               <th class="num">In stock at <app-info-tip tip="prepAverage" /><span class="ar">متوسط التكلفة</span></th>
@@ -16188,7 +16437,7 @@ const prepSorts: SortOption<PrepSort>[] = [
           <tbody>
             @for (r of waiting(); track r.id) {
               <tr class="pending-deletion">
-                <td colspan="8">
+                <td colspan="9">
                   {{ r.summary }}
                   <div>
                     <span class="pending-badge">{{ pendingLabel(r).en }}<span class="ar">{{ pendingLabel(r).ar }}</span></span>
@@ -16219,6 +16468,17 @@ const prepSorts: SortOption<PrepSort>[] = [
                   } @else if (p.missingPrices.length) {
                     <div class="warn small">No cost yet: {{ p.missingPrices.join(', ') }}</div>
                   }
+                </td>
+                <td class="station" (click)="$event.stopPropagation()">
+                  <mat-select class="station-select" [value]="p.kitchenStationId ?? ''" (selectionChange)="setStation(p, $event.value || null)"
+                    [aria-label]="'Station of ' + p.name" panelWidth="auto">
+                    <mat-option value="">{{ stations.shared()?.name ?? 'Shared' }} (none)</mat-option>
+                    @for (s of stations.active(); track s.id) {
+                      @if (!s.isShared) {
+                        <mat-option [value]="s.id">{{ s.name }}</mat-option>
+                      }
+                    }
+                  </mat-select>
                 </td>
                 <td class="num">{{ p.batchQuantity / p.displayUnitSize | number: '1.0-3' }} {{ p.displayUnit }}</td>
                 <td class="num">{{ p.standardCostPerDisplayUnit === null ? '—' : (p.standardCostPerDisplayUnit | money) + ' / ' + p.displayUnit }}</td>
@@ -16253,6 +16513,11 @@ const prepSorts: SortOption<PrepSort>[] = [
   `,
   styleUrl: './costing.scss',
   styles: `
+    .station-select {
+      min-width: 120px;
+      max-width: 170px;
+      font-size: 13px;
+    }
     .star {
       color: var(--mat-sys-on-surface-variant);
 
@@ -16289,6 +16554,9 @@ export class PrepItemsPage {
   protected readonly categories = signal<RecipeCategory[]>([]);
   protected readonly category = signal('');
   protected readonly uncategorized = 'none';
+  protected readonly station = signal('');
+  protected readonly stations = inject(Stations);
+  protected readonly stationFilters = computed<FilterOption[]>(() => this.stations.filter(this.items(), (p) => p.kitchenStationId));
   protected readonly sorts = prepSorts;
   protected readonly sort = signal<SortState<PrepSort>>({ key: 'name', direction: 1 });
 
@@ -16308,6 +16576,7 @@ export class PrepItemsPage {
     const found = this.items().filter(
       (p) =>
         smartMatch(this.search(), p.name, p.code, this.categoryName(p)) &&
+        this.stations.matches(this.station(), p.kitchenStationId) &&
         (!category || (category === this.uncategorized ? !p.recipeCategoryId : p.recipeCategoryId === category)),
     );
     return sortItems(found, this.sort(), (p, key) => {
@@ -16340,6 +16609,19 @@ export class PrepItemsPage {
     });
     void this.load();
     void this.approvals.refresh();
+    void this.stations.load();
+  }
+
+  // The station that makes and keeps it (null: none, the shared station's).
+  protected async setStation(item: PrepItem, stationId: string | null): Promise<void> {
+    try {
+      await firstValueFrom(this.api.assignMaterialsStation([item.id], stationId));
+      this.items.update((all) => all.map((x) => (x.id === item.id ? { ...x, kitchenStationId: stationId } : x)));
+      this.notify.info(`${item.name}: ${this.stations.label(stationId)}.`);
+      void this.stations.load(true);
+    } catch (error) {
+      this.notify.error(error, 'The station could not be set.');
+    }
   }
 
   protected categoryName(item: PrepItem): string | null {
@@ -31228,7 +31510,7 @@ export class DailySalesImportDialog {
 
 `CountsPage`: المسودة الحالية (إن وجدت) والجرود المرحّلة، وزرّان للبدء: افتتاحي وجرد شامل، وقوائم الجرد اليومي السريع بنقرة واحدة (الأصناف المحددة بالنجمة، الفئة A، الأكثر انحرافًا، حسب الفئة) من `count-presets`، وأنواع الجرد بشرح (ⓘ) لكلٍّ. و `CountSheetPage`: ورقة العد بالأقسام، **حفظ تلقائي** بعد آخر إدخال بمهلة قصيرة ("طويلة بما يكفي لكتابة رقم، قصيرة بما لا يضيع شيء إن وُضع التابلت")، وتغيير النوع، وقيمة المسودة بأسعار اليوم، والترحيل. وفيها **وضع الجرد الأعمى**: مفروض على من لا يرى التكاليف، ومفتاح لغيره، يخفي الدفتري والفرق والتكلفة ويترك الكمية والملاحظة، وطباعة كشف جرد أعمى، ثم **مراجعة الفروقات** للمراجِع (الأكبر قيمة أولًا، أحمر للعجز وكهرماني للزيادة خارج النسبة المسموحة) وإرسال سطور لإعادة الجرد. والنجمة على صفحتي الخامات والمصنّعات تضيف الصنف للجرد اليومي.
 
-> 📄 **`frontend/src/app/features/costing/counts-page.ts`** — 478 سطر
+> 📄 **`frontend/src/app/features/costing/counts-page.ts`** — 496 سطر
 
 ```ts
 import { DatePipe } from '@angular/common';
@@ -31368,6 +31650,16 @@ const countSorts: SortOption<CountSort>[] = [
                   }
                 </mat-select>
               </mat-form-field>
+              @if (p.stations?.length) {
+                <mat-form-field subscriptSizing="dynamic" class="category">
+                  <mat-label>By station · حسب قسم المطبخ</mat-label>
+                  <mat-select (selectionChange)="startStation($event.value)" [disabled]="starting()" aria-label="Spot count by station">
+                    @for (s of p.stations; track s.stationId) {
+                      <mat-option [value]="s.stationId">{{ s.name }}{{ s.nameAr ? ' · ' + s.nameAr : '' }} ({{ s.materialIds.length }})</mat-option>
+                    }
+                  </mat-select>
+                </mat-form-field>
+              }
             </div>
             @if (!p.presets[0].materialIds.length) {
               <p class="muted small">
@@ -31670,6 +31962,14 @@ export class CountsPage {
     }
   }
 
+  // A station's materials and prep items, for a count at its shift's close; printed blind from the sheet.
+  protected startStation(stationId: string): void {
+    const station = this.presets()?.stations?.find((s) => s.stationId === stationId);
+    if (station) {
+      void this.startSpot(station.materialIds, station.nameAr ? `${station.name} · ${station.nameAr}` : station.name);
+    }
+  }
+
   protected open(count: StockCountSummary): void {
     void this.router.navigate(['/costing/counts', count.id]);
   }
@@ -31712,7 +32012,7 @@ export class CountsPage {
 ```
 
 
-> 📄 **`frontend/src/app/features/costing/count-sheet-page.ts`** — 1238 سطر
+> 📄 **`frontend/src/app/features/costing/count-sheet-page.ts`** — 1261 سطر
 
 ```ts
 import { DatePipe, DecimalPipe } from '@angular/common';
@@ -31747,6 +32047,8 @@ import { Company } from '../../core/settings/company';
 import { MoneyPipe } from '../../core/ui/money.pipe';
 import { NotifyService } from '../../core/ui/notify.service';
 import { InfoTip } from './info-tip';
+import { NoStation, Stations } from './stations';
+import { MatSelectModule } from '@angular/material/select';
 
 interface Section {
   category: string;
@@ -31794,6 +32096,7 @@ const blindKey = 'costing.blindCount';
 @Component({
   selector: 'app-count-sheet-page',
   imports: [
+    MatSelectModule,
     DatePipe,
     DecimalPipe,
     FormsModule,
@@ -32005,6 +32308,16 @@ const blindKey = 'costing.blindCount';
           <mat-label>Find · بحث</mat-label>
           <input matInput [ngModel]="search()" (ngModelChange)="search.set($event)" />
         </mat-form-field>
+        @if (stationOptions().length > 2) {
+          <mat-form-field subscriptSizing="dynamic" class="find">
+            <mat-label>By station · حسب قسم المطبخ</mat-label>
+            <mat-select [ngModel]="station()" (ngModelChange)="station.set($event)" aria-label="Show one station">
+              @for (o of stationOptions(); track o.value) {
+                <mat-option [value]="o.value">{{ o.label }} ({{ o.count }})</mat-option>
+              }
+            </mat-select>
+          </mat-form-field>
+        }
         <span class="progress">
           {{ countedCount() }} of {{ materials().length }} counted<span class="muted"> (empty is not counted, 0 is none left)</span>
           @if (kind() === 'Opening' && !blind()) {
@@ -32424,6 +32737,10 @@ export class CountSheetPage {
   protected readonly problem = signal<string | null>(null);
   protected readonly confirming = signal<'post' | 'discard' | null>(null);
   protected readonly search = signal('');
+  // One station's materials shown (and printed on the blind sheet), for a count at its shift's close.
+  protected readonly station = signal('');
+  protected readonly stations = inject(Stations);
+  protected readonly stationOptions = computed(() => this.stations.filter(this.materials(), (m) => m.kitchenStationId));
 
   // By material id, in kg, litres or pieces; null or absent is not counted.
   protected readonly counted = signal<Record<string, number | null>>({});
@@ -32445,7 +32762,9 @@ export class CountSheetPage {
 
   protected readonly sections = computed<Section[]>(() => {
     const needle = this.search().trim().toLowerCase();
-    const shown = this.materials().filter((m) => !needle || [m.name, m.code, m.category].some((v) => v?.toLowerCase().includes(needle)));
+    const shown = this.materials().filter(
+      (m) => (!needle || [m.name, m.code, m.category].some((v) => v?.toLowerCase().includes(needle))) && this.stations.matches(this.station(), m.kitchenStationId),
+    );
     const byCategory = new Map<string, MaterialCost[]>();
     for (const m of shown) {
       const category = m.category ?? 'Other · أخرى';
@@ -32580,6 +32899,7 @@ export class CountSheetPage {
   private allMaterials: MaterialCost[] = [];
 
   constructor() {
+    void this.stations.load();
     effect(() => {
       const id = this.id();
       untracked(() => void this.load(id));
@@ -32765,7 +33085,9 @@ export class CountSheetPage {
       return;
     }
     const count = this.count();
-    const title = `${this.isSpot() ? 'Spot count · جرد يومي سريع' : this.kind() === 'Opening' ? 'Opening stock · جرد افتتاحي' : 'Periodic count · جرد دوري'}`;
+    const title = `${this.isSpot() ? 'Spot count · جرد يومي سريع' : this.kind() === 'Opening' ? 'Opening stock · جرد افتتاحي' : 'Periodic count · جرد دوري'}${
+      this.station() ? ` · ${this.station() === NoStation ? 'Shared / General' : this.stations.label(this.station())}` : ''
+    }`;
     const rows = this.sections()
       .map(
         (s) =>
@@ -32946,6 +33268,7 @@ function fromItem(item: CountItem): MaterialCost {
     costPerUnit: null,
     kind: item.isPrepItem ? 'Prep' : 'Purchased',
     isSpotCheckItem: item.isSpotCheckItem,
+    kitchenStationId: item.kitchenStationId ?? null,
   } as MaterialCost;
 }
 
@@ -32956,11 +33279,13 @@ function escape(value: string): string {
 ```
 
 
+**حسب قسم المطبخ:** صفحة الجرد تبدأ جردًا جزئيًا لقسم (`startStation`) من `presets.stations`، وورقة الجرد لها فلتر "حسب قسم المطبخ" يقصر الأقسام المعروضة **وكشف الجرد الأعمى المطبوع** على القسم (`sections` هي ما يُطبع)، واسم القسم في عنوان الكشف. والخامات والمصنعات لها عمود قسم بقائمة في كل صف وفلتر، وزر "Station for the N shown" يعيّن القسم لكل المعروض. والهالك له "القسم المسؤول" يبدأ بقسم الخامة.
+
 ## 14. الهالك والكسر
 
 `WastePage`: الهالك (خامات تالفة بسبب: تخرج من المخزون) والكسر (مستهلكات: تكلفة على اليوم)، وإلغاؤهما بموافقة.
 
-> 📄 **`frontend/src/app/features/costing/waste-page.ts`** — 568 سطر
+> 📄 **`frontend/src/app/features/costing/waste-page.ts`** — 603 سطر
 
 ```ts
 import { DatePipe, DecimalPipe } from '@angular/common';
@@ -32984,11 +33309,13 @@ import { NotifyService } from '../../core/ui/notify.service';
 import { Approvals } from './approvals';
 import { BusinessDay } from './financials';
 import { FilterOption, FilterSelect } from '../shared/filter-select';
+import { Stations } from './stations';
 import { SearchField } from '../shared/search-field';
 import { SortOption, SortState, smartMatch, sortItems } from '../shared/smart-search';
 import { SortControl } from '../shared/sort-control';
 import { GridKeys } from '../shared/grid-keys';
 import { MaterialPicker } from './material-picker';
+import { InfoTip } from './info-tip';
 
 type WasteSort = 'date' | 'worth';
 
@@ -33002,6 +33329,8 @@ interface Line {
   quantity: number | null;
   reason: string;
   other: string;
+  // The station held to account for it; undefined until chosen: the material's own.
+  stationId?: string | null;
 }
 
 // Raw stock thrown away: expired, spoiled, dropped. Recorded, it takes the stock off and the
@@ -33012,6 +33341,7 @@ interface Line {
 @Component({
   selector: 'app-waste-page',
   imports: [
+    InfoTip,
     FilterSelect,
     GridKeys,
     MaterialPicker,
@@ -33047,6 +33377,7 @@ interface Line {
               <th>Material<span class="ar">الخامة</span></th>
               <th class="num">Quantity<span class="ar">الكمية</span></th>
               <th>Why<span class="ar">السبب</span></th>
+              <th>Station responsible <app-info-tip tip="responsibleStation" /><span class="ar">القسم المسؤول</span></th>
               <th class="num">Worth<span class="ar">القيمة</span></th>
               <th></th>
             </tr>
@@ -33056,7 +33387,7 @@ interface Line {
               <tr>
                 <td>
                   <app-material-picker class="material" [materials]="materials()" [value]="line.rawMaterialId"
-                    (valueChange)="change(i, { rawMaterialId: $event })" [label]="'Material, line ' + (i + 1)" />
+                    (valueChange)="change(i, { rawMaterialId: $event, stationId: undefined })" [label]="'Material, line ' + (i + 1)" />
                 </td>
                 <td class="num">
                   <mat-form-field subscriptSizing="dynamic" class="small">
@@ -33078,6 +33409,19 @@ interface Line {
                     </mat-form-field>
                   }
                 </td>
+                <td>
+                  <mat-form-field subscriptSizing="dynamic" class="reason">
+                    <mat-select [ngModel]="stationFor(line)" (ngModelChange)="change(i, { stationId: $event || null })"
+                      [aria-label]="'Station responsible, line ' + (i + 1)">
+                      <mat-option value="">{{ stations.shared()?.name ?? 'Shared' }} (none)</mat-option>
+                      @for (s of stations.active(); track s.id) {
+                        @if (!s.isShared) {
+                          <mat-option [value]="s.id">{{ s.name }}{{ s.nameAr ? ' · ' + s.nameAr : '' }}</mat-option>
+                        }
+                      }
+                    </mat-select>
+                  </mat-form-field>
+                </td>
                 <td class="num">{{ worth(line) === null ? '' : (worth(line) | money) }}</td>
                 <td>
                   <button mat-icon-button (click)="remove(i)" [disabled]="lines().length === 1" aria-label="Remove line"><mat-icon>delete</mat-icon></button>
@@ -33088,7 +33432,7 @@ interface Line {
           <tfoot>
             <tr>
               <td><button mat-button (click)="add()"><mat-icon>add</mat-icon> Add line</button></td>
-              <td colspan="2"></td>
+              <td colspan="3"></td>
               <td class="num">{{ total() | money }}</td>
               <td></td>
             </tr>
@@ -33105,6 +33449,7 @@ interface Line {
         <app-search-field [(value)]="historySearch" placeholder="Material or who recorded it · الخامة أو المسجل" />
         <div class="pills">
           <app-filter-select label="Why · السبب" icon="help" [options]="reasonFilters()" [(value)]="historyReason" />
+          <app-filter-select label="Station · القسم" icon="soup_kitchen" [options]="stationFilters()" [(value)]="historyStation" />
           <app-sort-control [options]="wasteSorts" [(sort)]="historySort" />
         </div>
       </div>
@@ -33116,6 +33461,7 @@ interface Line {
               <th>Material<span class="ar">الخامة</span></th>
               <th class="num">Quantity<span class="ar">الكمية</span></th>
               <th>Why<span class="ar">السبب</span></th>
+              <th>Station<span class="ar">القسم المسؤول</span></th>
               <th>By<span class="ar">بواسطة</span></th>
               <th class="num">Worth<span class="ar">القيمة</span></th>
               <th class="num"><span class="visually-hidden">Actions</span></th>
@@ -33137,6 +33483,7 @@ interface Line {
                   <td>{{ l.material }}</td>
                   <td class="num">{{ l.quantity / unitFor(l).size | number: '1.0-3' }} {{ unitFor(l).label }}</td>
                   <td>{{ l.reason }}</td>
+                  <td class="muted">{{ stations.label(l.responsibleStationId) }}</td>
                   <td>{{ first ? entry.recordedBy : '' }}</td>
                   <td class="num">{{ l.value === null ? 'No price' : (l.value | money) }}</td>
                   <td class="num">
@@ -33342,6 +33689,11 @@ export class WastePage {
   // it, and the reason chosen; by date or by what its lines were worth.
   protected readonly historySearch = signal('');
   protected readonly historyReason = signal('');
+  protected readonly historyStation = signal('');
+  protected readonly stations = inject(Stations);
+  protected readonly stationFilters = computed<FilterOption[]>(() =>
+    this.stations.filter(this.recent().flatMap((e) => e.lines), (l) => l.responsibleStationId),
+  );
   protected readonly wasteSorts = wasteSorts;
   protected readonly historySort = signal<SortState<WasteSort>>({ key: 'date', direction: -1 });
 
@@ -33364,6 +33716,7 @@ export class WastePage {
         lines: e.lines.filter(
           (l) =>
             smartMatch(this.historySearch(), l.material, l.reason, e.recordedBy) &&
+            this.stations.matches(this.historyStation(), l.responsibleStationId) &&
             (!reason || (reason === 'Other' ? !known.has(l.reason ?? '') : l.reason === reason)),
         ),
       }))
@@ -33392,6 +33745,12 @@ export class WastePage {
 
   constructor() {
     void this.load();
+    void this.stations.load();
+  }
+
+  // The station held to account for a line: the one chosen, else its material's own ('' none).
+  protected stationFor(line: Line): string {
+    return line.stationId !== undefined ? (line.stationId ?? '') : (this.material(line)?.kitchenStationId ?? '');
   }
 
   protected unitOf(line: Line): string {
@@ -33430,6 +33789,7 @@ export class WastePage {
         rawMaterialId: l.rawMaterialId!,
         quantity: l.quantity! * countUnit(this.material(l)!.unit, this.material(l)!.purchaseUnitSize).size,
         reason: this.reasonOf(l),
+        responsibleStationId: this.stationFor(l) || null,
       }));
       await firstValueFrom(this.api.recordSpoilage(this.spoilageId, lines));
       this.notify.info('Waste recorded.');

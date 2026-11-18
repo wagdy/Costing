@@ -76,7 +76,7 @@ describe('the prep items', () => {
     const { el } = await render();
 
     // By name, as the list starts.
-    expect([...el.querySelectorAll('tbody tr')].map((r) => [...r.querySelectorAll('td')].slice(0, 6).map(text))).toEqual([
+    expect([...el.querySelectorAll('tbody tr')].map((r) => [...r.querySelectorAll('td:not(.station)')].slice(0, 6).map(text))).toEqual([
       ['Glaze No recipe yet', '10 kg', '—', '—', '0 kg', '—'],
       ['House sauce No cost yet: Basil', '5 L', '—', '—', '-0.5 L', '—'],
       ['PREP-1 · Pizza dough', '10 kg', 'L.E 18.20 / kg', 'L.E 18.96 / kg', '9.6 kg', 'L.E 182.00'],

@@ -116,6 +116,12 @@
 
 @@file backend/src/Costing.Domain/RawMaterials/IRawMaterialRepository.cs
 
+**أقسام المطبخ والبار (`KitchenStation`):** اسم وكود فريد وترتيب ونسبة سماح خاصة (أو نسبة الإعدادات) ومفعّل أم لا، و `IsShared` للقسم صاحب الكود `SHARED`. ثلاثة أعمدة تشير إليه، كلها `ON DELETE SET NULL` (فحذف القسم يُرجع ما كان له للقسم المشترك): `RawMaterials.KitchenStationId` (الخامة أو المصنّع)، `Recipes.KitchenStationId` (القسم الذي يحضّر الطبق)، و `StockMovements.ResponsibleStationId` (القسم المسؤول عن الهالك، ويُنسخ في قيد الإلغاء ليصافيه). الأقسام السبعة الأولى تُزرع **مرة واحدة** في الـ migration `AddKitchenStations` (لا عند كل تشغيل)، فلا يعود قسم حذفه المدير.
+
+@@file backend/src/Costing.Domain/Stations/KitchenStation.cs
+
+@@file backend/src/Costing.Infrastructure/Persistence/StationPersistence.cs
+
 ### 4.3 الفئات والمصروفات والموردون
 
 `PurchaseCategory`: فئة الشراء ونوعها (خامات أو مصروفات)، و **`ExpenseLine`**: أين تُحسب مصروفاتها في قائمة الدخل (أجور، مصروفات قابلة للتحكم، إشغال، …). المخزون المشترى لا يُحسب مصروفًا هنا: يصبح تكلفة مبيعات حين تستهلكه الوصفات.

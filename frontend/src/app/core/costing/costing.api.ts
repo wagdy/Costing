@@ -41,6 +41,33 @@ export interface MaterialCost {
   recipeCostMissing?: string[];
   // Counted every day: in the daily critical items' spot count (جرد يومي سريع).
   isSpotCheckItem?: boolean;
+  // The kitchen or bar station that keeps it (null: the shared station's).
+  kitchenStationId?: string | null;
+}
+
+// A kitchen or bar station (قسم التشغيل): each material, prep item and dish is kept by one, and its
+// variance judged by its own tolerance (null: the costing settings'). The shared station takes what
+// has none.
+export interface KitchenStation {
+  id: string;
+  name: string;
+  nameAr: string | null;
+  code: string | null;
+  displayOrder: number;
+  targetVarianceTolerancePercent: number | null;
+  isActive: boolean;
+  isShared: boolean;
+  materials: number;
+  recipes: number;
+}
+
+export interface SaveKitchenStation {
+  name: string;
+  nameAr: string | null;
+  code: string | null;
+  displayOrder: number;
+  targetVarianceTolerancePercent: number | null;
+  isActive: boolean;
 }
 
 // What a recipe line is costed from, per unit: the material's average, or for a prep item never
@@ -220,6 +247,8 @@ export interface RecipeCostCard {
   complexityWeight?: number;
   // A combo offer sold under this number: costed by its dishes.
   comboOfferId?: string | null;
+  // The kitchen or bar station that makes it.
+  kitchenStationId?: string | null;
 }
 
 // The kitchen's own grouping of its recipes: Sauces, Staff meals, Catering orders.
@@ -649,6 +678,8 @@ export interface CountItem {
   isPrepItem: boolean;
   isSpotCheckItem: boolean;
   isArchived: boolean;
+  // The kitchen or bar station that keeps it, for a count of one station.
+  kitchenStationId?: string | null;
 }
 
 // A spot count's ready lists, by material id alone.
@@ -666,12 +697,22 @@ export interface CountCategoryPreset {
   materialIds: string[];
 }
 
+// A station's materials and prep items, for a count at its shift's close (حسب قسم المطبخ).
+export interface CountStationPreset {
+  stationId: string;
+  name: string;
+  nameAr: string | null;
+  code: string | null;
+  materialIds: string[];
+}
+
 export interface CountPresets {
   from: string;
   to: string;
   tolerancePercent: number;
   presets: CountPreset[];
   categories: CountCategoryPreset[];
+  stations?: CountStationPreset[];
 }
 
 export interface StockCountSummary {
@@ -740,6 +781,8 @@ export interface SpoilageLine {
   rawMaterialId: string;
   quantity: number;
   reason: string;
+  // The station held to account for it (القسم المسؤول): the material's own unless another is named.
+  responsibleStationId?: string | null;
 }
 
 export interface SpoilageEntry {
@@ -754,6 +797,7 @@ export interface SpoilageEntry {
     quantity: number;
     reason: string | null;
     value: number | null;
+    responsibleStationId?: string | null;
   }[];
   value: number | null;
 }
@@ -1140,6 +1184,8 @@ export interface PrepItem {
   // A batch's prep time (null: the ordinary 10 minutes) and how hard it is.
   prepTimeMinutes?: number | null;
   complexityWeight?: number;
+  // The kitchen or bar station that makes and keeps it.
+  kitchenStationId?: string | null;
 }
 
 export interface SavePrepItem {
@@ -2303,6 +2349,28 @@ export class CostingApi {
   }
 
   // Starred, or not, as a daily critical item.
+  // The kitchen and bar stations; a manager's to set.
+  stations(): Observable<KitchenStation[]> {
+    return this.http.get<KitchenStation[]>('/api/costing/stations');
+  }
+
+  saveStation(id: string, station: SaveKitchenStation): Observable<KitchenStation> {
+    return this.http.put<KitchenStation>(`/api/costing/stations/${id}`, station);
+  }
+
+  deleteStation(id: string): Observable<void> {
+    return this.http.delete<void>(`/api/costing/stations/${id}`);
+  }
+
+  // Materials and prep items given a station (null: none, the shared station's), one or many.
+  assignMaterialsStation(rawMaterialIds: string[], stationId: string | null): Observable<{ assigned: number; stationId: string | null }> {
+    return this.http.put<{ assigned: number; stationId: string | null }>('/api/inventory/raw-materials/station', { rawMaterialIds, stationId });
+  }
+
+  assignRecipeStation(recipeId: string, stationId: string | null): Observable<{ assigned: number; stationId: string | null }> {
+    return this.http.put<{ assigned: number; stationId: string | null }>(`/api/inventory/recipes/${recipeId}/station`, { stationId });
+  }
+
   setSpotCheck(id: string, isSpotCheckItem: boolean): Observable<{ isSpotCheckItem: boolean }> {
     return this.http.put<{ isSpotCheckItem: boolean }>(`/api/inventory/raw-materials/${id}/spot-check`, { isSpotCheckItem });
   }

@@ -390,7 +390,7 @@ internal static class SheetText
 
 `RawMaterialSheet` + `RawMaterialWorkbook`: كل خامة بفئتها ووحدتها ووحدة شرائها وحجمها وتكلفة وحدة الشراء والـ Yield وحد الطلب. والمصروفات بنفس الأسلوب.
 
-> 📄 **`backend/src/Costing.Application/RawMaterials/RawMaterialSheet.cs`** — 469 سطر
+> 📄 **`backend/src/Costing.Application/RawMaterials/RawMaterialSheet.cs`** — 504 سطر
 
 ```csharp
 using MediatR;
@@ -433,7 +433,9 @@ public sealed record RawMaterialSheetRow(
     string? PurchaseUnit = null,
     string? PurchaseUnitHolds = null,
     string? ReorderLevel = null,
-    string? YieldPercent = null);
+    string? YieldPercent = null,
+    // The kitchen or bar station that keeps it, by its name, Arabic name or code.
+    string? Station = null);
 
 // A material as the sheet writes it, in the sheet's units.
 public sealed record RawMaterialSheetLine(
@@ -445,10 +447,12 @@ public sealed record RawMaterialSheetLine(
     decimal PurchaseUnitHolds,
     decimal? Cost,
     decimal ReorderLevel,
-    decimal YieldPercent);
+    decimal YieldPercent,
+    string? Station = null);
 
-// What the sheet is written from: the materials, and the raw materials categories for its dropdown.
-public sealed record RawMaterialSheet(IReadOnlyList<RawMaterialSheetLine> Lines, IReadOnlyList<string> Categories);
+// What the sheet is written from: the materials, and the raw materials categories and the stations
+// for its dropdowns.
+public sealed record RawMaterialSheet(IReadOnlyList<RawMaterialSheetLine> Lines, IReadOnlyList<string> Categories, IReadOnlyList<string>? Stations = null);
 
 public sealed record ImportedRawMaterial(
     int Row, Guid Id, string Name, string Category, UnitOfMeasure Unit, string PurchaseUnit, decimal? CostPerPurchaseUnit);
@@ -531,13 +535,16 @@ public static class SheetUnits
     public static decimal Factor(UnitOfMeasure unit) => unit == UnitOfMeasure.Piece ? 1m : 1000m;
 }
 
-internal sealed class GetRawMaterialSheetHandler(IRawMaterialRepository materials, IPurchaseCategoryRepository categories)
+internal sealed class GetRawMaterialSheetHandler(
+    IRawMaterialRepository materials, IPurchaseCategoryRepository categories, Costing.Domain.Stations.IKitchenStationRepository stations)
     : IRequestHandler<GetRawMaterialSheetQuery, RawMaterialSheet>
 {
     public async Task<RawMaterialSheet> Handle(GetRawMaterialSheetQuery request, CancellationToken cancellationToken)
     {
         var all = await categories.GetAllAsync(cancellationToken);
         var byId = all.ToDictionary(c => c.Id);
+        var kitchen = await stations.GetAllAsync(cancellationToken);
+        var stationNames = kitchen.ToDictionary(s => s.Id, s => s.Name);
         var lines = (await materials.GetAllAsync(cancellationToken))
             .Where(m => !m.IsArchived && !m.IsPrepItem)
             .Select(m =>
@@ -552,18 +559,20 @@ internal sealed class GetRawMaterialSheetHandler(IRawMaterialRepository material
                     Math.Round(m.PurchaseUnitSize / factor, 3),
                     m.CostPerPurchaseUnit is { } cost ? Math.Round(cost, 4) : null,
                     Math.Round(m.ReorderLevel / m.PurchaseUnitSize, 3),
-                    m.DefaultYieldPercent);
+                    m.DefaultYieldPercent,
+                    m.KitchenStationId is { } station ? stationNames.GetValueOrDefault(station) : null);
             })
             .OrderBy(l => l.Category, StringComparer.CurrentCultureIgnoreCase)
             .ThenBy(l => l.Name, StringComparer.CurrentCultureIgnoreCase)
             .ToList();
         var names = all.Where(c => c.Kind == CategoryKind.RawMaterials).Select(c => c.Name).OrderBy(n => n, StringComparer.CurrentCultureIgnoreCase).ToList();
-        return new RawMaterialSheet(lines, names);
+        return new RawMaterialSheet(lines, names, kitchen.Where(s => s.IsActive).Select(s => s.Name).ToList());
     }
 }
 
 internal sealed class ImportRawMaterialsHandler(
-    IRawMaterialRepository materials, IPurchaseCategoryRepository categories, IApprovalRequestRepository approvals, IUnitOfWork unitOfWork)
+    IRawMaterialRepository materials, IPurchaseCategoryRepository categories, IApprovalRequestRepository approvals,
+    Costing.Domain.Stations.IKitchenStationRepository stations, IUnitOfWork unitOfWork)
     : IRequestHandler<ImportRawMaterialsCommand, RawMaterialImportResult>
 {
     public const int MaxRows = 2000;
@@ -603,6 +612,12 @@ internal sealed class ImportRawMaterialsHandler(
                 known.TryAdd(PurchaseCategory.Normalize(ar), category);
         }
 
+        // Stations by their name, Arabic name or code.
+        var stationsByKey = new Dictionary<string, Costing.Domain.Stations.KitchenStation>();
+        foreach (var station in await stations.GetAllAsync(cancellationToken))
+            foreach (var key in new[] { station.Name, station.NameAr, station.Code }.OfType<string>())
+                stationsByKey.TryAdd(PurchaseCategory.Normalize(key), station);
+
         var created = new List<ImportedRawMaterial>();
         var updated = new List<UpdatedSheetItem>();
         var unchanged = 0;
@@ -623,6 +638,19 @@ internal sealed class ImportRawMaterialsHandler(
             }
 
             var plan = checkedRow.Plan!;
+            // Its station, when the row names one: one on the list, in use.
+            Guid? stationId = null;
+            if (SheetText.Clean(row.Station) is { } stationText)
+            {
+                if (!stationsByKey.TryGetValue(PurchaseCategory.Normalize(stationText), out var station) || !station.IsActive)
+                {
+                    skipped.Add(new SkippedSheetRow(row.Row, name,
+                        $"No station in use called {stationText}: choose one from the list, or add it on Cost settings.",
+                        $"لا يوجد قسم تشغيلي باسم {stationText}: اختره من القائمة أو أضفه من إعدادات التكاليف."));
+                    continue;
+                }
+                stationId = station.Id;
+            }
             var category = plan.Category is null ? null : await CategoryAsync(plan.Category, known, added, cancellationToken);
             RawMaterial material;
             if (plan.Existing is null)
@@ -638,6 +666,8 @@ internal sealed class ImportRawMaterialsHandler(
                     material.SetReorderLevel(reorder * material.PurchaseUnitSize);
                 if (plan.Cost is { } cost)
                     material.SetCost(cost);
+                if (stationId is not null)
+                    material.AssignStation(stationId);
                 materials.Add(material);
                 created.Add(new ImportedRawMaterial(
                     row.Row, material.Id, material.Name, category?.Name ?? PurchaseCategory.GeneralName, material.Unit, material.PurchaseUnit, plan.Cost));
@@ -646,6 +676,11 @@ internal sealed class ImportRawMaterialsHandler(
             {
                 material = plan.Existing;
                 var changes = Apply(material, plan, category);
+                if (stationId is not null && material.KitchenStationId != stationId)
+                {
+                    material.AssignStation(stationId);
+                    changes.Add("Station");
+                }
                 if (changes.Count == 0)
                     unchanged++;
                 else
@@ -865,7 +900,7 @@ internal sealed class ImportRawMaterialsHandler(
 ```
 
 
-> 📄 **`backend/src/Costing.Infrastructure/Excel/RawMaterialWorkbook.cs`** — 108 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Excel/RawMaterialWorkbook.cs`** — 118 سطر
 
 ```csharp
 using Costing.Application.RawMaterials;
@@ -895,6 +930,7 @@ public static class RawMaterialWorkbook
     public const string CostHeader = "Cost per Purchase Unit · تكلفة وحدة الشراء";
     public const string ReorderHeader = "Reorder Level · حد الطلب";
     public const string YieldHeader = "Yield % · نسبة الصافي";
+    public const string StationHeader = "Station · القسم التشغيلي";
 
     private static readonly Column[] Columns =
     [
@@ -916,6 +952,8 @@ public static class RawMaterialWorkbook
             "Optional: reorder when stock falls to this many purchase units."),
         new("Yield", YieldHeader, ["yield %", "yield", "default yield", "نسبة الصافي", "الصافي"],
             "Optional: what is left after trimming, 1 to 100. Blank: 100 for a new material."),
+        new("Station", StationHeader, ["station", "kitchen station", "kitchen section", "القسم التشغيلي", "قسم المطبخ", "قسم التشغيل"],
+            "Optional: the kitchen or bar station that keeps it, by its name or code (Grill, BAR). Blank leaves it as it is."),
     ];
 
     private static readonly string[] Help =
@@ -929,6 +967,7 @@ public static class RawMaterialWorkbook
         "Unit of Measure: Kg, Liter or Piece (كيلو، لتر، قطعة). A material on the list keeps the unit it is counted in.",
         "Purchase Unit and its Holds: what it is bought in and how many kg, litres or pieces that is, such as carton and 30.",
         "Cost per Purchase Unit: the price to start from. Purchases move the average cost from there.",
+        "Station: the kitchen or bar station that keeps it (القسم التشغيلي), from the list. Blank: none (the shared station's).",
         "Stock on hand is not on the sheet: it comes in by purchases and stock counts. · الرصيد لا يُستورد: يأتي من المشتريات والجرد.",
         "",
         "Exported from Raw materials, the sheet is the list as it is: edit it and import it back, or import it into another installation.",
@@ -936,28 +975,33 @@ public static class RawMaterialWorkbook
 
     private static readonly object[][] Examples =
     [
-        ["ING-001", "Chicken breast", "Poultry", "Kg", "kg", 1, 185, 5, 85],
-        ["ING-002", "Full-cream milk", "Dairy", "Liter", "carton", 12, 504, 2, ""],
-        ["", "Eggs", "Dairy", "Piece", "tray", 30, 127.5, 4, 98],
-        ["", "بقدونس", "Vegetables", "Kg", "", "", "", "", ""],
+        ["ING-001", "Chicken breast", "Poultry", "Kg", "kg", 1, 185, 5, 85, "Grill"],
+        ["ING-002", "Full-cream milk", "Dairy", "Liter", "carton", 12, 504, 2, "", "Bar & Barista"],
+        ["", "Eggs", "Dairy", "Piece", "tray", 30, 127.5, 4, 98, ""],
+        ["", "بقدونس", "Vegetables", "Kg", "", "", "", "", "", ""],
     ];
 
     // The template: the columns, with dropdowns for the category (the restaurant's own, a new name
     // allowed) and the unit. No rows on the sheet itself: examples there would be imported.
-    public static Stream Build(IReadOnlyList<string> categories) => Build(categories, []);
+    public static Stream Build(IReadOnlyList<string> categories, IReadOnlyList<string>? stations = null) => Build(categories, [], stations);
 
     // The materials written out, under the template's columns.
-    public static Stream Build(IReadOnlyList<string> categories, IReadOnlyList<RawMaterialSheetLine> lines) =>
-        SheetBook.Build(DataSheetName, Columns, Help, Examples,
+    public static Stream Build(IReadOnlyList<string> categories, IReadOnlyList<RawMaterialSheetLine> lines, IReadOnlyList<string>? stations = null)
+    {
+        var lists = new Dictionary<string, SheetList>
+        {
+            ["Category"] = new(categories, true, "A new category", "Not on the list yet: it is added on import. · قسم جديد يُضاف عند الاستيراد."),
+            ["Unit"] = new(SheetUnits.Names, false, "Kg, Liter or Piece", "Write Kg, Liter or Piece (كيلو، لتر، قطعة)."),
+        };
+        if (stations is { Count: > 0 })
+            lists["Station"] = new(stations, false, "A station on the list", "Choose the station from the list. · اختر القسم من القائمة.");
+        return SheetBook.Build(DataSheetName, Columns, Help, Examples,
             lines.Select(l => new object?[]
             {
-                l.Code, l.Name, l.Category, l.Unit, l.PurchaseUnit, l.PurchaseUnitHolds, l.Cost, l.ReorderLevel, l.YieldPercent,
+                l.Code, l.Name, l.Category, l.Unit, l.PurchaseUnit, l.PurchaseUnitHolds, l.Cost, l.ReorderLevel, l.YieldPercent, l.Station,
             }).ToList(),
-            new Dictionary<string, SheetList>
-            {
-                ["Category"] = new(categories, true, "A new category", "Not on the list yet: it is added on import. · قسم جديد يُضاف عند الاستيراد."),
-                ["Unit"] = new(SheetUnits.Names, false, "Kg, Liter or Piece", "Write Kg, Liter or Piece (كيلو، لتر، قطعة)."),
-            });
+            lists);
+    }
 
     // The rows of a filled-in sheet. Blank rows are left out.
     public static IReadOnlyList<RawMaterialSheetRow> Read(Stream stream) =>
@@ -973,7 +1017,8 @@ public static class RawMaterialWorkbook
                 r.Text("Holds"),
                 r.Text("ReorderLevel"),
                 // 85% typed into a cell is 0.85 kept as a percentage: read as it shows.
-                r.Shown("Yield") is { } shown && shown.EndsWith('%') ? shown : r.Text("Yield")))
+                r.Shown("Yield") is { } shown && shown.EndsWith('%') ? shown : r.Text("Yield"),
+                r.Text("Station")))
             .ToList();
 }
 ```
@@ -3135,7 +3180,7 @@ public static class DailySalesWorkbook
 ```
 
 
-> 📄 **`backend/src/Costing.Infrastructure/Excel/ReportWorkbook.cs`** — 434 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Excel/ReportWorkbook.cs`** — 502 سطر
 
 ```csharp
 using ClosedXML.Excel;
@@ -3319,6 +3364,74 @@ public static class IntelligenceWorkbooks
                     Flagged: r.Evaluation == VarianceEvaluation.Unfavourable)),
                 new ReportRow(["", "Total · الإجمالي", null, null, null, null, null, null, null, null, null, null, null, null, report.UnexplainedValue], ReportRowKind.Total),
             ])]);
+
+    public static string StatusName(StationStatus status) => status switch
+    {
+        StationStatus.HighLoss => "High loss · عجز مرتفع",
+        StationStatus.Watch => "Watch · تحت المراقبة",
+        _ => "Within target · منضبط",
+    };
+
+    // Station-level variance: a summary a station, then each station's materials under it.
+    public static Stream StationVariance(StationVarianceReport report)
+    {
+        var names = report.Stations.ToDictionary(s => s.StationId ?? Guid.Empty, s => s.StationAr is null ? s.Station : $"{s.Station} · {s.StationAr}");
+        var span = $"{Span(report.From, report.To)} · tolerance {report.TolerancePercent:0.##}% unless a station has its own";
+        return ReportWorkbook.Build(
+        [
+            new ReportSheet(
+                "Station Summary", "Station-level variance · انحراف الأقسام", span,
+                [
+                    new("Station · القسم"), new("Status · الحالة"), new("Materials · الخامات", "0"), new("Theoretical cost · التكلفة النظرية", ReportWorkbook.Money),
+                    new("Actual cost · التكلفة الفعلية", ReportWorkbook.Money), new("Unexplained variance · الانحراف غير المبرر", ReportWorkbook.Money),
+                    new("Variance % · النسبة", ReportWorkbook.Percent), new("Tolerance % · السماح", ReportWorkbook.Percent),
+                    new("Logged waste · الهالك المسجل", ReportWorkbook.Money), new("Staff meals · وجبات العاملين", ReportWorkbook.Money),
+                    new("Top losing materials · أعلى الخامات عجزًا"),
+                ],
+                [
+                    .. report.Stations.Select(s => new ReportRow(
+                        [names[s.StationId ?? Guid.Empty], StatusName(s.Status), s.Materials, s.TheoreticalConsumptionCost, s.ActualConsumptionCost,
+                         s.UnexplainedVarianceCost, s.UnexplainedVariancePercent, s.TolerancePercent, s.LoggedSpoilageWasteCost, s.StaffMealsCost,
+                         string.Join(", ", s.TopLossMaterials.Select(m => m.Material))],
+                        Flagged: s.Status == StationStatus.HighLoss)),
+                    new ReportRow(
+                        ["Total · الإجمالي", null, report.Stations.Sum(s => s.Materials), report.TheoreticalValue, report.ActualValue, report.UnexplainedValue,
+                         report.TheoreticalValue > 0 ? Math.Round(report.UnexplainedValue / report.TheoreticalValue * 100, 2) : null, null, report.WasteValue,
+                         report.Stations.Sum(s => s.StaffMealsCost), null],
+                        ReportRowKind.Total),
+                ]),
+            new ReportSheet(
+                "By Station", "Detailed breakdown by station · التفاصيل حسب القسم", span,
+                [
+                    new("Station · القسم"), new("Code · الكود"), new("Material · الخامة"), new("Unit · الوحدة"),
+                    new("Opening · أول المدة", ReportWorkbook.Quantity), new("Purchases · المشتريات", ReportWorkbook.Quantity),
+                    new("Logged waste · الهالك المسجل", ReportWorkbook.Quantity), new("Closing · آخر المدة", ReportWorkbook.Quantity),
+                    new("Actual · الفعلي", ReportWorkbook.Quantity), new("Theoretical · النظري", ReportWorkbook.Quantity),
+                    new("Unexplained · غير المبرر", ReportWorkbook.Quantity), new("Variance cost · قيمة الانحراف", ReportWorkbook.Money),
+                    new("Variance % · النسبة", ReportWorkbook.Percent), new("Evaluation · التقييم"),
+                ],
+                [
+                    .. report.Stations.SelectMany(s => (IEnumerable<ReportRow>)
+                    [
+                        new ReportRow([names[s.StationId ?? Guid.Empty], null, null, null, null, null, null, null, null, null, null, null, null, null], ReportRowKind.Group),
+                        .. report.Rows.Where(r => r.KitchenStationId == s.StationId).Select(r => new ReportRow(
+                            [names[s.StationId ?? Guid.Empty], r.Code, r.Material, r.PurchaseUnit, r.Opening, r.Purchases, r.Waste, r.Closing, r.ActualUsage,
+                             r.TheoreticalUsage, r.UnexplainedQuantity, r.VarianceCost, r.UnexplainedPercent, Evaluation(r.Evaluation)],
+                            Flagged: r.Evaluation == VarianceEvaluation.Unfavourable)),
+                        new ReportRow([$"{s.Station} total", null, null, null, null, null, null, null, null, null, null, s.UnexplainedVarianceCost,
+                            s.UnexplainedVariancePercent, StatusName(s.Status)], ReportRowKind.Total),
+                    ]),
+                ]),
+        ]);
+    }
+
+    private static string Evaluation(VarianceEvaluation evaluation) => evaluation switch
+    {
+        VarianceEvaluation.Unfavourable => "Unfavourable · غير مبرر",
+        VarianceEvaluation.Favourable => "Favourable · فائض",
+        VarianceEvaluation.SharedCost => "Shared cost · تكلفة مشتركة",
+        _ => "Within limit · ضمن الحد",
+    };
 
     public static Stream Abc(AbcReport report) =>
         ReportWorkbook.Build([new ReportSheet(

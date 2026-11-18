@@ -371,6 +371,38 @@ each bought material over the period, from the book's stock either side:
   unfavourable (a high loss, the row in red); under minus it, favourable. A shared cost with nothing
   expected is not judged. Dishes sold with no recipe are listed, since they took nothing.
 
+**Station variance (انحراف الأقسام)** (`GET /api/costing/intelligence/station-variance?from&to`,
+for whoever works Material & demand intelligence or Reports; also Reports → Station variance): the
+same consumption, each material held against the kitchen or bar station that keeps it (see [Kitchen
+and bar stations](#kitchen-and-bar-stations-أقسام-التشغيل-والمطبخ)). A material with no station, or
+one whose station was taken away, is the shared station's (a shared group of its own when there is
+no shared station). For each station over the period:
+
+| Figure | How it is worked out |
+| --- | --- |
+| Theoretical cost (التكلفة النظرية) | Σ its materials' theoretical usage (with what is held in prep) × the average cost now |
+| Actual cost (التكلفة الفعلية) | Σ (opening + purchases − logged waste − staff meals & hospitality − closing) × the average cost now |
+| Unexplained variance (الانحراف غير المبرر) | actual − theoretical, in money, and its % of the theoretical (none when nothing should have been used) |
+| Logged waste (الهالك المسجل) | spoilage logged and dishes voided after the kitchen, less refunds put back, at the cost then, held against the **station responsible** for each entry (not always the material's own) |
+| Top 3 losing materials | its three materials with the highest unfavourable variance cost |
+| Status | **Within target** (منضبط) up to three quarters of its tolerance; **Watch** (تحت المراقبة) above that; **High loss** (عجز مرتفع) past it; with nothing expected and something used, high loss |
+
+The tolerance is the station's own when it has one, the costing settings' otherwise. Shared costs
+with nothing expected (as on the consumption report) are listed but not judged. The quantities are
+per material, in its purchase unit: a station's materials are in different units, so a station is
+summed in money only.
+
+The page shows a **scorecard a station** (its status badge, theoretical against actual, the
+unexplained in money and %, colour-coded, its logged waste, its tolerance and its three leaking
+materials as pills); **a bar a station** of its unexplained % against its own tolerance line (green,
+amber or red, the value beside it); and **each material** (station, material, opening, purchases,
+logged waste, closing, actual, theoretical, unexplained quantity, variance cost, variance % and
+evaluation). Clicking a scorecard or a bar lists that station's materials (again: every station's),
+and a material's name opens its stock card over the period, to its invoices, waste and counts. Each
+figure and technical column has its (ⓘ). **Export station variance** (`…/station-variance/sheet`)
+writes a **Station Summary** sheet (a row a station and the total) and a **By Station** sheet (each
+station's materials under its heading, its total and status under them).
+
 **ABC & days on hand (تصنيف ABC وكفاية المخزون)** (`GET abc?from&to`), each bought material that
 is not archived:
 
@@ -677,6 +709,32 @@ changed there. Here only:
   to someone on a day, on Financials → Payroll & deductions; kept here as a record and, while HR
   is linked, sent to HR as a deduction from their pay. Voided, it is taken off there too.
 
+## Kitchen and bar stations (أقسام التشغيل والمطبخ)
+
+Each material, prep item and dish is kept by a **kitchen or bar station** (`costing.KitchenStations`:
+name, Arabic name, code, display order, its own variance tolerance or none, in use or not), so its use
+and its waste are held against that section of the kitchen. Seven come with the migration
+(`AddKitchenStations`), once: Grill · المشويات, Pizza & Bakery · البيتزا والمخبوزات, Hot Kitchen ·
+المطبخ الساخن, Cold & Salads · المقبلات والسلطات, Bar & Barista · البار والباريستا, Pastry & Desserts ·
+الحلويات and Shared / General · خامات مشتركة (code `SHARED`); a manager changes or takes each away
+on **Cost settings** (`GET /api/costing/stations`, `PUT|DELETE /api/costing/stations/{id}`, a
+manager's), and they are not added back. A code is unique; a name too.
+
+- **Materials and prep items** (`RawMaterials.KitchenStationId`): on Raw materials and Prep items a
+  **Station** column with its picker in each row, and a **Station** filter pill; on Raw materials,
+  **Station for the N shown** gives every material the filters show one station at once (`PUT
+  /api/inventory/raw-materials/station` with `rawMaterialIds` and `stationId`; null: none). The raw
+  materials sheet has a **Station · القسم التشغيلي** column (exported by name; imported by name,
+  Arabic name or code; blank leaves it as it is; one not in use skips the row, said why).
+- **Dishes** (`Recipes.KitchenStationId`): on the recipe card (`PUT /api/inventory/recipes/{id}/station`).
+  A plate voided after the kitchen made it is that station's waste.
+- **Waste** (`StockMovements.ResponsibleStationId`): each spoilage line on Waste has a **Station
+  responsible · القسم المسؤول**, the material's own until another is chosen (the hot kitchen that
+  spoiled a shared item); the recent entries show and filter by it. A void of an entry keeps its
+  station, so the two net out.
+- A station **not in use** is off the pickers and given nothing new; its history stays. **Taken
+  away**, what it kept (materials, prep items, dishes, waste) falls to the shared station.
+
 ## Stock counts: opening, periodic, spot and blind
 
 A count is drafted (it saves itself as it is filled in, on any device) and then posted. Each count
@@ -717,6 +775,10 @@ showing how many it covers:
 | Top class-A materials (أصناف الفئة A الأعلى قيمة) | Class A of the ABC analysis over the last 30 days |
 | High-variance materials (الأصناف الأكثر انحرافًا) | Over their recipes in the last 30 days, or short beyond the tolerance at the last periodic count |
 | By category (حسب الفئة) | Every material of one category |
+| By station (حسب قسم المطبخ) | Every material and prep item of one kitchen or bar station (none: the shared station's), for a count at its shift's close |
+
+On a count's sheet, full or spot, **By station · حسب قسم المطبخ** shows one station's materials
+alone, and **Print blind sheet** then prints that station's, its name in the title.
 
 The star is a flag alone (no stock moves, so no approval), set by whoever manages the materials.
 **Posting a spot count adjusts only the lines counted**: a material not on it, or on it and left

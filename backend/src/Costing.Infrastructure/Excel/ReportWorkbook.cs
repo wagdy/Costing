@@ -180,6 +180,74 @@ public static class IntelligenceWorkbooks
                 new ReportRow(["", "Total · الإجمالي", null, null, null, null, null, null, null, null, null, null, null, null, report.UnexplainedValue], ReportRowKind.Total),
             ])]);
 
+    public static string StatusName(StationStatus status) => status switch
+    {
+        StationStatus.HighLoss => "High loss · عجز مرتفع",
+        StationStatus.Watch => "Watch · تحت المراقبة",
+        _ => "Within target · منضبط",
+    };
+
+    // Station-level variance: a summary a station, then each station's materials under it.
+    public static Stream StationVariance(StationVarianceReport report)
+    {
+        var names = report.Stations.ToDictionary(s => s.StationId ?? Guid.Empty, s => s.StationAr is null ? s.Station : $"{s.Station} · {s.StationAr}");
+        var span = $"{Span(report.From, report.To)} · tolerance {report.TolerancePercent:0.##}% unless a station has its own";
+        return ReportWorkbook.Build(
+        [
+            new ReportSheet(
+                "Station Summary", "Station-level variance · انحراف الأقسام", span,
+                [
+                    new("Station · القسم"), new("Status · الحالة"), new("Materials · الخامات", "0"), new("Theoretical cost · التكلفة النظرية", ReportWorkbook.Money),
+                    new("Actual cost · التكلفة الفعلية", ReportWorkbook.Money), new("Unexplained variance · الانحراف غير المبرر", ReportWorkbook.Money),
+                    new("Variance % · النسبة", ReportWorkbook.Percent), new("Tolerance % · السماح", ReportWorkbook.Percent),
+                    new("Logged waste · الهالك المسجل", ReportWorkbook.Money), new("Staff meals · وجبات العاملين", ReportWorkbook.Money),
+                    new("Top losing materials · أعلى الخامات عجزًا"),
+                ],
+                [
+                    .. report.Stations.Select(s => new ReportRow(
+                        [names[s.StationId ?? Guid.Empty], StatusName(s.Status), s.Materials, s.TheoreticalConsumptionCost, s.ActualConsumptionCost,
+                         s.UnexplainedVarianceCost, s.UnexplainedVariancePercent, s.TolerancePercent, s.LoggedSpoilageWasteCost, s.StaffMealsCost,
+                         string.Join(", ", s.TopLossMaterials.Select(m => m.Material))],
+                        Flagged: s.Status == StationStatus.HighLoss)),
+                    new ReportRow(
+                        ["Total · الإجمالي", null, report.Stations.Sum(s => s.Materials), report.TheoreticalValue, report.ActualValue, report.UnexplainedValue,
+                         report.TheoreticalValue > 0 ? Math.Round(report.UnexplainedValue / report.TheoreticalValue * 100, 2) : null, null, report.WasteValue,
+                         report.Stations.Sum(s => s.StaffMealsCost), null],
+                        ReportRowKind.Total),
+                ]),
+            new ReportSheet(
+                "By Station", "Detailed breakdown by station · التفاصيل حسب القسم", span,
+                [
+                    new("Station · القسم"), new("Code · الكود"), new("Material · الخامة"), new("Unit · الوحدة"),
+                    new("Opening · أول المدة", ReportWorkbook.Quantity), new("Purchases · المشتريات", ReportWorkbook.Quantity),
+                    new("Logged waste · الهالك المسجل", ReportWorkbook.Quantity), new("Closing · آخر المدة", ReportWorkbook.Quantity),
+                    new("Actual · الفعلي", ReportWorkbook.Quantity), new("Theoretical · النظري", ReportWorkbook.Quantity),
+                    new("Unexplained · غير المبرر", ReportWorkbook.Quantity), new("Variance cost · قيمة الانحراف", ReportWorkbook.Money),
+                    new("Variance % · النسبة", ReportWorkbook.Percent), new("Evaluation · التقييم"),
+                ],
+                [
+                    .. report.Stations.SelectMany(s => (IEnumerable<ReportRow>)
+                    [
+                        new ReportRow([names[s.StationId ?? Guid.Empty], null, null, null, null, null, null, null, null, null, null, null, null, null], ReportRowKind.Group),
+                        .. report.Rows.Where(r => r.KitchenStationId == s.StationId).Select(r => new ReportRow(
+                            [names[s.StationId ?? Guid.Empty], r.Code, r.Material, r.PurchaseUnit, r.Opening, r.Purchases, r.Waste, r.Closing, r.ActualUsage,
+                             r.TheoreticalUsage, r.UnexplainedQuantity, r.VarianceCost, r.UnexplainedPercent, Evaluation(r.Evaluation)],
+                            Flagged: r.Evaluation == VarianceEvaluation.Unfavourable)),
+                        new ReportRow([$"{s.Station} total", null, null, null, null, null, null, null, null, null, null, s.UnexplainedVarianceCost,
+                            s.UnexplainedVariancePercent, StatusName(s.Status)], ReportRowKind.Total),
+                    ]),
+                ]),
+        ]);
+    }
+
+    private static string Evaluation(VarianceEvaluation evaluation) => evaluation switch
+    {
+        VarianceEvaluation.Unfavourable => "Unfavourable · غير مبرر",
+        VarianceEvaluation.Favourable => "Favourable · فائض",
+        VarianceEvaluation.SharedCost => "Shared cost · تكلفة مشتركة",
+        _ => "Within limit · ضمن الحد",
+    };
+
     public static Stream Abc(AbcReport report) =>
         ReportWorkbook.Build([new ReportSheet(
             "ABC", "ABC classification & days on hand · تصنيف ABC وكفاية المخزون",

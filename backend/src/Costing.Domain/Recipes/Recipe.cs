@@ -97,6 +97,12 @@ public sealed class Recipe : AggregateRoot
         DeletedBy = null;
     }
 
+    // The kitchen or bar station that makes it (قسم التشغيل): a plate of it voided after the kitchen
+    // made it is that station's waste. Null: its materials' own stations.
+    public Guid? KitchenStationId { get; private set; }
+
+    public void AssignStation(Guid? stationId) => KitchenStationId = stationId;
+
     // How many portions the quantities below make, as a recipe is written: 15 for a tray of
     // strata. A sold item uses one portion's share.
     public int Portions { get; private set; } = 1;

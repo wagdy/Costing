@@ -259,3 +259,54 @@ describe('a daily critical item (جرد يومي سريع), starred from its row
     expect(open).not.toHaveBeenCalled();
   });
 });
+
+describe('a material’s kitchen station (القسم التشغيلي)', () => {
+  const material = (id: string, name: string, kitchenStationId: string | null) =>
+    ({ id, name, kind: 'Purchased', code: null, category: 'Meat', categoryId: 'meat', unit: 'Gram', purchaseUnit: 'kg', purchaseUnitSize: 1000,
+      costPerPurchaseUnit: null, defaultYieldPercent: 100, quantityOnHand: 0, stockValue: null, lastPurchaseCostPerPurchaseUnit: null,
+      kitchenStationId }) as unknown as MaterialCost;
+  const stations = [
+    { id: 'grill', name: 'Grill', nameAr: 'المشويات', code: 'GRILL', displayOrder: 1, targetVarianceTolerancePercent: null, isActive: true, isShared: false, materials: 1, recipes: 0 },
+    { id: 'bar', name: 'Bar & Barista', nameAr: null, code: 'BAR', displayOrder: 5, targetVarianceTolerancePercent: 2, isActive: true, isShared: false, materials: 0, recipes: 0 },
+    { id: 'shared', name: 'Shared / General', nameAr: 'خامات مشتركة', code: 'SHARED', displayOrder: 7, targetVarianceTolerancePercent: null, isActive: true, isShared: true, materials: 0, recipes: 0 },
+  ];
+
+  it('is filtered by, set in its row and given to every material shown at once', async () => {
+    const info = vi.fn();
+    const assignMaterialsStation = vi.fn((ids: string[], stationId: string | null) => of({ assigned: ids.length, stationId }));
+    TestBed.configureTestingModule({
+      providers: [
+        {
+          provide: CostingApi,
+          useValue: {
+            materials: () => of([material('beef', 'Beef', 'grill'), material('milk', 'Milk', null), material('coffee', 'Coffee', null)]),
+            stations: () => of(stations), assignMaterialsStation,
+          },
+        },
+        { provide: MatDialog, useValue: { open: vi.fn() } },
+        { provide: NotifyService, useValue: { info, error: vi.fn() } },
+        { provide: Approvals, useValue: { refresh: vi.fn(), pendingFor: vi.fn() } },
+      ],
+    });
+    const fixture = TestBed.createComponent(MaterialsPage);
+    await fixture.whenStable();
+    fixture.detectChanges();
+    const page = fixture.componentInstance as unknown as Record<string, any>;
+
+    // None given is the shared station's.
+    expect(page['stationFilters']().map((o: { label: string; count: number }) => `${o.label} (${o.count})`)).toEqual([
+      'All · الكل (3)', 'Grill · المشويات (1)', 'Shared / General · خامات مشتركة (2)',
+    ]);
+    page['station'].set('shared');
+    expect(page['shown']().map((m: MaterialCost) => m.name)).toEqual(['Coffee', 'Milk']);
+
+    // Every material shown given the bar at once.
+    await page['setStation'](page['shown'](), 'bar');
+    expect(assignMaterialsStation).toHaveBeenCalledWith(['coffee', 'milk'], 'bar');
+    expect(info).toHaveBeenLastCalledWith('2 materials: Bar & Barista.');
+    page['station'].set('bar');
+    expect(page['shown']().map((m: MaterialCost) => m.name)).toEqual(['Coffee', 'Milk']);
+    fixture.detectChanges();
+    expect((fixture.nativeElement as HTMLElement).querySelector('[aria-label="Station of Coffee"]')).not.toBeNull();
+  });
+});

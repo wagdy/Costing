@@ -6350,7 +6350,7 @@ export class TaxServicePage {
 
 وفي كل هذه الشاشات (وتقارير الإنفاق والخزنة والفروقات والـ KPIs وبطاقة الوصفة) البطاقة **عنوان ورقم وشارة قصيرة** فقط؛ المعادلات التي كانت تحت البطاقات وفي ذيل الصفحة انتقلت إلى (ⓘ) بجانب العنوان (الفصل 08). واسم الخامة في جداول التحليلات بجانبه زر كارتة الصنف على فترة التقرير، و "آخر سعر صافي" في انحراف الأسعار يفتح فاتورته وسطرها مُعلَّم.
 
-> 📄 **`frontend/src/app/core/costing/intelligence.api.ts`** — 603 سطر
+> 📄 **`frontend/src/app/core/costing/intelligence.api.ts`** — 665 سطر
 
 ```ts
 import { HttpClient } from '@angular/common/http';
@@ -6518,12 +6518,66 @@ export interface ConsumptionRow {
   evaluation: VarianceEvaluation;
   // Staff meals, hospitality and tastings: taken on purpose, out of the actual usage judged.
   staffMeals?: number;
+  // The station it is reported under (the shared station's when it has none).
+  kitchenStationId?: string | null;
 }
 
 export interface SoldWithoutRecipe {
   itemCode: string;
   menuItem: string;
   quantity: number;
+}
+
+// How a station stands against its tolerance: within three quarters of it, near it, or past it.
+export type StationStatus = 'WithinTarget' | 'Watch' | 'HighLoss';
+
+export const stationStatusLabels: Record<StationStatus, { en: string; ar: string }> = {
+  WithinTarget: { en: 'Within target', ar: 'منضبط' },
+  Watch: { en: 'Watch', ar: 'تحت المراقبة' },
+  HighLoss: { en: 'High loss', ar: 'عجز مرتفع' },
+};
+
+export interface StationLossMaterial {
+  rawMaterialId: string;
+  material: string;
+  varianceCost: number;
+  variancePercent: number | null;
+}
+
+// A kitchen or bar station over the period (stationId null: the shared group when there is no
+// shared station): its materials' theoretical and actual cost, the unexplained between them and its
+// share of the theoretical, the waste held against it, and its three materials losing the most.
+export interface StationVariance {
+  stationId: string | null;
+  station: string;
+  stationAr: string | null;
+  code: string | null;
+  isShared: boolean;
+  isActive: boolean;
+  tolerancePercent: number;
+  materials: number;
+  theoreticalConsumptionCost: number;
+  actualConsumptionCost: number;
+  loggedSpoilageWasteCost: number;
+  staffMealsCost: number;
+  unexplainedVarianceCost: number;
+  unexplainedVariancePercent: number | null;
+  overTolerance: number;
+  status: StationStatus;
+  topLossMaterials: StationLossMaterial[];
+}
+
+export interface StationVarianceReport {
+  from: string;
+  to: string;
+  tolerancePercent: number;
+  watchSharePercent: number;
+  stations: StationVariance[];
+  rows: ConsumptionRow[];
+  theoreticalValue: number;
+  actualValue: number;
+  unexplainedValue: number;
+  wasteValue: number;
 }
 
 export interface ConsumptionReport {
@@ -6897,6 +6951,14 @@ export class IntelligenceApi {
     return this.http.get('/api/costing/intelligence/consumption/sheet', { params: { from, to }, responseType: 'blob' });
   }
 
+  stationVariance(from: string, to: string): Observable<StationVarianceReport> {
+    return this.http.get<StationVarianceReport>('/api/costing/intelligence/station-variance', { params: { from, to } });
+  }
+
+  stationVarianceSheet(from: string, to: string): Observable<Blob> {
+    return this.http.get('/api/costing/intelligence/station-variance/sheet', { params: { from, to }, responseType: 'blob' });
+  }
+
   abc(from: string, to: string): Observable<AbcReport> {
     return this.http.get<AbcReport>('/api/costing/intelligence/abc', { params: { from, to } });
   }
@@ -6959,7 +7021,7 @@ function menuParams(from: string, to: string, category: string | null): Record<s
 ```
 
 
-> 📄 **`frontend/src/app/features/costing/intelligence-shell.ts`** — 29 سطر
+> 📄 **`frontend/src/app/features/costing/intelligence-shell.ts`** — 30 سطر
 
 ```ts
 import { Component } from '@angular/core';
@@ -6984,6 +7046,7 @@ export class IntelligenceShell {
     { path: 'prices', icon: 'price_change', en: 'Price variance & recipe impact', ar: 'انحراف الأسعار وأثره' },
     { path: 'orders', icon: 'shopping_basket', en: 'Smart order planner', ar: 'تخطيط الطلبيات' },
     { path: 'consumption', icon: 'compare_arrows', en: 'Theoretical vs actual', ar: 'النظري مقابل الفعلي' },
+    { path: 'stations', icon: 'soup_kitchen', en: 'Station variance', ar: 'انحراف الأقسام' },
     { path: 'abc', icon: 'stacked_bar_chart', en: 'ABC & days on hand', ar: 'تصنيف ABC وكفاية المخزون' },
     { path: 'menu', icon: 'grid_view', en: 'Menu engineering', ar: 'هندسة المنيو والربحية' },
     { path: 'burdened', icon: 'layers', en: 'Burdened plate cost', ar: 'التكلفة الكلية للطبق' },
@@ -8215,6 +8278,697 @@ export class ConsumptionPage {
       this.loading.set(false);
     }
   }
+}
+```
+
+
+`StationVariancePage` (تبويب "انحراف الأقسام" في التحليلات، ورابط في التقارير): بطاقة لكل قسم (شارة الحالة بأيقونة واسم، النظري والفعلي، الانحراف بالمال والنسبة ملوّنًا، الهالك، أعلى 3 خامات)، ثم شريط أفقي لكل قسم بنسبة انحرافه أمام **خط سماحه هو** (المقياس من أعمق فائض أو صفر إلى ما بعد أعلى نسبة أو سماح)، ثم جدول خامات القسم المختار (الضغط على البطاقة أو الشريط يختاره، ومرة أخرى يعرض الكل) واسم الخامة يفتح كارتة الصنف. `Stations` خدمة مشتركة تحمّل الأقسام مرة واحدة وتعطي كل صفحة اسم القسم وفلتره (`filter`, `matches`) والقسم المشترك لما لا قسم له.
+
+> 📄 **`frontend/src/app/features/costing/station-variance-page.ts`** — 610 سطر
+
+```ts
+import { DecimalPipe } from '@angular/common';
+import { Component, computed, effect, inject, signal, untracked } from '@angular/core';
+import { MatButtonModule } from '@angular/material/button';
+import { MatDialog } from '@angular/material/dialog';
+import { MatIconModule } from '@angular/material/icon';
+import { MatProgressBarModule } from '@angular/material/progress-bar';
+import { firstValueFrom } from 'rxjs';
+import {
+  ConsumptionRow,
+  IntelligenceApi,
+  StationStatus,
+  StationVariance,
+  StationVarianceReport,
+  evaluationLabels,
+  stationStatusLabels,
+} from '../../core/costing/intelligence.api';
+import { errorMessage } from '../../core/http/error-message';
+import { MoneyPipe } from '../../core/ui/money.pipe';
+import { NotifyService } from '../../core/ui/notify.service';
+import { saveBlob } from '../../core/ui/save-blob';
+import { FilterOption, FilterSelect } from '../shared/filter-select';
+import { SearchField } from '../shared/search-field';
+import { SortOption, SortState, smartMatch, sortItems } from '../shared/smart-search';
+import { SortControl } from '../shared/sort-control';
+import { InfoTip } from './info-tip';
+import { PeriodBar, periodDays } from './period-bar';
+import { showStockCard } from './stock-card-dialog';
+
+type MaterialSort = 'cost' | 'percent' | 'material';
+
+const sorts: SortOption<MaterialSort>[] = [
+  { key: 'cost', en: 'Variance cost', ar: 'قيمة الانحراف', descending: true },
+  { key: 'percent', en: 'Variance %', ar: 'نسبة الانحراف', descending: true },
+  { key: 'material', en: 'Material', ar: 'الخامة' },
+];
+
+const statusIcons: Record<StationStatus, string> = { WithinTarget: 'check_circle', Watch: 'warning', HighLoss: 'error' };
+
+// A station's key on the page: its id, or 'shared' for the shared group with no station of its own.
+const keyOf = (id: string | null): string => id ?? 'shared';
+
+// Station-level variance (تحليل الهدر والانحراف حسب أقسام المطبخ والبار): one scorecard a kitchen or
+// bar station, its materials' theoretical against actual cost, the unexplained between them and its
+// share, the waste held against it and its three materials losing the most, judged against its
+// tolerance; a bar a station of its unexplained % against its tolerance line; and each material of
+// the station chosen, its stock card a click away. As a workbook too.
+@Component({
+  selector: 'app-station-variance-page',
+  imports: [DecimalPipe, FilterSelect, InfoTip, MatButtonModule, MatIconModule, MatProgressBarModule, MoneyPipe, PeriodBar, SearchField, SortControl],
+  template: `
+    <div class="toolbar">
+      <app-period-bar [(from)]="from" [(to)]="to" />
+      <span class="spacer"></span>
+      <button mat-stroked-button (click)="download()" [disabled]="!report()">
+        <mat-icon>download</mat-icon> Export station variance<span class="inline-ar">تصدير انحراف الأقسام</span>
+      </button>
+    </div>
+    @if (loading()) {
+      <mat-progress-bar mode="indeterminate" />
+    }
+    @if (error()) {
+      <p class="error">{{ error() }}</p>
+    } @else if (report(); as r) {
+      <p class="lead">
+        Unexplained across the stations <app-info-tip tip="stationUnexplained" />:
+        <strong [class.loss]="r.unexplainedValue > 0" [class.gain]="r.unexplainedValue < 0">{{ r.unexplainedValue | money }}</strong>
+        of {{ r.theoreticalValue | money }} theoretical · logged waste {{ r.wasteValue | money }}
+        <span class="inline-ar">إجمالي الانحراف غير المبرر للأقسام</span>
+      </p>
+
+      <div class="scorecards" role="list" aria-label="Stations">
+        @for (s of r.stations; track keyOf(s.stationId)) {
+          <button type="button" role="listitem" class="scorecard" [class]="s.status" [class.selected]="selected() === keyOf(s.stationId)"
+            [attr.aria-pressed]="selected() === keyOf(s.stationId)" (click)="select(s)" [attr.aria-label]="s.station + ', ' + labels[s.status].en">
+            <header>
+              <span class="name">{{ s.station }}@if (s.stationAr) {<span class="ar">{{ s.stationAr }}</span>}</span>
+              <span class="badge" [class]="s.status"><mat-icon>{{ icons[s.status] }}</mat-icon> {{ labels[s.status].en }} · {{ labels[s.status].ar }}</span>
+            </header>
+            <dl>
+              <div><dt>Theoretical <app-info-tip tip="stationTheoretical" /></dt><dd>{{ s.theoreticalConsumptionCost | money }}</dd></div>
+              <div><dt>Actual <app-info-tip tip="stationActual" /></dt><dd>{{ s.actualConsumptionCost | money }}</dd></div>
+              <div class="key">
+                <dt>Unexplained <app-info-tip tip="stationUnexplained" /></dt>
+                <dd [class.loss]="s.unexplainedVarianceCost > 0" [class.gain]="s.unexplainedVarianceCost < 0">
+                  {{ s.unexplainedVarianceCost | money }}
+                  <small>{{ s.unexplainedVariancePercent === null ? '—' : (s.unexplainedVariancePercent > 0 ? '+' : '') + (s.unexplainedVariancePercent | number: '1.1-1') + '%' }}</small>
+                </dd>
+              </div>
+              <div><dt>Logged waste <app-info-tip tip="stationWaste" /></dt><dd>{{ s.loggedSpoilageWasteCost | money }}</dd></div>
+            </dl>
+            <footer>
+              <span class="muted small">{{ s.materials }} {{ s.materials === 1 ? 'material' : 'materials' }} · ±{{ s.tolerancePercent | number: '1.0-2' }}%</span>
+              @if (s.topLossMaterials.length) {
+                <span class="leaks" aria-label="Top leaking materials">
+                  @for (m of s.topLossMaterials; track m.rawMaterialId) {
+                    <span class="leak">{{ m.material }} {{ m.varianceCost | money }}</span>
+                  }
+                </span>
+              }
+            </footer>
+          </button>
+        }
+      </div>
+
+      <section class="comparison" aria-labelledby="comparison-title">
+        <h3 id="comparison-title">Unexplained variance % by station <span class="inline-ar">نسبة الانحراف حسب القسم</span> <app-info-tip tip="stationComparison" /></h3>
+        <div class="bars">
+          @for (s of r.stations; track keyOf(s.stationId)) {
+            <div class="bar-row" [attr.aria-label]="s.station + ': ' + percentText(s) + ' against ±' + s.tolerancePercent + '%'">
+              <span class="bar-label">{{ s.station }}</span>
+              <span class="track" (click)="select(s)">
+                <span class="zero" [style.left.%]="position(0)"></span>
+                @if (s.unexplainedVariancePercent !== null) {
+                  <span class="fill" [class]="s.status" [style.left.%]="position(Math.min(0, s.unexplainedVariancePercent))"
+                    [style.width.%]="position(Math.max(0, s.unexplainedVariancePercent)) - position(Math.min(0, s.unexplainedVariancePercent))"
+                    [attr.title]="s.station + ': ' + percentText(s)"></span>
+                }
+                <span class="limit" [style.left.%]="position(s.tolerancePercent)" [attr.title]="'Tolerance ±' + s.tolerancePercent + '%'"></span>
+              </span>
+              <span class="bar-value" [class.loss]="s.status === 'HighLoss'">{{ percentText(s) }}</span>
+            </div>
+          }
+        </div>
+        <p class="muted small legend">
+          <span class="key-line"></span> each station's tolerance · <span class="dot WithinTarget"></span> within target · <span class="dot Watch"></span> watch
+          (past {{ r.watchSharePercent | number: '1.0-0' }}% of it) · <span class="dot HighLoss"></span> high loss
+        </p>
+      </section>
+
+      <div class="toolbar smart">
+        <app-search-field [(value)]="search" placeholder="Material or code · الخامة أو الكود" />
+        <div class="pills">
+          <app-filter-select label="Station · القسم" icon="soup_kitchen" [options]="stationFilters()" [value]="selected()" (valueChange)="selected.set($event)" />
+          <app-filter-select label="Evaluation · التقييم" icon="flag" [options]="evaluationFilters()" [(value)]="evaluation" />
+          <app-sort-control [options]="sorts" [(sort)]="sort" />
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table class="grid detail">
+          <thead>
+            <tr>
+              <th>Station<span class="ar">القسم</span></th>
+              <th>Material<span class="ar">الخامة</span></th>
+              <th class="num">Opening<span class="ar">أول المدة</span></th>
+              <th class="num">Purchases<span class="ar">المشتريات</span></th>
+              <th class="num">Logged waste <app-info-tip tip="recordedWaste" /><span class="ar">الهالك المسجل</span></th>
+              <th class="num">Closing<span class="ar">آخر المدة</span></th>
+              <th class="num">Actual <app-info-tip tip="actualUsage" /><span class="ar">الفعلي</span></th>
+              <th class="num">Theoretical <app-info-tip tip="theoreticalUsage" /><span class="ar">النظري</span></th>
+              <th class="num">Unexplained qty <app-info-tip tip="theoreticalVsActual" /><span class="ar">الكمية غير المبررة</span></th>
+              <th class="num">Variance cost <app-info-tip tip="unexplainedVariance" /><span class="ar">قيمة الانحراف</span></th>
+              <th class="num">Variance % <app-info-tip tip="stationPercent" /><span class="ar">النسبة</span></th>
+              <th>Evaluation <app-info-tip tip="highLoss" /><span class="ar">التقييم</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            @for (row of shown(); track row.rawMaterialId) {
+              <tr [class.high-loss]="row.evaluation === 'Unfavourable'">
+                <td class="muted">{{ stationName(row) }}</td>
+                <td>
+                  <button type="button" class="material" (click)="stockCard(row)" [attr.aria-label]="'Stock card of ' + row.material">
+                    {{ row.material }} <mat-icon>receipt_long</mat-icon>
+                  </button>
+                  <div class="muted small">{{ row.code ? row.code + ' · ' : '' }}in {{ row.purchaseUnit }}</div>
+                </td>
+                <td class="num">{{ row.opening | number: '1.0-3' }}</td>
+                <td class="num">{{ row.purchases | number: '1.0-3' }}</td>
+                <td class="num">{{ row.waste | number: '1.0-3' }}</td>
+                <td class="num">{{ row.closing | number: '1.0-3' }}</td>
+                <td class="num"><strong>{{ row.actualUsage | number: '1.0-3' }}</strong></td>
+                <td class="num">{{ row.theoreticalUsage | number: '1.0-3' }}</td>
+                <td class="num" [class.loss]="row.unexplainedQuantity > 0" [class.gain]="row.unexplainedQuantity < 0">
+                  {{ row.unexplainedQuantity > 0 ? '+' : '' }}{{ row.unexplainedQuantity | number: '1.0-3' }}
+                </td>
+                <td class="num" [class.loss]="(row.varianceCost ?? 0) > 0" [class.gain]="(row.varianceCost ?? 0) < 0">
+                  <strong>{{ row.varianceCost === null ? '—' : (row.varianceCost | money) }}</strong>
+                </td>
+                <td class="num">{{ row.unexplainedPercent === null ? '—' : (row.unexplainedPercent > 0 ? '+' : '') + (row.unexplainedPercent | number: '1.1-1') + '%' }}</td>
+                <td><span class="evaluation" [class]="row.evaluation">{{ evaluations[row.evaluation].en }}<span class="ar">{{ evaluations[row.evaluation].ar }}</span></span></td>
+              </tr>
+            } @empty {
+              <tr><td colspan="12" class="muted">Nothing moved at {{ selected() ? 'this station' : 'any station' }} in these days{{ search() || evaluation() ? ' that matches' : '' }}.</td></tr>
+            }
+          </tbody>
+          @if (selectedStation(); as s) {
+            <tfoot>
+              <tr>
+                <td colspan="9">{{ s.station }} · unexplained variance</td>
+                <td class="num">{{ s.unexplainedVarianceCost | money }}</td>
+                <td class="num">{{ percentText(s) }}</td>
+                <td>{{ labels[s.status].en }}</td>
+              </tr>
+            </tfoot>
+          }
+        </table>
+      </div>
+    }
+  `,
+  styleUrl: './costing.scss',
+  styles: `
+    .lead {
+      margin: 4px 0 14px;
+    }
+    .loss {
+      color: var(--mat-sys-error);
+    }
+    .gain {
+      color: var(--app-ok);
+    }
+    .small {
+      font-size: 0.85em;
+    }
+    .scorecards {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+      gap: 12px;
+      margin-bottom: 18px;
+    }
+    .scorecard {
+      display: grid;
+      gap: 8px;
+      padding: 12px 14px;
+      border: 1px solid var(--app-line);
+      border-top: 4px solid var(--app-line-strong);
+      border-radius: 14px;
+      background: var(--mat-sys-surface-container-lowest);
+      color: inherit;
+      font: inherit;
+      text-align: start;
+      cursor: pointer;
+      box-shadow: var(--app-card-shadow);
+
+      &.WithinTarget {
+        border-top-color: var(--app-ok);
+      }
+      &.Watch {
+        border-top-color: var(--app-warn);
+      }
+      &.HighLoss {
+        border-top-color: var(--mat-sys-error);
+      }
+      &.selected {
+        outline: 2px solid var(--mat-sys-primary);
+        outline-offset: 2px;
+      }
+      header {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: 6px;
+      }
+      .name {
+        font: var(--mat-sys-title-small);
+
+        .ar {
+          display: block;
+          font-size: 0.85em;
+          opacity: 0.75;
+        }
+      }
+      dl {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 6px 12px;
+        margin: 0;
+
+        div {
+          display: grid;
+          gap: 2px;
+        }
+        dt {
+          display: flex;
+          align-items: center;
+          gap: 2px;
+          font: var(--mat-sys-label-small);
+          color: var(--mat-sys-on-surface-variant);
+        }
+        dd {
+          margin: 0;
+          font-variant-numeric: tabular-nums;
+          font-weight: 600;
+        }
+        .key dd {
+          font: var(--mat-sys-title-medium);
+          font-weight: 700;
+
+          small {
+            margin-inline-start: 4px;
+            font-size: 0.75em;
+          }
+        }
+      }
+      footer {
+        display: grid;
+        gap: 6px;
+      }
+    }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 1px 8px;
+      border-radius: 999px;
+      font: var(--mat-sys-label-small);
+      white-space: nowrap;
+
+      mat-icon {
+        width: 16px;
+        height: 16px;
+        font-size: 16px;
+      }
+      &.WithinTarget {
+        background: color-mix(in srgb, var(--app-ok) 14%, transparent);
+        color: var(--app-ok);
+      }
+      &.Watch {
+        background: color-mix(in srgb, var(--app-warn) 16%, transparent);
+        color: var(--app-warn);
+      }
+      &.HighLoss {
+        background: color-mix(in srgb, var(--mat-sys-error) 14%, transparent);
+        color: var(--mat-sys-error);
+      }
+    }
+    .leaks {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+    }
+    .leak {
+      padding: 1px 8px;
+      border-radius: 999px;
+      background: var(--mat-sys-surface-container-high);
+      font: var(--mat-sys-label-small);
+    }
+    .comparison {
+      margin: 0 0 18px;
+      padding: 12px 14px;
+      border: 1px solid var(--app-line);
+      border-radius: 14px;
+
+      h3 {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin: 0 0 10px;
+        font: var(--mat-sys-title-small);
+      }
+    }
+    .bars {
+      display: grid;
+      gap: 6px;
+    }
+    .bar-row {
+      display: grid;
+      grid-template-columns: minmax(110px, 180px) minmax(0, 1fr) 64px;
+      align-items: center;
+      gap: 10px;
+    }
+    .bar-label {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font: var(--mat-sys-body-small);
+    }
+    .track {
+      position: relative;
+      height: 18px;
+      border-radius: 4px;
+      background: var(--mat-sys-surface-container);
+      cursor: pointer;
+    }
+    .zero {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      width: 1px;
+      background: var(--mat-sys-outline);
+    }
+    .fill {
+      position: absolute;
+      top: 3px;
+      bottom: 3px;
+      border-radius: 4px;
+      background: var(--app-ok);
+
+      &.Watch {
+        background: var(--app-warn);
+      }
+      &.HighLoss {
+        background: var(--mat-sys-error);
+      }
+    }
+    .limit {
+      position: absolute;
+      top: -2px;
+      bottom: -2px;
+      width: 2px;
+      background: var(--mat-sys-on-surface);
+    }
+    .bar-value {
+      font-variant-numeric: tabular-nums;
+      text-align: end;
+      font: var(--mat-sys-label-medium);
+    }
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 4px;
+      margin: 10px 0 0;
+    }
+    .key-line {
+      display: inline-block;
+      width: 2px;
+      height: 12px;
+      background: var(--mat-sys-on-surface);
+    }
+    .dot {
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      border-radius: 3px;
+      background: var(--app-ok);
+
+      &.Watch {
+        background: var(--app-warn);
+      }
+      &.HighLoss {
+        background: var(--mat-sys-error);
+      }
+    }
+    button.material {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 0;
+      border: 0;
+      background: none;
+      color: var(--mat-sys-primary);
+      font: inherit;
+      font-weight: 600;
+      cursor: pointer;
+
+      mat-icon {
+        width: 16px;
+        height: 16px;
+        font-size: 16px;
+      }
+    }
+    tr.high-loss td {
+      background: color-mix(in srgb, var(--mat-sys-error) 7%, transparent);
+    }
+    .evaluation {
+      display: inline-block;
+      padding: 0 8px;
+      border-radius: 999px;
+      font-size: 11.5px;
+      line-height: 20px;
+      white-space: nowrap;
+      background: var(--app-slate-100, #f1f5f9);
+      color: var(--app-slate-600, #475569);
+
+      .ar {
+        margin-inline-start: 4px;
+        opacity: 0.8;
+      }
+      &.Unfavourable {
+        background: color-mix(in srgb, var(--mat-sys-error) 14%, transparent);
+        color: var(--mat-sys-error);
+      }
+      &.Favourable {
+        background: color-mix(in srgb, var(--app-ok) 14%, transparent);
+        color: var(--app-ok);
+      }
+    }
+    @media (max-width: 599.98px) {
+      .bar-row {
+        grid-template-columns: 90px minmax(0, 1fr) 52px;
+      }
+    }
+  `,
+})
+export class StationVariancePage {
+  private readonly api = inject(IntelligenceApi);
+  private readonly notify = inject(NotifyService);
+  private readonly dialog = inject(MatDialog);
+  protected readonly labels = stationStatusLabels;
+  protected readonly icons = statusIcons;
+  protected readonly evaluations = evaluationLabels;
+  protected readonly keyOf = keyOf;
+  protected readonly Math = Math;
+
+  protected readonly from = signal(periodDays('month').from);
+  protected readonly to = signal(periodDays('month').to);
+  protected readonly report = signal<StationVarianceReport | null>(null);
+  protected readonly loading = signal(false);
+  protected readonly error = signal<string | null>(null);
+
+  // The station whose materials are listed ('' all).
+  protected readonly selected = signal('');
+  protected readonly search = signal('');
+  protected readonly evaluation = signal('');
+  protected readonly sorts = sorts;
+  protected readonly sort = signal<SortState<MaterialSort>>({ key: 'cost', direction: -1 });
+
+  protected readonly selectedStation = computed(() => this.report()?.stations.find((s) => keyOf(s.stationId) === this.selected()) ?? null);
+
+  protected readonly stationFilters = computed<FilterOption[]>(() => {
+    const r = this.report();
+    return [
+      { value: '', label: 'All · الكل', count: r?.rows.length ?? 0 },
+      ...(r?.stations ?? []).map((s) => ({
+        value: keyOf(s.stationId),
+        label: s.stationAr ? `${s.station} · ${s.stationAr}` : s.station,
+        count: r!.rows.filter((row) => keyOf(row.kitchenStationId ?? null) === keyOf(s.stationId)).length,
+      })),
+    ];
+  });
+
+  protected readonly evaluationFilters = computed<FilterOption[]>(() => {
+    const rows = this.inStation();
+    return [
+      { value: '', label: 'All · الكل', count: rows.length },
+      ...(['Unfavourable', 'Favourable', 'WithinLimit', 'SharedCost'] as const)
+        .map((e) => ({ value: e, label: `${evaluationLabels[e].en} · ${evaluationLabels[e].ar}`, count: rows.filter((r) => r.evaluation === e).length }))
+        .filter((o) => o.count > 0),
+    ];
+  });
+
+  private readonly inStation = computed(() =>
+    (this.report()?.rows ?? []).filter((r) => !this.selected() || keyOf(r.kitchenStationId ?? null) === this.selected()),
+  );
+
+  protected readonly shown = computed(() =>
+    sortItems(
+      this.inStation().filter((r) => (!this.evaluation() || r.evaluation === this.evaluation()) && smartMatch(this.search(), r.material, r.code)),
+      this.sort(),
+      (r, key) => (key === 'cost' ? r.varianceCost : key === 'percent' ? r.unexplainedPercent : r.material),
+      (r) => r.material,
+    ),
+  );
+
+  // The comparison's scale: from the deepest surplus (or 0) to past the furthest loss or tolerance.
+  private readonly scale = computed(() => {
+    const stations = this.report()?.stations ?? [];
+    const values = stations.flatMap((s) => [s.unexplainedVariancePercent ?? 0, s.tolerancePercent]);
+    const low = Math.min(0, ...values);
+    const high = Math.max(1, ...values);
+    const pad = (high - low) * 0.08;
+    return { low: low < 0 ? low - pad : 0, high: high + pad };
+  });
+
+  constructor() {
+    effect(() => {
+      const [from, to] = [this.from(), this.to()];
+      untracked(() => void this.load(from, to));
+    });
+  }
+
+  // Where a percentage sits on the comparison's track, 0 to 100.
+  protected position(percent: number): number {
+    const { low, high } = this.scale();
+    return ((percent - low) / (high - low)) * 100;
+  }
+
+  protected percentText(s: StationVariance): string {
+    const p = s.unexplainedVariancePercent;
+    return p === null ? '—' : `${p > 0 ? '+' : ''}${p.toFixed(1)}%`;
+  }
+
+  protected stationName(row: ConsumptionRow): string {
+    return this.report()?.stations.find((s) => keyOf(s.stationId) === keyOf(row.kitchenStationId ?? null))?.station ?? 'Shared / General';
+  }
+
+  // The scorecard clicked: its materials below; clicked again, every station's.
+  protected select(s: StationVariance): void {
+    const key = keyOf(s.stationId);
+    this.selected.set(this.selected() === key ? '' : key);
+  }
+
+  protected stockCard(row: ConsumptionRow): void {
+    showStockCard(this.dialog, { id: row.rawMaterialId, name: row.material }, { from: this.from(), to: this.to() });
+  }
+
+  protected async download(): Promise<void> {
+    try {
+      saveBlob(await firstValueFrom(this.api.stationVarianceSheet(this.from(), this.to())), `station-variance-${this.from()}-to-${this.to()}.xlsx`);
+    } catch (error) {
+      this.notify.error(error, 'The sheet could not be made.');
+    }
+  }
+
+  private async load(from: string, to: string): Promise<void> {
+    this.loading.set(true);
+    this.error.set(null);
+    try {
+      const report = await firstValueFrom(this.api.stationVariance(from, to));
+      if (this.from() === from && this.to() === to) {
+        this.report.set(report);
+      }
+    } catch (error) {
+      this.report.set(null);
+      this.error.set(errorMessage(error, 'The station variance could not be loaded.'));
+    } finally {
+      this.loading.set(false);
+    }
+  }
+}
+```
+
+
+> 📄 **`frontend/src/app/features/costing/stations.ts`** — 67 سطر
+
+```ts
+import { Injectable, computed, inject, signal } from '@angular/core';
+import { firstValueFrom } from 'rxjs';
+import { CostingApi, KitchenStation } from '../../core/costing/costing.api';
+import { FilterOption } from '../shared/filter-select';
+
+// The kitchen and bar stations (أقسام التشغيل), loaded once for every page that sorts, filters or
+// counts by them: each one's label, and the station something with none falls to (the shared one).
+@Injectable({ providedIn: 'root' })
+export class Stations {
+  private readonly api = inject(CostingApi);
+  private loading: Promise<void> | null = null;
+
+  readonly list = signal<KitchenStation[]>([]);
+  readonly active = computed(() => this.list().filter((s) => s.isActive));
+  readonly shared = computed(() => this.list().find((s) => s.isShared) ?? null);
+
+  load(again = false): Promise<void> {
+    if (!this.loading || again) {
+      this.loading = (async () => {
+        try {
+          this.list.set(await firstValueFrom(this.api.stations()));
+        } catch {
+          // Not offered: the pages work without stations.
+        }
+      })();
+    }
+    return this.loading;
+  }
+
+  // The station something is under: its own, else the shared station.
+  of(id: string | null | undefined): string | null {
+    return id && this.list().some((s) => s.id === id) ? id : (this.shared()?.id ?? null);
+  }
+
+  label(id: string | null | undefined): string {
+    const station = this.list().find((s) => s.id === this.of(id));
+    return station ? stationName(station) : 'Shared / General · خامات مشتركة';
+  }
+
+  // A filter pill's options over the items given: each station they are under, with how many.
+  filter<T>(items: readonly T[], stationOf: (item: T) => string | null | undefined): FilterOption[] {
+    const counts = new Map<string, number>();
+    for (const item of items) {
+      const key = this.of(stationOf(item)) ?? '';
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    return [
+      { value: '', label: 'All · الكل', count: items.length },
+      ...this.list()
+        .filter((s) => counts.has(s.id))
+        .map((s) => ({ value: s.id, label: stationName(s), count: counts.get(s.id)! })),
+      ...(counts.has('') ? [{ value: NoStation, label: 'Shared / General · خامات مشتركة', count: counts.get('')! }] : []),
+    ];
+  }
+
+  // Whether an item is under the station a filter pill chose ('' all, NoStation none at all).
+  matches(chosen: string, id: string | null | undefined): boolean {
+    return !chosen || (chosen === NoStation ? this.of(id) === null : this.of(id) === chosen);
+  }
+}
+
+// A filter's choice for what has no station when there is no shared station to put it under.
+export const NoStation = '(no-station)';
+
+export function stationName(station: Pick<KitchenStation, 'name' | 'nameAr'>): string {
+  return station.nameAr ? `${station.name} · ${station.nameAr}` : station.name;
 }
 ```
 
@@ -10465,7 +11219,7 @@ export class InflationPage {
 - `BreakEvenPage`: ورقة نقطة التعادل وسيناريوهاتها الأربعة.
 - `DailySummariesPage` (`/costing/reports/daily-summaries`): لوحة تصحيح المدير: كل تقفيل في فترة (حتى 92 يومًا)، وآخر مقفول والتالي وإقفال الدفاتر فوقها، وزر **Undo & Reopen Day** على صف آخر يوم مقفول فقط للمدير. التبويب يظهر فقط لمن يقرأ تقفيل اليوم (`EndOfDay` أو `Purchases` أو `Financials`)، والمسار محمي بـ `costingTabGuard` الذي صار يقبل أكثر من قسم.
 
-> 📄 **`frontend/src/app/features/costing/costing-reports-shell.ts`** — 34 سطر
+> 📄 **`frontend/src/app/features/costing/costing-reports-shell.ts`** — 35 سطر
 
 ```ts
 import { Component, computed, inject } from '@angular/core';
@@ -10495,6 +11249,7 @@ export class CostingReportsShell {
     { path: 'daily-break-even', icon: 'speed', en: 'Daily break-even', ar: 'نقطة التعادل اليومية' },
     { path: 'kpis', icon: 'insights', en: 'KPIs', ar: 'المؤشرات' },
     { path: 'break-even', icon: 'balance', en: 'Break-even', ar: 'نقطة التعادل' },
+    { path: 'station-variance', icon: 'soup_kitchen', en: 'Station variance', ar: 'انحراف الأقسام' },
     { path: 'daily-summaries', icon: 'event_note', en: 'Daily summaries', ar: 'ملخصات تقفيل الأيام' },
   ];
   private static readonly endOfDayReaders: CostingTab[] = ['EndOfDay', 'Purchases', 'Financials'];
@@ -15176,10 +15931,11 @@ export class DailyBreakEvenPage {
 
 `SettingsPage` (إعدادات التكلفة): نسبة تكلفة الطعام المستهدفة، فئات المشروبات، التكاليف المشتركة، المصروفات الشهرية.
 
-> 📄 **`frontend/src/app/features/costing/settings-page.ts`** — 528 سطر
+> 📄 **`frontend/src/app/features/costing/settings-page.ts`** — 532 سطر
 
 ```ts
 import { Component, computed, inject, signal } from '@angular/core';
+import { StationsSettings } from './stations-settings';
 import { FormsModule } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
 import { MatFormFieldModule } from '@angular/material/form-field';
@@ -15215,6 +15971,7 @@ interface Draft {
 @Component({
   selector: 'app-settings-page',
   imports: [
+    StationsSettings,
     FormsModule,
     MatButtonModule,
     MatFormFieldModule,
@@ -15256,6 +16013,8 @@ interface Draft {
           }
         </div>
       </section>
+
+      <app-stations-settings [tolerance]="savedTolerance" />
 
       <section class="block">
         <h2>Plate cost <span class="inline-ar">التكلفة الكلية للطبق</span></h2>
@@ -15705,6 +16464,213 @@ export class SettingsPage {
     } finally {
       this.loading.set(false);
     }
+  }
+}
+```
+
+
+`StationsSettings` داخل إعدادات التكاليف: جدول الأقسام قابل للتعديل للمدير (الكود، الاسم، العربي، الترتيب، السماح وفراغه يعني سماح الإعدادات ظاهرًا كتلميح، مفعّل)، وقسم جديد، وحذف بعد تأكيد يذكر عدد الخامات والأطباق التي ستعود للقسم المشترك.
+
+> 📄 **`frontend/src/app/features/costing/stations-settings.ts`** — 199 سطر
+
+```ts
+import { Component, computed, inject, input, signal } from '@angular/core';
+import { FormsModule } from '@angular/forms';
+import { MatButtonModule } from '@angular/material/button';
+import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatIconModule } from '@angular/material/icon';
+import { MatInputModule } from '@angular/material/input';
+import { MatSlideToggleModule } from '@angular/material/slide-toggle';
+import { MatTooltipModule } from '@angular/material/tooltip';
+import { firstValueFrom } from 'rxjs';
+import { AuthService } from '../../core/auth/auth.service';
+import { Permissions } from '../../core/auth/permissions';
+import { CostingApi, KitchenStation } from '../../core/costing/costing.api';
+import { NotifyService } from '../../core/ui/notify.service';
+import { InfoTip } from './info-tip';
+import { Stations } from './stations';
+
+interface Draft {
+  id: string;
+  name: string;
+  nameAr: string;
+  code: string;
+  displayOrder: number;
+  tolerance: number | null;
+  isActive: boolean;
+  isNew: boolean;
+  materials: number;
+  recipes: number;
+}
+
+// The kitchen and bar stations on Cost settings (أقسام التشغيل والمطبخ), a manager's to set: each
+// named in English and Arabic, coded, in its place on the lists, with its own variance tolerance
+// (blank: the settings'), in use or not. Taken away, what it kept falls to the shared station.
+@Component({
+  selector: 'app-stations-settings',
+  imports: [FormsModule, InfoTip, MatButtonModule, MatFormFieldModule, MatIconModule, MatInputModule, MatSlideToggleModule, MatTooltipModule],
+  template: `
+    <section class="block" aria-labelledby="stations-title">
+      <h2 id="stations-title">Kitchen & bar stations <span class="inline-ar">أقسام التشغيل والمطبخ</span> <app-info-tip tip="kitchenStation" /></h2>
+      <p class="note">
+        Each material, prep item and dish is kept by a station, and its use and waste are held against it on Station variance. A station's own tolerance
+        tightens or loosens the ±{{ tolerance() }}% above for it alone.
+        <span class="note-ar" lang="ar" dir="rtl">كل خامة ومصنّع وطبق تابع لقسم، ويُحاسب القسم على استهلاكه وهالكه في انحراف الأقسام.</span>
+      </p>
+      <div class="table-wrap">
+        <table class="grid stations">
+          <thead>
+            <tr>
+              <th>Code<span class="ar">الكود</span></th>
+              <th>Name<span class="ar">الاسم</span></th>
+              <th>Arabic name<span class="ar">الاسم بالعربي</span></th>
+              <th class="num">Order<span class="ar">الترتيب</span></th>
+              <th class="num">Tolerance % <app-info-tip tip="stationTolerance" /><span class="ar">نسبة السماح</span></th>
+              <th class="num">Kept<span class="ar">الخامات / الأطباق</span></th>
+              <th>In use<span class="ar">مفعل</span></th>
+              <th><span class="visually-hidden">Actions</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            @for (d of drafts(); track d.id; let i = $index) {
+              <tr [class.inactive]="!d.isActive">
+                <td><input class="cell code" [(ngModel)]="d.code" maxlength="20" [disabled]="!canEdit()" [attr.aria-label]="'Code of ' + (d.name || 'a new station')" /></td>
+                <td><input class="cell" [(ngModel)]="d.name" maxlength="100" [disabled]="!canEdit()" [attr.aria-label]="'Name, row ' + (i + 1)" /></td>
+                <td><input class="cell" [(ngModel)]="d.nameAr" maxlength="100" dir="rtl" [disabled]="!canEdit()" [attr.aria-label]="'Arabic name of ' + (d.name || 'a new station')" /></td>
+                <td class="num"><input class="cell num" type="number" min="0" [(ngModel)]="d.displayOrder" [disabled]="!canEdit()" [attr.aria-label]="'Order of ' + (d.name || 'a new station')" /></td>
+                <td class="num">
+                  <input class="cell num" type="number" min="0.5" max="100" step="0.5" [(ngModel)]="d.tolerance" [placeholder]="tolerance() + ''" [disabled]="!canEdit()"
+                    [attr.aria-label]="'Tolerance of ' + (d.name || 'a new station')" />
+                </td>
+                <td class="num muted">{{ d.materials }} · {{ d.recipes }}</td>
+                <td><mat-slide-toggle [(ngModel)]="d.isActive" [disabled]="!canEdit()" [aria-label]="(d.name || 'The new station') + ' in use'" /></td>
+                <td class="actions">
+                  @if (canEdit()) {
+                    <button mat-icon-button (click)="save(d)" [disabled]="busy() || !d.name.trim()" matTooltip="Save · حفظ" [attr.aria-label]="'Save ' + (d.name || 'the new station')">
+                      <mat-icon>save</mat-icon>
+                    </button>
+                    @if (!d.isNew) {
+                      <button mat-icon-button class="danger" (click)="remove(d)" [disabled]="busy()" matTooltip="Delete · حذف" [attr.aria-label]="'Delete ' + (d.name || 'the new station')">
+                        <mat-icon>delete</mat-icon>
+                      </button>
+                    }
+                  }
+                </td>
+              </tr>
+            }
+          </tbody>
+        </table>
+      </div>
+      @if (canEdit()) {
+        <button mat-stroked-button (click)="add()"><mat-icon>add</mat-icon> New station · قسم جديد</button>
+      } @else {
+        <p class="muted small">A manager sets the stations.</p>
+      }
+    </section>
+  `,
+  styleUrl: './costing.scss',
+  styles: `
+    .block h2 {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .cell {
+      width: 100%;
+      min-width: 70px;
+      padding: 6px 8px;
+      border: 1px solid var(--app-line);
+      border-radius: 8px;
+      background: transparent;
+      color: inherit;
+      font: inherit;
+
+      &.code {
+        width: 90px;
+        text-transform: uppercase;
+      }
+      &.num {
+        width: 80px;
+        text-align: end;
+      }
+    }
+    tr.inactive td {
+      opacity: 0.6;
+    }
+    .actions {
+      white-space: nowrap;
+    }
+    .danger {
+      color: var(--mat-sys-error);
+    }
+    .small {
+      font-size: 0.85em;
+    }
+  `,
+})
+export class StationsSettings {
+  private readonly api = inject(CostingApi);
+  private readonly auth = inject(AuthService);
+  private readonly notify = inject(NotifyService);
+  private readonly stations = inject(Stations);
+
+  // The settings' tolerance, which a station with none is judged by.
+  readonly tolerance = input(5);
+  protected readonly canEdit = computed(() => this.auth.can(Permissions.ApprovalDecide));
+  protected readonly busy = signal(false);
+  protected readonly drafts = signal<Draft[]>([]);
+
+  constructor() {
+    void this.load();
+  }
+
+  protected add(): void {
+    const order = Math.max(0, ...this.drafts().map((d) => d.displayOrder)) + 1;
+    this.drafts.update((all) => [
+      ...all,
+      { id: crypto.randomUUID(), name: '', nameAr: '', code: '', displayOrder: order, tolerance: null, isActive: true, isNew: true, materials: 0, recipes: 0 },
+    ]);
+  }
+
+  protected async save(d: Draft): Promise<void> {
+    this.busy.set(true);
+    try {
+      const tolerance = d.tolerance === null || (d.tolerance as unknown) === '' ? null : Number(d.tolerance);
+      await firstValueFrom(this.api.saveStation(d.id, {
+        name: d.name.trim(), nameAr: d.nameAr.trim() || null, code: d.code.trim() || null, displayOrder: Number(d.displayOrder) || 0,
+        targetVarianceTolerancePercent: tolerance, isActive: d.isActive,
+      }));
+      this.notify.info(`${d.name.trim()} saved. · تم حفظ القسم.`);
+      await this.load(true);
+    } catch (error) {
+      this.notify.error(error, 'The station could not be saved.');
+    } finally {
+      this.busy.set(false);
+    }
+  }
+
+  protected async remove(d: Draft): Promise<void> {
+    if (!confirm(`Delete ${d.name}? Its ${d.materials} materials and ${d.recipes} dishes fall to the shared station.`)) {
+      return;
+    }
+    this.busy.set(true);
+    try {
+      await firstValueFrom(this.api.deleteStation(d.id));
+      this.notify.info(`${d.name} deleted. · تم حذف القسم.`);
+      await this.load(true);
+    } catch (error) {
+      this.notify.error(error, 'The station could not be deleted.');
+    } finally {
+      this.busy.set(false);
+    }
+  }
+
+  private async load(again = false): Promise<void> {
+    await this.stations.load(again);
+    this.drafts.set(this.stations.list().map((s: KitchenStation) => ({
+      id: s.id, name: s.name, nameAr: s.nameAr ?? '', code: s.code ?? '', displayOrder: s.displayOrder, tolerance: s.targetVarianceTolerancePercent,
+      isActive: s.isActive, isNew: false, materials: s.materials, recipes: s.recipes,
+    })));
   }
 }
 ```

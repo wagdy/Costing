@@ -103,6 +103,8 @@ const costingChildren: Routes = [
       { path: 'prices', loadComponent: () => import('./features/costing/price-variance-page').then((m) => m.PriceVariancePage) },
       { path: 'orders', loadComponent: () => import('./features/costing/order-planner-page').then((m) => m.OrderPlannerPage) },
       { path: 'consumption', loadComponent: () => import('./features/costing/consumption-page').then((m) => m.ConsumptionPage) },
+      // Station-level variance: each kitchen and bar station held to its materials' use and its waste.
+      { path: 'stations', loadComponent: () => import('./features/costing/station-variance-page').then((m) => m.StationVariancePage) },
       { path: 'abc', loadComponent: () => import('./features/costing/abc-page').then((m) => m.AbcPage) },
       { path: 'menu', loadComponent: () => import('./features/costing/menu-engineering-page').then((m) => m.MenuEngineeringPage) },
       { path: 'burdened', loadComponent: () => import('./features/costing/burdened-cost-page').then((m) => m.BurdenedCostPage) },
@@ -232,6 +234,8 @@ const costingChildren: Routes = [
       },
       { path: 'kpis', loadComponent: () => import('./features/costing/kpis-page').then((m) => m.KpisPage) },
       { path: 'break-even', loadComponent: () => import('./features/costing/break-even-page').then((m) => m.BreakEvenPage) },
+      // Station-level variance, as on Material & demand intelligence.
+      { path: 'station-variance', loadComponent: () => import('./features/costing/station-variance-page').then((m) => m.StationVariancePage) },
       {
         // Each end of day handed in, and the manager's undo of the last one closed: for whoever reads
         // the end of day too.

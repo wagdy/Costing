@@ -28,7 +28,9 @@ public sealed record RawMaterialDto(
     Guid CategoryId,
     string? CategoryAr,
     // Counted every day, in the daily critical items' spot count.
-    bool IsSpotCheckItem = false)
+    bool IsSpotCheckItem = false,
+    // The kitchen or bar station that keeps it (none: the shared station).
+    Guid? KitchenStationId = null)
 {
     public static RawMaterialDto From(RawMaterial material, PurchaseCategory? category) => new(
         material.Id,
@@ -45,7 +47,8 @@ public sealed record RawMaterialDto(
         material.Kind,
         material.CategoryId,
         category?.NameAr,
-        material.IsSpotCheckItem);
+        material.IsSpotCheckItem,
+        material.KitchenStationId);
 }
 
 // The optional parts describe it for costing. PurchaseUnit and PurchaseUnitSize go together:

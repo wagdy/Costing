@@ -19,11 +19,13 @@ import { NotifyService } from '../../core/ui/notify.service';
 import { Approvals } from './approvals';
 import { BusinessDay } from './financials';
 import { FilterOption, FilterSelect } from '../shared/filter-select';
+import { Stations } from './stations';
 import { SearchField } from '../shared/search-field';
 import { SortOption, SortState, smartMatch, sortItems } from '../shared/smart-search';
 import { SortControl } from '../shared/sort-control';
 import { GridKeys } from '../shared/grid-keys';
 import { MaterialPicker } from './material-picker';
+import { InfoTip } from './info-tip';
 
 type WasteSort = 'date' | 'worth';
 
@@ -37,6 +39,8 @@ interface Line {
   quantity: number | null;
   reason: string;
   other: string;
+  // The station held to account for it; undefined until chosen: the material's own.
+  stationId?: string | null;
 }
 
 // Raw stock thrown away: expired, spoiled, dropped. Recorded, it takes the stock off and the
@@ -47,6 +51,7 @@ interface Line {
 @Component({
   selector: 'app-waste-page',
   imports: [
+    InfoTip,
     FilterSelect,
     GridKeys,
     MaterialPicker,
@@ -82,6 +87,7 @@ interface Line {
               <th>Material<span class="ar">الخامة</span></th>
               <th class="num">Quantity<span class="ar">الكمية</span></th>
               <th>Why<span class="ar">السبب</span></th>
+              <th>Station responsible <app-info-tip tip="responsibleStation" /><span class="ar">القسم المسؤول</span></th>
               <th class="num">Worth<span class="ar">القيمة</span></th>
               <th></th>
             </tr>
@@ -91,7 +97,7 @@ interface Line {
               <tr>
                 <td>
                   <app-material-picker class="material" [materials]="materials()" [value]="line.rawMaterialId"
-                    (valueChange)="change(i, { rawMaterialId: $event })" [label]="'Material, line ' + (i + 1)" />
+                    (valueChange)="change(i, { rawMaterialId: $event, stationId: undefined })" [label]="'Material, line ' + (i + 1)" />
                 </td>
                 <td class="num">
                   <mat-form-field subscriptSizing="dynamic" class="small">
@@ -113,6 +119,19 @@ interface Line {
                     </mat-form-field>
                   }
                 </td>
+                <td>
+                  <mat-form-field subscriptSizing="dynamic" class="reason">
+                    <mat-select [ngModel]="stationFor(line)" (ngModelChange)="change(i, { stationId: $event || null })"
+                      [aria-label]="'Station responsible, line ' + (i + 1)">
+                      <mat-option value="">{{ stations.shared()?.name ?? 'Shared' }} (none)</mat-option>
+                      @for (s of stations.active(); track s.id) {
+                        @if (!s.isShared) {
+                          <mat-option [value]="s.id">{{ s.name }}{{ s.nameAr ? ' · ' + s.nameAr : '' }}</mat-option>
+                        }
+                      }
+                    </mat-select>
+                  </mat-form-field>
+                </td>
                 <td class="num">{{ worth(line) === null ? '' : (worth(line) | money) }}</td>
                 <td>
                   <button mat-icon-button (click)="remove(i)" [disabled]="lines().length === 1" aria-label="Remove line"><mat-icon>delete</mat-icon></button>
@@ -123,7 +142,7 @@ interface Line {
           <tfoot>
             <tr>
               <td><button mat-button (click)="add()"><mat-icon>add</mat-icon> Add line</button></td>
-              <td colspan="2"></td>
+              <td colspan="3"></td>
               <td class="num">{{ total() | money }}</td>
               <td></td>
             </tr>
@@ -140,6 +159,7 @@ interface Line {
         <app-search-field [(value)]="historySearch" placeholder="Material or who recorded it · الخامة أو المسجل" />
         <div class="pills">
           <app-filter-select label="Why · السبب" icon="help" [options]="reasonFilters()" [(value)]="historyReason" />
+          <app-filter-select label="Station · القسم" icon="soup_kitchen" [options]="stationFilters()" [(value)]="historyStation" />
           <app-sort-control [options]="wasteSorts" [(sort)]="historySort" />
         </div>
       </div>
@@ -151,6 +171,7 @@ interface Line {
               <th>Material<span class="ar">الخامة</span></th>
               <th class="num">Quantity<span class="ar">الكمية</span></th>
               <th>Why<span class="ar">السبب</span></th>
+              <th>Station<span class="ar">القسم المسؤول</span></th>
               <th>By<span class="ar">بواسطة</span></th>
               <th class="num">Worth<span class="ar">القيمة</span></th>
               <th class="num"><span class="visually-hidden">Actions</span></th>
@@ -172,6 +193,7 @@ interface Line {
                   <td>{{ l.material }}</td>
                   <td class="num">{{ l.quantity / unitFor(l).size | number: '1.0-3' }} {{ unitFor(l).label }}</td>
                   <td>{{ l.reason }}</td>
+                  <td class="muted">{{ stations.label(l.responsibleStationId) }}</td>
                   <td>{{ first ? entry.recordedBy : '' }}</td>
                   <td class="num">{{ l.value === null ? 'No price' : (l.value | money) }}</td>
                   <td class="num">
@@ -377,6 +399,11 @@ export class WastePage {
   // it, and the reason chosen; by date or by what its lines were worth.
   protected readonly historySearch = signal('');
   protected readonly historyReason = signal('');
+  protected readonly historyStation = signal('');
+  protected readonly stations = inject(Stations);
+  protected readonly stationFilters = computed<FilterOption[]>(() =>
+    this.stations.filter(this.recent().flatMap((e) => e.lines), (l) => l.responsibleStationId),
+  );
   protected readonly wasteSorts = wasteSorts;
   protected readonly historySort = signal<SortState<WasteSort>>({ key: 'date', direction: -1 });
 
@@ -399,6 +426,7 @@ export class WastePage {
         lines: e.lines.filter(
           (l) =>
             smartMatch(this.historySearch(), l.material, l.reason, e.recordedBy) &&
+            this.stations.matches(this.historyStation(), l.responsibleStationId) &&
             (!reason || (reason === 'Other' ? !known.has(l.reason ?? '') : l.reason === reason)),
         ),
       }))
@@ -427,6 +455,12 @@ export class WastePage {
 
   constructor() {
     void this.load();
+    void this.stations.load();
+  }
+
+  // The station held to account for a line: the one chosen, else its material's own ('' none).
+  protected stationFor(line: Line): string {
+    return line.stationId !== undefined ? (line.stationId ?? '') : (this.material(line)?.kitchenStationId ?? '');
   }
 
   protected unitOf(line: Line): string {
@@ -465,6 +499,7 @@ export class WastePage {
         rawMaterialId: l.rawMaterialId!,
         quantity: l.quantity! * countUnit(this.material(l)!.unit, this.material(l)!.purchaseUnitSize).size,
         reason: this.reasonOf(l),
+        responsibleStationId: this.stationFor(l) || null,
       }));
       await firstValueFrom(this.api.recordSpoilage(this.spoilageId, lines));
       this.notify.info('Waste recorded.');

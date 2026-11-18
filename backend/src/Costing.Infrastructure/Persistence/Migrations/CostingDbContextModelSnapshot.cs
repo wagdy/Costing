@@ -1780,6 +1780,9 @@ namespace Costing.Infrastructure.Persistence.Migrations
                         .HasMaxLength(32)
                         .HasColumnType("character varying(32)");
 
+                    b.Property<Guid?>("KitchenStationId")
+                        .HasColumnType("uuid");
+
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasMaxLength(200)
@@ -1817,6 +1820,8 @@ namespace Costing.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("CategoryId");
 
+                    b.HasIndex("KitchenStationId");
+
                     b.ToTable("RawMaterials", "costing");
                 });
 
@@ -1843,6 +1848,9 @@ namespace Costing.Infrastructure.Persistence.Migrations
                     b.Property<string>("DeletedBy")
                         .HasMaxLength(200)
                         .HasColumnType("character varying(200)");
+
+                    b.Property<Guid?>("KitchenStationId")
+                        .HasColumnType("uuid");
 
                     b.Property<string>("Name")
                         .HasMaxLength(200)
@@ -1878,6 +1886,8 @@ namespace Costing.Infrastructure.Persistence.Migrations
                         .HasColumnName("xmin");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("KitchenStationId");
 
                     b.HasIndex("RecipeCategoryId");
 
@@ -2266,6 +2276,51 @@ namespace Costing.Infrastructure.Persistence.Migrations
                     b.ToTable("Staff", "costing");
                 });
 
+            modelBuilder.Entity("Costing.Domain.Stations.KitchenStation", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Code")
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<int>("DisplayOrder")
+                        .HasColumnType("integer");
+
+                    b.Property<bool>("IsActive")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true);
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<string>("NameAr")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<decimal?>("TargetVarianceTolerancePercent")
+                        .HasPrecision(5, 2)
+                        .HasColumnType("numeric(5,2)");
+
+                    b.Property<uint>("Version")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("xid")
+                        .HasColumnName("xmin");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Code")
+                        .IsUnique()
+                        .HasFilter("\"Code\" IS NOT NULL");
+
+                    b.ToTable("KitchenStations", "costing");
+                });
+
             modelBuilder.Entity("Costing.Domain.StockCounts.StockCount", b =>
                 {
                     b.Property<Guid>("Id")
@@ -2428,6 +2483,9 @@ namespace Costing.Infrastructure.Persistence.Migrations
                         .HasMaxLength(200)
                         .HasColumnType("character varying(200)");
 
+                    b.Property<Guid?>("ResponsibleStationId")
+                        .HasColumnType("uuid");
+
                     b.Property<Guid?>("ReversalOf")
                         .HasColumnType("uuid");
 
@@ -2445,6 +2503,8 @@ namespace Costing.Infrastructure.Persistence.Migrations
                         .HasColumnName("xmin");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("ResponsibleStationId");
 
                     b.HasIndex("RawMaterialId", "OccurredAtUtc");
 
@@ -3301,10 +3361,20 @@ namespace Costing.Infrastructure.Persistence.Migrations
                         .HasForeignKey("CategoryId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
+
+                    b.HasOne("Costing.Domain.Stations.KitchenStation", null)
+                        .WithMany()
+                        .HasForeignKey("KitchenStationId")
+                        .OnDelete(DeleteBehavior.SetNull);
                 });
 
             modelBuilder.Entity("Costing.Domain.Recipes.Recipe", b =>
                 {
+                    b.HasOne("Costing.Domain.Stations.KitchenStation", null)
+                        .WithMany()
+                        .HasForeignKey("KitchenStationId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
                     b.HasOne("Costing.Domain.Recipes.RecipeCategory", null)
                         .WithMany()
                         .HasForeignKey("RecipeCategoryId")
@@ -3434,6 +3504,11 @@ namespace Costing.Infrastructure.Persistence.Migrations
                         .HasForeignKey("RawMaterialId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
+
+                    b.HasOne("Costing.Domain.Stations.KitchenStation", null)
+                        .WithMany()
+                        .HasForeignKey("ResponsibleStationId")
+                        .OnDelete(DeleteBehavior.SetNull);
                 });
 
             modelBuilder.Entity("Costing.Domain.Treasury.SafeTransaction", b =>

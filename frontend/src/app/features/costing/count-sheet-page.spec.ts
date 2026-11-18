@@ -22,7 +22,7 @@ const all = [beef, saffron, bun, oil, dough];
 const item = (m: MaterialCost): CountItem => ({
   id: m.id, code: m.code, name: m.name, categoryId: m.category ?? 'other', category: m.category ?? 'Other · أخرى', categoryAr: null, unit: m.unit,
   purchaseUnit: countUnit(m.unit, m.purchaseUnitSize).label, purchaseUnitSize: m.purchaseUnitSize, isPrepItem: m.id === 'dough', isSpotCheckItem: false,
-  isArchived: false,
+  isArchived: false, kitchenStationId: m.id === 'beef' || m.id === 'bun' ? 'grill' : null,
 });
 
 const draft = (overrides: Partial<StockCount> = {}): StockCount => ({
@@ -170,6 +170,26 @@ describe('counting the stores', () => {
     ]);
     expect((fixture.nativeElement as HTMLElement).querySelector('input')).toBeNull();
     expect(text((fixture.nativeElement as HTMLElement).querySelector('h2')!)).toContain('Periodic count, posted');
+  });
+
+  it('shows one kitchen station’s materials, and prints its blind sheet alone', async () => {
+    const { fixture, el, page } = await render();
+    page['stations'].list.set([
+      { id: 'grill', name: 'Grill', nameAr: 'المشويات', code: 'GRILL', displayOrder: 1, targetVarianceTolerancePercent: null, isActive: true, isShared: false, materials: 2, recipes: 0 },
+      { id: 'shared', name: 'Shared / General', nameAr: null, code: 'SHARED', displayOrder: 7, targetVarianceTolerancePercent: null, isActive: true, isShared: true, materials: 0, recipes: 0 },
+    ]);
+    fixture.detectChanges();
+    expect(el.querySelector('[aria-label="Show one station"]')).not.toBeNull();
+    page['station'].set('grill');
+    fixture.detectChanges();
+    expect(page['sections']().flatMap((s: { materials: MaterialCost[] }) => s.materials.map((m) => m.id))).toEqual(['bun', 'beef']);
+
+    const write = vi.fn();
+    vi.spyOn(window, 'open').mockReturnValue({ document: { open: vi.fn(), write, close: vi.fn() }, focus: vi.fn(), print: vi.fn() } as unknown as Window);
+    page['printBlindSheet']();
+    const printed = write.mock.calls.map((c) => c[0]).join('');
+    expect(printed).toContain('Grill · المشويات');
+    expect(printed).not.toContain('Spices');
   });
 
   describe('counted blind (الجرد الأعمى)', () => {

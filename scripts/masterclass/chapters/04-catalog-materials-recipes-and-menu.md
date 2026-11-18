@@ -170,6 +170,10 @@ EP$/وحدة = AP$/وحدة ÷ Yield%
 
 @@file backend/src/Costing.Application/Production/PrepItems.cs
 
+**الأقسام:** `Stations.cs` يحفظ القسم (كود واسم غير مكررين)، ويحذفه (ما كان له يصبح بلا قسم = القسم المشترك)، ويعيّن قسمًا لخامة أو لكثير منها دفعة واحدة، أو لطبق. القسم غير المفعّل لا يُعطى شيئًا جديدًا (`EnsureUsableAsync`). وشيت الخامات له عمود قسم يُقرأ بالاسم أو الاسم العربي أو الكود.
+
+@@file backend/src/Costing.Application/Stations/Stations.cs
+
 ### 4.2 `ProductionOrders.cs`: المحاسبة سطرًا سطرًا
 
 أمر الإنتاج يحرك **مخزونين**:

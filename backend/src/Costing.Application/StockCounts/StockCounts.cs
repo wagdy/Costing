@@ -216,7 +216,9 @@ public sealed record CountItemDto(
     decimal PurchaseUnitSize,
     bool IsPrepItem,
     bool IsSpotCheckItem,
-    bool IsArchived);
+    bool IsArchived,
+    // The kitchen or bar station that keeps it, for a count of one station.
+    Guid? KitchenStationId = null);
 
 public sealed record GetCountItemsQuery : IRequest<IReadOnlyList<CountItemDto>>;
 
@@ -232,7 +234,7 @@ internal sealed class GetCountItemsQueryHandler(IRawMaterialRepository materials
                 var category = byId.GetValueOrDefault(m.CategoryId);
                 return new CountItemDto(
                     m.Id, m.Code, m.Name, m.CategoryId, category?.Name ?? PurchaseCategory.GeneralName, category?.NameAr, m.Unit, m.PurchaseUnit,
-                    m.PurchaseUnitSize, m.IsPrepItem, m.IsSpotCheckItem, m.IsArchived);
+                    m.PurchaseUnitSize, m.IsPrepItem, m.IsSpotCheckItem, m.IsArchived, m.KitchenStationId);
             })
             .OrderBy(i => i.Category, StringComparer.CurrentCultureIgnoreCase)
             .ThenBy(i => i.Name, StringComparer.CurrentCultureIgnoreCase)

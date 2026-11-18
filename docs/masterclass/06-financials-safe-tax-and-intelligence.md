@@ -3589,7 +3589,7 @@ public sealed class SuppliersController(SupplierAccountsService accounts) : Cont
 
 "الحصة قبل الصف" تضمن أن الخامة التي **تعبر** حد 75% تدخل A (فالفئة A دائمًا تغطي 75% على الأقل).
 
-> 📄 **`backend/src/Costing.Infrastructure/Reports/IntelligenceService.cs`** — 1020 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Reports/IntelligenceService.cs`** — 1037 سطر
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
@@ -3808,7 +3808,9 @@ public sealed record ConsumptionRow(
     decimal? UnitCost,
     decimal? VarianceCost,
     VarianceEvaluation Evaluation,
-    decimal StaffMeals = 0);
+    decimal StaffMeals = 0,
+    // The kitchen or bar station that keeps it (none: the shared station's).
+    Guid? KitchenStationId = null);
 
 // WasteValue and StaffMealsValue: the logged spoilage and the staff meals, hospitality and tastings,
 // at the average cost now, each apart from the unexplained.
@@ -3882,9 +3884,15 @@ public sealed record CountCategoryPreset(Guid CategoryId, string Name, string? N
 // Critical: the daily critical items starred. ClassA: class A of the last 30 days (ABC). HighVariance:
 // what ran over its recipes in them (theoretical against actual, unfavourable) or came up short at the
 // last periodic count by more than the tolerance. And each category's materials.
-public sealed record CountPresets(DateOnly From, DateOnly To, decimal TolerancePercent, IReadOnlyList<CountPreset> Presets, IReadOnlyList<CountCategoryPreset> Categories);
+public sealed record CountPresets(
+    DateOnly From, DateOnly To, decimal TolerancePercent, IReadOnlyList<CountPreset> Presets, IReadOnlyList<CountCategoryPreset> Categories,
+    IReadOnlyList<CountStationPreset>? Stations = null);
 
-public sealed class IntelligenceService(CostingDbContext db, IBusinessCalendar clock, SalesLedger ledger)
+// A station's materials and prep items (حسب قسم المطبخ), for a count at its shift's close: the
+// shared station's takes those with none.
+public sealed record CountStationPreset(Guid StationId, string Name, string? NameAr, string? Code, IReadOnlyList<Guid> MaterialIds);
+
+public sealed partial class IntelligenceService(CostingDbContext db, IBusinessCalendar clock, SalesLedger ledger)
 {
     // The days a preset looks back over.
     public const int PresetDays = 30;
@@ -3947,6 +3955,10 @@ public sealed class IntelligenceService(CostingDbContext db, IBusinessCalendar c
 
         var categories = await db.PurchaseCategories.AsNoTracking().ToListAsync(cancellationToken);
         var byCategory = materials.ToLookup(m => m.CategoryId);
+        var stations = (await db.KitchenStations.AsNoTracking().ToListAsync(cancellationToken)).Where(s => s.IsActive).ToList();
+        var sharedStation = stations.Where(s => s.IsShared).Select(s => (Guid?)s.Id).FirstOrDefault();
+        var known = stations.Select(s => s.Id).ToHashSet();
+        var byStation = materials.ToLookup(m => m.KitchenStationId is { } id && known.Contains(id) ? id : sharedStation);
         return new CountPresets(
             from, to, tolerance,
             [
@@ -3958,6 +3970,11 @@ public sealed class IntelligenceService(CostingDbContext db, IBusinessCalendar c
                 .Where(c => byCategory[c.Id].Any())
                 .OrderBy(c => c.Name, StringComparer.CurrentCultureIgnoreCase)
                 .Select(c => new CountCategoryPreset(c.Id, c.Name, c.NameAr, byCategory[c.Id].OrderBy(m => m.Name).Select(m => m.Id).ToList()))
+                .ToList(),
+            stations
+                .Where(s => byStation[s.Id].Any())
+                .OrderBy(s => s.DisplayOrder).ThenBy(s => s.Name, StringComparer.CurrentCultureIgnoreCase)
+                .Select(s => new CountStationPreset(s.Id, s.Name, s.NameAr, s.Code, byStation[s.Id].OrderBy(m => m.Name).Select(m => m.Id).ToList()))
                 .ToList());
     }
 
@@ -4322,7 +4339,7 @@ public sealed class IntelligenceService(CostingDbContext db, IBusinessCalendar c
                 id, material.Code, material.Name, material.CategoryId, catalog.CategoryName(material.CategoryId), catalog.CategoryAr(material.CategoryId),
                 material.PurchaseUnit, Quantity(opening / size), Quantity(purchases / size), Quantity(waste / size), Quantity(closing / size),
                 Quantity(actual / size), Quantity(expected / size), Quantity(inPrep / size), Quantity(unexplained / size), percent,
-                Money(material.CostPerPurchaseUnit), Money(unexplained * material.AverageCost), evaluation, Quantity(staff / size)));
+                Money(material.CostPerPurchaseUnit), Money(unexplained * material.AverageCost), evaluation, Quantity(staff / size), material.KitchenStationId));
         }
 
         rows = rows.OrderBy(r => r.Evaluation == VarianceEvaluation.SharedCost).ThenByDescending(r => r.VarianceCost ?? 0).ThenBy(r => r.Material).ToList();
@@ -5872,9 +5889,250 @@ public sealed class IntelligenceController(IntelligenceService intelligence, Cos
 ```
 
 
+### انحراف الأقسام (`IntelligenceService.Stations.cs`)
+
+يعيد استخدام صفوف الاستهلاك نفسها (`GetConsumptionAsync`) ويجمعها بقسم كل خامة (بلا قسم أو قسم محذوف ⇐ القسم المشترك):
+
+```text
+النظري  = Σ (الاستهلاك النظري × متوسط التكلفة الآن)            لخامات القسم
+الفعلي  = Σ (أول + مشتريات − هالك − وجبات − آخر) × المتوسط
+الانحراف = الفعلي − النظري ، ونسبته = الانحراف ÷ النظري × 100
+الهالك المسجل = Σ −الكمية × تكلفتها وقتها، مجمّعًا بـ ResponsibleStationId ?? قسم الخامة  (هالك، إتلاف، مرتجع)
+الحالة: ≤ 75% من السماح منضبط · حتى السماح تحت المراقبة · بعده عجز مرتفع · (نظري صفر واستُهلك شيء ⇐ عجز مرتفع)
+```
+
+السماح هو سماح القسم إن وُجد وإلا سماح الإعدادات. والكميات تبقى لكل خامة بوحدتها، لأن خامات القسم بوحدات مختلفة: القسم يُجمع بالمال فقط. `StationsController` (بقراءة Intelligence أو Reports، لأن صلاحية الكلاس تُضرب مع صلاحية الدالة) يقدم الأقسام وتعيينها والتقرير وشيته (ورقتان: ملخص الأقسام، والتفاصيل حسب القسم).
+
+> 📄 **`backend/src/Costing.Infrastructure/Reports/IntelligenceService.Stations.cs`** — 136 سطر
+
+```csharp
+using Microsoft.EntityFrameworkCore;
+using Costing.Domain.Categories;
+using Costing.Domain.Stations;
+using Costing.Domain.StockMovements;
+using static Costing.Infrastructure.Reports.CostingService;
+
+namespace Costing.Infrastructure.Reports;
+
+// Station-level variance (تحليل الهدر والانحراف حسب أقسام المطبخ والبار): the theoretical against
+// actual consumption, each material held against the station that keeps it (the shared station's
+// when it has none), so a manager sees which section of the kitchen or bar loses the food cost.
+// Each station: what its materials should have been used for by the sales (through the prep items,
+// with what is held in them) and what was used (opening + purchases − logged waste − staff meals,
+// hospitality and tastings − closing), both at the average cost now; the unexplained between them
+// and its share of the theoretical; the waste held against it, by the station responsible for each
+// entry (a dish voided after the kitchen: the station that made it), at the cost then; its three
+// materials losing the most; and how it stands against its tolerance (its own, or the settings').
+
+public enum StationStatus
+{
+    // Within three quarters of its tolerance, or ahead.
+    WithinTarget = 1,
+
+    // Past three quarters of its tolerance: near it.
+    Watch = 2,
+
+    // Past its tolerance: losing more than it should; or using what no sale accounts for.
+    HighLoss = 3,
+}
+
+public sealed record StationLossMaterial(Guid RawMaterialId, string Material, decimal VarianceCost, decimal? VariancePercent);
+
+// StationId: the station's, or null for the shared group when there is no shared station.
+public sealed record StationVariance(
+    Guid? StationId,
+    string Station,
+    string? StationAr,
+    string? Code,
+    bool IsShared,
+    bool IsActive,
+    decimal TolerancePercent,
+    int Materials,
+    decimal TheoreticalConsumptionCost,
+    decimal ActualConsumptionCost,
+    decimal LoggedSpoilageWasteCost,
+    decimal StaffMealsCost,
+    decimal UnexplainedVarianceCost,
+    decimal? UnexplainedVariancePercent,
+    int OverTolerance,
+    StationStatus Status,
+    IReadOnlyList<StationLossMaterial> TopLossMaterials);
+
+// Rows: each material's consumption, its KitchenStationId the station it is reported under.
+public sealed record StationVarianceReport(
+    DateOnly From,
+    DateOnly To,
+    decimal TolerancePercent,
+    decimal WatchSharePercent,
+    IReadOnlyList<StationVariance> Stations,
+    IReadOnlyList<ConsumptionRow> Rows,
+    decimal TheoreticalValue,
+    decimal ActualValue,
+    decimal UnexplainedValue,
+    decimal WasteValue);
+
+public sealed partial class IntelligenceService
+{
+    // A station is watched once its unexplained loss passes this share of its tolerance.
+    public const decimal WatchShare = 0.75m;
+
+    // Waste held against a station: spoilage logged, dishes voided after the kitchen, less refunds put back.
+    private static readonly StockMovementReason[] StationWaste = [StockMovementReason.Waste, StockMovementReason.Spoilage, StockMovementReason.VoidReturn];
+
+    public async Task<StationVarianceReport> GetStationVarianceAsync(DateOnly from, DateOnly to, CancellationToken cancellationToken)
+    {
+        var (fromUtc, toUtc) = Period(from, to);
+        var consumption = await GetConsumptionAsync(from, to, cancellationToken);
+        var stations = await db.KitchenStations.AsNoTracking().ToListAsync(cancellationToken);
+        var byId = stations.ToDictionary(s => s.Id);
+        var shared = stations.Where(s => s.IsShared).OrderBy(s => s.DisplayOrder).FirstOrDefault();
+        // A station that is not there (taken away since) falls to the shared one.
+        Guid? Resolve(Guid? id) => id is { } known && byId.ContainsKey(known) ? known : shared?.Id;
+
+        var rows = consumption.Rows.Select(r => r with { KitchenStationId = Resolve(r.KitchenStationId) }).ToList();
+
+        // The waste held against each station, at the cost then: the station named on the entry, its material's otherwise.
+        var materials = await db.RawMaterials.AsNoTracking()
+            .Select(m => new { m.Id, m.KitchenStationId, m.AverageCost })
+            .ToDictionaryAsync(m => m.Id, cancellationToken);
+        var wasted = await db.StockMovements.AsNoTracking()
+            .Where(m => StationWaste.Contains(m.Reason) && m.OccurredAtUtc >= fromUtc && m.OccurredAtUtc < toUtc)
+            .Select(m => new { m.RawMaterialId, m.ResponsibleStationId, m.Quantity, m.UnitCost })
+            .ToListAsync(cancellationToken);
+        var waste = wasted
+            .GroupBy(m => Resolve(m.ResponsibleStationId ?? materials.GetValueOrDefault(m.RawMaterialId)?.KitchenStationId))
+            .ToDictionary(g => g.Key ?? Guid.Empty, g => Money(g.Sum(m => -m.Quantity * (m.UnitCost ?? materials.GetValueOrDefault(m.RawMaterialId)?.AverageCost ?? 0))));
+
+        var tolerance = consumption.TolerancePercent;
+        var keys = stations.Where(s => s.IsActive).Select(s => (Guid?)s.Id)
+            .Concat(rows.Select(r => r.KitchenStationId))
+            .Concat(waste.Keys.Select(k => k == Guid.Empty ? (Guid?)null : k))
+            .Distinct()
+            .ToList();
+        var report = keys
+            .Select(key =>
+            {
+                var station = key is { } id ? byId[id] : null;
+                var own = rows.Where(r => r.KitchenStationId == key).ToList();
+                var measured = own.Where(r => r.Evaluation != VarianceEvaluation.SharedCost).ToList();
+                decimal Worth(Func<ConsumptionRow, decimal> quantity) => Money(measured.Sum(r => quantity(r) * (r.UnitCost ?? 0)));
+                var theoretical = Worth(r => r.TheoreticalUsage);
+                var unexplained = Money(measured.Sum(r => r.VarianceCost ?? 0));
+                decimal? percent = theoretical > 0 ? Math.Round(unexplained / theoretical * 100, 2, MidpointRounding.AwayFromZero) : null;
+                var limit = station?.ToleranceOr(tolerance) ?? tolerance;
+                var status = percent is { } p
+                    ? p > limit ? StationStatus.HighLoss : p > limit * WatchShare ? StationStatus.Watch : StationStatus.WithinTarget
+                    : unexplained > 0 ? StationStatus.HighLoss : StationStatus.WithinTarget;
+                return new StationVariance(
+                    key, station?.Name ?? KitchenStation.SharedName, station is null ? KitchenStation.SharedNameAr : station.NameAr,
+                    station?.Code ?? KitchenStation.SharedCode, station?.IsShared ?? true, station?.IsActive ?? true, limit, own.Count,
+                    theoretical, Worth(r => r.ActualUsage), waste.GetValueOrDefault(key ?? Guid.Empty), Worth(r => r.StaffMeals), unexplained, percent,
+                    measured.Count(r => r.Evaluation == VarianceEvaluation.Unfavourable), status,
+                    measured.Where(r => r.VarianceCost > 0).OrderByDescending(r => r.VarianceCost).Take(3)
+                        .Select(r => new StationLossMaterial(r.RawMaterialId, r.Material, r.VarianceCost!.Value, r.UnexplainedPercent)).ToList());
+            })
+            // In the kitchen's order, the shared group last.
+            .OrderBy(s => s.StationId is { } id ? byId[id].DisplayOrder : int.MaxValue)
+            .ThenBy(s => s.Station, StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+
+        return new StationVarianceReport(
+            from, to, tolerance, WatchShare * 100, report, rows,
+            report.Sum(s => s.TheoreticalConsumptionCost), report.Sum(s => s.ActualConsumptionCost), report.Sum(s => s.UnexplainedVarianceCost),
+            report.Sum(s => s.LoggedSpoilageWasteCost));
+    }
+}
+```
+
+
+> 📄 **`backend/src/Costing.Api/Controllers/StationsController.cs`** — 79 سطر
+
+```csharp
+using MediatR;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using Costing.Api.Auth;
+using Costing.Application.Stations;
+using Costing.Domain.Access;
+using Costing.Infrastructure.Excel;
+using Costing.Infrastructure.Reports;
+
+namespace Costing.Api.Controllers;
+
+// The kitchen and bar stations (أقسام التشغيل والمطبخ): listed for whoever sorts or counts by them,
+// set by a manager on Cost settings; materials, prep items and dishes given one; and the station-level
+// variance (انحراف الأقسام) on Material & demand intelligence and Reports.
+[ApiController]
+[Authorize(Policy = Permissions.InventoryView)]
+public sealed class StationsController(ISender sender, IntelligenceService intelligence) : ControllerBase
+{
+    private const CostingTabs Readers =
+        CostingTabs.Materials | CostingTabs.Recipes | CostingTabs.Production | CostingTabs.Waste | CostingTabs.Counts | CostingTabs.Intelligence
+        | CostingTabs.Reports | CostingTabs.CostSettings;
+
+    [HttpGet("api/costing/stations")]
+    [CostingTab(Readers)]
+    public Task<IReadOnlyList<KitchenStationDto>> GetStations(CancellationToken cancellationToken) =>
+        sender.Send(new GetKitchenStationsQuery(), cancellationToken);
+
+    // Made on its first save, changed after: a manager's.
+    [HttpPut("api/costing/stations/{id:guid}")]
+    [CostingTab(CostingTabs.CostSettings)]
+    [Authorize(Policy = Permissions.ApprovalDecide)]
+    public Task<KitchenStationDto> SaveStation(Guid id, SaveStationRequest request, CancellationToken cancellationToken) =>
+        sender.Send(new SaveKitchenStationCommand(
+            id, request.Name, request.NameAr, request.Code, request.DisplayOrder, request.TargetVarianceTolerancePercent, request.IsActive), cancellationToken);
+
+    // Taken away: what it kept falls back to the shared station.
+    [HttpDelete("api/costing/stations/{id:guid}")]
+    [CostingTab(CostingTabs.CostSettings)]
+    [Authorize(Policy = Permissions.ApprovalDecide)]
+    public async Task<IActionResult> DeleteStation(Guid id, CancellationToken cancellationToken)
+    {
+        await sender.Send(new DeleteKitchenStationCommand(id), cancellationToken);
+        return NoContent();
+    }
+
+    // Materials and prep items given a station (or none), one or many.
+    [HttpPut("api/inventory/raw-materials/station")]
+    [CostingTab(CostingTabs.Materials | CostingTabs.Recipes | CostingTabs.Production)]
+    [Authorize(Policy = Permissions.InventoryManage)]
+    public async Task<StationAssigned> AssignMaterials(AssignMaterialsStationRequest request, CancellationToken cancellationToken) =>
+        new(await sender.Send(new AssignMaterialStationCommand(request.RawMaterialIds ?? [], request.StationId), cancellationToken), request.StationId);
+
+    [HttpPut("api/inventory/recipes/{id:guid}/station")]
+    [CostingTab(CostingTabs.Recipes)]
+    [Authorize(Policy = Permissions.InventoryManage)]
+    public async Task<StationAssigned> AssignRecipe(Guid id, AssignStationRequest request, CancellationToken cancellationToken) =>
+        new(1, await sender.Send(new AssignRecipeStationCommand(id, request.StationId), cancellationToken));
+
+    // Station-level variance over a period: each station's theoretical, actual, unexplained and waste.
+    [HttpGet("api/costing/intelligence/station-variance")]
+    [CostingTab(CostingTabs.Intelligence | CostingTabs.Reports)]
+    public Task<StationVarianceReport> GetStationVariance([FromQuery] DateOnly from, [FromQuery] DateOnly to, CancellationToken cancellationToken) =>
+        intelligence.GetStationVarianceAsync(from, to, cancellationToken);
+
+    // As a workbook: a station summary sheet, and each station's materials.
+    [HttpGet("api/costing/intelligence/station-variance/sheet")]
+    [CostingTab(CostingTabs.Intelligence | CostingTabs.Reports)]
+    public async Task<IActionResult> GetStationVarianceSheet([FromQuery] DateOnly from, [FromQuery] DateOnly to, CancellationToken cancellationToken) =>
+        File(IntelligenceWorkbooks.StationVariance(await intelligence.GetStationVarianceAsync(from, to, cancellationToken)), ReportWorkbook.ContentType,
+            $"station-variance-{from:yyyy-MM-dd}-to-{to:yyyy-MM-dd}.xlsx");
+}
+
+public sealed record SaveStationRequest(string Name, string? NameAr, string? Code, int DisplayOrder, decimal? TargetVarianceTolerancePercent, bool IsActive = true);
+
+public sealed record AssignMaterialsStationRequest(IReadOnlyList<Guid>? RawMaterialIds, Guid? StationId);
+
+public sealed record AssignStationRequest(Guid? StationId);
+
+public sealed record StationAssigned(int Assigned, Guid? StationId);
+```
+
+
 ### 3.5 تقرير الفروقات بين جردين
 
-> 📄 **`backend/src/Costing.Infrastructure/Reports/VarianceService.cs`** — 280 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Reports/VarianceService.cs`** — 283 سطر
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
@@ -5970,8 +6228,10 @@ public sealed record VarianceReport(
 public sealed record SpoilageEntry(
     Guid SpoilageId, DateTime RecordedAtUtc, string? RecordedBy, IReadOnlyList<SpoilageEntryLine> Lines, decimal? Value);
 
+// ResponsibleStationId: the kitchen or bar station held to account for it (none: the material's own).
 public sealed record SpoilageEntryLine(
-    Guid RawMaterialId, string Material, UnitOfMeasure Unit, decimal PurchaseUnitSize, decimal Quantity, string? Reason, decimal? Value);
+    Guid RawMaterialId, string Material, UnitOfMeasure Unit, decimal PurchaseUnitSize, decimal Quantity, string? Reason, decimal? Value,
+    Guid? ResponsibleStationId = null);
 
 // Pillar 3: actual usage against standard, between two posted stock counts. Actual usage is
 // what the counts and the deliveries say left the stores; standard usage is what the recipes
@@ -6144,7 +6404,8 @@ public sealed class VarianceService(CostingDbContext db, SalesLedger ledger)
                 var entryLines = g
                     .Select(m => new SpoilageEntryLine(
                         m.RawMaterialId, materials[m.RawMaterialId].Name, materials[m.RawMaterialId].Unit,
-                        materials[m.RawMaterialId].PurchaseUnitSize, -m.Quantity, m.Note, Money(-m.Quantity * m.UnitCost)))
+                        materials[m.RawMaterialId].PurchaseUnitSize, -m.Quantity, m.Note, Money(-m.Quantity * m.UnitCost),
+                        m.ResponsibleStationId ?? materials[m.RawMaterialId].KitchenStationId))
                     .OrderBy(l => l.Material)
                     .ToList();
                 return new SpoilageEntry(

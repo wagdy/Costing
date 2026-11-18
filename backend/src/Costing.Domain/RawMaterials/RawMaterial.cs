@@ -78,6 +78,12 @@ public sealed class RawMaterial : AggregateRoot
 
     public void MarkSpotCheck(bool isSpotCheckItem) => IsSpotCheckItem = isSpotCheckItem;
 
+    // The kitchen or bar station that keeps it (قسم التشغيل): its use and its waste are held against
+    // that station. Null: the shared station's.
+    public Guid? KitchenStationId { get; private set; }
+
+    public void AssignStation(Guid? stationId) => KitchenStationId = stationId;
+
     public void Rename(string name)
     {
         if (string.IsNullOrWhiteSpace(name))
@@ -171,8 +177,9 @@ public sealed class RawMaterial : AggregateRoot
     public StockMovement RecordSale(decimal quantity, Guid orderItemId) =>
         Move(-Positive(quantity), StockMovementReason.Sale, orderItemId, AverageCost);
 
-    public StockMovement RecordWaste(decimal quantity, Guid orderItemId) =>
-        Move(-Positive(quantity), StockMovementReason.Waste, orderItemId, AverageCost);
+    // station: where the dish was made (its recipe's station), whose waste it is; its own otherwise.
+    public StockMovement RecordWaste(decimal quantity, Guid orderItemId, Guid? station = null) =>
+        Move(-Positive(quantity), StockMovementReason.Waste, orderItemId, AverageCost, responsibleStationId: station ?? KitchenStationId);
 
     public StockMovement RecordVoidReturn(decimal quantity, Guid orderItemId) =>
         Move(Positive(quantity), StockMovementReason.VoidReturn, orderItemId, AverageCost);
@@ -216,13 +223,16 @@ public sealed class RawMaterial : AggregateRoot
 
     // Stock thrown away before it reached a dish. Why is required: the variance report sets it
     // against the shortfall, and "expired" and "dropped" call for different fixes.
-    public StockMovement RecordSpoilage(decimal quantity, Guid spoilageId, string reason, string recordedBy)
+    // responsibleStation: the station held to account for it (the hot kitchen that spoiled a shared
+    // item), its own station unless said.
+    public StockMovement RecordSpoilage(decimal quantity, Guid spoilageId, string reason, string recordedBy, Guid? responsibleStation = null)
     {
         if (string.IsNullOrWhiteSpace(reason))
             throw new DomainException("Say why it was thrown away.");
         if (reason.Trim().Length > 200)
             throw new DomainException("Keep the reason under 200 characters.");
-        return Move(-Positive(quantity), StockMovementReason.Spoilage, spoilageId, AverageCost, reason.Trim(), recordedBy);
+        return Move(-Positive(quantity), StockMovementReason.Spoilage, spoilageId, AverageCost, reason.Trim(), recordedBy,
+            responsibleStationId: responsibleStation ?? KitchenStationId);
     }
 
     // Taken on purpose: a staff meal, hospitality or a recipe tried (StaffConsumption), at the
@@ -287,7 +297,7 @@ public sealed class RawMaterial : AggregateRoot
 
         if (original.Reason is StockMovementReason.Purchase or StockMovementReason.ProductionOutput && original.Quantity > 0)
             UnaverageWith(original.Quantity, original.UnitCost);
-        return Move(-original.Quantity, original.Reason, original.SourceId, original.UnitCost, "Voided", reversedBy, original.Id);
+        return Move(-original.Quantity, original.Reason, original.SourceId, original.UnitCost, "Voided", reversedBy, original.Id, original.ResponsibleStationId);
     }
 
     // The average as if `quantity` bought at `unitCost` had never come in: the value of the
@@ -336,10 +346,10 @@ public sealed class RawMaterial : AggregateRoot
 
     private StockMovement Move(
         decimal delta, StockMovementReason reason, Guid sourceId, decimal? unitCost, string? note = null, string? recordedBy = null,
-        Guid? reversalOf = null)
+        Guid? reversalOf = null, Guid? responsibleStationId = null)
     {
         QuantityOnHand += delta;
-        return new StockMovement(Id, delta, reason, sourceId, unitCost, note, recordedBy, reversalOf);
+        return new StockMovement(Id, delta, reason, sourceId, unitCost, note, recordedBy, reversalOf, responsibleStationId);
     }
 
     private static decimal Positive(decimal quantity) =>

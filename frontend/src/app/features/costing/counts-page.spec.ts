@@ -22,6 +22,7 @@ const presets: CountPresets = {
     { key: 'highVariance', name: 'High-variance materials', nameAr: 'الأصناف الأكثر انحرافًا', materialIds: [] },
   ],
   categories: [{ categoryId: 'dairy', name: 'Dairy', nameAr: 'ألبان', materialIds: ['cheese', 'milk'] }],
+  stations: [{ stationId: 'bar', name: 'Bar & Barista', nameAr: 'البار والباريستا', code: 'BAR', materialIds: ['coffee', 'milk'] }],
 };
 
 describe('the stock counts', () => {
@@ -111,6 +112,14 @@ describe('the stock counts', () => {
     page['startCategory']('dairy');
     await vi.waitFor(() => expect(saveStockCount).toHaveBeenCalled());
     expect(saveStockCount.mock.lastCall![3]).toEqual({ scope: 'Spot', scopeMaterialIds: ['cheese', 'milk'], scopeLabel: 'Dairy · ألبان' });
+  });
+
+  it('starts a spot count of one kitchen station, for its shift close', async () => {
+    const { el, page } = await render([]);
+    expect(el.querySelector('[aria-label="Spot count by station"]')).not.toBeNull();
+    page['startStation']('bar');
+    await vi.waitFor(() => expect(saveStockCount).toHaveBeenCalled());
+    expect(saveStockCount.mock.lastCall![3]).toEqual({ scope: 'Spot', scopeMaterialIds: ['coffee', 'milk'], scopeLabel: 'Bar & Barista · البار والباريستا' });
   });
 
   it('says what kind the draft being filled in is, and offers a reviewer a count handed in', async () => {

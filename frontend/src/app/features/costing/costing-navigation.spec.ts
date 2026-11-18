@@ -48,6 +48,7 @@ describe('the costing navigation', () => {
       ['daily-break-even', 'page'],
       ['kpis', 'page'],
       ['break-even', 'page'],
+      ['station-variance', 'page'],
       ['daily-summaries', 'page'],
     ]);
 
@@ -110,6 +111,7 @@ describe('the costing navigation', () => {
       ['/daily-break-even', 'speed', 'Daily break-even', 'نقطة التعادل اليومية'],
       ['/kpis', 'insights', 'KPIs', 'المؤشرات'],
       ['/break-even', 'balance', 'Break-even', 'نقطة التعادل'],
+      ['/station-variance', 'soup_kitchen', 'Station variance', 'انحراف الأقسام'],
     ]);
   });
 

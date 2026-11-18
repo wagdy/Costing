@@ -423,7 +423,7 @@ public enum UnitOfMeasure
 - **المخزون يُسمح أن يصبح سالبًا**: البيع حدث فعلًا؛ رفض الخصم لن "يلغي البيع" بل سيضيّع السجل. الرصيد السالب **إشارة**: فاتورة لم تُسجل أو وصفة خاطئة، والجرد يصححه.
 - **`Archive`**: لا حذف؛ أرشفة فقط ورصيده صفر، حتى لا تختفي قيمته من الدفاتر.
 
-> 📄 **`backend/src/Costing.Domain/RawMaterials/RawMaterial.cs`** — 347 سطر
+> 📄 **`backend/src/Costing.Domain/RawMaterials/RawMaterial.cs`** — 357 سطر
 
 ```csharp
 using Costing.Domain.Common;
@@ -505,6 +505,12 @@ public sealed class RawMaterial : AggregateRoot
     public bool IsSpotCheckItem { get; private set; }
 
     public void MarkSpotCheck(bool isSpotCheckItem) => IsSpotCheckItem = isSpotCheckItem;
+
+    // The kitchen or bar station that keeps it (قسم التشغيل): its use and its waste are held against
+    // that station. Null: the shared station's.
+    public Guid? KitchenStationId { get; private set; }
+
+    public void AssignStation(Guid? stationId) => KitchenStationId = stationId;
 
     public void Rename(string name)
     {
@@ -599,8 +605,9 @@ public sealed class RawMaterial : AggregateRoot
     public StockMovement RecordSale(decimal quantity, Guid orderItemId) =>
         Move(-Positive(quantity), StockMovementReason.Sale, orderItemId, AverageCost);
 
-    public StockMovement RecordWaste(decimal quantity, Guid orderItemId) =>
-        Move(-Positive(quantity), StockMovementReason.Waste, orderItemId, AverageCost);
+    // station: where the dish was made (its recipe's station), whose waste it is; its own otherwise.
+    public StockMovement RecordWaste(decimal quantity, Guid orderItemId, Guid? station = null) =>
+        Move(-Positive(quantity), StockMovementReason.Waste, orderItemId, AverageCost, responsibleStationId: station ?? KitchenStationId);
 
     public StockMovement RecordVoidReturn(decimal quantity, Guid orderItemId) =>
         Move(Positive(quantity), StockMovementReason.VoidReturn, orderItemId, AverageCost);
@@ -644,13 +651,16 @@ public sealed class RawMaterial : AggregateRoot
 
     // Stock thrown away before it reached a dish. Why is required: the variance report sets it
     // against the shortfall, and "expired" and "dropped" call for different fixes.
-    public StockMovement RecordSpoilage(decimal quantity, Guid spoilageId, string reason, string recordedBy)
+    // responsibleStation: the station held to account for it (the hot kitchen that spoiled a shared
+    // item), its own station unless said.
+    public StockMovement RecordSpoilage(decimal quantity, Guid spoilageId, string reason, string recordedBy, Guid? responsibleStation = null)
     {
         if (string.IsNullOrWhiteSpace(reason))
             throw new DomainException("Say why it was thrown away.");
         if (reason.Trim().Length > 200)
             throw new DomainException("Keep the reason under 200 characters.");
-        return Move(-Positive(quantity), StockMovementReason.Spoilage, spoilageId, AverageCost, reason.Trim(), recordedBy);
+        return Move(-Positive(quantity), StockMovementReason.Spoilage, spoilageId, AverageCost, reason.Trim(), recordedBy,
+            responsibleStationId: responsibleStation ?? KitchenStationId);
     }
 
     // Taken on purpose: a staff meal, hospitality or a recipe tried (StaffConsumption), at the
@@ -715,7 +725,7 @@ public sealed class RawMaterial : AggregateRoot
 
         if (original.Reason is StockMovementReason.Purchase or StockMovementReason.ProductionOutput && original.Quantity > 0)
             UnaverageWith(original.Quantity, original.UnitCost);
-        return Move(-original.Quantity, original.Reason, original.SourceId, original.UnitCost, "Voided", reversedBy, original.Id);
+        return Move(-original.Quantity, original.Reason, original.SourceId, original.UnitCost, "Voided", reversedBy, original.Id, original.ResponsibleStationId);
     }
 
     // The average as if `quantity` bought at `unitCost` had never come in: the value of the
@@ -764,10 +774,10 @@ public sealed class RawMaterial : AggregateRoot
 
     private StockMovement Move(
         decimal delta, StockMovementReason reason, Guid sourceId, decimal? unitCost, string? note = null, string? recordedBy = null,
-        Guid? reversalOf = null)
+        Guid? reversalOf = null, Guid? responsibleStationId = null)
     {
         QuantityOnHand += delta;
-        return new StockMovement(Id, delta, reason, sourceId, unitCost, note, recordedBy, reversalOf);
+        return new StockMovement(Id, delta, reason, sourceId, unitCost, note, recordedBy, reversalOf, responsibleStationId);
     }
 
     private static decimal Positive(decimal quantity) =>
@@ -791,6 +801,146 @@ public interface IRawMaterialRepository : IRepository<RawMaterial>
     Task<IReadOnlyList<RawMaterial>> GetByIdsAsync(IEnumerable<Guid> ids, CancellationToken cancellationToken = default);
 
     Task<IReadOnlyList<RawMaterial>> GetNeedingReorderAsync(CancellationToken cancellationToken = default);
+}
+```
+
+
+**أقسام المطبخ والبار (`KitchenStation`):** اسم وكود فريد وترتيب ونسبة سماح خاصة (أو نسبة الإعدادات) ومفعّل أم لا، و `IsShared` للقسم صاحب الكود `SHARED`. ثلاثة أعمدة تشير إليه، كلها `ON DELETE SET NULL` (فحذف القسم يُرجع ما كان له للقسم المشترك): `RawMaterials.KitchenStationId` (الخامة أو المصنّع)، `Recipes.KitchenStationId` (القسم الذي يحضّر الطبق)، و `StockMovements.ResponsibleStationId` (القسم المسؤول عن الهالك، ويُنسخ في قيد الإلغاء ليصافيه). الأقسام السبعة الأولى تُزرع **مرة واحدة** في الـ migration `AddKitchenStations` (لا عند كل تشغيل)، فلا يعود قسم حذفه المدير.
+
+> 📄 **`backend/src/Costing.Domain/Stations/KitchenStation.cs`** — 74 سطر
+
+```csharp
+using Costing.Domain.Common;
+
+namespace Costing.Domain.Stations;
+
+// A kitchen or bar station (قسم التشغيل): the grill, the pizza oven, the bar. Each material and prep
+// item is kept by one, and its use is held against it; each dish is made at one. Its variance is
+// judged by its own tolerance when it has one (a bar's is tighter than a bakery's), the costing
+// settings' otherwise. Unassigned materials fall to the shared station (SharedCode), or to a shared
+// group of their own when there is none.
+public sealed class KitchenStation : AggregateRoot
+{
+    public const int MaxName = 100;
+    public const int MaxCode = 20;
+    public const string SharedCode = "SHARED";
+    public const string SharedName = "Shared / General";
+    public const string SharedNameAr = "خامات مشتركة";
+
+    private KitchenStation() { }
+
+    public KitchenStation(Guid id, string name, string? nameAr, string? code, int displayOrder, decimal? tolerancePercent, bool isActive = true)
+    {
+        Id = id;
+        Change(name, nameAr, code, displayOrder, tolerancePercent, isActive);
+    }
+
+    public string Name { get; private set; } = string.Empty;
+    public string? NameAr { get; private set; }
+
+    // A short code for sheets and labels (GRILL, BAR); unique when given.
+    public string? Code { get; private set; }
+
+    public int DisplayOrder { get; private set; }
+
+    // Its own variance tolerance, % of theoretical (null: the costing settings').
+    public decimal? TargetVarianceTolerancePercent { get; private set; }
+
+    // Kept off the pickers when not in use; its history stays.
+    public bool IsActive { get; private set; } = true;
+
+    public bool IsShared => Code == SharedCode;
+
+    public decimal ToleranceOr(decimal fallback) => TargetVarianceTolerancePercent ?? fallback;
+
+    public void Change(string name, string? nameAr, string? code, int displayOrder, decimal? tolerancePercent, bool isActive)
+    {
+        var cleaned = Clean(name) ?? throw new DomainException("Name the station. · اكتب اسم القسم.");
+        if (cleaned.Length > MaxName || Clean(nameAr)?.Length > MaxName)
+            throw new DomainException($"Keep the station's name under {MaxName} characters.");
+        var shortCode = Clean(code)?.ToUpperInvariant();
+        if (shortCode?.Length > MaxCode)
+            throw new DomainException($"Keep the station's code under {MaxCode} characters.");
+        if (tolerancePercent is { } t && (t <= 0 || t > 100))
+            throw new DomainException("A station's tolerance is a percentage above 0, up to 100. · نسبة السماح أكبر من صفر حتى 100.");
+        if (displayOrder < 0)
+            throw new DomainException("The display order is 0 or more.");
+        Name = cleaned;
+        NameAr = Clean(nameAr);
+        Code = shortCode;
+        DisplayOrder = displayOrder;
+        TargetVarianceTolerancePercent = tolerancePercent is { } p ? Math.Round(p, 2, MidpointRounding.AwayFromZero) : null;
+        IsActive = isActive;
+    }
+
+    private static string? Clean(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+}
+
+public interface IKitchenStationRepository : IRepository<KitchenStation>
+{
+    Task<IReadOnlyList<KitchenStation>> GetAllAsync(CancellationToken cancellationToken = default);
+
+    // Taken away: the materials, prep items and dishes kept by it, and the waste held against it, fall
+    // back to the shared station.
+    void Remove(KitchenStation station);
+}
+```
+
+
+> 📄 **`backend/src/Costing.Infrastructure/Persistence/StationPersistence.cs`** — 52 سطر
+
+```csharp
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata.Builders;
+using Costing.Domain.RawMaterials;
+using Costing.Domain.Recipes;
+using Costing.Domain.Stations;
+using Costing.Domain.StockMovements;
+
+namespace Costing.Infrastructure.Persistence;
+
+// The kitchen and bar stations, and what points at them: a material's (a prep item's) station, a
+// dish's, and the station held to account for a waste entry. Taken away, each falls back to the
+// shared station (null).
+internal sealed class KitchenStationConfiguration : IEntityTypeConfiguration<KitchenStation>
+{
+    public void Configure(EntityTypeBuilder<KitchenStation> builder)
+    {
+        builder.ToTable("KitchenStations", CostingDbContext.CostingSchema);
+        builder.Property(s => s.Name).HasMaxLength(KitchenStation.MaxName);
+        builder.Property(s => s.NameAr).HasMaxLength(KitchenStation.MaxName);
+        builder.Property(s => s.Code).HasMaxLength(KitchenStation.MaxCode);
+        builder.Property(s => s.TargetVarianceTolerancePercent).HasPrecision(5, 2);
+        builder.Property(s => s.IsActive).HasDefaultValue(true);
+        builder.Ignore(s => s.IsShared);
+        builder.HasIndex(s => s.Code).IsUnique().HasFilter("\"Code\" IS NOT NULL");
+    }
+}
+
+internal sealed class StationLinksConfiguration :
+    IEntityTypeConfiguration<RawMaterial>, IEntityTypeConfiguration<Recipe>, IEntityTypeConfiguration<StockMovement>
+{
+    public void Configure(EntityTypeBuilder<RawMaterial> builder) =>
+        builder.HasOne<KitchenStation>().WithMany().HasForeignKey(m => m.KitchenStationId).OnDelete(DeleteBehavior.SetNull);
+
+    public void Configure(EntityTypeBuilder<Recipe> builder) =>
+        builder.HasOne<KitchenStation>().WithMany().HasForeignKey(r => r.KitchenStationId).OnDelete(DeleteBehavior.SetNull);
+
+    public void Configure(EntityTypeBuilder<StockMovement> builder) =>
+        builder.HasOne<KitchenStation>().WithMany().HasForeignKey(m => m.ResponsibleStationId).OnDelete(DeleteBehavior.SetNull);
+}
+
+internal sealed class KitchenStationRepository(CostingDbContext db) : IKitchenStationRepository
+{
+    public Task<KitchenStation?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default) =>
+        db.KitchenStations.SingleOrDefaultAsync(s => s.Id == id, cancellationToken);
+
+    public void Add(KitchenStation aggregate) => db.KitchenStations.Add(aggregate);
+
+    public async Task<IReadOnlyList<KitchenStation>> GetAllAsync(CancellationToken cancellationToken = default) =>
+        await db.KitchenStations.OrderBy(s => s.DisplayOrder).ThenBy(s => s.Name).ToListAsync(cancellationToken);
+
+    public void Remove(KitchenStation station) => db.KitchenStations.Remove(station);
 }
 ```
 
@@ -1215,7 +1365,7 @@ public static class StaffConsumption
 ```
 
 
-> 📄 **`backend/src/Costing.Domain/StockMovements/StockMovement.cs`** — 59 سطر
+> 📄 **`backend/src/Costing.Domain/StockMovements/StockMovement.cs`** — 65 سطر
 
 ```csharp
 using Costing.Domain.Common;
@@ -1233,8 +1383,9 @@ public sealed class StockMovement : AggregateRoot
     // they explain.
     internal StockMovement(
         Guid rawMaterialId, decimal quantity, StockMovementReason reason, Guid sourceId, decimal? unitCost,
-        string? note = null, string? recordedBy = null, Guid? reversalOf = null)
+        string? note = null, string? recordedBy = null, Guid? reversalOf = null, Guid? responsibleStationId = null)
     {
+        ResponsibleStationId = responsibleStationId;
         RawMaterialId = rawMaterialId;
         Quantity = quantity;
         Reason = reason;
@@ -1276,6 +1427,11 @@ public sealed class StockMovement : AggregateRoot
     // SourceId already says.
     public string? Note { get; private set; }
     public string? RecordedBy { get; private set; }
+
+    // For waste (spoilage logged, a dish voided after the kitchen made it): the kitchen or bar
+    // station held to account for it, the material's own unless another was named. Null: the
+    // material's station, as it is now.
+    public Guid? ResponsibleStationId { get; private set; }
 }
 ```
 
@@ -1381,7 +1537,7 @@ public sealed class RecipeIngredient : Entity
 ```
 
 
-> 📄 **`backend/src/Costing.Domain/Recipes/Recipe.cs`** — 167 سطر
+> 📄 **`backend/src/Costing.Domain/Recipes/Recipe.cs`** — 173 سطر
 
 ```csharp
 using Costing.Domain.Common;
@@ -1482,6 +1638,12 @@ public sealed class Recipe : AggregateRoot
         DeletedAtUtc = null;
         DeletedBy = null;
     }
+
+    // The kitchen or bar station that makes it (قسم التشغيل): a plate of it voided after the kitchen
+    // made it is that station's waste. Null: its materials' own stations.
+    public Guid? KitchenStationId { get; private set; }
+
+    public void AssignStation(Guid? stationId) => KitchenStationId = stationId;
 
     // How many portions the quantities below make, as a recipe is written: 15 for a tray of
     // strata. A sold item uses one portion's share.
@@ -1685,7 +1847,7 @@ public interface IRecipeRepository : IRepository<Recipe>
 ```
 
 
-> 📄 **`backend/src/Costing.Domain/Recipes/StockRequirements.cs`** — 72 سطر
+> 📄 **`backend/src/Costing.Domain/Recipes/StockRequirements.cs`** — 82 سطر
 
 ```csharp
 namespace Costing.Domain.Recipes;
@@ -1712,6 +1874,16 @@ public static class StockRequirements
     // takes its recipe's stock for the quantity sold × how many of it one combo takes, and through
     // its prep items the stock they were made from, as a sale of that dish would. `recipes` holds
     // the combos' recipes too, by id (RecipeIdsFor). A deleted recipe takes nothing.
+    // The station that made a sold item: its size's recipe's, or the item's (none for a combo, whose
+    // dishes are made at their own stations).
+    public static Guid? StationOf(SoldItem item, IReadOnlyCollection<Recipe> recipes)
+    {
+        var live = recipes.Where(r => !r.IsDeleted && r.Target is not null).ToList();
+        var main = (item.VariantId is { } variantId ? live.FirstOrDefault(r => r.Target == RecipeTarget.ForVariant(item.MenuItemId, variantId)) : null)
+            ?? live.FirstOrDefault(r => r.Target == RecipeTarget.ForMenuItem(item.MenuItemId));
+        return main?.KitchenStationId;
+    }
+
     public static IReadOnlyDictionary<Guid, decimal> For(
         SoldItem item, IReadOnlyCollection<Recipe> recipes, IReadOnlyDictionary<int, IReadOnlyList<ComboPart>>? combos = null)
     {
@@ -5438,7 +5610,7 @@ public static class DatabaseConnection
 - `ConfigureConventions`: كل `decimal` بدقة (10,2) افتراضيًا (والكميات تتجاوزه صراحة بـ `IsQuantity()`).
 - `SaveChangesAsync`: `TouchRootsOfChangedChildren` (تعديل ابن يعلّم أباه معدّلًا ليُفحص `xmin` الخاص به)، وترجمة أخطاء EF/Npgsql (تزامن، تكرار فريد، مفتاح أجنبي) إلى `ConflictException`، فلا تعرف الطبقات العليا شيئًا عن EF.
 
-> 📄 **`backend/src/Costing.Infrastructure/Persistence/CostingDbContext.cs`** — 171 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Persistence/CostingDbContext.cs`** — 172 سطر
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
@@ -5512,6 +5684,7 @@ public sealed class CostingDbContext(DbContextOptions<CostingDbContext> options)
     public DbSet<ProductionOrder> ProductionOrders => Set<ProductionOrder>();
     public DbSet<BreakageEntry> BreakageEntries => Set<BreakageEntry>();
     public DbSet<CostingSettings> CostingSettings => Set<CostingSettings>();
+    public DbSet<Domain.Stations.KitchenStation> KitchenStations => Set<Domain.Stations.KitchenStation>();
     public DbSet<FinancialSettings> FinancialSettings => Set<FinancialSettings>();
     public DbSet<SharedCost> SharedCosts => Set<SharedCost>();
     public DbSet<MonthlyExpenses> MonthlyExpenses => Set<MonthlyExpenses>();
@@ -7546,6 +7719,7 @@ dotnet ef migrations add <Name> \
 | 15 | `20261116233433_AddPurchaseOrders` | Add Purchase Orders |
 | 16 | `20261117092011_AddEndOfDaySequence` | Add End Of Day Sequence |
 | 17 | `20261117103857_AddEndOfDayClosedDaysAndAudit` | Add End Of Day Closed Days And Audit |
+| 18 | `20261118092632_AddKitchenStations` | Add Kitchen Stations |
 
 
 ### 14.1 `UnifySafeTakings`: migration تحوّل بيانات لا شكلًا فقط

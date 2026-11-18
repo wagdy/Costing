@@ -30,6 +30,8 @@ import { Company } from '../../core/settings/company';
 import { MoneyPipe } from '../../core/ui/money.pipe';
 import { NotifyService } from '../../core/ui/notify.service';
 import { InfoTip } from './info-tip';
+import { NoStation, Stations } from './stations';
+import { MatSelectModule } from '@angular/material/select';
 
 interface Section {
   category: string;
@@ -77,6 +79,7 @@ const blindKey = 'costing.blindCount';
 @Component({
   selector: 'app-count-sheet-page',
   imports: [
+    MatSelectModule,
     DatePipe,
     DecimalPipe,
     FormsModule,
@@ -288,6 +291,16 @@ const blindKey = 'costing.blindCount';
           <mat-label>Find · بحث</mat-label>
           <input matInput [ngModel]="search()" (ngModelChange)="search.set($event)" />
         </mat-form-field>
+        @if (stationOptions().length > 2) {
+          <mat-form-field subscriptSizing="dynamic" class="find">
+            <mat-label>By station · حسب قسم المطبخ</mat-label>
+            <mat-select [ngModel]="station()" (ngModelChange)="station.set($event)" aria-label="Show one station">
+              @for (o of stationOptions(); track o.value) {
+                <mat-option [value]="o.value">{{ o.label }} ({{ o.count }})</mat-option>
+              }
+            </mat-select>
+          </mat-form-field>
+        }
         <span class="progress">
           {{ countedCount() }} of {{ materials().length }} counted<span class="muted"> (empty is not counted, 0 is none left)</span>
           @if (kind() === 'Opening' && !blind()) {
@@ -707,6 +720,10 @@ export class CountSheetPage {
   protected readonly problem = signal<string | null>(null);
   protected readonly confirming = signal<'post' | 'discard' | null>(null);
   protected readonly search = signal('');
+  // One station's materials shown (and printed on the blind sheet), for a count at its shift's close.
+  protected readonly station = signal('');
+  protected readonly stations = inject(Stations);
+  protected readonly stationOptions = computed(() => this.stations.filter(this.materials(), (m) => m.kitchenStationId));
 
   // By material id, in kg, litres or pieces; null or absent is not counted.
   protected readonly counted = signal<Record<string, number | null>>({});
@@ -728,7 +745,9 @@ export class CountSheetPage {
 
   protected readonly sections = computed<Section[]>(() => {
     const needle = this.search().trim().toLowerCase();
-    const shown = this.materials().filter((m) => !needle || [m.name, m.code, m.category].some((v) => v?.toLowerCase().includes(needle)));
+    const shown = this.materials().filter(
+      (m) => (!needle || [m.name, m.code, m.category].some((v) => v?.toLowerCase().includes(needle))) && this.stations.matches(this.station(), m.kitchenStationId),
+    );
     const byCategory = new Map<string, MaterialCost[]>();
     for (const m of shown) {
       const category = m.category ?? 'Other · أخرى';
@@ -863,6 +882,7 @@ export class CountSheetPage {
   private allMaterials: MaterialCost[] = [];
 
   constructor() {
+    void this.stations.load();
     effect(() => {
       const id = this.id();
       untracked(() => void this.load(id));
@@ -1048,7 +1068,9 @@ export class CountSheetPage {
       return;
     }
     const count = this.count();
-    const title = `${this.isSpot() ? 'Spot count · جرد يومي سريع' : this.kind() === 'Opening' ? 'Opening stock · جرد افتتاحي' : 'Periodic count · جرد دوري'}`;
+    const title = `${this.isSpot() ? 'Spot count · جرد يومي سريع' : this.kind() === 'Opening' ? 'Opening stock · جرد افتتاحي' : 'Periodic count · جرد دوري'}${
+      this.station() ? ` · ${this.station() === NoStation ? 'Shared / General' : this.stations.label(this.station())}` : ''
+    }`;
     const rows = this.sections()
       .map(
         (s) =>
@@ -1229,6 +1251,7 @@ function fromItem(item: CountItem): MaterialCost {
     costPerUnit: null,
     kind: item.isPrepItem ? 'Prep' : 'Purchased',
     isSpotCheckItem: item.isSpotCheckItem,
+    kitchenStationId: item.kitchenStationId ?? null,
   } as MaterialCost;
 }
 

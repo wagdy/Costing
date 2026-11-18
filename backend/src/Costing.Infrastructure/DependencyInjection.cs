@@ -94,6 +94,7 @@ public static class DependencyInjection
         services.AddScoped<Costing.Domain.EndOfDay.IEndOfDayPhotoStore, EndOfDayPhotoStore>();
         services.AddScoped<ISupplierRepository, SupplierRepository>();
         services.AddScoped<IPurchaseCategoryRepository, PurchaseCategoryRepository>();
+        services.AddScoped<Domain.Stations.IKitchenStationRepository, KitchenStationRepository>();
         services.AddScoped<ISafeTransactionRepository, SafeTransactionRepository>();
         services.AddScoped<ISupplierLedgerRepository, SupplierLedgerRepository>();
         services.AddScoped<Costing.Application.Approvals.IRecordDescriptions, RecordDescriptions>();

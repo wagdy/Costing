@@ -13,8 +13,9 @@ public sealed class StockMovement : AggregateRoot
     // they explain.
     internal StockMovement(
         Guid rawMaterialId, decimal quantity, StockMovementReason reason, Guid sourceId, decimal? unitCost,
-        string? note = null, string? recordedBy = null, Guid? reversalOf = null)
+        string? note = null, string? recordedBy = null, Guid? reversalOf = null, Guid? responsibleStationId = null)
     {
+        ResponsibleStationId = responsibleStationId;
         RawMaterialId = rawMaterialId;
         Quantity = quantity;
         Reason = reason;
@@ -56,4 +57,9 @@ public sealed class StockMovement : AggregateRoot
     // SourceId already says.
     public string? Note { get; private set; }
     public string? RecordedBy { get; private set; }
+
+    // For waste (spoilage logged, a dish voided after the kitchen made it): the kitchen or bar
+    // station held to account for it, the material's own unless another was named. Null: the
+    // material's station, as it is now.
+    public Guid? ResponsibleStationId { get; private set; }
 }

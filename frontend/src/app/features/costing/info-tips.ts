@@ -1114,6 +1114,84 @@ export const infoTips = {
       ar: 'تُجمع الصفوف حسب التاريخ وتُستورد من الأقدم. يبدأ الملف من أول يوم بعد آخر يوم مُقفل لم تُسجل مبيعاته، والأيام متتالية (يوم الإغلاق يُسجل أولاً من تقفيل اليوم)، ولا يوم في المستقبل. تُعرض معاينة أولاً، ثم تُسجل كل الأيام مع مسودة تقفيل لكل يوم، أو لا يُسجل شيء.',
     },
   ),
+  kitchenStation: tip(
+    { en: 'Kitchen station', ar: 'القسم التشغيلي' },
+    {
+      en: 'The kitchen or bar section that keeps this material or prep item, or makes this dish: its use and its waste are held against that station on Station variance. None: the shared station.',
+      ar: 'قسم المطبخ أو البار المسؤول عن الخامة أو المصنّع أو الطبق: يُحاسب القسم على استهلاكها وهالكها في انحراف الأقسام. بدون قسم: الخامات المشتركة.',
+    },
+    {
+      en: 'Set on Raw materials, Prep items (one or every one shown) and the recipe card, or by the Station column of the raw materials sheet. Stations are a manager’s to set on Cost settings.',
+      ar: 'يُحدد من الخامات والمصنعات (صنف أو كل المعروض) وكارت الوصفة أو عمود القسم في شيت الخامات، والأقسام يضبطها المدير من إعدادات التكاليف.',
+    },
+  ),
+  responsibleStation: tip(
+    { en: 'Station responsible', ar: 'القسم المسؤول' },
+    {
+      en: 'The station held to account for this waste: the material’s own unless another is chosen (the hot kitchen that spoiled a shared item).',
+      ar: 'القسم الذي يُحاسب على هذا الهالك: قسم الخامة إلا إذا اخترت غيره (كأن يُتلف المطبخ الساخن خامة مشتركة).',
+    },
+    {
+      en: 'Its worth, at the cost then, goes to that station’s logged waste on Station variance. A dish voided after the kitchen made it is the waste of the station that makes the dish.',
+      ar: 'قيمته بتكلفة وقتها تُضاف لهالك ذلك القسم في انحراف الأقسام، والطبق الملغى بعد التحضير هالك القسم الذي يحضّره.',
+    },
+  ),
+  stationTolerance: tip(
+    { en: 'Station tolerance', ar: 'نسبة السماح للقسم' },
+    {
+      en: 'How far its materials’ actual use may stray above what the sales should have taken before the station is High loss. Blank: the costing settings’ tolerance.',
+      ar: 'أقصى زيادة مسموحة لاستهلاك خامات القسم عن النظري قبل أن يُعد عجزًا مرتفعًا. فارغ: نسبة إعدادات التكاليف.',
+    },
+    {
+      en: 'Within target up to three quarters of it, Watch above that, High loss past it.',
+      ar: 'منضبط حتى ثلاثة أرباعها، تحت المراقبة بعد ذلك، وعجز مرتفع إذا تجاوزها.',
+    },
+  ),
+  stationTheoretical: tip(
+    { en: 'Theoretical cost', ar: 'التكلفة النظرية' },
+    {
+      en: 'What the dishes sold should have used of the station’s materials, by their recipes and through the prep items, with what is held in prep stock made from them.',
+      ar: 'ما كان يجب أن تستهلكه الأطباق المباعة من خامات القسم بوصفاتها ومن خلال المصنعات، مع ما بقي في مخزون المصنعات منها.',
+    },
+    { en: 'Σ theoretical usage × average cost now, over the station’s materials.', ar: 'مجموع (الاستهلاك النظري × متوسط التكلفة الحالي) لخامات القسم.' },
+  ),
+  stationActual: tip(
+    { en: 'Actual cost', ar: 'التكلفة الفعلية' },
+    { en: 'What the stores say the station’s materials were used for over the period.', ar: 'ما تقوله المخازن عن استهلاك خامات القسم في الفترة.' },
+    {
+      en: '(Opening + purchases − logged waste − staff meals & hospitality − closing) × average cost now, over its materials.',
+      ar: '(أول المدة + المشتريات − الهالك المسجل − وجبات العاملين والضيافة − آخر المدة) × متوسط التكلفة الحالي.',
+    },
+  ),
+  stationUnexplained: tip(
+    { en: 'Unexplained variance', ar: 'الانحراف غير المبرر' },
+    {
+      en: 'Used beyond what the sales, the logged waste and the staff meals account for: over-portioning, waste not logged, a recipe written too light, or stock walking out.',
+      ar: 'ما استُهلك زيادة عما تبرره المبيعات والهالك المسجل ووجبات العاملين: زيادة الحصص، هالك غير مسجل، وصفة أخف من الواقع، أو تسرب.',
+    },
+    { en: 'Actual cost − theoretical cost, over the station’s materials.', ar: 'التكلفة الفعلية − التكلفة النظرية لخامات القسم.' },
+  ),
+  stationPercent: tip(
+    { en: 'Variance %', ar: 'نسبة الانحراف' },
+    { en: 'The unexplained as a share of what should have been used.', ar: 'الانحراف غير المبرر كنسبة مما كان يجب استهلاكه.' },
+    { en: 'Unexplained ÷ theoretical × 100. None when nothing should have been used.', ar: 'الانحراف ÷ النظري × 100، ولا نسبة إذا كان النظري صفرًا.' },
+  ),
+  stationWaste: tip(
+    { en: 'Logged waste', ar: 'الهالك المسجل' },
+    {
+      en: 'Spoilage logged and dishes voided after the kitchen made them, held against the station responsible for each (not always the material’s own).',
+      ar: 'الهالك المسجل والأطباق الملغاة بعد التحضير، محسوبة على القسم المسؤول عن كل منها (وليس دائمًا قسم الخامة).',
+    },
+    { en: 'Σ quantity wasted × the cost then, less refunds put back.', ar: 'مجموع الكمية المهدرة × تكلفتها وقتها، ناقص المرتجعات.' },
+  ),
+  stationComparison: tip(
+    { en: 'Stations compared', ar: 'مقارنة الأقسام' },
+    {
+      en: 'Each station’s unexplained variance % against its own tolerance line: the bar past its line is the section bleeding food cost. Click a bar or a card for its materials.',
+      ar: 'نسبة الانحراف لكل قسم أمام خط السماح الخاص به: الشريط الذي يتجاوز خطه هو القسم الذي يستنزف التكلفة. اضغط على شريط أو بطاقة لعرض خاماته.',
+    },
+    { en: 'Bar: unexplained ÷ theoretical × 100. Line: the station’s tolerance, or the settings’.', ar: 'الشريط: الانحراف ÷ النظري × 100، والخط: نسبة السماح للقسم أو للإعدادات.' },
+  ),
 } satisfies Record<string, InfoTipContent>;
 
 export type InfoTipKey = keyof typeof infoTips;

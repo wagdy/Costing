@@ -1,4 +1,5 @@
 import { DatePipe, DecimalPipe } from '@angular/common';
+import { Stations } from './stations';
 import { Component, computed, effect, inject, input, signal, untracked } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
@@ -159,6 +160,22 @@ const linkKey = (kind: RecipeTargetKind | null, catalogItemId: number | null, va
                 @if (card()?.recipeCategoryAr) {
                   <span class="inline-ar">{{ card()!.recipeCategoryAr }}</span>
                 }
+              }
+              @if (!editing() && card()?.recipeId && !card()!.usesBaseRecipe) {
+                · <span class="station-pick">
+                  Station<span class="inline-ar">القسم</span> <app-info-tip tip="kitchenStation" />:
+                  @if (canEdit() && !card()!.isDeleted) {
+                    <mat-select class="station-select no-print" [value]="card()!.kitchenStationId ?? ''" (selectionChange)="setStation($event.value || null)"
+                      aria-label="Station that makes it" panelWidth="auto">
+                      <mat-option value="">None (its materials' own)</mat-option>
+                      @for (s of stations.active(); track s.id) {
+                        <mat-option [value]="s.id">{{ s.name }}{{ s.nameAr ? ' · ' + s.nameAr : '' }}</mat-option>
+                      }
+                    </mat-select>
+                  } @else {
+                    <strong>{{ card()!.kitchenStationId ? stations.label(card()!.kitchenStationId) : 'None' }}</strong>
+                  }
+                </span>
               }
             </div>
           </div>
@@ -440,6 +457,11 @@ const linkKey = (kind: RecipeTargetKind | null, catalogItemId: number | null, va
   `,
   styleUrl: './costing.scss',
   styles: `
+    .station-select {
+      display: inline-block;
+      width: 170px;
+      font-size: 13px;
+    }
     .by-recipe {
       font-size: 0.78em;
       color: var(--mat-sys-tertiary);
@@ -666,6 +688,22 @@ export class RecipeCardPage {
   protected readonly editing = computed(() => (this.mode() === 'edit' || this.mode() === 'new') && this.canEdit() && !this.pending());
 
   protected readonly card = signal<RecipeCostCard | null>(null);
+  protected readonly stations = inject(Stations);
+
+  // The station that makes the dish: a plate voided after the kitchen made it is its waste.
+  protected async setStation(stationId: string | null): Promise<void> {
+    const card = this.card();
+    if (!card?.recipeId) {
+      return;
+    }
+    try {
+      await firstValueFrom(this.api.assignRecipeStation(card.recipeId, stationId));
+      this.card.set({ ...card, kitchenStationId: stationId });
+      this.notify.info(`${this.title()}: ${stationId ? this.stations.label(stationId) : 'no station'}.`);
+    } catch (error) {
+      this.notify.error(error, 'The station could not be set.');
+    }
+  }
   // Every menu item, size and add-on, by the recipe it sells by: what can be linked.
   protected readonly menu = signal<RecipeCostCard[]>([]);
   protected readonly materials = signal<MaterialCost[]>([]);
@@ -847,6 +885,7 @@ export class RecipeCardPage {
   });
 
   constructor() {
+    void this.stations.load();
     effect(() => {
       const mode = this.mode();
       const recipeId = this.recipeId();

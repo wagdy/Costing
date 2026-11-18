@@ -737,7 +737,7 @@ public static class DependencyInjection
 
 البنية التحتية: كل "منفذ" يُربط بتطبيقه. `Singleton` للساعة وملف الشركة والتشفير؛ `Scoped` لكل ما يلمس `CostingDbContext`؛ `RetryOnConflictBehavior` يلف كل أمر؛ و `AddHttpClient` + `AddHostedService<HrSyncWorker>` للربط مع HR.
 
-> 📄 **`backend/src/Costing.Infrastructure/DependencyInjection.cs`** — 128 سطر
+> 📄 **`backend/src/Costing.Infrastructure/DependencyInjection.cs`** — 129 سطر
 
 ```csharp
 using MediatR;
@@ -836,6 +836,7 @@ public static class DependencyInjection
         services.AddScoped<Costing.Domain.EndOfDay.IEndOfDayPhotoStore, EndOfDayPhotoStore>();
         services.AddScoped<ISupplierRepository, SupplierRepository>();
         services.AddScoped<IPurchaseCategoryRepository, PurchaseCategoryRepository>();
+        services.AddScoped<Domain.Stations.IKitchenStationRepository, KitchenStationRepository>();
         services.AddScoped<ISafeTransactionRepository, SafeTransactionRepository>();
         services.AddScoped<ISupplierLedgerRepository, SupplierLedgerRepository>();
         services.AddScoped<Costing.Application.Approvals.IRecordDescriptions, RecordDescriptions>();
@@ -1442,6 +1443,7 @@ Costing/
                     PosIntegrationController.cs
                     PurchaseOrdersController.cs
                     SettingsController.cs
+                    StationsController.cs
                     SuppliersController.cs
                     UsersController.cs
                 Costing.Api.csproj
@@ -1518,6 +1520,8 @@ Costing/
                     Sales.cs
                 Staff/
                     Staff.cs
+                Stations/
+                    Stations.cs
                 StockCounts/
                     StockCounts.cs
                 Suppliers/
@@ -1587,6 +1591,8 @@ Costing/
                 Staff/
                     PayrollRun.cs
                     StaffMember.cs
+                Stations/
+                    KitchenStation.cs
                 StockCounts/
                     IStockCountRepository.cs
                     StockCount.cs
@@ -1656,10 +1662,12 @@ Costing/
                         20261116233433_AddPurchaseOrders.cs
                         20261117092011_AddEndOfDaySequence.cs
                         20261117103857_AddEndOfDayClosedDaysAndAudit.cs
+                        20261118092632_AddKitchenStations.cs
                         CostingDbContextModelSnapshot.cs
                     PosIntegrationPersistence.cs
                     PurchaseOrderPersistence.cs
                     RetryOnConflictBehavior.cs
+                    StationPersistence.cs
                 Reports/
                     BreakEvenService.cs
                     BurdenedCostService.cs
@@ -1673,6 +1681,7 @@ Costing/
                     CostingTables.cs
                     DailyBreakEvenService.cs
                     FixedAssetService.cs
+                    IntelligenceService.Stations.cs
                     IntelligenceService.cs
                     KpiService.cs
                     ProfitAndLoss.cs
@@ -1697,6 +1706,7 @@ Costing/
                 PosIntegrationApiTests.cs
                 PurchaseOrdersApiTests.cs
                 SettingsApiTests.cs
+                StationsApiTests.cs
                 StockCountApiTests.cs
                 TestApi.cs
             Costing.Application.Tests/
@@ -1709,6 +1719,7 @@ Costing/
                 ExpenseItemImportTests.cs
                 HrIntegrationTests.cs
                 InventoryTests.cs
+                KitchenStationTests.cs
                 MenuSalesFlowTests.cs
                 OpeningStockTests.cs
                 PrepItemImportTests.cs
@@ -1727,6 +1738,7 @@ Costing/
                 EndOfDayTests.cs
                 FixedAssetTests.cs
                 IngredientSwapTests.cs
+                KitchenStationTests.cs
                 MaterialExplosionTests.cs
                 MenuSalesTests.cs
                 PlateCostTests.cs
@@ -1754,6 +1766,7 @@ Costing/
                 PosIntegrationTests.cs
                 PurchaseOrdersTests.cs
                 StaffMealsAndInflationTests.cs
+                StationVarianceTests.cs
                 SupplierAccountsTests.cs
                 TestSystem.cs
                 Till.cs
@@ -1981,6 +1994,11 @@ Costing/
                         staff-meals-page.ts
                         staff-page.spec.ts
                         staff-page.ts
+                        station-variance-page.ts
+                        station-variance.spec.ts
+                        stations-settings.spec.ts
+                        stations-settings.ts
+                        stations.ts
                         stock-card-dialog.spec.ts
                         stock-card-dialog.ts
                         supplier-debts-page.spec.ts

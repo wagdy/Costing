@@ -41,6 +41,7 @@ public sealed class TestCosting
     public ComboStore Combos { get; } = new();
     public FixedAssetStore FixedAssets { get; } = new();
     public BooksLockStore BooksLock { get; } = new();
+    public StationStore Stations { get; } = new();
     public PurchaseOrderStore PurchaseOrders { get; } = new();
     public SalesStore Sales { get; } = new();
     public StaffStore Staff { get; } = new();
@@ -67,6 +68,7 @@ public sealed class TestCosting
         services.AddSingleton<IBusinessCalendar>(new TestCalendar());
         services.AddSingleton<Costing.Application.Treasury.ITaxRate>(TaxRate);
         services.AddSingleton<Costing.Application.EndOfDay.IBooksLock>(BooksLock);
+        services.AddSingleton<Costing.Domain.Stations.IKitchenStationRepository>(Stations);
         services.AddSingleton<IRawMaterialRepository>(Inventory);
         services.AddSingleton<IRecipeRepository>(Inventory.Recipes);
         services.AddSingleton<IRecipeCategoryRepository>(Inventory.RecipeCategories);
@@ -373,6 +375,13 @@ public sealed class BreakageStore : ListStore<BreakageEntry>, IBreakageEntryRepo
         Task.FromResult<IReadOnlyList<BreakageEntry>>(All.Where(b => b.BusinessDate >= from && b.BusinessDate <= to).ToList());
     public Task<BreakageEntry?> GetForTransactionAsync(Guid assetTransactionId, CancellationToken cancellationToken = default) =>
         Task.FromResult(All.SingleOrDefault(b => b.AssetTransactionId == assetTransactionId));
+}
+
+public sealed class StationStore : ListStore<Costing.Domain.Stations.KitchenStation>, Costing.Domain.Stations.IKitchenStationRepository
+{
+    public Task<IReadOnlyList<Costing.Domain.Stations.KitchenStation>> GetAllAsync(CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyList<Costing.Domain.Stations.KitchenStation>>(All.OrderBy(s => s.DisplayOrder).ThenBy(s => s.Name).ToList());
+    public void Remove(Costing.Domain.Stations.KitchenStation station) => All.Remove(station);
 }
 
 public sealed class EndOfDayStore : ListStore<EndOfDayReport>, IEndOfDayRepository, IEndOfDayPhotoStore

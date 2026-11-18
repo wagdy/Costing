@@ -1,4 +1,5 @@
 import { Component, computed, inject, signal } from '@angular/core';
+import { StationsSettings } from './stations-settings';
 import { FormsModule } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
 import { MatFormFieldModule } from '@angular/material/form-field';
@@ -34,6 +35,7 @@ interface Draft {
 @Component({
   selector: 'app-settings-page',
   imports: [
+    StationsSettings,
     FormsModule,
     MatButtonModule,
     MatFormFieldModule,
@@ -75,6 +77,8 @@ interface Draft {
           }
         </div>
       </section>
+
+      <app-stations-settings [tolerance]="savedTolerance" />
 
       <section class="block">
         <h2>Plate cost <span class="inline-ar">التكلفة الكلية للطبق</span></h2>

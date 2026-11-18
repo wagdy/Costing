@@ -135,6 +135,16 @@ const countSorts: SortOption<CountSort>[] = [
                   }
                 </mat-select>
               </mat-form-field>
+              @if (p.stations?.length) {
+                <mat-form-field subscriptSizing="dynamic" class="category">
+                  <mat-label>By station · حسب قسم المطبخ</mat-label>
+                  <mat-select (selectionChange)="startStation($event.value)" [disabled]="starting()" aria-label="Spot count by station">
+                    @for (s of p.stations; track s.stationId) {
+                      <mat-option [value]="s.stationId">{{ s.name }}{{ s.nameAr ? ' · ' + s.nameAr : '' }} ({{ s.materialIds.length }})</mat-option>
+                    }
+                  </mat-select>
+                </mat-form-field>
+              }
             </div>
             @if (!p.presets[0].materialIds.length) {
               <p class="muted small">
@@ -434,6 +444,14 @@ export class CountsPage {
     const category = this.presets()?.categories.find((c) => c.categoryId === categoryId);
     if (category) {
       void this.startSpot(category.materialIds, category.nameAr ? `${category.name} · ${category.nameAr}` : category.name);
+    }
+  }
+
+  // A station's materials and prep items, for a count at its shift's close; printed blind from the sheet.
+  protected startStation(stationId: string): void {
+    const station = this.presets()?.stations?.find((s) => s.stationId === stationId);
+    if (station) {
+      void this.startSpot(station.materialIds, station.nameAr ? `${station.name} · ${station.nameAr}` : station.name);
     }
   }
 

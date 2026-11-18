@@ -91,8 +91,10 @@ public sealed record VarianceReport(
 public sealed record SpoilageEntry(
     Guid SpoilageId, DateTime RecordedAtUtc, string? RecordedBy, IReadOnlyList<SpoilageEntryLine> Lines, decimal? Value);
 
+// ResponsibleStationId: the kitchen or bar station held to account for it (none: the material's own).
 public sealed record SpoilageEntryLine(
-    Guid RawMaterialId, string Material, UnitOfMeasure Unit, decimal PurchaseUnitSize, decimal Quantity, string? Reason, decimal? Value);
+    Guid RawMaterialId, string Material, UnitOfMeasure Unit, decimal PurchaseUnitSize, decimal Quantity, string? Reason, decimal? Value,
+    Guid? ResponsibleStationId = null);
 
 // Pillar 3: actual usage against standard, between two posted stock counts. Actual usage is
 // what the counts and the deliveries say left the stores; standard usage is what the recipes
@@ -265,7 +267,8 @@ public sealed class VarianceService(CostingDbContext db, SalesLedger ledger)
                 var entryLines = g
                     .Select(m => new SpoilageEntryLine(
                         m.RawMaterialId, materials[m.RawMaterialId].Name, materials[m.RawMaterialId].Unit,
-                        materials[m.RawMaterialId].PurchaseUnitSize, -m.Quantity, m.Note, Money(-m.Quantity * m.UnitCost)))
+                        materials[m.RawMaterialId].PurchaseUnitSize, -m.Quantity, m.Note, Money(-m.Quantity * m.UnitCost),
+                        m.ResponsibleStationId ?? materials[m.RawMaterialId].KitchenStationId))
                     .OrderBy(l => l.Material)
                     .ToList();
                 return new SpoilageEntry(

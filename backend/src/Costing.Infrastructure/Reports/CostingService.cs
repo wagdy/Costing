@@ -59,7 +59,9 @@ public sealed record MaterialCostDto(
     // Costed by its recipe: what has no price inside it ("Cream", "Alfredo base: Cream").
     IReadOnlyList<string>? RecipeCostMissing = null,
     // Counted every day, in the daily critical items' spot count.
-    bool IsSpotCheckItem = false);
+    bool IsSpotCheckItem = false,
+    // The kitchen or bar station that keeps it (none: the shared station).
+    Guid? KitchenStationId = null);
 
 // One line of the Recipe Costing Template. Quantity is the Edible Portion (EP) for the whole
 // recipe in the material's Unit; APS/Unit and EPS/Unit are per PurchaseUnit, as prices are written.
@@ -123,7 +125,9 @@ public sealed record RecipeCostCard(
     decimal? PrepTimeMinutes = PlateActivity.DefaultPrepTimeMinutes,
     decimal ComplexityWeight = PlateActivity.DefaultComplexityWeight,
     // A combo offer sold under this number: costed by the dishes in it (ComboOffer).
-    Guid? ComboOfferId = null);
+    Guid? ComboOfferId = null,
+    // The kitchen or bar station that makes it.
+    Guid? KitchenStationId = null);
 
 // Where a theoretical cost report's sales come from: the till's closed orders (and the online ones),
 // or quantities an accountant typed in.
@@ -247,7 +251,7 @@ public sealed partial class CostingService(CostingDbContext db, IBusinessCalenda
                 Money(m.AverageCost * Math.Max(m.QuantityOnHand, 0)),
                 Money(last?.UnitCost * m.PurchaseUnitSize), last?.OccurredAtUtc, m.AverageCost, m.Kind, m.CategoryId,
                 categories.GetValueOrDefault(m.CategoryId)?.Kind == CategoryKind.Expenses, costs.Of(m.Id).PerUnit, costs.Of(m.Id).ByRecipe,
-                costs.Of(m.Id).ByRecipe ? costs.Of(m.Id).Missing : [], m.IsSpotCheckItem);
+                costs.Of(m.Id).ByRecipe ? costs.Of(m.Id).Missing : [], m.IsSpotCheckItem, m.KitchenStationId);
         }).ToList();
     }
 
@@ -686,7 +690,8 @@ public sealed partial class CostingService(CostingDbContext db, IBusinessCalenda
             recipe?.Id, usesBaseRecipe ? null : recipe?.Name, linkedTo, standalone, recipe?.PlannedPrice, usesBaseRecipe,
             recipe?.IsDeleted ?? false, recipe?.DeletedAtUtc, recipe?.DeletedBy,
             usesBaseRecipe ? null : own?.Id, usesBaseRecipe ? null : own?.Name, usesBaseRecipe ? null : own?.NameAr,
-            recipe is null ? PlateActivity.DefaultPrepTimeMinutes : recipe.PrepTimeMinutes, recipe?.ComplexityWeight ?? PlateActivity.DefaultComplexityWeight);
+            recipe is null ? PlateActivity.DefaultPrepTimeMinutes : recipe.PrepTimeMinutes, recipe?.ComplexityWeight ?? PlateActivity.DefaultComplexityWeight,
+            KitchenStationId: usesBaseRecipe ? null : recipe?.KitchenStationId);
     }
 
     // One sold line of a settled order in the month, net of refunds, with what its ingredients

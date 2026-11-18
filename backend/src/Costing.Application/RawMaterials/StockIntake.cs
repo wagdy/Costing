@@ -69,12 +69,15 @@ public sealed record RecordSpoilageCommand(Guid SpoilageId, IReadOnlyList<Spoila
     : IRequest<IReadOnlyList<RawMaterialDto>>, IRetryOnConflict;
 
 // Quantity in the material's own unit. Reason: expired, spoiled, dropped, damaged packaging.
-public sealed record SpoilageLine(Guid RawMaterialId, decimal Quantity, string Reason);
+// ResponsibleStationId: the kitchen or bar station held to account for it (القسم المسؤول), the
+// material's own unless another is named (the hot kitchen spoiling a shared item).
+public sealed record SpoilageLine(Guid RawMaterialId, decimal Quantity, string Reason, Guid? ResponsibleStationId = null);
 
 internal sealed class RecordSpoilageCommandHandler(
     IRawMaterialRepository materials,
     IStockMovementRepository movements,
     IPurchaseCategoryRepository categories,
+    Costing.Domain.Stations.IKitchenStationRepository stations,
     IUnitOfWork unitOfWork) : IRequestHandler<RecordSpoilageCommand, IReadOnlyList<RawMaterialDto>>
 {
     public async Task<IReadOnlyList<RawMaterialDto>> Handle(RecordSpoilageCommand request, CancellationToken cancellationToken)
@@ -84,8 +87,12 @@ internal sealed class RecordSpoilageCommandHandler(
 
         if (!await movements.ExistsAsync(request.SpoilageId, StockMovementReason.Spoilage, cancellationToken))
         {
+            foreach (var station in request.Lines.Select(l => l.ResponsibleStationId).OfType<Guid>().Distinct())
+                if (await stations.GetByIdAsync(station, cancellationToken) is null)
+                    throw new DomainException("That station is no longer on the list: choose another. · هذا القسم غير موجود.");
             foreach (var line in request.Lines)
-                movements.Add(byId[line.RawMaterialId].RecordSpoilage(line.Quantity, request.SpoilageId, line.Reason, request.RecordedBy));
+                movements.Add(byId[line.RawMaterialId].RecordSpoilage(
+                    line.Quantity, request.SpoilageId, line.Reason, request.RecordedBy, line.ResponsibleStationId));
 
             await unitOfWork.SaveChangesAsync(cancellationToken);
         }

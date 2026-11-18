@@ -27,6 +27,7 @@ import { FilterOption, FilterSelect } from '../shared/filter-select';
 import { SearchField } from '../shared/search-field';
 import { SortOption, SortState, smartMatch, sortItems } from '../shared/smart-search';
 import { SortControl } from '../shared/sort-control';
+import { Stations } from './stations';
 
 type PrepSort = 'name' | 'category' | 'batchCost' | 'unitCost' | 'stock' | 'made';
 
@@ -82,6 +83,7 @@ const prepSorts: SortOption<PrepSort>[] = [
         <app-search-field [(value)]="search" />
         <div class="pills">
           <app-filter-select label="Category · القسم" icon="category" [options]="categoryFilters()" [(value)]="category" />
+          <app-filter-select label="Station · القسم التشغيلي" icon="soup_kitchen" [options]="stationFilters()" [(value)]="station" />
           <app-sort-control [options]="sorts" [(sort)]="sort" />
         </div>
       </div>
@@ -111,6 +113,7 @@ const prepSorts: SortOption<PrepSort>[] = [
           <thead>
             <tr>
               <th>Prep item<span class="ar">الصنف</span></th>
+              <th>Station <app-info-tip tip="kitchenStation" /><span class="ar">القسم التشغيلي</span></th>
               <th class="num">One batch<span class="ar">الدفعة</span></th>
               <th class="num">By its recipe <app-info-tip tip="prepStandard" /><span class="ar">التكلفة المعيارية</span></th>
               <th class="num">In stock at <app-info-tip tip="prepAverage" /><span class="ar">متوسط التكلفة</span></th>
@@ -123,7 +126,7 @@ const prepSorts: SortOption<PrepSort>[] = [
           <tbody>
             @for (r of waiting(); track r.id) {
               <tr class="pending-deletion">
-                <td colspan="8">
+                <td colspan="9">
                   {{ r.summary }}
                   <div>
                     <span class="pending-badge">{{ pendingLabel(r).en }}<span class="ar">{{ pendingLabel(r).ar }}</span></span>
@@ -154,6 +157,17 @@ const prepSorts: SortOption<PrepSort>[] = [
                   } @else if (p.missingPrices.length) {
                     <div class="warn small">No cost yet: {{ p.missingPrices.join(', ') }}</div>
                   }
+                </td>
+                <td class="station" (click)="$event.stopPropagation()">
+                  <mat-select class="station-select" [value]="p.kitchenStationId ?? ''" (selectionChange)="setStation(p, $event.value || null)"
+                    [aria-label]="'Station of ' + p.name" panelWidth="auto">
+                    <mat-option value="">{{ stations.shared()?.name ?? 'Shared' }} (none)</mat-option>
+                    @for (s of stations.active(); track s.id) {
+                      @if (!s.isShared) {
+                        <mat-option [value]="s.id">{{ s.name }}</mat-option>
+                      }
+                    }
+                  </mat-select>
                 </td>
                 <td class="num">{{ p.batchQuantity / p.displayUnitSize | number: '1.0-3' }} {{ p.displayUnit }}</td>
                 <td class="num">{{ p.standardCostPerDisplayUnit === null ? '—' : (p.standardCostPerDisplayUnit | money) + ' / ' + p.displayUnit }}</td>
@@ -188,6 +202,11 @@ const prepSorts: SortOption<PrepSort>[] = [
   `,
   styleUrl: './costing.scss',
   styles: `
+    .station-select {
+      min-width: 120px;
+      max-width: 170px;
+      font-size: 13px;
+    }
     .star {
       color: var(--mat-sys-on-surface-variant);
 
@@ -224,6 +243,9 @@ export class PrepItemsPage {
   protected readonly categories = signal<RecipeCategory[]>([]);
   protected readonly category = signal('');
   protected readonly uncategorized = 'none';
+  protected readonly station = signal('');
+  protected readonly stations = inject(Stations);
+  protected readonly stationFilters = computed<FilterOption[]>(() => this.stations.filter(this.items(), (p) => p.kitchenStationId));
   protected readonly sorts = prepSorts;
   protected readonly sort = signal<SortState<PrepSort>>({ key: 'name', direction: 1 });
 
@@ -243,6 +265,7 @@ export class PrepItemsPage {
     const found = this.items().filter(
       (p) =>
         smartMatch(this.search(), p.name, p.code, this.categoryName(p)) &&
+        this.stations.matches(this.station(), p.kitchenStationId) &&
         (!category || (category === this.uncategorized ? !p.recipeCategoryId : p.recipeCategoryId === category)),
     );
     return sortItems(found, this.sort(), (p, key) => {
@@ -275,6 +298,19 @@ export class PrepItemsPage {
     });
     void this.load();
     void this.approvals.refresh();
+    void this.stations.load();
+  }
+
+  // The station that makes and keeps it (null: none, the shared station's).
+  protected async setStation(item: PrepItem, stationId: string | null): Promise<void> {
+    try {
+      await firstValueFrom(this.api.assignMaterialsStation([item.id], stationId));
+      this.items.update((all) => all.map((x) => (x.id === item.id ? { ...x, kitchenStationId: stationId } : x)));
+      this.notify.info(`${item.name}: ${this.stations.label(stationId)}.`);
+      void this.stations.load(true);
+    } catch (error) {
+      this.notify.error(error, 'The station could not be set.');
+    }
   }
 
   protected categoryName(item: PrepItem): string | null {

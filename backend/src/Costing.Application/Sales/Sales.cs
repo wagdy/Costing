@@ -125,11 +125,12 @@ internal sealed class SaleStockPoster(
             return;
 
         var (relevant, parts) = await recipes.ForSaleAsync(combos, pending.Select(p => p.Item).ToList(), cancellationToken);
-        var needs = pending.Select(p => (p.LineId, p.Reason, Needs: StockRequirements.For(p.Item, relevant, parts))).ToList();
+        var needs = pending.Select(p => (p.LineId, p.Reason, Needs: StockRequirements.For(p.Item, relevant, parts),
+            Station: p.Reason == StockMovementReason.Waste ? StockRequirements.StationOf(p.Item, relevant) : null)).ToList();
         var materialsById = (await materials.GetByIdsAsync(needs.SelectMany(n => n.Needs.Keys).Distinct().ToList(), cancellationToken))
             .ToDictionary(m => m.Id);
 
-        foreach (var (lineId, reason, need) in needs)
+        foreach (var (lineId, reason, need, station) in needs)
         {
             foreach (var (rawMaterialId, quantity) in need)
             {
@@ -143,7 +144,8 @@ internal sealed class SaleStockPoster(
                 movements.Add(reason switch
                 {
                     StockMovementReason.Sale => material.RecordSale(quantity, lineId),
-                    StockMovementReason.Waste => material.RecordWaste(quantity, lineId),
+                    // Voided after the kitchen made it: the waste of the station that made the dish.
+                    StockMovementReason.Waste => material.RecordWaste(quantity, lineId, station),
                     _ => material.RecordVoidReturn(quantity, lineId),
                 });
             }

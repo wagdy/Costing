@@ -96,7 +96,7 @@ public sealed class InventoryController(ISender sender) : ControllerBase
     public async Task<IActionResult> GetRawMaterialsTemplate(CancellationToken cancellationToken)
     {
         var sheet = await sender.Send(new GetRawMaterialSheetQuery(), cancellationToken);
-        return File(RawMaterialWorkbook.Build(sheet.Categories), RawMaterialWorkbook.ContentType, RawMaterialWorkbook.FileName);
+        return File(RawMaterialWorkbook.Build(sheet.Categories, sheet.Stations), RawMaterialWorkbook.ContentType, RawMaterialWorkbook.FileName);
     }
 
     // The raw materials as they are, under the template's columns: edited and imported back, or
@@ -107,7 +107,7 @@ public sealed class InventoryController(ISender sender) : ControllerBase
     public async Task<IActionResult> ExportRawMaterials(CancellationToken cancellationToken)
     {
         var sheet = await sender.Send(new GetRawMaterialSheetQuery(), cancellationToken);
-        return File(RawMaterialWorkbook.Build(sheet.Categories, sheet.Lines), RawMaterialWorkbook.ContentType, RawMaterialWorkbook.ExportFileName);
+        return File(RawMaterialWorkbook.Build(sheet.Categories, sheet.Lines, sheet.Stations), RawMaterialWorkbook.ContentType, RawMaterialWorkbook.ExportFileName);
     }
 
     // A filled-in sheet: each good row a material added or changed, the rest said why not.

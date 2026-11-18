@@ -22,6 +22,16 @@ public static class StockRequirements
     // takes its recipe's stock for the quantity sold × how many of it one combo takes, and through
     // its prep items the stock they were made from, as a sale of that dish would. `recipes` holds
     // the combos' recipes too, by id (RecipeIdsFor). A deleted recipe takes nothing.
+    // The station that made a sold item: its size's recipe's, or the item's (none for a combo, whose
+    // dishes are made at their own stations).
+    public static Guid? StationOf(SoldItem item, IReadOnlyCollection<Recipe> recipes)
+    {
+        var live = recipes.Where(r => !r.IsDeleted && r.Target is not null).ToList();
+        var main = (item.VariantId is { } variantId ? live.FirstOrDefault(r => r.Target == RecipeTarget.ForVariant(item.MenuItemId, variantId)) : null)
+            ?? live.FirstOrDefault(r => r.Target == RecipeTarget.ForMenuItem(item.MenuItemId));
+        return main?.KitchenStationId;
+    }
+
     public static IReadOnlyDictionary<Guid, decimal> For(
         SoldItem item, IReadOnlyCollection<Recipe> recipes, IReadOnlyDictionary<int, IReadOnlyList<ComboPart>>? combos = null)
     {

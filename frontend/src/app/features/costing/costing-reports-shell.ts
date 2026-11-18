@@ -25,6 +25,7 @@ export class CostingReportsShell {
     { path: 'daily-break-even', icon: 'speed', en: 'Daily break-even', ar: 'نقطة التعادل اليومية' },
     { path: 'kpis', icon: 'insights', en: 'KPIs', ar: 'المؤشرات' },
     { path: 'break-even', icon: 'balance', en: 'Break-even', ar: 'نقطة التعادل' },
+    { path: 'station-variance', icon: 'soup_kitchen', en: 'Station variance', ar: 'انحراف الأقسام' },
     { path: 'daily-summaries', icon: 'event_note', en: 'Daily summaries', ar: 'ملخصات تقفيل الأيام' },
   ];
   private static readonly endOfDayReaders: CostingTab[] = ['EndOfDay', 'Purchases', 'Financials'];

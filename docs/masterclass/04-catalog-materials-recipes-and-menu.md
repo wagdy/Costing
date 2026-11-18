@@ -364,7 +364,7 @@ public sealed class MaterialExplosion
 
 `RawMaterials.cs`: الإنشاء والتعديل والقائمة. `RawMaterialDto` (حسب تعليقه) بلا تكاليف: الكميات للجميع، والتكاليف عبر `api/costing`.
 
-> 📄 **`backend/src/Costing.Application/RawMaterials/RawMaterials.cs`** — 142 سطر
+> 📄 **`backend/src/Costing.Application/RawMaterials/RawMaterials.cs`** — 145 سطر
 
 ```csharp
 using MediatR;
@@ -397,7 +397,9 @@ public sealed record RawMaterialDto(
     Guid CategoryId,
     string? CategoryAr,
     // Counted every day, in the daily critical items' spot count.
-    bool IsSpotCheckItem = false)
+    bool IsSpotCheckItem = false,
+    // The kitchen or bar station that keeps it (none: the shared station).
+    Guid? KitchenStationId = null)
 {
     public static RawMaterialDto From(RawMaterial material, PurchaseCategory? category) => new(
         material.Id,
@@ -414,7 +416,8 @@ public sealed record RawMaterialDto(
         material.Kind,
         material.CategoryId,
         category?.NameAr,
-        material.IsSpotCheckItem);
+        material.IsSpotCheckItem,
+        material.KitchenStationId);
 }
 
 // The optional parts describe it for costing. PurchaseUnit and PurchaseUnitSize go together:
@@ -1646,7 +1649,7 @@ internal sealed class RestoreExpenseItemHandler(
 
 `Recipes.cs`: `SetRecipeCommand` (وصفة طبق: المكونات بـ EP والـ Yield، الحصص، الفئة، والهدف في المنيو)، الحذف كعلامة (`DeletedAtUtc`) والاستعادة. وصفة فعّالة واحدة لكل هدف (فهرس فريد، الفصل 02).
 
-> 📄 **`backend/src/Costing.Application/Recipes/Recipes.cs`** — 248 سطر
+> 📄 **`backend/src/Costing.Application/Recipes/Recipes.cs`** — 251 سطر
 
 ```csharp
 using MediatR;
@@ -1678,7 +1681,9 @@ public sealed record RecipeDto(
     int Portions,
     bool IsDeleted,
     decimal? PrepTimeMinutes = PlateActivity.DefaultPrepTimeMinutes,
-    decimal ComplexityWeight = PlateActivity.DefaultComplexityWeight)
+    decimal ComplexityWeight = PlateActivity.DefaultComplexityWeight,
+    // The kitchen or bar station that makes it.
+    Guid? KitchenStationId = null)
 {
     public static RecipeDto From(Recipe recipe) => new(
         recipe.Id,
@@ -1692,7 +1697,8 @@ public sealed record RecipeDto(
         recipe.Portions,
         recipe.IsDeleted,
         recipe.PrepTimeMinutes,
-        recipe.ComplexityWeight);
+        recipe.ComplexityWeight,
+        recipe.KitchenStationId);
 }
 
 internal static class RecipeWriting
@@ -2302,7 +2308,7 @@ internal sealed class AddRecipesToMenuHandler(IRecipeRepository recipes, IMenuRe
 
 المصنّع **خامة من نوع `Prep`** لها وصفة دفعة. القائمة تعرض: تكلفته بوصفته بأسعار اليوم (`RecipeCosts`)، وتكلفة الدفعات الموجودة على الرف (المتوسط)، والرصيد. التعديل للمدير، وغيره يطلب (`RequestPrepItemChangeCommand`).
 
-> 📄 **`backend/src/Costing.Application/Production/PrepItems.cs`** — 500 سطر
+> 📄 **`backend/src/Costing.Application/Production/PrepItems.cs`** — 503 سطر
 
 ```csharp
 using System.Globalization;
@@ -2377,7 +2383,9 @@ public sealed record PrepItemDto(
     bool IsSpotCheckItem = false,
     // A batch's prep time (null: the ordinary 10 minutes) and complexity.
     decimal? PrepTimeMinutes = PlateActivity.DefaultPrepTimeMinutes,
-    decimal ComplexityWeight = PlateActivity.DefaultComplexityWeight);
+    decimal ComplexityWeight = PlateActivity.DefaultComplexityWeight,
+    // The kitchen or bar station that makes and keeps it.
+    Guid? KitchenStationId = null);
 
 public sealed record PrepIngredientEntry(Guid RawMaterialId, decimal Quantity, decimal? YieldPercent = null);
 
@@ -2445,7 +2453,8 @@ internal static class PrepItemCosting
             recipe?.RecipeCategoryId,
             item.IsSpotCheckItem,
             recipe is null ? PlateActivity.DefaultPrepTimeMinutes : recipe.PrepTimeMinutes,
-            recipe?.ComplexityWeight ?? PlateActivity.DefaultComplexityWeight);
+            recipe?.ComplexityWeight ?? PlateActivity.DefaultComplexityWeight,
+            item.KitchenStationId);
     }
 
     // Would `prepItemId` end up made from itself, through the ingredients given and the other
@@ -2803,6 +2812,161 @@ internal sealed class RequestPrepItemChangeHandler(IApprovalRequestRepository re
         requests.Add(asked);
         await unitOfWork.SaveChangesAsync(cancellationToken);
         return ApprovalResultDto.Of(asked);
+    }
+}
+```
+
+
+**الأقسام:** `Stations.cs` يحفظ القسم (كود واسم غير مكررين)، ويحذفه (ما كان له يصبح بلا قسم = القسم المشترك)، ويعيّن قسمًا لخامة أو لكثير منها دفعة واحدة، أو لطبق. القسم غير المفعّل لا يُعطى شيئًا جديدًا (`EnsureUsableAsync`). وشيت الخامات له عمود قسم يُقرأ بالاسم أو الاسم العربي أو الكود.
+
+> 📄 **`backend/src/Costing.Application/Stations/Stations.cs`** — 147 سطر
+
+```csharp
+using MediatR;
+using Costing.Application.Common;
+using Costing.Application.RawMaterials;
+using Costing.Domain.Common;
+using Costing.Domain.RawMaterials;
+using Costing.Domain.Recipes;
+using Costing.Domain.Stations;
+
+namespace Costing.Application.Stations;
+
+// The kitchen and bar stations (أقسام التشغيل والمطبخ), a manager's to set on Cost settings: each
+// with its own variance tolerance if it has one, and how many materials, prep items and dishes it
+// keeps. Each material (a prep item too) and each dish is given one; unassigned, they are the shared
+// station's. Seven are there to start with (grill, pizza & bakery, hot kitchen, cold & salads, bar &
+// barista, pastry & desserts, shared), each changed or taken away as the kitchen works.
+
+public sealed record KitchenStationDto(
+    Guid Id, string Name, string? NameAr, string? Code, int DisplayOrder, decimal? TargetVarianceTolerancePercent, bool IsActive, bool IsShared,
+    int Materials, int Recipes)
+{
+    public static KitchenStationDto From(KitchenStation station, int materials = 0, int recipes = 0) => new(
+        station.Id, station.Name, station.NameAr, station.Code, station.DisplayOrder, station.TargetVarianceTolerancePercent, station.IsActive,
+        station.IsShared, materials, recipes);
+}
+
+public sealed record GetKitchenStationsQuery : IRequest<IReadOnlyList<KitchenStationDto>>;
+
+// Made on its first save (its id made by the page), changed after.
+public sealed record SaveKitchenStationCommand(
+    Guid Id, string Name, string? NameAr, string? Code, int DisplayOrder, decimal? TargetVarianceTolerancePercent, bool IsActive = true)
+    : IRequest<KitchenStationDto>;
+
+// Taken away: what it kept falls back to the shared station.
+public sealed record DeleteKitchenStationCommand(Guid Id) : IRequest;
+
+// Materials and prep items given a station (or none: the shared station's), one or many at once.
+public sealed record AssignMaterialStationCommand(IReadOnlyList<Guid> RawMaterialIds, Guid? StationId) : IRequest<int>;
+
+// A dish's recipe given the station that makes it (or none).
+public sealed record AssignRecipeStationCommand(Guid RecipeId, Guid? StationId) : IRequest<Guid?>;
+
+internal static class StationChecks
+{
+    // A station to give something to: one there, and in use.
+    public static async Task EnsureUsableAsync(this IKitchenStationRepository stations, Guid? stationId, CancellationToken cancellationToken)
+    {
+        if (stationId is not { } id)
+            return;
+        var station = await stations.GetByIdAsync(id, cancellationToken)
+            ?? throw new DomainException("That station is no longer on the list: choose another. · هذا القسم غير موجود.");
+        if (!station.IsActive)
+            throw new DomainException($"{station.Name} is not in use: choose another, or put it back in use on Cost settings. · القسم غير مفعل.");
+    }
+}
+
+internal sealed class GetKitchenStationsHandler(IKitchenStationRepository stations, IRawMaterialRepository materials, IRecipeRepository recipes)
+    : IRequestHandler<GetKitchenStationsQuery, IReadOnlyList<KitchenStationDto>>
+{
+    public async Task<IReadOnlyList<KitchenStationDto>> Handle(GetKitchenStationsQuery request, CancellationToken cancellationToken)
+    {
+        var kept = (await materials.GetAllAsync(cancellationToken)).Where(m => m.KitchenStationId is not null && !m.IsArchived)
+            .GroupBy(m => m.KitchenStationId!.Value).ToDictionary(g => g.Key, g => g.Count());
+        var made = (await recipes.GetAllAsync(cancellationToken)).Where(r => r.KitchenStationId is not null && !r.IsDeleted)
+            .GroupBy(r => r.KitchenStationId!.Value).ToDictionary(g => g.Key, g => g.Count());
+        return (await stations.GetAllAsync(cancellationToken))
+            .OrderBy(s => s.DisplayOrder).ThenBy(s => s.Name, StringComparer.CurrentCultureIgnoreCase)
+            .Select(s => KitchenStationDto.From(s, kept.GetValueOrDefault(s.Id), made.GetValueOrDefault(s.Id)))
+            .ToList();
+    }
+}
+
+internal sealed class SaveKitchenStationHandler(IKitchenStationRepository stations, IUnitOfWork unitOfWork)
+    : IRequestHandler<SaveKitchenStationCommand, KitchenStationDto>
+{
+    public async Task<KitchenStationDto> Handle(SaveKitchenStationCommand request, CancellationToken cancellationToken)
+    {
+        if (request.Id == Guid.Empty)
+            throw new DomainException("A station needs its id.");
+        var all = await stations.GetAllAsync(cancellationToken);
+        var code = string.IsNullOrWhiteSpace(request.Code) ? null : request.Code.Trim().ToUpperInvariant();
+        if (code is not null && all.Any(s => s.Id != request.Id && s.Code == code))
+            throw new DomainException($"Another station has the code {code}: give this one another. · الكود مستخدم لقسم آخر.");
+        if (all.FirstOrDefault(s => s.Id != request.Id && string.Equals(s.Name, request.Name?.Trim(), StringComparison.CurrentCultureIgnoreCase)) is { } same)
+            throw new DomainException($"There is a station called {same.Name} already. · يوجد قسم بنفس الاسم.");
+
+        var station = await stations.GetByIdAsync(request.Id, cancellationToken);
+        if (station is null)
+        {
+            station = new KitchenStation(
+                request.Id, request.Name, request.NameAr, code, request.DisplayOrder, request.TargetVarianceTolerancePercent, request.IsActive);
+            stations.Add(station);
+        }
+        else
+        {
+            station.Change(request.Name, request.NameAr, code, request.DisplayOrder, request.TargetVarianceTolerancePercent, request.IsActive);
+        }
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+        return KitchenStationDto.From(station);
+    }
+}
+
+internal sealed class DeleteKitchenStationHandler(IKitchenStationRepository stations, IRawMaterialRepository materials, IRecipeRepository recipes, IUnitOfWork unitOfWork)
+    : IRequestHandler<DeleteKitchenStationCommand>
+{
+    public async Task Handle(DeleteKitchenStationCommand request, CancellationToken cancellationToken)
+    {
+        var station = await stations.GetByIdAsync(request.Id, cancellationToken) ?? throw new NotFoundException("Station", request.Id);
+        // What it kept falls back to the shared station (the database does the waste held against it).
+        foreach (var material in (await materials.GetAllAsync(cancellationToken)).Where(m => m.KitchenStationId == station.Id))
+            material.AssignStation(null);
+        foreach (var recipe in (await recipes.GetAllAsync(cancellationToken)).Where(r => r.KitchenStationId == station.Id))
+            recipe.AssignStation(null);
+        stations.Remove(station);
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+    }
+}
+
+internal sealed class AssignMaterialStationHandler(IKitchenStationRepository stations, IRawMaterialRepository materials, IUnitOfWork unitOfWork)
+    : IRequestHandler<AssignMaterialStationCommand, int>
+{
+    public const int MaxAtOnce = 2_000;
+
+    public async Task<int> Handle(AssignMaterialStationCommand request, CancellationToken cancellationToken)
+    {
+        if (request.RawMaterialIds.Count > MaxAtOnce)
+            throw new DomainException($"Give at most {MaxAtOnce:N0} materials a station at once.");
+        await stations.EnsureUsableAsync(request.StationId, cancellationToken);
+        var byId = await materials.GetRequiredByIdsAsync(request.RawMaterialIds.Distinct().ToList(), cancellationToken);
+        foreach (var material in byId.Values)
+            material.AssignStation(request.StationId);
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+        return byId.Count;
+    }
+}
+
+internal sealed class AssignRecipeStationHandler(IKitchenStationRepository stations, IRecipeRepository recipes, IUnitOfWork unitOfWork)
+    : IRequestHandler<AssignRecipeStationCommand, Guid?>
+{
+    public async Task<Guid?> Handle(AssignRecipeStationCommand request, CancellationToken cancellationToken)
+    {
+        await stations.EnsureUsableAsync(request.StationId, cancellationToken);
+        var recipe = await recipes.GetByIdAsync(request.RecipeId, cancellationToken) ?? throw new NotFoundException("Recipe", request.RecipeId);
+        recipe.AssignStation(request.StationId);
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+        return recipe.KitchenStationId;
     }
 }
 ```
@@ -3774,7 +3938,7 @@ internal static class SaleRecipes
 - **التقرير النظري (`TheoreticalCostReport`):** لكل صنف مُباع في الفترة: الكمية × تكلفة وصفته = تكلفة المبيعات النظرية، مقابل إيراده. (يُستخدم في الـ KPIs والفروقات، الفصل 06.)
 - **ورقة المبيعات اليدوية** والإعدادات (الهدف، التكاليف المشتركة).
 
-> 📄 **`backend/src/Costing.Infrastructure/Reports/CostingService.cs`** — 817 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Reports/CostingService.cs`** — 822 سطر
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
@@ -3838,7 +4002,9 @@ public sealed record MaterialCostDto(
     // Costed by its recipe: what has no price inside it ("Cream", "Alfredo base: Cream").
     IReadOnlyList<string>? RecipeCostMissing = null,
     // Counted every day, in the daily critical items' spot count.
-    bool IsSpotCheckItem = false);
+    bool IsSpotCheckItem = false,
+    // The kitchen or bar station that keeps it (none: the shared station).
+    Guid? KitchenStationId = null);
 
 // One line of the Recipe Costing Template. Quantity is the Edible Portion (EP) for the whole
 // recipe in the material's Unit; APS/Unit and EPS/Unit are per PurchaseUnit, as prices are written.
@@ -3902,7 +4068,9 @@ public sealed record RecipeCostCard(
     decimal? PrepTimeMinutes = PlateActivity.DefaultPrepTimeMinutes,
     decimal ComplexityWeight = PlateActivity.DefaultComplexityWeight,
     // A combo offer sold under this number: costed by the dishes in it (ComboOffer).
-    Guid? ComboOfferId = null);
+    Guid? ComboOfferId = null,
+    // The kitchen or bar station that makes it.
+    Guid? KitchenStationId = null);
 
 // Where a theoretical cost report's sales come from: the till's closed orders (and the online ones),
 // or quantities an accountant typed in.
@@ -4026,7 +4194,7 @@ public sealed partial class CostingService(CostingDbContext db, IBusinessCalenda
                 Money(m.AverageCost * Math.Max(m.QuantityOnHand, 0)),
                 Money(last?.UnitCost * m.PurchaseUnitSize), last?.OccurredAtUtc, m.AverageCost, m.Kind, m.CategoryId,
                 categories.GetValueOrDefault(m.CategoryId)?.Kind == CategoryKind.Expenses, costs.Of(m.Id).PerUnit, costs.Of(m.Id).ByRecipe,
-                costs.Of(m.Id).ByRecipe ? costs.Of(m.Id).Missing : [], m.IsSpotCheckItem);
+                costs.Of(m.Id).ByRecipe ? costs.Of(m.Id).Missing : [], m.IsSpotCheckItem, m.KitchenStationId);
         }).ToList();
     }
 
@@ -4465,7 +4633,8 @@ public sealed partial class CostingService(CostingDbContext db, IBusinessCalenda
             recipe?.Id, usesBaseRecipe ? null : recipe?.Name, linkedTo, standalone, recipe?.PlannedPrice, usesBaseRecipe,
             recipe?.IsDeleted ?? false, recipe?.DeletedAtUtc, recipe?.DeletedBy,
             usesBaseRecipe ? null : own?.Id, usesBaseRecipe ? null : own?.Name, usesBaseRecipe ? null : own?.NameAr,
-            recipe is null ? PlateActivity.DefaultPrepTimeMinutes : recipe.PrepTimeMinutes, recipe?.ComplexityWeight ?? PlateActivity.DefaultComplexityWeight);
+            recipe is null ? PlateActivity.DefaultPrepTimeMinutes : recipe.PrepTimeMinutes, recipe?.ComplexityWeight ?? PlateActivity.DefaultComplexityWeight,
+            KitchenStationId: usesBaseRecipe ? null : recipe?.KitchenStationId);
     }
 
     // One sold line of a settled order in the month, net of refunds, with what its ingredients

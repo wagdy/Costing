@@ -149,7 +149,7 @@ public class WorkbookTests
         Assert.Equal(
             [RawMaterialWorkbook.CodeHeader, RawMaterialWorkbook.NameHeader, RawMaterialWorkbook.CategoryHeader, RawMaterialWorkbook.UnitHeader,
              RawMaterialWorkbook.PurchaseUnitHeader, RawMaterialWorkbook.HoldsHeader, RawMaterialWorkbook.CostHeader, RawMaterialWorkbook.ReorderHeader,
-             RawMaterialWorkbook.YieldHeader],
+             RawMaterialWorkbook.YieldHeader, RawMaterialWorkbook.StationHeader],
             sheet.Row(1).CellsUsed().Select(c => c.GetString()));
         // Nothing to import on the template itself; the examples are on its own sheet.
         Assert.Empty(sheet.RowsUsed().Skip(1));

@@ -6,6 +6,7 @@ import { MatDialog } from '@angular/material/dialog';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatIconModule } from '@angular/material/icon';
 import { MatInputModule } from '@angular/material/input';
+import { MatMenuModule } from '@angular/material/menu';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatSelectModule } from '@angular/material/select';
 import { MatTooltipModule } from '@angular/material/tooltip';
@@ -26,6 +27,7 @@ import { FilterOption, FilterSelect } from '../shared/filter-select';
 import { SearchField } from '../shared/search-field';
 import { SortOption, SortState, smartMatch, sortItems } from '../shared/smart-search';
 import { SortControl } from '../shared/sort-control';
+import { Stations } from './stations';
 
 type MaterialSort = 'name' | 'category' | 'cost' | 'stock' | 'value' | 'reorder';
 
@@ -57,6 +59,7 @@ const unitGroups: Record<UnitOfMeasure, string> = { Gram: 'Weight · وزن', Mi
     MatFormFieldModule,
     MatIconModule,
     MatInputModule,
+    MatMenuModule,
     MatProgressBarModule,
     MatSelectModule,
     MatTooltipModule,
@@ -70,6 +73,7 @@ const unitGroups: Record<UnitOfMeasure, string> = { Gram: 'Weight · وزن', Mi
       <div class="pills">
         <app-filter-select label="Category · القسم" icon="category" [options]="categoryFilters()" [(value)]="category" />
         <app-filter-select label="Unit · الوحدة" icon="straighten" [options]="unitFilters()" [(value)]="unitFilter" />
+        <app-filter-select label="Station · القسم التشغيلي" icon="soup_kitchen" [options]="stationFilters()" [(value)]="station" />
         <app-sort-control [options]="sorts" [(sort)]="sort" />
       </div>
     </div>
@@ -77,6 +81,17 @@ const unitGroups: Record<UnitOfMeasure, string> = { Gram: 'Weight · وزن', Mi
       <span class="muted shown-count">Showing {{ shown().length }} of {{ materials().length }}<span class="inline-ar">المعروض</span></span>
       <span class="spacer"></span>
       <span class="muted">Stock value · قيمة المخزون: <strong>{{ stockValue() | money }}</strong></span>
+      @if (stations.active().length) {
+        <button mat-stroked-button [matMenuTriggerFor]="stationMenu" [disabled]="busy() || !shown().length">
+          <mat-icon>soup_kitchen</mat-icon> Station for the {{ shown().length }} shown<span class="inline-ar">تعيين القسم للمعروض</span>
+        </button>
+        <mat-menu #stationMenu="matMenu">
+          @for (s of stations.active(); track s.id) {
+            <button mat-menu-item (click)="setStation(shown(), s.id)">{{ s.name }}{{ s.nameAr ? ' · ' + s.nameAr : '' }}</button>
+          }
+          <button mat-menu-item (click)="setStation(shown(), null)">None (shared) · بدون قسم</button>
+        </mat-menu>
+      }
       <button mat-stroked-button (click)="exportExcel()" [disabled]="busy()">
         <mat-icon>download</mat-icon> Export Excel<span class="inline-ar">تصدير إلى إكسل</span>
       </button>
@@ -102,6 +117,7 @@ const unitGroups: Record<UnitOfMeasure, string> = { Gram: 'Weight · وزن', Mi
               <th>Code<span class="ar">الكود</span></th>
               <th>Material<span class="ar">الخامة</span></th>
               <th>Category<span class="ar">الفئة</span></th>
+              <th>Station <app-info-tip tip="kitchenStation" /><span class="ar">القسم التشغيلي</span></th>
               <th>Bought by<span class="ar">وحدة الشراء</span></th>
               <th class="num">AP$ / unit <app-info-tip tip="apUnit" /><span class="ar">تكلفة الشراء</span></th>
               <th class="num">Yield % <app-info-tip tip="yieldPercent" /><span class="ar">نسبة الصافي</span></th>
@@ -131,6 +147,17 @@ const unitGroups: Record<UnitOfMeasure, string> = { Gram: 'Weight · وزن', Mi
                   @if (m.misplaced) {
                     <div class="misplaced" title="Filed in a general expenses category before the kinds were kept apart">In an expenses category: move it</div>
                   }
+                </td>
+                <td class="station" (click)="$event.stopPropagation()">
+                  <mat-select class="station-select" [value]="m.kitchenStationId ?? ''" (selectionChange)="setStation([m], $event.value || null)"
+                    [disabled]="busy()" [aria-label]="'Station of ' + m.name" panelWidth="auto">
+                    <mat-option value="">{{ stations.shared()?.name ?? 'Shared' }} (none)</mat-option>
+                    @for (s of stations.active(); track s.id) {
+                      @if (!s.isShared) {
+                        <mat-option [value]="s.id">{{ s.name }}</mat-option>
+                      }
+                    }
+                  </mat-select>
                 </td>
                 <td>{{ m.purchaseUnit }} <span class="muted">({{ m.purchaseUnitSize | number: '1.0-3' }} {{ unit(m) }})</span></td>
                 <td class="num">
@@ -178,6 +205,11 @@ const unitGroups: Record<UnitOfMeasure, string> = { Gram: 'Weight · وزن', Mi
   `,
   styleUrl: './costing.scss',
   styles: `
+    .station-select {
+      min-width: 120px;
+      max-width: 170px;
+      font-size: 13px;
+    }
     .star {
       color: var(--mat-sys-on-surface-variant);
 
@@ -224,6 +256,9 @@ export class MaterialsPage {
   // ('': all). The units they are counted in, the same way.
   protected readonly category = signal('');
   protected readonly unitFilter = signal('');
+  protected readonly station = signal('');
+  protected readonly stations = inject(Stations);
+  protected readonly stationFilters = computed<FilterOption[]>(() => this.stations.filter(this.materials(), (m) => m.kitchenStationId));
   protected readonly sorts = materialSorts;
   protected readonly sort = signal<SortState<MaterialSort>>({ key: 'name', direction: 1 });
   protected readonly categories = computed(() => {
@@ -255,6 +290,7 @@ export class MaterialsPage {
       (m) =>
         (!category || m.categoryId === category) &&
         (!unit || m.unit === unit) &&
+        this.stations.matches(this.station(), m.kitchenStationId) &&
         smartMatch(this.search(), m.name, m.code, m.category),
     );
     return sortItems(found, this.sort(), (m, key) => {
@@ -280,6 +316,27 @@ export class MaterialsPage {
 
   constructor() {
     void this.load();
+    void this.stations.load();
+  }
+
+  // Given a station (null: none, the shared station's), one or every material shown.
+  protected async setStation(materials: MaterialCost[], stationId: string | null): Promise<void> {
+    const ids = materials.map((m) => m.id);
+    if (!ids.length) {
+      return;
+    }
+    this.busy.set(true);
+    try {
+      await firstValueFrom(this.api.assignMaterialsStation(ids, stationId));
+      const chosen = new Set(ids);
+      this.materials.update((all) => all.map((m) => (chosen.has(m.id) ? { ...m, kitchenStationId: stationId } : m)));
+      this.notify.info(`${ids.length === 1 ? materials[0].name : `${ids.length} materials`}: ${this.stations.label(stationId)}.`);
+      void this.stations.load(true);
+    } catch (error) {
+      this.notify.error(error, 'The station could not be set.');
+    } finally {
+      this.busy.set(false);
+    }
   }
 
   protected unit(m: MaterialCost): string {

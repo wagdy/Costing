@@ -20,6 +20,7 @@ export class IntelligenceShell {
     { path: 'prices', icon: 'price_change', en: 'Price variance & recipe impact', ar: 'انحراف الأسعار وأثره' },
     { path: 'orders', icon: 'shopping_basket', en: 'Smart order planner', ar: 'تخطيط الطلبيات' },
     { path: 'consumption', icon: 'compare_arrows', en: 'Theoretical vs actual', ar: 'النظري مقابل الفعلي' },
+    { path: 'stations', icon: 'soup_kitchen', en: 'Station variance', ar: 'انحراف الأقسام' },
     { path: 'abc', icon: 'stacked_bar_chart', en: 'ABC & days on hand', ar: 'تصنيف ABC وكفاية المخزون' },
     { path: 'menu', icon: 'grid_view', en: 'Menu engineering', ar: 'هندسة المنيو والربحية' },
     { path: 'burdened', icon: 'layers', en: 'Burdened plate cost', ar: 'التكلفة الكلية للطبق' },

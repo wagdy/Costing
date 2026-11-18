@@ -470,7 +470,7 @@ describe('a recipe', () => {
     it('is read-only, with Edit and Delete for whoever may change it', async () => {
       const { el } = await render('view', { recipeId: 'r1' });
 
-      expect(el.querySelector('input, mat-select')).toBeNull();
+      expect(el.querySelector('input, mat-select:not(.station-select)')).toBeNull();
       expect(text(el)).toContain('Burger bun');
       expect(text(el)).toContain('Linked to menu: Classic Cheeseburger');
       expect([...el.querySelectorAll('.toolbar a, .toolbar button')].map(text)).toEqual([
@@ -485,7 +485,7 @@ describe('a recipe', () => {
       can.mockReturnValue(false);
       const { el } = await render('edit', { recipeId: 'r1' });
 
-      expect(el.querySelector('input, mat-select')).toBeNull();
+      expect(el.querySelector('input, mat-select:not(.station-select)')).toBeNull();
       expect(text(el)).not.toContain('Save recipe');
       expect(text(el)).not.toContain('Delete');
     });

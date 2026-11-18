@@ -25,6 +25,7 @@ public static class RawMaterialWorkbook
     public const string CostHeader = "Cost per Purchase Unit · تكلفة وحدة الشراء";
     public const string ReorderHeader = "Reorder Level · حد الطلب";
     public const string YieldHeader = "Yield % · نسبة الصافي";
+    public const string StationHeader = "Station · القسم التشغيلي";
 
     private static readonly Column[] Columns =
     [
@@ -46,6 +47,8 @@ public static class RawMaterialWorkbook
             "Optional: reorder when stock falls to this many purchase units."),
         new("Yield", YieldHeader, ["yield %", "yield", "default yield", "نسبة الصافي", "الصافي"],
             "Optional: what is left after trimming, 1 to 100. Blank: 100 for a new material."),
+        new("Station", StationHeader, ["station", "kitchen station", "kitchen section", "القسم التشغيلي", "قسم المطبخ", "قسم التشغيل"],
+            "Optional: the kitchen or bar station that keeps it, by its name or code (Grill, BAR). Blank leaves it as it is."),
     ];
 
     private static readonly string[] Help =
@@ -59,6 +62,7 @@ public static class RawMaterialWorkbook
         "Unit of Measure: Kg, Liter or Piece (كيلو، لتر، قطعة). A material on the list keeps the unit it is counted in.",
         "Purchase Unit and its Holds: what it is bought in and how many kg, litres or pieces that is, such as carton and 30.",
         "Cost per Purchase Unit: the price to start from. Purchases move the average cost from there.",
+        "Station: the kitchen or bar station that keeps it (القسم التشغيلي), from the list. Blank: none (the shared station's).",
         "Stock on hand is not on the sheet: it comes in by purchases and stock counts. · الرصيد لا يُستورد: يأتي من المشتريات والجرد.",
         "",
         "Exported from Raw materials, the sheet is the list as it is: edit it and import it back, or import it into another installation.",
@@ -66,28 +70,33 @@ public static class RawMaterialWorkbook
 
     private static readonly object[][] Examples =
     [
-        ["ING-001", "Chicken breast", "Poultry", "Kg", "kg", 1, 185, 5, 85],
-        ["ING-002", "Full-cream milk", "Dairy", "Liter", "carton", 12, 504, 2, ""],
-        ["", "Eggs", "Dairy", "Piece", "tray", 30, 127.5, 4, 98],
-        ["", "بقدونس", "Vegetables", "Kg", "", "", "", "", ""],
+        ["ING-001", "Chicken breast", "Poultry", "Kg", "kg", 1, 185, 5, 85, "Grill"],
+        ["ING-002", "Full-cream milk", "Dairy", "Liter", "carton", 12, 504, 2, "", "Bar & Barista"],
+        ["", "Eggs", "Dairy", "Piece", "tray", 30, 127.5, 4, 98, ""],
+        ["", "بقدونس", "Vegetables", "Kg", "", "", "", "", "", ""],
     ];
 
     // The template: the columns, with dropdowns for the category (the restaurant's own, a new name
     // allowed) and the unit. No rows on the sheet itself: examples there would be imported.
-    public static Stream Build(IReadOnlyList<string> categories) => Build(categories, []);
+    public static Stream Build(IReadOnlyList<string> categories, IReadOnlyList<string>? stations = null) => Build(categories, [], stations);
 
     // The materials written out, under the template's columns.
-    public static Stream Build(IReadOnlyList<string> categories, IReadOnlyList<RawMaterialSheetLine> lines) =>
-        SheetBook.Build(DataSheetName, Columns, Help, Examples,
+    public static Stream Build(IReadOnlyList<string> categories, IReadOnlyList<RawMaterialSheetLine> lines, IReadOnlyList<string>? stations = null)
+    {
+        var lists = new Dictionary<string, SheetList>
+        {
+            ["Category"] = new(categories, true, "A new category", "Not on the list yet: it is added on import. · قسم جديد يُضاف عند الاستيراد."),
+            ["Unit"] = new(SheetUnits.Names, false, "Kg, Liter or Piece", "Write Kg, Liter or Piece (كيلو، لتر، قطعة)."),
+        };
+        if (stations is { Count: > 0 })
+            lists["Station"] = new(stations, false, "A station on the list", "Choose the station from the list. · اختر القسم من القائمة.");
+        return SheetBook.Build(DataSheetName, Columns, Help, Examples,
             lines.Select(l => new object?[]
             {
-                l.Code, l.Name, l.Category, l.Unit, l.PurchaseUnit, l.PurchaseUnitHolds, l.Cost, l.ReorderLevel, l.YieldPercent,
+                l.Code, l.Name, l.Category, l.Unit, l.PurchaseUnit, l.PurchaseUnitHolds, l.Cost, l.ReorderLevel, l.YieldPercent, l.Station,
             }).ToList(),
-            new Dictionary<string, SheetList>
-            {
-                ["Category"] = new(categories, true, "A new category", "Not on the list yet: it is added on import. · قسم جديد يُضاف عند الاستيراد."),
-                ["Unit"] = new(SheetUnits.Names, false, "Kg, Liter or Piece", "Write Kg, Liter or Piece (كيلو، لتر، قطعة)."),
-            });
+            lists);
+    }
 
     // The rows of a filled-in sheet. Blank rows are left out.
     public static IReadOnlyList<RawMaterialSheetRow> Read(Stream stream) =>
@@ -103,6 +112,7 @@ public static class RawMaterialWorkbook
                 r.Text("Holds"),
                 r.Text("ReorderLevel"),
                 // 85% typed into a cell is 0.85 kept as a percentage: read as it shows.
-                r.Shown("Yield") is { } shown && shown.EndsWith('%') ? shown : r.Text("Yield")))
+                r.Shown("Yield") is { } shown && shown.EndsWith('%') ? shown : r.Text("Yield"),
+                r.Text("Station")))
             .ToList();
 }

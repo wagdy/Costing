@@ -163,12 +163,66 @@ export interface ConsumptionRow {
   evaluation: VarianceEvaluation;
   // Staff meals, hospitality and tastings: taken on purpose, out of the actual usage judged.
   staffMeals?: number;
+  // The station it is reported under (the shared station's when it has none).
+  kitchenStationId?: string | null;
 }
 
 export interface SoldWithoutRecipe {
   itemCode: string;
   menuItem: string;
   quantity: number;
+}
+
+// How a station stands against its tolerance: within three quarters of it, near it, or past it.
+export type StationStatus = 'WithinTarget' | 'Watch' | 'HighLoss';
+
+export const stationStatusLabels: Record<StationStatus, { en: string; ar: string }> = {
+  WithinTarget: { en: 'Within target', ar: 'منضبط' },
+  Watch: { en: 'Watch', ar: 'تحت المراقبة' },
+  HighLoss: { en: 'High loss', ar: 'عجز مرتفع' },
+};
+
+export interface StationLossMaterial {
+  rawMaterialId: string;
+  material: string;
+  varianceCost: number;
+  variancePercent: number | null;
+}
+
+// A kitchen or bar station over the period (stationId null: the shared group when there is no
+// shared station): its materials' theoretical and actual cost, the unexplained between them and its
+// share of the theoretical, the waste held against it, and its three materials losing the most.
+export interface StationVariance {
+  stationId: string | null;
+  station: string;
+  stationAr: string | null;
+  code: string | null;
+  isShared: boolean;
+  isActive: boolean;
+  tolerancePercent: number;
+  materials: number;
+  theoreticalConsumptionCost: number;
+  actualConsumptionCost: number;
+  loggedSpoilageWasteCost: number;
+  staffMealsCost: number;
+  unexplainedVarianceCost: number;
+  unexplainedVariancePercent: number | null;
+  overTolerance: number;
+  status: StationStatus;
+  topLossMaterials: StationLossMaterial[];
+}
+
+export interface StationVarianceReport {
+  from: string;
+  to: string;
+  tolerancePercent: number;
+  watchSharePercent: number;
+  stations: StationVariance[];
+  rows: ConsumptionRow[];
+  theoreticalValue: number;
+  actualValue: number;
+  unexplainedValue: number;
+  wasteValue: number;
 }
 
 export interface ConsumptionReport {
@@ -540,6 +594,14 @@ export class IntelligenceApi {
 
   consumptionSheet(from: string, to: string): Observable<Blob> {
     return this.http.get('/api/costing/intelligence/consumption/sheet', { params: { from, to }, responseType: 'blob' });
+  }
+
+  stationVariance(from: string, to: string): Observable<StationVarianceReport> {
+    return this.http.get<StationVarianceReport>('/api/costing/intelligence/station-variance', { params: { from, to } });
+  }
+
+  stationVarianceSheet(from: string, to: string): Observable<Blob> {
+    return this.http.get('/api/costing/intelligence/station-variance/sheet', { params: { from, to }, responseType: 'blob' });
   }
 
   abc(from: string, to: string): Observable<AbcReport> {

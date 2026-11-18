@@ -27,7 +27,9 @@ public sealed record RecipeDto(
     int Portions,
     bool IsDeleted,
     decimal? PrepTimeMinutes = PlateActivity.DefaultPrepTimeMinutes,
-    decimal ComplexityWeight = PlateActivity.DefaultComplexityWeight)
+    decimal ComplexityWeight = PlateActivity.DefaultComplexityWeight,
+    // The kitchen or bar station that makes it.
+    Guid? KitchenStationId = null)
 {
     public static RecipeDto From(Recipe recipe) => new(
         recipe.Id,
@@ -41,7 +43,8 @@ public sealed record RecipeDto(
         recipe.Portions,
         recipe.IsDeleted,
         recipe.PrepTimeMinutes,
-        recipe.ComplexityWeight);
+        recipe.ComplexityWeight,
+        recipe.KitchenStationId);
 }
 
 internal static class RecipeWriting

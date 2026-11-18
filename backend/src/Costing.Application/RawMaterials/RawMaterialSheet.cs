@@ -38,7 +38,9 @@ public sealed record RawMaterialSheetRow(
     string? PurchaseUnit = null,
     string? PurchaseUnitHolds = null,
     string? ReorderLevel = null,
-    string? YieldPercent = null);
+    string? YieldPercent = null,
+    // The kitchen or bar station that keeps it, by its name, Arabic name or code.
+    string? Station = null);
 
 // A material as the sheet writes it, in the sheet's units.
 public sealed record RawMaterialSheetLine(
@@ -50,10 +52,12 @@ public sealed record RawMaterialSheetLine(
     decimal PurchaseUnitHolds,
     decimal? Cost,
     decimal ReorderLevel,
-    decimal YieldPercent);
+    decimal YieldPercent,
+    string? Station = null);
 
-// What the sheet is written from: the materials, and the raw materials categories for its dropdown.
-public sealed record RawMaterialSheet(IReadOnlyList<RawMaterialSheetLine> Lines, IReadOnlyList<string> Categories);
+// What the sheet is written from: the materials, and the raw materials categories and the stations
+// for its dropdowns.
+public sealed record RawMaterialSheet(IReadOnlyList<RawMaterialSheetLine> Lines, IReadOnlyList<string> Categories, IReadOnlyList<string>? Stations = null);
 
 public sealed record ImportedRawMaterial(
     int Row, Guid Id, string Name, string Category, UnitOfMeasure Unit, string PurchaseUnit, decimal? CostPerPurchaseUnit);
@@ -136,13 +140,16 @@ public static class SheetUnits
     public static decimal Factor(UnitOfMeasure unit) => unit == UnitOfMeasure.Piece ? 1m : 1000m;
 }
 
-internal sealed class GetRawMaterialSheetHandler(IRawMaterialRepository materials, IPurchaseCategoryRepository categories)
+internal sealed class GetRawMaterialSheetHandler(
+    IRawMaterialRepository materials, IPurchaseCategoryRepository categories, Costing.Domain.Stations.IKitchenStationRepository stations)
     : IRequestHandler<GetRawMaterialSheetQuery, RawMaterialSheet>
 {
     public async Task<RawMaterialSheet> Handle(GetRawMaterialSheetQuery request, CancellationToken cancellationToken)
     {
         var all = await categories.GetAllAsync(cancellationToken);
         var byId = all.ToDictionary(c => c.Id);
+        var kitchen = await stations.GetAllAsync(cancellationToken);
+        var stationNames = kitchen.ToDictionary(s => s.Id, s => s.Name);
         var lines = (await materials.GetAllAsync(cancellationToken))
             .Where(m => !m.IsArchived && !m.IsPrepItem)
             .Select(m =>
@@ -157,18 +164,20 @@ internal sealed class GetRawMaterialSheetHandler(IRawMaterialRepository material
                     Math.Round(m.PurchaseUnitSize / factor, 3),
                     m.CostPerPurchaseUnit is { } cost ? Math.Round(cost, 4) : null,
                     Math.Round(m.ReorderLevel / m.PurchaseUnitSize, 3),
-                    m.DefaultYieldPercent);
+                    m.DefaultYieldPercent,
+                    m.KitchenStationId is { } station ? stationNames.GetValueOrDefault(station) : null);
             })
             .OrderBy(l => l.Category, StringComparer.CurrentCultureIgnoreCase)
             .ThenBy(l => l.Name, StringComparer.CurrentCultureIgnoreCase)
             .ToList();
         var names = all.Where(c => c.Kind == CategoryKind.RawMaterials).Select(c => c.Name).OrderBy(n => n, StringComparer.CurrentCultureIgnoreCase).ToList();
-        return new RawMaterialSheet(lines, names);
+        return new RawMaterialSheet(lines, names, kitchen.Where(s => s.IsActive).Select(s => s.Name).ToList());
     }
 }
 
 internal sealed class ImportRawMaterialsHandler(
-    IRawMaterialRepository materials, IPurchaseCategoryRepository categories, IApprovalRequestRepository approvals, IUnitOfWork unitOfWork)
+    IRawMaterialRepository materials, IPurchaseCategoryRepository categories, IApprovalRequestRepository approvals,
+    Costing.Domain.Stations.IKitchenStationRepository stations, IUnitOfWork unitOfWork)
     : IRequestHandler<ImportRawMaterialsCommand, RawMaterialImportResult>
 {
     public const int MaxRows = 2000;
@@ -208,6 +217,12 @@ internal sealed class ImportRawMaterialsHandler(
                 known.TryAdd(PurchaseCategory.Normalize(ar), category);
         }
 
+        // Stations by their name, Arabic name or code.
+        var stationsByKey = new Dictionary<string, Costing.Domain.Stations.KitchenStation>();
+        foreach (var station in await stations.GetAllAsync(cancellationToken))
+            foreach (var key in new[] { station.Name, station.NameAr, station.Code }.OfType<string>())
+                stationsByKey.TryAdd(PurchaseCategory.Normalize(key), station);
+
         var created = new List<ImportedRawMaterial>();
         var updated = new List<UpdatedSheetItem>();
         var unchanged = 0;
@@ -228,6 +243,19 @@ internal sealed class ImportRawMaterialsHandler(
             }
 
             var plan = checkedRow.Plan!;
+            // Its station, when the row names one: one on the list, in use.
+            Guid? stationId = null;
+            if (SheetText.Clean(row.Station) is { } stationText)
+            {
+                if (!stationsByKey.TryGetValue(PurchaseCategory.Normalize(stationText), out var station) || !station.IsActive)
+                {
+                    skipped.Add(new SkippedSheetRow(row.Row, name,
+                        $"No station in use called {stationText}: choose one from the list, or add it on Cost settings.",
+                        $"لا يوجد قسم تشغيلي باسم {stationText}: اختره من القائمة أو أضفه من إعدادات التكاليف."));
+                    continue;
+                }
+                stationId = station.Id;
+            }
             var category = plan.Category is null ? null : await CategoryAsync(plan.Category, known, added, cancellationToken);
             RawMaterial material;
             if (plan.Existing is null)
@@ -243,6 +271,8 @@ internal sealed class ImportRawMaterialsHandler(
                     material.SetReorderLevel(reorder * material.PurchaseUnitSize);
                 if (plan.Cost is { } cost)
                     material.SetCost(cost);
+                if (stationId is not null)
+                    material.AssignStation(stationId);
                 materials.Add(material);
                 created.Add(new ImportedRawMaterial(
                     row.Row, material.Id, material.Name, category?.Name ?? PurchaseCategory.GeneralName, material.Unit, material.PurchaseUnit, plan.Cost));
@@ -251,6 +281,11 @@ internal sealed class ImportRawMaterialsHandler(
             {
                 material = plan.Existing;
                 var changes = Apply(material, plan, category);
+                if (stationId is not null && material.KitchenStationId != stationId)
+                {
+                    material.AssignStation(stationId);
+                    changes.Add("Station");
+                }
                 if (changes.Count == 0)
                     unchanged++;
                 else

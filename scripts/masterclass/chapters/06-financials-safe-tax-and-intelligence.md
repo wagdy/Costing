@@ -250,6 +250,24 @@ Star = مطلوب + مربح ؛ Plowhorse = مطلوب فقط ؛ Puzzle = مرب
 
 @@file backend/src/Costing.Api/Controllers/IntelligenceController.cs
 
+### انحراف الأقسام (`IntelligenceService.Stations.cs`)
+
+يعيد استخدام صفوف الاستهلاك نفسها (`GetConsumptionAsync`) ويجمعها بقسم كل خامة (بلا قسم أو قسم محذوف ⇐ القسم المشترك):
+
+```text
+النظري  = Σ (الاستهلاك النظري × متوسط التكلفة الآن)            لخامات القسم
+الفعلي  = Σ (أول + مشتريات − هالك − وجبات − آخر) × المتوسط
+الانحراف = الفعلي − النظري ، ونسبته = الانحراف ÷ النظري × 100
+الهالك المسجل = Σ −الكمية × تكلفتها وقتها، مجمّعًا بـ ResponsibleStationId ?? قسم الخامة  (هالك، إتلاف، مرتجع)
+الحالة: ≤ 75% من السماح منضبط · حتى السماح تحت المراقبة · بعده عجز مرتفع · (نظري صفر واستُهلك شيء ⇐ عجز مرتفع)
+```
+
+السماح هو سماح القسم إن وُجد وإلا سماح الإعدادات. والكميات تبقى لكل خامة بوحدتها، لأن خامات القسم بوحدات مختلفة: القسم يُجمع بالمال فقط. `StationsController` (بقراءة Intelligence أو Reports، لأن صلاحية الكلاس تُضرب مع صلاحية الدالة) يقدم الأقسام وتعيينها والتقرير وشيته (ورقتان: ملخص الأقسام، والتفاصيل حسب القسم).
+
+@@file backend/src/Costing.Infrastructure/Reports/IntelligenceService.Stations.cs
+
+@@file backend/src/Costing.Api/Controllers/StationsController.cs
+
 ### 3.5 تقرير الفروقات بين جردين
 
 @@file backend/src/Costing.Infrastructure/Reports/VarianceService.cs

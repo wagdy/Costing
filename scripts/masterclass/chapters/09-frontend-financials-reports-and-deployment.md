@@ -96,6 +96,12 @@
 
 @@file frontend/src/app/features/costing/consumption-page.ts
 
+`StationVariancePage` (تبويب "انحراف الأقسام" في التحليلات، ورابط في التقارير): بطاقة لكل قسم (شارة الحالة بأيقونة واسم، النظري والفعلي، الانحراف بالمال والنسبة ملوّنًا، الهالك، أعلى 3 خامات)، ثم شريط أفقي لكل قسم بنسبة انحرافه أمام **خط سماحه هو** (المقياس من أعمق فائض أو صفر إلى ما بعد أعلى نسبة أو سماح)، ثم جدول خامات القسم المختار (الضغط على البطاقة أو الشريط يختاره، ومرة أخرى يعرض الكل) واسم الخامة يفتح كارتة الصنف. `Stations` خدمة مشتركة تحمّل الأقسام مرة واحدة وتعطي كل صفحة اسم القسم وفلتره (`filter`, `matches`) والقسم المشترك لما لا قسم له.
+
+@@file frontend/src/app/features/costing/station-variance-page.ts
+
+@@file frontend/src/app/features/costing/stations.ts
+
 @@file frontend/src/app/features/costing/abc-page.ts
 
 @@file frontend/src/app/features/costing/menu-engineering-page.ts
@@ -146,6 +152,10 @@
 `SettingsPage` (إعدادات التكلفة): نسبة تكلفة الطعام المستهدفة، فئات المشروبات، التكاليف المشتركة، المصروفات الشهرية.
 
 @@file frontend/src/app/features/costing/settings-page.ts
+
+`StationsSettings` داخل إعدادات التكاليف: جدول الأقسام قابل للتعديل للمدير (الكود، الاسم، العربي، الترتيب، السماح وفراغه يعني سماح الإعدادات ظاهرًا كتلميح، مفعّل)، وقسم جديد، وحذف بعد تأكيد يذكر عدد الخامات والأطباق التي ستعود للقسم المشترك.
+
+@@file frontend/src/app/features/costing/stations-settings.ts
 
 `PermissionsPage`: صف لكل مستخدم بأقسامه الفعلية، و `TabsDialog` لتعليم الأقسام أو العودة لأقسام الدور.
 

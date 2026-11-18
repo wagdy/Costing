@@ -2291,7 +2291,7 @@ public sealed record CreatePurchaseOrdersRequest(IReadOnlyList<NewPurchaseOrder>
 
 `ReceivePurchaseCommand` (استلام بإذن) و `RecordSpoilageCommand` (هالك: يخرج المخزون بحركة `Spoilage` بالمتوسط). والمعرّف من المتصفح: الضغط مرتين على شبكة ضعيفة يجد الحركة نفسها ولا يكررها.
 
-> 📄 **`backend/src/Costing.Application/RawMaterials/StockIntake.cs`** — 95 سطر
+> 📄 **`backend/src/Costing.Application/RawMaterials/StockIntake.cs`** — 102 سطر
 
 ```csharp
 using MediatR;
@@ -2365,12 +2365,15 @@ public sealed record RecordSpoilageCommand(Guid SpoilageId, IReadOnlyList<Spoila
     : IRequest<IReadOnlyList<RawMaterialDto>>, IRetryOnConflict;
 
 // Quantity in the material's own unit. Reason: expired, spoiled, dropped, damaged packaging.
-public sealed record SpoilageLine(Guid RawMaterialId, decimal Quantity, string Reason);
+// ResponsibleStationId: the kitchen or bar station held to account for it (القسم المسؤول), the
+// material's own unless another is named (the hot kitchen spoiling a shared item).
+public sealed record SpoilageLine(Guid RawMaterialId, decimal Quantity, string Reason, Guid? ResponsibleStationId = null);
 
 internal sealed class RecordSpoilageCommandHandler(
     IRawMaterialRepository materials,
     IStockMovementRepository movements,
     IPurchaseCategoryRepository categories,
+    Costing.Domain.Stations.IKitchenStationRepository stations,
     IUnitOfWork unitOfWork) : IRequestHandler<RecordSpoilageCommand, IReadOnlyList<RawMaterialDto>>
 {
     public async Task<IReadOnlyList<RawMaterialDto>> Handle(RecordSpoilageCommand request, CancellationToken cancellationToken)
@@ -2380,8 +2383,12 @@ internal sealed class RecordSpoilageCommandHandler(
 
         if (!await movements.ExistsAsync(request.SpoilageId, StockMovementReason.Spoilage, cancellationToken))
         {
+            foreach (var station in request.Lines.Select(l => l.ResponsibleStationId).OfType<Guid>().Distinct())
+                if (await stations.GetByIdAsync(station, cancellationToken) is null)
+                    throw new DomainException("That station is no longer on the list: choose another. · هذا القسم غير موجود.");
             foreach (var line in request.Lines)
-                movements.Add(byId[line.RawMaterialId].RecordSpoilage(line.Quantity, request.SpoilageId, line.Reason, request.RecordedBy));
+                movements.Add(byId[line.RawMaterialId].RecordSpoilage(
+                    line.Quantity, request.SpoilageId, line.Reason, request.RecordedBy, line.ResponsibleStationId));
 
             await unitOfWork.SaveChangesAsync(cancellationToken);
         }
@@ -4354,7 +4361,7 @@ internal sealed class BulkImportSalesHandler(BulkSalesPlanner planner, DailySale
 
 `Sales.cs`: `SaleStockPoster` (الخصم بالوصفات)، `SaleWriter`، والمرتجعات (حركة `VoidReturn` تعيد المخزون)، وتقرير المبيعات.
 
-> 📄 **`backend/src/Costing.Application/Sales/Sales.cs`** — 288 سطر
+> 📄 **`backend/src/Costing.Application/Sales/Sales.cs`** — 290 سطر
 
 ```csharp
 using MediatR;
@@ -4484,11 +4491,12 @@ internal sealed class SaleStockPoster(
             return;
 
         var (relevant, parts) = await recipes.ForSaleAsync(combos, pending.Select(p => p.Item).ToList(), cancellationToken);
-        var needs = pending.Select(p => (p.LineId, p.Reason, Needs: StockRequirements.For(p.Item, relevant, parts))).ToList();
+        var needs = pending.Select(p => (p.LineId, p.Reason, Needs: StockRequirements.For(p.Item, relevant, parts),
+            Station: p.Reason == StockMovementReason.Waste ? StockRequirements.StationOf(p.Item, relevant) : null)).ToList();
         var materialsById = (await materials.GetByIdsAsync(needs.SelectMany(n => n.Needs.Keys).Distinct().ToList(), cancellationToken))
             .ToDictionary(m => m.Id);
 
-        foreach (var (lineId, reason, need) in needs)
+        foreach (var (lineId, reason, need, station) in needs)
         {
             foreach (var (rawMaterialId, quantity) in need)
             {
@@ -4502,7 +4510,8 @@ internal sealed class SaleStockPoster(
                 movements.Add(reason switch
                 {
                     StockMovementReason.Sale => material.RecordSale(quantity, lineId),
-                    StockMovementReason.Waste => material.RecordWaste(quantity, lineId),
+                    // Voided after the kitchen made it: the waste of the station that made the dish.
+                    StockMovementReason.Waste => material.RecordWaste(quantity, lineId, station),
                     _ => material.RecordVoidReturn(quantity, lineId),
                 });
             }
@@ -4673,7 +4682,7 @@ internal sealed class GetSalesHandler(ISalesReceiptRepository sales) : IRequestH
 
 **الجرد الأعمى (Blind):** `StockCountDto.ShowAsync(count, blind, …)` هو المكان الوحيد الذي يقرر ما يُعرض: في المسودة الرصيد الدفتري الحي (`QuantityOnHand`) والتكلفة (`AverageCost`) لمن يراجع، وفي الجرد المرحّل القيم المحفوظة، وفي الوضع الأعمى يُحذفان معًا. والـ API يفرضه: `Blind(asked) => asked || !costing.view`، فأمين المخزن لا يرى الدفتري ولو طلبه. لذلك الترحيل وطلب إعادة الجرد لمن يملك `costing.view` فقط، والعادّ الأعمى **يسلّم للمراجعة** (`SubmitStockCountCommand`). و `GetCountItemsQuery` يعطي ورقة العد الأصناف بلا رصيد ولا تكلفة.
 
-> 📄 **`backend/src/Costing.Application/StockCounts/StockCounts.cs`** — 372 سطر
+> 📄 **`backend/src/Costing.Application/StockCounts/StockCounts.cs`** — 374 سطر
 
 ```csharp
 using System.Globalization;
@@ -4894,7 +4903,9 @@ public sealed record CountItemDto(
     decimal PurchaseUnitSize,
     bool IsPrepItem,
     bool IsSpotCheckItem,
-    bool IsArchived);
+    bool IsArchived,
+    // The kitchen or bar station that keeps it, for a count of one station.
+    Guid? KitchenStationId = null);
 
 public sealed record GetCountItemsQuery : IRequest<IReadOnlyList<CountItemDto>>;
 
@@ -4910,7 +4921,7 @@ internal sealed class GetCountItemsQueryHandler(IRawMaterialRepository materials
                 var category = byId.GetValueOrDefault(m.CategoryId);
                 return new CountItemDto(
                     m.Id, m.Code, m.Name, m.CategoryId, category?.Name ?? PurchaseCategory.GeneralName, category?.NameAr, m.Unit, m.PurchaseUnit,
-                    m.PurchaseUnitSize, m.IsPrepItem, m.IsSpotCheckItem, m.IsArchived);
+                    m.PurchaseUnitSize, m.IsPrepItem, m.IsSpotCheckItem, m.IsArchived, m.KitchenStationId);
             })
             .OrderBy(i => i.Category, StringComparer.CurrentCultureIgnoreCase)
             .ThenBy(i => i.Name, StringComparer.CurrentCultureIgnoreCase)
@@ -5346,7 +5357,7 @@ public sealed class InventoryController(ISender sender) : ControllerBase
     public async Task<IActionResult> GetRawMaterialsTemplate(CancellationToken cancellationToken)
     {
         var sheet = await sender.Send(new GetRawMaterialSheetQuery(), cancellationToken);
-        return File(RawMaterialWorkbook.Build(sheet.Categories), RawMaterialWorkbook.ContentType, RawMaterialWorkbook.FileName);
+        return File(RawMaterialWorkbook.Build(sheet.Categories, sheet.Stations), RawMaterialWorkbook.ContentType, RawMaterialWorkbook.FileName);
     }
 
     // The raw materials as they are, under the template's columns: edited and imported back, or
@@ -5357,7 +5368,7 @@ public sealed class InventoryController(ISender sender) : ControllerBase
     public async Task<IActionResult> ExportRawMaterials(CancellationToken cancellationToken)
     {
         var sheet = await sender.Send(new GetRawMaterialSheetQuery(), cancellationToken);
-        return File(RawMaterialWorkbook.Build(sheet.Categories, sheet.Lines), RawMaterialWorkbook.ContentType, RawMaterialWorkbook.ExportFileName);
+        return File(RawMaterialWorkbook.Build(sheet.Categories, sheet.Lines, sheet.Stations), RawMaterialWorkbook.ContentType, RawMaterialWorkbook.ExportFileName);
     }
 
     // A filled-in sheet: each good row a material added or changed, the rest said why not.
