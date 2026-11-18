@@ -297,7 +297,10 @@ public sealed class RawMaterial : AggregateRoot
 
         if (original.Reason is StockMovementReason.Purchase or StockMovementReason.ProductionOutput && original.Quantity > 0)
             UnaverageWith(original.Quantity, original.UnitCost);
-        return Move(-original.Quantity, original.Reason, original.SourceId, original.UnitCost, "Voided", reversedBy, original.Id, original.ResponsibleStationId);
+        var reversal = Move(-original.Quantity, original.Reason, original.SourceId, original.UnitCost, "Voided", reversedBy, original.Id, original.ResponsibleStationId);
+        // Undone in the branch it was entered in, whichever the reversal is made from.
+        reversal.AssignBranch(original.BranchId);
+        return reversal;
     }
 
     // The average as if `quantity` bought at `unitCost` had never come in: the value of the

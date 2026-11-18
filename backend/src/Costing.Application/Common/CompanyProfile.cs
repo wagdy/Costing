@@ -12,11 +12,12 @@ public sealed record CompanyProfile(
     string TimeZoneId,
     int WorkdayStartsAtHour,
     bool HasLogo,
-    DateTime? LogoUpdatedAtUtc)
+    DateTime? LogoUpdatedAtUtc,
+    SystemOperatingMode OperatingMode = SystemOperatingMode.SingleBranch_OpenSpace)
 {
     public static CompanyProfile From(CompanySettings settings) => new(
         settings.Name, settings.Money, settings.Country, settings.TimeZoneId, settings.WorkdayStartsAtHour, settings.HasLogo,
-        settings.LogoUpdatedAtUtc);
+        settings.LogoUpdatedAtUtc, settings.OperatingMode);
 }
 
 // Kept in memory for the whole app, read at start-up from the database and replaced as a manager

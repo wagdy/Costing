@@ -8,6 +8,7 @@ import { User, UsersApi } from '../../core/users/users.api';
 import { managerMe } from '../../../testing/fixtures';
 import { UserDialog } from './user-dialogs';
 import { UsersPage } from './users-page';
+import { BranchContext } from '../../core/settings/branch-context';
 
 const text = (el: Element) => el.textContent!.replace(/\s+/g, ' ').trim();
 
@@ -117,7 +118,7 @@ describe('the user form', () => {
 
     dialog['password'] = 'long-enough';
     expect(dialog['ready']()).toBe(true);
-    expect(dialog['result']()).toEqual({ email: 'sara@example.com', fullName: 'Sara', role: 'Accountant', password: 'long-enough' });
+    expect(dialog['result']()).toEqual({ email: 'sara@example.com', fullName: 'Sara', role: 'Accountant', password: 'long-enough', branchId: null });
   });
 
   it('changes a user without a password, active or not', () => {
@@ -125,6 +126,26 @@ describe('the user form', () => {
     dialog['isActive'] = false;
 
     expect(dialog['ready']()).toBe(true);
-    expect(dialog['result']()).toEqual({ email: 'mona@example.com', fullName: 'Mona', role: 'Accountant', isActive: false });
+    expect(dialog['result']()).toEqual({ email: 'mona@example.com', fullName: 'Mona', role: 'Accountant', isActive: false, branchId: null });
+  });
+
+  it('keeps a user to a branch once the company has several, and their branch as it is otherwise', () => {
+    const single = form({ user: { ...mona, branchId: 'b-2' } });
+    expect(single['branchId']).toBe('b-2');
+    expect(document.querySelector('[aria-label="Branch"]')).toBeNull();
+    TestBed.resetTestingModule();
+
+    TestBed.configureTestingModule({
+      providers: [
+        { provide: MAT_DIALOG_DATA, useValue: { user: mona } },
+        { provide: BranchContext, useValue: { multi: () => true, branches: () => [{ id: 'b-2', name: 'Tanta', nameAr: 'طنطا' }] } },
+      ],
+    });
+    const fixture = TestBed.createComponent(UserDialog);
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('mat-select[aria-label="Branch"]')).not.toBeNull();
+    const dialog = fixture.componentInstance as unknown as Record<string, any>;
+    dialog['branchId'] = 'b-2';
+    expect(dialog['result']().branchId).toBe('b-2');
   });
 });

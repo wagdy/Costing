@@ -7,6 +7,7 @@ import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatInputModule } from '@angular/material/input';
 import { MatSelectModule } from '@angular/material/select';
 import { UserRole } from '../../core/api/models';
+import { BranchContext } from '../../core/settings/branch-context';
 import { MinPasswordLength, NewUser, User, UserChange, roleLabels } from '../../core/users/users.api';
 
 const dialogStyles = `
@@ -24,6 +25,8 @@ const dialogStyles = `
     font-size: 0.8em;
   }
 `;
+
+const everyBranch = '(every-branch)';
 
 export interface UserDialogData {
   // The user changed; none for someone new.
@@ -56,6 +59,18 @@ export interface UserDialogData {
         </mat-select>
         <mat-hint>{{ roleHints[role] }}</mat-hint>
       </mat-form-field>
+      @if (branches.multi()) {
+        <mat-form-field class="wide">
+          <mat-label>Branch · الفرع</mat-label>
+          <mat-select [(ngModel)]="branchId" [disabled]="!!data.self" aria-label="Branch">
+            <mat-option [value]="everyBranch">Every branch · كل الفروع</mat-option>
+            @for (b of branches.branches(); track b.id) {
+              <mat-option [value]="b.id">{{ b.name }}@if (b.nameAr) { · {{ b.nameAr }}}</mat-option>
+            }
+          </mat-select>
+          <mat-hint>Kept to a branch, they work in it alone; every branch, they choose at the top of the screen. A change signs them out.</mat-hint>
+        </mat-form-field>
+      }
       @if (data.user) {
         <mat-checkbox [(ngModel)]="isActive" [disabled]="!!data.self">Active: can sign in · نشط</mat-checkbox>
         @if (data.self) {
@@ -93,13 +108,19 @@ export class UserDialog {
   protected role: UserRole = this.data.user?.role ?? 'Accountant';
   protected isActive = this.data.user?.isActive ?? true;
   protected password = '';
+  // The branch they are kept to; kept as it is while the company has one branch.
+  protected readonly branches = inject(BranchContext);
+  // Every branch is a value of its own: a select shows none for null.
+  protected readonly everyBranch = everyBranch;
+  protected branchId: string = this.data.user?.branchId ?? everyBranch;
 
   protected ready(): boolean {
     return !!this.fullName.trim() && this.email.includes('@') && (!!this.data.user || this.password.length >= MinPasswordLength);
   }
 
   protected result(): NewUser | UserChange {
-    const common = { email: this.email.trim(), fullName: this.fullName.trim(), role: this.role };
+    const branchId = this.branchId === everyBranch ? null : this.branchId;
+    const common = { email: this.email.trim(), fullName: this.fullName.trim(), role: this.role, branchId };
     return this.data.user ? { ...common, isActive: this.isActive } : { ...common, password: this.password };
   }
 }

@@ -15,6 +15,8 @@ export interface Me {
   role: UserRole;
   permissions: string[];
   tabs?: CostingTab[] | null;
+  // The branch they are kept to; none (null) for one who works every branch.
+  branchId?: string | null;
 }
 
 // POST /api/auth/sign-in, and a password changed: the token, good until expiresAtUtc.

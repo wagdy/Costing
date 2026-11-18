@@ -42,6 +42,10 @@ public sealed class UserAccount
     public DateTime CreatedAtUtc { get; set; }
 
     public DateTime? LastSignInAtUtc { get; set; }
+
+    // The branch they are kept to (a storekeeper in Tanta); none for one who works every branch and
+    // chooses at the top of the screen. Changed, it signs them out (their token names it).
+    public Guid? BranchId { get; set; }
 }
 
 internal sealed class UserAccountConfiguration : IEntityTypeConfiguration<UserAccount>
@@ -57,6 +61,7 @@ internal sealed class UserAccountConfiguration : IEntityTypeConfiguration<UserAc
         builder.Property(u => u.FullName).HasMaxLength(UserAccount.MaxNameLength);
         builder.Property(u => u.Role).IsEnumName();
         builder.Property(u => u.PasswordHash).HasMaxLength(200);
+        builder.HasOne<Domain.Company.Branch>().WithMany().HasForeignKey(u => u.BranchId).OnDelete(DeleteBehavior.SetNull);
     }
 }
 
@@ -83,12 +88,12 @@ public sealed class UserDirectory(CostingDbContext db, ILogger<UserDirectory> lo
 
     // Null when the user is gone or deactivated. Checked on every request, so a deactivation, a
     // new role or a new password takes effect at once rather than when a token expires.
-    public async Task<(UserRole Role, DateTime PasswordSetAtUtc)?> GetActiveAsync(string id, CancellationToken cancellationToken) =>
+    public async Task<(UserRole Role, DateTime PasswordSetAtUtc, Guid? BranchId)?> GetActiveAsync(string id, CancellationToken cancellationToken) =>
         await db.Users.AsNoTracking()
             .Where(u => u.Id == id && u.IsActive)
-            .Select(u => new { u.Role, u.PasswordSetAtUtc })
+            .Select(u => new { u.Role, u.PasswordSetAtUtc, u.BranchId })
             .SingleOrDefaultAsync(cancellationToken) is { } found
-            ? (found.Role, found.PasswordSetAtUtc)
+            ? (found.Role, found.PasswordSetAtUtc, found.BranchId)
             : null;
 
     public async Task<SignInOutcome> SignInAsync(string? email, string? password, CancellationToken cancellationToken)
@@ -125,23 +130,27 @@ public sealed class UserDirectory(CostingDbContext db, ILogger<UserDirectory> lo
         return new SignInOutcome(user, null);
     }
 
-    public async Task<UserAccount> CreateAsync(string email, string fullName, UserRole role, string password, CancellationToken cancellationToken)
+    public async Task<UserAccount> CreateAsync(
+        string email, string fullName, UserRole role, string password, CancellationToken cancellationToken, Guid? branchId = null)
     {
         var user = new UserAccount { Id = Guid.NewGuid().ToString("N"), CreatedAtUtc = DateTime.UtcNow, IsActive = true };
         await SetDetailsAsync(user, email, fullName, role, cancellationToken);
+        await SetBranchAsync(user, branchId, cancellationToken);
         SetPassword(user, password);
         db.Users.Add(user);
         await db.SaveChangesAsync(cancellationToken);
         return user;
     }
 
-    public async Task<UserAccount> UpdateAsync(string id, string email, string fullName, UserRole role, bool isActive, CancellationToken cancellationToken)
+    public async Task<UserAccount> UpdateAsync(
+        string id, string email, string fullName, UserRole role, bool isActive, CancellationToken cancellationToken, Guid? branchId = null)
     {
         var user = await db.Users.SingleOrDefaultAsync(u => u.Id == id, cancellationToken) ?? throw new NotFoundException("User", id);
         if ((role != UserRole.Manager || !isActive) && user is { Role: UserRole.Manager, IsActive: true }
             && !await db.Users.AnyAsync(u => u.Id != id && u.IsActive && u.Role == UserRole.Manager, cancellationToken))
             throw new DomainException("This is the only active manager: make someone else a manager first.");
         await SetDetailsAsync(user, email, fullName, role, cancellationToken);
+        await SetBranchAsync(user, branchId, cancellationToken);
         user.IsActive = isActive;
         await db.SaveChangesAsync(cancellationToken);
         return user;
@@ -198,6 +207,14 @@ public sealed class UserDirectory(CostingDbContext db, ILogger<UserDirectory> lo
         user.NormalizedEmail = normalized;
         user.FullName = name;
         user.Role = role;
+    }
+
+    // Kept to a branch in use, or to none (every branch).
+    private async Task SetBranchAsync(UserAccount user, Guid? branchId, CancellationToken cancellationToken)
+    {
+        if (branchId is { } id && !await db.Branches.AnyAsync(b => b.Id == id && b.IsActive, cancellationToken))
+            throw new DomainException("That branch is not in use: choose one from the list, or every branch.");
+        user.BranchId = branchId;
     }
 
     private static void SetPassword(UserAccount user, string password)

@@ -46,6 +46,7 @@ public sealed class AuthController(UserDirectory users, TokenService tokens, Bus
         return Me.For(id, user?.FullName ?? User.FindFirst(UserClaims.Name)?.Value ?? string.Empty, user?.Email ?? string.Empty, UserClaims.RoleOf(User)!.Value) with
         {
             Tabs = CostingTabSet.Split(await caller.TabsAsync(cancellationToken)),
+            BranchId = user?.BranchId,
         };
     }
 
@@ -68,7 +69,9 @@ public sealed record SignInResponse(string Token, DateTime ExpiresAtUtc, Me User
 
 public sealed record ChangePasswordRequest(string CurrentPassword, string NewPassword);
 
-public sealed record Me(string Id, string FullName, string Email, UserRole Role, IReadOnlyList<string> Permissions, IReadOnlyList<CostingTabs>? Tabs = null)
+// BranchId: the branch they are kept to; none for one who works every branch.
+public sealed record Me(
+    string Id, string FullName, string Email, UserRole Role, IReadOnlyList<string> Permissions, IReadOnlyList<CostingTabs>? Tabs = null, Guid? BranchId = null)
 {
     public static Me For(string id, string fullName, string email, UserRole role) =>
         new(id, fullName, email, role, RolePermissions.For(role).Order(StringComparer.Ordinal).ToList());

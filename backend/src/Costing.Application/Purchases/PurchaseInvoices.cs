@@ -13,6 +13,7 @@ using Costing.Domain.StockMovements;
 using Costing.Domain.Suppliers;
 using Costing.Domain.Treasury;
 using Costing.Application.Books;
+using Costing.Application.Company;
 
 namespace Costing.Application.Purchases;
 
@@ -204,14 +205,16 @@ public sealed record PurchaseInvoiceSummaryDto(
 public sealed record GetPurchaseInvoicesQuery(PurchaseInvoiceStatus Status) : IRequest<IReadOnlyList<PurchaseInvoiceSummaryDto>>;
 
 internal sealed class GetPurchaseInvoicesQueryHandler(
-    IPurchaseInvoiceRepository invoices, ISupplierRepository suppliers, ISafeTransactionRepository safe, IApprovalRequestRepository requests)
+    IPurchaseInvoiceRepository invoices, ISupplierRepository suppliers, ISafeTransactionRepository safe, IApprovalRequestRepository requests,
+    ICurrentBranch branch)
     : IRequestHandler<GetPurchaseInvoicesQuery, IReadOnlyList<PurchaseInvoiceSummaryDto>>
 {
     public async Task<IReadOnlyList<PurchaseInvoiceSummaryDto>> Handle(GetPurchaseInvoicesQuery request, CancellationToken cancellationToken)
     {
         // Archived ones too: an invoice keeps showing who it was from.
         var names = (await suppliers.GetAllAsync(cancellationToken)).ToDictionary(s => s.Id, s => s.Name);
-        var listed = await invoices.GetByStatusAsync(request.Status, cancellationToken);
+        // The branch's own, when the company has several.
+        var listed = await branch.NarrowAsync(await invoices.GetByStatusAsync(request.Status, cancellationToken), cancellationToken);
         var paid = await safe.PaidInvoicesAsync(listed.Select(i => i.Id).ToList(), cancellationToken);
         var pending = (await requests.GetPendingAsync(cancellationToken)).Where(r => r.Module == ApprovalModule.Treasury).Select(r => r.RecordId).ToHashSet();
         return listed

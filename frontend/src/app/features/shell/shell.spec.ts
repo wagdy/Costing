@@ -6,6 +6,7 @@ import { AuthService } from '../../core/auth/auth.service';
 import { Permission, Permissions } from '../../core/auth/permissions';
 import { ConnectivityService } from '../../core/connectivity/connectivity.service';
 import { managerMe, accountantMe } from '../../../testing/fixtures';
+import { BranchContext } from '../../core/settings/branch-context';
 import { Approvals } from '../costing/approvals';
 import { Shell } from './shell';
 
@@ -80,5 +81,40 @@ describe('the top bar', () => {
     await new Promise((resolve) => setTimeout(resolve));
 
     expect(signOut).toHaveBeenCalled();
+  });
+
+  describe('the branch', () => {
+    const otantik = { id: 'b-1', name: 'Otantik', nameAr: null, type: 'Restaurant', isActive: true, isDefault: true, locations: 1 };
+    const tanta = { id: 'b-2', name: 'Tanta', nameAr: 'طنطا', type: 'Restaurant', isActive: true, isDefault: false, locations: 1 };
+
+    async function withBranches(context: object): Promise<HTMLElement> {
+      TestBed.overrideProvider(BranchContext, { useValue: { load: vi.fn(), ...context } });
+      return render(managerMe);
+    }
+
+    afterEach(() => TestBed.resetTestingModule());
+
+    it('shows nothing of branches while the company has one', async () => {
+      const el = await withBranches({ multi: () => false, canChoose: () => false, current: () => otantik, branches: () => [otantik] });
+      expect(el.querySelector('.branch')).toBeNull();
+    });
+
+    it('lets one who works every branch choose it at the top, and shows one kept to a branch theirs', async () => {
+      const choose = vi.fn();
+      let el = await withBranches({ multi: () => true, canChoose: () => true, current: () => otantik, branches: () => [otantik, tanta], choose });
+      const button = el.querySelector<HTMLButtonElement>('button.branch')!;
+      expect(button.getAttribute('aria-label')).toBe('Branch: Otantik. Choose another');
+      button.click();
+      await new Promise((r) => setTimeout(r));
+      const items = [...document.querySelectorAll<HTMLButtonElement>('.mat-mdc-menu-panel button')];
+      expect(items.map(text)).toEqual(['checkOtantikRestaurant · مطعم', 'storefrontTanta · طنطاRestaurant · مطعم']);
+      items[1].click();
+      expect(choose).toHaveBeenCalledWith('b-2');
+      TestBed.resetTestingModule();
+
+      el = await withBranches({ multi: () => true, canChoose: () => false, current: () => tanta, branches: () => [tanta] });
+      expect(el.querySelector('button.branch')).toBeNull();
+      expect(text(el.querySelector('.branch.fixed')!)).toBe('storefrontTanta');
+    });
   });
 });

@@ -4,6 +4,7 @@ using Costing.Domain.Common;
 using Costing.Domain.Staff;
 using Costing.Domain.Waste;
 using Costing.Application.Books;
+using Costing.Application.Company;
 
 namespace Costing.Application.Waste;
 
@@ -29,7 +30,7 @@ public sealed record BreakageEntryDto(
 // The business days from From to To, voided entries too.
 public sealed record GetBreakageQuery(DateOnly From, DateOnly To) : IRequest<IReadOnlyList<BreakageEntryDto>>;
 
-internal sealed class GetBreakageHandler(IBreakageEntryRepository breakage, IStaffMemberRepository staff)
+internal sealed class GetBreakageHandler(IBreakageEntryRepository breakage, IStaffMemberRepository staff, ICurrentBranch branch)
     : IRequestHandler<GetBreakageQuery, IReadOnlyList<BreakageEntryDto>>
 {
     public async Task<IReadOnlyList<BreakageEntryDto>> Handle(GetBreakageQuery request, CancellationToken cancellationToken)
@@ -37,7 +38,8 @@ internal sealed class GetBreakageHandler(IBreakageEntryRepository breakage, ISta
         if (request.To < request.From)
             throw new DomainException("The period ends before it starts.");
         var names = (await staff.GetAllAsync(cancellationToken)).ToDictionary(s => s.Id, s => s.Name);
-        return (await breakage.GetBetweenAsync(request.From, request.To, cancellationToken)).Select(b => BreakageDtos.Of(b, names)).ToList();
+        return (await branch.NarrowAsync(await breakage.GetBetweenAsync(request.From, request.To, cancellationToken), cancellationToken))
+            .Select(b => BreakageDtos.Of(b, names)).ToList();
     }
 }
 

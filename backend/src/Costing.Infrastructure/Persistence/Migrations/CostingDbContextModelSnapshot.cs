@@ -189,6 +189,41 @@ namespace Costing.Infrastructure.Persistence.Migrations
                     b.ToTable("PurchaseCategories", "costing");
                 });
 
+            modelBuilder.Entity("Costing.Domain.Company.Branch", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid");
+
+                    b.Property<bool>("IsActive")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true);
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<string>("NameAr")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<string>("Type")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<uint>("Version")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("xid")
+                        .HasColumnName("xmin");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("Branches", "costing");
+                });
+
             modelBuilder.Entity("Costing.Domain.Company.CompanySettings", b =>
                 {
                     b.Property<int>("Id")
@@ -231,6 +266,13 @@ namespace Costing.Infrastructure.Persistence.Migrations
                         .HasMaxLength(200)
                         .HasColumnType("character varying(200)");
 
+                    b.Property<string>("OperatingMode")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasDefaultValue("SingleBranch_OpenSpace");
+
                     b.Property<string>("TimeZoneId")
                         .IsRequired()
                         .HasMaxLength(64)
@@ -252,6 +294,46 @@ namespace Costing.Infrastructure.Persistence.Migrations
                         {
                             t.HasCheckConstraint("CK_CompanySettings_Single", "\"Id\" = 1");
                         });
+                });
+
+            modelBuilder.Entity("Costing.Domain.Company.InventoryLocation", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("BranchId")
+                        .HasColumnType("uuid");
+
+                    b.Property<bool>("IsActive")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true);
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<string>("NameAr")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<uint>("Version")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("xid")
+                        .HasColumnName("xmin");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("BranchId");
+
+                    b.ToTable("InventoryLocations", "costing");
                 });
 
             modelBuilder.Entity("Costing.Domain.EndOfDay.EndOfDayInvoice", b =>
@@ -952,6 +1034,11 @@ namespace Costing.Infrastructure.Persistence.Migrations
                     b.Property<Guid>("Id")
                         .HasColumnType("uuid");
 
+                    b.Property<Guid>("BranchId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasDefaultValue(new Guid("b2a40000-0000-4000-8000-000000000001"));
+
                     b.Property<DateOnly>("BusinessDate")
                         .HasColumnType("date");
 
@@ -988,6 +1075,8 @@ namespace Costing.Infrastructure.Persistence.Migrations
                         .HasColumnName("xmin");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("BranchId");
 
                     b.HasIndex("BusinessDate");
 
@@ -1456,6 +1545,11 @@ namespace Costing.Infrastructure.Persistence.Migrations
                         .HasMaxLength(200)
                         .HasColumnType("character varying(200)");
 
+                    b.Property<Guid>("BranchId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasDefaultValue(new Guid("b2a40000-0000-4000-8000-000000000001"));
+
                     b.Property<bool>("ClosesPurchaseOrder")
                         .HasColumnType("boolean");
 
@@ -1523,6 +1617,8 @@ namespace Costing.Infrastructure.Persistence.Migrations
                         .HasColumnType("character varying(200)");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("BranchId");
 
                     b.HasIndex("PurchaseOrderId")
                         .HasFilter("\"PurchaseOrderId\" IS NOT NULL");
@@ -1975,6 +2071,11 @@ namespace Costing.Infrastructure.Persistence.Migrations
                     b.Property<Guid>("Id")
                         .HasColumnType("uuid");
 
+                    b.Property<Guid>("BranchId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasDefaultValue(new Guid("b2a40000-0000-4000-8000-000000000001"));
+
                     b.Property<DateOnly>("BusinessDate")
                         .HasColumnType("date");
 
@@ -2057,6 +2158,8 @@ namespace Costing.Infrastructure.Persistence.Migrations
                         .HasDefaultValueSql("'[]'::jsonb");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("BranchId");
 
                     b.HasIndex("BusinessDate");
 
@@ -2375,6 +2478,11 @@ namespace Costing.Infrastructure.Persistence.Migrations
                     b.Property<Guid>("Id")
                         .HasColumnType("uuid");
 
+                    b.Property<Guid>("BranchId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasDefaultValue(new Guid("b2a40000-0000-4000-8000-000000000001"));
+
                     b.Property<string>("Kind")
                         .IsRequired()
                         .ValueGeneratedOnAdd()
@@ -2459,6 +2567,8 @@ namespace Costing.Infrastructure.Persistence.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("BranchId");
+
                     b.HasIndex("Status");
 
                     b.ToTable("StockCounts", "costing");
@@ -2509,6 +2619,11 @@ namespace Costing.Infrastructure.Persistence.Migrations
                     b.Property<Guid>("Id")
                         .HasColumnType("uuid");
 
+                    b.Property<Guid>("BranchId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasDefaultValue(new Guid("b2a40000-0000-4000-8000-000000000001"));
+
                     b.Property<string>("Note")
                         .HasMaxLength(200)
                         .HasColumnType("character varying(200)");
@@ -2552,6 +2667,8 @@ namespace Costing.Infrastructure.Persistence.Migrations
                         .HasColumnName("xmin");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("BranchId");
 
                     b.HasIndex("ResponsibleStationId");
 
@@ -2634,6 +2751,11 @@ namespace Costing.Infrastructure.Persistence.Migrations
                     b.Property<string>("ApprovedBy")
                         .HasMaxLength(200)
                         .HasColumnType("character varying(200)");
+
+                    b.Property<Guid>("BranchId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasDefaultValue(new Guid("b2a40000-0000-4000-8000-000000000001"));
 
                     b.Property<DateOnly>("BusinessDate")
                         .HasColumnType("date");
@@ -2740,6 +2862,8 @@ namespace Costing.Infrastructure.Persistence.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("BranchId");
+
                     b.HasIndex("ExpenseItemId");
 
                     b.HasIndex("FixedAssetId")
@@ -2828,6 +2952,11 @@ namespace Costing.Infrastructure.Persistence.Migrations
                     b.Property<Guid?>("AssetTransactionId")
                         .HasColumnType("uuid");
 
+                    b.Property<Guid>("BranchId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasDefaultValue(new Guid("b2a40000-0000-4000-8000-000000000001"));
+
                     b.Property<DateOnly>("BusinessDate")
                         .HasColumnType("date");
 
@@ -2877,6 +3006,8 @@ namespace Costing.Infrastructure.Persistence.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("BranchId");
+
                     b.HasIndex("BusinessDate");
 
                     b.HasIndex("EmployeeId");
@@ -2906,6 +3037,9 @@ namespace Costing.Infrastructure.Persistence.Migrations
                     b.Property<string>("Id")
                         .HasMaxLength(64)
                         .HasColumnType("character varying(64)");
+
+                    b.Property<Guid?>("BranchId")
+                        .HasColumnType("uuid");
 
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone");
@@ -2951,6 +3085,8 @@ namespace Costing.Infrastructure.Persistence.Migrations
                         .HasColumnType("character varying(32)");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("BranchId");
 
                     b.HasIndex("NormalizedEmail")
                         .IsUnique();
@@ -3184,6 +3320,15 @@ namespace Costing.Infrastructure.Persistence.Migrations
                     b.ToTable("SharedCosts", "costing");
                 });
 
+            modelBuilder.Entity("Costing.Domain.Company.InventoryLocation", b =>
+                {
+                    b.HasOne("Costing.Domain.Company.Branch", null)
+                        .WithMany()
+                        .HasForeignKey("BranchId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("Costing.Domain.EndOfDay.EndOfDayInvoice", b =>
                 {
                     b.HasOne("Costing.Domain.Purchases.PurchaseInvoice", null)
@@ -3248,6 +3393,15 @@ namespace Costing.Infrastructure.Persistence.Migrations
                         .WithMany()
                         .HasForeignKey("SaleTransactionId")
                         .OnDelete(DeleteBehavior.Restrict);
+                });
+
+            modelBuilder.Entity("Costing.Domain.Integrations.PosZReport", b =>
+                {
+                    b.HasOne("Costing.Domain.Company.Branch", null)
+                        .WithMany()
+                        .HasForeignKey("BranchId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("Costing.Domain.Integrations.SyncedEmployee", b =>
@@ -3346,6 +3500,12 @@ namespace Costing.Infrastructure.Persistence.Migrations
 
             modelBuilder.Entity("Costing.Domain.Purchases.PurchaseInvoice", b =>
                 {
+                    b.HasOne("Costing.Domain.Company.Branch", null)
+                        .WithMany()
+                        .HasForeignKey("BranchId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
                     b.HasOne("Costing.Domain.Purchases.PurchaseOrder", null)
                         .WithMany()
                         .HasForeignKey("PurchaseOrderId")
@@ -3444,6 +3604,12 @@ namespace Costing.Infrastructure.Persistence.Migrations
 
             modelBuilder.Entity("Costing.Domain.Sales.SalesReceipt", b =>
                 {
+                    b.HasOne("Costing.Domain.Company.Branch", null)
+                        .WithMany()
+                        .HasForeignKey("BranchId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
                     b.OwnsMany("Costing.Domain.Sales.SalesReceiptLine", "Lines", b1 =>
                         {
                             b1.Property<int>("Id")
@@ -3528,6 +3694,15 @@ namespace Costing.Infrastructure.Persistence.Migrations
                         .IsRequired();
                 });
 
+            modelBuilder.Entity("Costing.Domain.StockCounts.StockCount", b =>
+                {
+                    b.HasOne("Costing.Domain.Company.Branch", null)
+                        .WithMany()
+                        .HasForeignKey("BranchId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("Costing.Domain.StockCounts.StockCountLine", b =>
                 {
                     b.HasOne("Costing.Domain.RawMaterials.RawMaterial", null)
@@ -3545,6 +3720,12 @@ namespace Costing.Infrastructure.Persistence.Migrations
 
             modelBuilder.Entity("Costing.Domain.StockMovements.StockMovement", b =>
                 {
+                    b.HasOne("Costing.Domain.Company.Branch", null)
+                        .WithMany()
+                        .HasForeignKey("BranchId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
                     b.HasOne("Costing.Domain.RawMaterials.RawMaterial", null)
                         .WithMany()
                         .HasForeignKey("RawMaterialId")
@@ -3559,6 +3740,12 @@ namespace Costing.Infrastructure.Persistence.Migrations
 
             modelBuilder.Entity("Costing.Domain.Treasury.SafeTransaction", b =>
                 {
+                    b.HasOne("Costing.Domain.Company.Branch", null)
+                        .WithMany()
+                        .HasForeignKey("BranchId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
                     b.HasOne("Costing.Domain.Staff.StaffMember", null)
                         .WithMany()
                         .HasForeignKey("EmployeeId")
@@ -3596,6 +3783,12 @@ namespace Costing.Infrastructure.Persistence.Migrations
 
             modelBuilder.Entity("Costing.Domain.Waste.BreakageEntry", b =>
                 {
+                    b.HasOne("Costing.Domain.Company.Branch", null)
+                        .WithMany()
+                        .HasForeignKey("BranchId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
                     b.HasOne("Costing.Domain.Staff.StaffMember", null)
                         .WithMany()
                         .HasForeignKey("EmployeeId")
@@ -3609,6 +3802,14 @@ namespace Costing.Infrastructure.Persistence.Migrations
                         .HasForeignKey("Costing.Infrastructure.Company.CompanyLogo", "Id")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
+                });
+
+            modelBuilder.Entity("Costing.Infrastructure.Identity.UserAccount", b =>
+                {
+                    b.HasOne("Costing.Domain.Company.Branch", null)
+                        .WithMany()
+                        .HasForeignKey("BranchId")
+                        .OnDelete(DeleteBehavior.SetNull);
                 });
 
             modelBuilder.Entity("Costing.Infrastructure.Persistence.PurchaseInvoiceAttachment", b =>

@@ -705,7 +705,7 @@ internal sealed class ApplicationExceptionHandler(
 
 طبقة التطبيق: MediatR يجد الـ Handlers تلقائيًا، والخدمات الداخلية المشتركة (`TreasuryWriter`, `InvoicePoster`, `HrOutbox`, …) بعمر `Scoped`.
 
-> 📄 **`backend/src/Costing.Application/DependencyInjection.cs`** — 47 سطر
+> 📄 **`backend/src/Costing.Application/DependencyInjection.cs`** — 48 سطر
 
 ```csharp
 using Microsoft.Extensions.DependencyInjection;
@@ -726,6 +726,7 @@ public static class DependencyInjection
         services.AddScoped<Books.IBooksLock, Books.CompanyBooksLock>();
         services.AddScoped<Books.BooksGuard>();
         services.AddScoped<Books.PeriodLockReader>();
+        services.AddScoped<Company.CompanyStructureReader>();
         // The days of the records each request names.
         foreach (var lookup in typeof(DependencyInjection).Assembly.GetTypes()
                      .Where(t => t is { IsClass: true, IsAbstract: false } && !t.IsGenericTypeDefinition))
@@ -760,7 +761,7 @@ public static class DependencyInjection
 
 البنية التحتية: كل "منفذ" يُربط بتطبيقه. `Singleton` للساعة وملف الشركة والتشفير؛ `Scoped` لكل ما يلمس `CostingDbContext`؛ `RetryOnConflictBehavior` يلف كل أمر؛ و `AddHttpClient` + `AddHostedService<HrSyncWorker>` للربط مع HR.
 
-> 📄 **`backend/src/Costing.Infrastructure/DependencyInjection.cs`** — 129 سطر
+> 📄 **`backend/src/Costing.Infrastructure/DependencyInjection.cs`** — 137 سطر
 
 ```csharp
 using MediatR;
@@ -810,7 +811,9 @@ public static class DependencyInjection
         services.AddSingleton<IBusinessCalendar>(sp => sp.GetRequiredService<BusinessCalendar>());
         services.TryAddSingleton(TimeProvider.System);
 
-        services.AddDbContext<CostingDbContext>(o => o.UseNpgsql(connectionString, CostingDbContext.ConfigureNpgsql));
+        // Each new record given its branch as it is saved (BranchStampInterceptor).
+        services.AddDbContext<CostingDbContext>((sp, o) =>
+            o.UseNpgsql(connectionString, CostingDbContext.ConfigureNpgsql).AddInterceptors(new BranchStampInterceptor(sp)));
         services.AddScoped<IUnitOfWork>(sp => sp.GetRequiredService<CostingDbContext>());
         services.AddTransient(typeof(IPipelineBehavior<,>), typeof(RetryOnConflictBehavior<,>));
 
@@ -865,6 +868,12 @@ public static class DependencyInjection
         services.AddScoped<Costing.Application.Approvals.IRecordDescriptions, RecordDescriptions>();
         services.AddScoped<Costing.Application.Treasury.ITaxRate, FinancialTaxRate>();
         services.AddScoped<Domain.Security.ISecurityAuditLogRepository, SecurityAuditLogRepository>();
+        // The company's structure: its branches and locations, and the branch of each request
+        // (the API says who is asking; anything else is the app itself).
+        services.AddScoped<Domain.Company.IBranchRepository, BranchRepository>();
+        services.AddScoped<Domain.Company.IInventoryLocationRepository, InventoryLocationRepository>();
+        services.AddScoped<Costing.Application.Company.ICurrentBranch, CurrentBranch>();
+        services.TryAddScoped<Costing.Application.Company.IBranchRequest, NoBranchRequest>();
         services.AddScoped<IExpenseItemRepository, ExpenseItemRepository>();
         services.AddScoped<IPrepRecipeRepository, PrepRecipeRepository>();
         services.AddScoped<IProductionOrderRepository, ProductionOrderRepository>();
@@ -899,7 +908,7 @@ public static class DependencyInjection
 
 `ICompanyProfile`: إعدادات الشركة في الذاكرة لكل طلب، و `CompanyMoney` لكتابة المال بعملة الشركة في رسائل الأخطاء.
 
-> 📄 **`backend/src/Costing.Application/Common/CompanyProfile.cs`** — 47 سطر
+> 📄 **`backend/src/Costing.Application/Common/CompanyProfile.cs`** — 48 سطر
 
 ```csharp
 using Costing.Domain.Company;
@@ -916,11 +925,12 @@ public sealed record CompanyProfile(
     string TimeZoneId,
     int WorkdayStartsAtHour,
     bool HasLogo,
-    DateTime? LogoUpdatedAtUtc)
+    DateTime? LogoUpdatedAtUtc,
+    SystemOperatingMode OperatingMode = SystemOperatingMode.SingleBranch_OpenSpace)
 {
     public static CompanyProfile From(CompanySettings settings) => new(
         settings.Name, settings.Money, settings.Country, settings.TimeZoneId, settings.WorkdayStartsAtHour, settings.HasLogo,
-        settings.LogoUpdatedAtUtc);
+        settings.LogoUpdatedAtUtc, settings.OperatingMode);
 }
 
 // Kept in memory for the whole app, read at start-up from the database and replaced as a manager
@@ -1120,7 +1130,7 @@ internal static class UploadedFile
 
 والشعار (شعار الشركة وأيقونة المتصفح) فيها: PNG أو SVG أو JPEG أو WebP أو ICO حتى 2 ميجابايت. نوعه يُقرأ **من بايتاته** (`LogoImage.TypeOf`) لا مما قاله المتصفح، فملف ICO يصل بنوع `application/octet-stream` يُقبل كأيقونة. و SVG وثيقة XML قد تحمل سكربت، فلا يُقبل إلا إن قُرئ بلا DTD (فلا يجلب ملفًا ولا يتمدد)، وبلا `<script>` ولا `foreignObject` ولا معالج حدث `on…` ولا رابط إلا لنفسه (`#id`) أو لصورة داخله (`data:image/…`)؛ ثم يُخدم **معزولًا** (`Content-Security-Policy: …; sandbox`) فما فات الفحص لا يعمل أيضًا. ويُخدم الشعار لأي أحد (`GET /api/company-settings/logo`، والمسار القديم `api/settings` معه) بإصداره في العنوان (`?v=`): بالإصدار يُحفظ سنة (`immutable`)، وبدونه يُتحقق منه كل مرة بالـ ETag فيرد 304 إن لم يتغير. و `LogoUrl` في الـ DTO هو العنوان بإصداره، و `HasCustomLogo` هل رُفع شعار بدل أيقونة النظام.
 
-> 📄 **`backend/src/Costing.Application/Company/Settings.cs`** — 236 سطر
+> 📄 **`backend/src/Costing.Application/Company/Settings.cs`** — 238 سطر
 
 ```csharp
 using System.Xml;
@@ -1148,7 +1158,9 @@ public sealed record CompanySettingsDto(
     // Changes whenever the logo does, for the app to ask for the new one.
     long LogoVersion,
     // Where it is, its version in the address (null with none): the tab's icon and the top bar's.
-    string? LogoUrl)
+    string? LogoUrl,
+    // How the company is built: what the app shows (locations, the branch selector) follows it.
+    SystemOperatingMode OperatingMode = SystemOperatingMode.SingleBranch_OpenSpace)
 {
     public const string LogoPath = "/api/company-settings/logo";
 
@@ -1157,7 +1169,7 @@ public sealed record CompanySettingsDto(
         var version = p.LogoUpdatedAtUtc?.Ticks ?? 0;
         return new(
             p.Name, p.Money.Symbol, p.Money.Position, p.Country, p.TimeZoneId, p.WorkdayStartsAtHour, p.HasLogo, version,
-            p.HasLogo ? $"{LogoPath}?v={version}" : null);
+            p.HasLogo ? $"{LogoPath}?v={version}" : null, p.OperatingMode);
     }
 }
 
@@ -1450,11 +1462,13 @@ Costing/
                 Auth/
                     AuthOptions.cs
                     AuthenticationSetup.cs
+                    BranchRequest.cs
                     TabAccess.cs
                     TokenService.cs
                     UserClaims.cs
                 Controllers/
                     AuthController.cs
+                    CompanyStructureController.cs
                     CostingController.cs
                     EndOfDayController.cs
                     FinancialsController.cs
@@ -1503,6 +1517,7 @@ Costing/
                     WorkClock.cs
                 Company/
                     Settings.cs
+                    Structure.cs
                 Costing.Application.csproj
                 DependencyInjection.cs
                 EndOfDay/
@@ -1578,6 +1593,7 @@ Costing/
                     PeriodLockedException.cs
                 Company/
                     CompanySettings.cs
+                    CompanyStructure.cs
                 Costing.Domain.csproj
                 EndOfDay/
                     EndOfDayReport.cs
@@ -1660,6 +1676,7 @@ Costing/
                 Integrations/
                     HrIntegrationServices.cs
                 Persistence/
+                    BranchPersistence.cs
                     Configurations/
                         EndOfDayConfigurations.cs
                         InventoryConfigurations.cs
@@ -1695,6 +1712,7 @@ Costing/
                         20261117103857_AddEndOfDayClosedDaysAndAudit.cs
                         20261118092632_AddKitchenStations.cs
                         20261118122831_AddPeriodLockAndSecurityAudit.cs
+                        20261118131754_AddCompanyStructure.cs
                         CostingDbContextModelSnapshot.cs
                     PosIntegrationPersistence.cs
                     PurchaseOrderPersistence.cs
@@ -1730,6 +1748,7 @@ Costing/
                 BulkSwapApiTests.cs
                 BurdenedCostApiTests.cs
                 CombosAndDiscountsApiTests.cs
+                CompanyStructureApiTests.cs
                 ControllershipApiTests.cs
                 Costing.Api.Tests.csproj
                 CostingApiTests.cs
@@ -1747,6 +1766,7 @@ Costing/
                 BlindAndSpotCountTests.cs
                 BulkSalesImportTests.cs
                 CompanySettingsFlowTests.cs
+                CompanyStructureTests.cs
                 Costing.Application.Tests.csproj
                 EndOfDayPayoutTests.cs
                 EndOfDayTests.cs
@@ -1768,6 +1788,7 @@ Costing/
                 ApprovalTests.cs
                 CombosAndDiscountsTests.cs
                 CompanySettingsTests.cs
+                CompanyStructureTests.cs
                 Costing.Domain.Tests.csproj
                 CostingTests.cs
                 EndOfDayTests.cs
@@ -1792,6 +1813,7 @@ Costing/
                 BulkSwapTests.cs
                 BurdenedCostTests.cs
                 CombosAndDiscountsTests.cs
+                CompanyStructureTests.cs
                 Costing.Infrastructure.Tests.csproj
                 CostingTests.cs
                 DailyBreakEvenTests.cs
@@ -1858,6 +1880,9 @@ Costing/
                         error-message.ts
                         interceptors.ts
                     settings/
+                        branch-context.spec.ts
+                        branch-context.ts
+                        company-structure.ts
                         company.spec.ts
                         company.ts
                         hr-integration.ts
@@ -2062,6 +2087,8 @@ Costing/
                         waste-page.ts
                         waste-shell.ts
                     settings/
+                        company-structure-page.spec.ts
+                        company-structure-page.ts
                         hr-integration-page.spec.ts
                         hr-integration-page.ts
                         period-lock-page.spec.ts

@@ -1,12 +1,18 @@
 using Costing.Domain.Common;
+using Costing.Domain.Company;
 
 namespace Costing.Domain.StockMovements;
 
 // One entry in the stock ledger. Append-only: a mistake is corrected by a new movement, never
 // by editing an old one, so a material's QuantityOnHand always equals the sum of its
 // movements and can be rebuilt from them.
-public sealed class StockMovement : AggregateRoot
+public sealed class StockMovement : AggregateRoot, IBranchOwned
 {
+    // The branch that keeps it (IBranchOwned): given when it is saved, or kept from its original.
+    public Guid BranchId { get; private set; }
+
+    public void AssignBranch(Guid branchId) => BranchId = branchId;
+
     private StockMovement() { }
 
     // Internal: entries are created only by RawMaterial, together with the balance change

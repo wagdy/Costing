@@ -1114,6 +1114,50 @@ export const infoTips = {
       ar: 'تُجمع الصفوف حسب التاريخ وتُستورد من الأقدم. يبدأ الملف من أول يوم بعد آخر يوم مُقفل لم تُسجل مبيعاته، والأيام متتالية (يوم الإغلاق يُسجل أولاً من تقفيل اليوم)، ولا يوم في المستقبل. تُعرض معاينة أولاً، ثم تُسجل كل الأيام مع مسودة تقفيل لكل يوم، أو لا يُسجل شيء.',
     },
   ),
+  structureOpenSpace: tip(
+    { en: 'Single branch, open space', ar: 'فرع واحد بمساحة مفتوحة' },
+    {
+      en: 'All physical goods are in one place. No internal transfers needed.',
+      ar: 'كل البضاعة في مكان واحد ولا حاجة لأذونات صرف داخلية.',
+    },
+    {
+      en: 'One branch and one implicit store (Main Store). No location lists, no transfer screens, no branch selector: one stock figure and one average cost per material, as the system has always worked.',
+      ar: 'فرع واحد ومخزن واحد ضمني. لا قوائم مواقع ولا شاشات تحويل ولا اختيار فرع: رصيد واحد ومتوسط تكلفة واحد لكل خامة كما يعمل النظام دائماً.',
+    },
+  ),
+  structureSubStores: tip(
+    { en: 'Single branch with sub-stores', ar: 'فرع واحد يحتوي على مخزن ومناطق تشغيل' },
+    {
+      en: 'A single branch containing a locked main warehouse and kitchen operating locations.',
+      ar: 'فرع واحد يحتوي على مخزن رئيسي مغلق وعُهد تشغيل لأقسام المطبخ.',
+    },
+    {
+      en: 'One branch with several inventory locations (Main Store, Kitchen, Bar), added under Locations below. Stock kept per location and internal transfers between them follow in the next release.',
+      ar: 'فرع واحد بعدة مواقع مخزون (المخزن الرئيسي، المطبخ، البار) تُضاف من قسم المواقع. رصيد كل موقع والتحويلات الداخلية بينها في الإصدار القادم.',
+    },
+  ),
+  structureIndependent: tip(
+    { en: 'Several independent branches', ar: 'فروع متعددة تشتري وتعمل بشكل مستقل' },
+    {
+      en: 'Multiple branches, each managing its own purchases and stock independently.',
+      ar: 'فروع متعددة، كل فرع يشتري الخامات ويحسب تكلفته بشكل مستقل.',
+    },
+    {
+      en: 'Branches are added below; a branch selector at the top of the screen lets whoever works every branch choose one, and each user can be kept to theirs. Purchases, sales, the safe, Z reports, waste and counts are recorded under the branch they are entered in, and the lists show that branch’s.',
+      ar: 'تُضاف الفروع من الأسفل، ويظهر اختيار الفرع أعلى الشاشة لمن يعمل في كل الفروع، ويمكن تخصيص فرع لكل مستخدم. تُسجل المشتريات والمبيعات والخزنة وتقارير Z والهالك والجرد باسم الفرع، وتعرض القوائم حركات الفرع.',
+    },
+  ),
+  structureCentralKitchen: tip(
+    { en: 'Branches with a central kitchen', ar: 'فروع متعددة يدعمها مطبخ مركزي / مخزن رئيسي' },
+    {
+      en: 'A Central Kitchen/Warehouse purchases and preps items, then supplies/sells them to the restaurant branches.',
+      ar: 'مطبخ مركزي يشتري ويُصنع الخامات ثم يوردها ويبيعها لباقي الفروع.',
+    },
+    {
+      en: 'Everything several branches have, with a branch of type Central kitchen or Central warehouse. Branch requisitions, Dispatch & Bill and Receive with internal invoices follow in a later release.',
+      ar: 'كل ما في الفروع المتعددة، مع فرع من نوع مطبخ مركزي أو مخزن رئيسي. طلبات الفروع والصرف بفاتورة داخلية والاستلام في إصدار لاحق.',
+    },
+  ),
   kitchenStation: tip(
     { en: 'Kitchen station', ar: 'القسم التشغيلي' },
     {

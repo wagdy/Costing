@@ -41,6 +41,9 @@ public sealed class TestCosting
     public ComboStore Combos { get; } = new();
     public FixedAssetStore FixedAssets { get; } = new();
     public AuditStore Audit { get; } = new();
+    public BranchStore Branches { get; } = new();
+    public LocationStore Locations { get; } = new();
+    public BranchStub CurrentBranch { get; } = new();
     public StationStore Stations { get; } = new();
     public PurchaseOrderStore PurchaseOrders { get; } = new();
     public SalesStore Sales { get; } = new();
@@ -68,6 +71,9 @@ public sealed class TestCosting
         services.AddSingleton<IBusinessCalendar>(new TestCalendar());
         services.AddSingleton<Costing.Application.Treasury.ITaxRate>(TaxRate);
         services.AddSingleton<Costing.Domain.Security.ISecurityAuditLogRepository>(Audit);
+        services.AddSingleton<Costing.Domain.Company.IBranchRepository>(Branches);
+        services.AddSingleton<Costing.Domain.Company.IInventoryLocationRepository>(Locations);
+        services.AddSingleton<Costing.Application.Company.ICurrentBranch>(CurrentBranch);
         services.AddSingleton<Costing.Domain.Stations.IKitchenStationRepository>(Stations);
         services.AddSingleton<IRawMaterialRepository>(Inventory);
         services.AddSingleton<IRecipeRepository>(Inventory.Recipes);
@@ -165,6 +171,48 @@ public sealed class TestCalendar : IBusinessCalendar
         var start = businessDate.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
         return (start, start.AddDays(1));
     }
+}
+
+// The company's branches: the first, as the migration makes it.
+public sealed class BranchStore : Costing.Domain.Company.IBranchRepository
+{
+    public List<Costing.Domain.Company.Branch> All { get; } =
+        [new(Costing.Domain.Company.Branch.DefaultId, "Test Bistro", null, Costing.Domain.Company.BranchType.Restaurant)];
+
+    public Task<Costing.Domain.Company.Branch?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default) =>
+        Task.FromResult(All.SingleOrDefault(b => b.Id == id));
+
+    public void Add(Costing.Domain.Company.Branch aggregate) => All.Add(aggregate);
+
+    public Task<IReadOnlyList<Costing.Domain.Company.Branch>> GetAllAsync(CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyList<Costing.Domain.Company.Branch>>(All.ToList());
+}
+
+public sealed class LocationStore : Costing.Domain.Company.IInventoryLocationRepository
+{
+    public List<Costing.Domain.Company.InventoryLocation> All { get; } =
+        [new(Costing.Domain.Company.InventoryLocation.DefaultId, Costing.Domain.Company.Branch.DefaultId, "Main Store", "المخزن الرئيسي",
+            Costing.Domain.Company.LocationKind.MainStore)];
+
+    public Task<Costing.Domain.Company.InventoryLocation?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default) =>
+        Task.FromResult(All.SingleOrDefault(l => l.Id == id));
+
+    public void Add(Costing.Domain.Company.InventoryLocation aggregate) => All.Add(aggregate);
+
+    public Task<IReadOnlyList<Costing.Domain.Company.InventoryLocation>> GetAllAsync(CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyList<Costing.Domain.Company.InventoryLocation>>(All.ToList());
+}
+
+// The branch of the request: the first, nothing narrowed, unless a test says otherwise.
+public sealed class BranchStub : Costing.Application.Company.ICurrentBranch
+{
+    public Guid Branch { get; set; } = Costing.Domain.Company.Branch.DefaultId;
+
+    public Guid? Scope { get; set; }
+
+    public Task<Guid> BranchIdAsync(CancellationToken cancellationToken = default) => Task.FromResult(Branch);
+
+    public Task<Guid?> ScopeAsync(CancellationToken cancellationToken = default) => Task.FromResult(Scope);
 }
 
 // The security audit log, kept in order.

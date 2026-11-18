@@ -406,7 +406,7 @@ export class App {}
 - `provideAppInitializer(() => inject(WesternDigits).install())`: الأرقام العربية في حقول الأرقام تُكتب غربية تلقائيًا.
 - `MAT_FORM_FIELD_DEFAULT_OPTIONS: { appearance: 'outline' }`.
 
-> 📄 **`frontend/src/app/app.config.ts`** — 27 سطر
+> 📄 **`frontend/src/app/app.config.ts`** — 28 سطر
 
 ```ts
 import { provideHttpClient, withInterceptors } from '@angular/common/http';
@@ -419,12 +419,13 @@ import { loadCompany } from './core/settings/company';
 import { TabIcon } from './core/settings/tab-icon';
 import { authInterceptor, reachabilityInterceptor } from './core/http/interceptors';
 import { WesternDigits } from './core/ui/western-digits';
+import { branchInterceptor } from './core/settings/branch-context';
 
 export const appConfig: ApplicationConfig = {
   providers: [
     provideBrowserGlobalErrorListeners(),
     provideRouter(routes, withComponentInputBinding()),
-    provideHttpClient(withInterceptors([reachabilityInterceptor, authInterceptor])),
+    provideHttpClient(withInterceptors([reachabilityInterceptor, authInterceptor, branchInterceptor])),
     // Before the first route resolves: who is signed in, as GET /api/auth/me says.
     provideAppInitializer(() => inject(AuthService).restore()),
     // The company's name, logo, money and country, for every screen: the sign-in page's too.
@@ -443,7 +444,7 @@ export const appConfig: ApplicationConfig = {
 
 كل قسم بـ `canActivate: [costingTabGuard('Materials')]` و `loadComponent` كسول، والأقسام الفرعية (الوصفات، المشتريات، الماليات، التقارير، التحليلات) كأبناء لـ Shell خاص بها، والمسار الفارغ يفتح أول قسم يملكه المستخدم.
 
-> 📄 **`frontend/src/app/app.routes.ts`** — 328 سطر
+> 📄 **`frontend/src/app/app.routes.ts`** — 336 سطر
 
 ```ts
 import { Routes } from '@angular/router';
@@ -697,6 +698,8 @@ const costingChildren: Routes = [
   { path: 'variance', redirectTo: 'reports/variance' },
   { path: 'kpis', redirectTo: 'reports/kpis' },
   { path: 'break-even', redirectTo: 'reports/break-even' },
+  // Company structure is the company's, on Settings.
+  { path: 'settings/company-structure', redirectTo: '/settings/company-structure' },
   {
     // The cost targets, beverage categories, shared costs and monthly expenses.
     path: 'settings',
@@ -758,6 +761,12 @@ export const routes: Routes = [
         path: 'settings/hr-integration',
         canActivate: [permissionGuard(Permissions.SettingsManage)],
         loadComponent: () => import('./features/settings/hr-integration-page').then((m) => m.HrIntegrationPage),
+      },
+      {
+        // Company structure: how the business is built, its branches and locations; a manager's.
+        path: 'settings/company-structure',
+        canActivate: [permissionGuard(Permissions.SettingsManage)],
+        loadComponent: () => import('./features/settings/company-structure-page').then((m) => m.CompanyStructurePage),
       },
       {
         // Period lock & month-end close: the books closed until a day, opened again with why; a manager's.
@@ -897,12 +906,13 @@ export class ConnectivityService {
 
 ### 4.2 الشركة والأدوات
 
-> 📄 **`frontend/src/app/core/settings/company.ts`** — 113 سطر
+> 📄 **`frontend/src/app/core/settings/company.ts`** — 118 سطر
 
 ```ts
 import { HttpClient } from '@angular/common/http';
 import { Injectable, computed, inject, signal } from '@angular/core';
 import { Observable, firstValueFrom } from 'rxjs';
+import { OperatingMode } from './company-structure';
 
 // Company Settings (إعدادات الشركة), as the API keeps them (/api/settings): read by anyone, the
 // sign-in page too; changed by a manager.
@@ -924,9 +934,11 @@ export interface CompanySettings {
   logoVersion: number;
   // Where it is, its version in the address; null with none.
   logoUrl: string | null;
+  // How the company is built: what the app shows (locations, the branch selector) follows it.
+  operatingMode?: OperatingMode;
 }
 
-export type CompanySettingsInput = Omit<CompanySettings, 'hasCustomLogo' | 'logoVersion' | 'logoUrl'>;
+export type CompanySettingsInput = Omit<CompanySettings, 'hasCustomLogo' | 'logoVersion' | 'logoUrl' | 'operatingMode'>;
 
 export const countryLabels: Record<Country, { en: string; ar: string }> = {
   Egypt: { en: 'Egypt', ar: 'مصر' },
@@ -971,6 +983,8 @@ export class Company {
   readonly currency = computed(() => this.settings().currencySymbol);
   // The company's name, or the system's own until it has one.
   readonly name = computed(() => this.settings().name || 'Costing & Financials');
+  // How the company is built: an open-space shop until a manager says otherwise.
+  readonly mode = computed<OperatingMode>(() => this.settings().operatingMode ?? 'SingleBranch_OpenSpace');
   // The company's logo: the browser tab's icon, the top bar's and the sign-in page's; null with none.
   readonly logoUrl = computed(() => (this.settings().hasCustomLogo ? this.settings().logoUrl : null));
 
@@ -8222,7 +8236,7 @@ table.grid {
 
 `Shell`: الشريط العلوي بالأقسام وحالة الاتصال وشريط "الخادم غير متاح".
 
-> 📄 **`frontend/src/app/features/shell/shell.ts`** — 61 سطر
+> 📄 **`frontend/src/app/features/shell/shell.ts`** — 67 سطر
 
 ```ts
 import { BreakpointObserver } from '@angular/cdk/layout';
@@ -8239,7 +8253,9 @@ import { AuthService } from '../../core/auth/auth.service';
 import { CanDirective } from '../../core/auth/can.directive';
 import { Permissions } from '../../core/auth/permissions';
 import { ConnectivityService } from '../../core/connectivity/connectivity.service';
+import { BranchContext } from '../../core/settings/branch-context';
 import { Company } from '../../core/settings/company';
+import { branchTypeLabels } from '../../core/settings/company-structure';
 import { roleLabels } from '../../core/users/users.api';
 import { Approvals } from '../costing/approvals';
 
@@ -8260,6 +8276,9 @@ export class Shell implements OnInit {
   protected readonly roleLabels = roleLabels;
   // The company's name and logo, beside the sections.
   protected readonly company = inject(Company);
+  // The branch worked in, and the choice of it, once the company has several.
+  protected readonly branch = inject(BranchContext);
+  protected readonly branchTypes = branchTypeLabels;
   // The signed-in user's first letters, in the avatar on their menu.
   protected readonly initials = computed(() =>
     (this.auth.me()?.fullName ?? '')
@@ -8280,6 +8299,7 @@ export class Shell implements OnInit {
 
   ngOnInit(): void {
     void this.approvals.refresh();
+    void this.branch.load();
   }
 
   protected signOut(): void {
@@ -8289,7 +8309,7 @@ export class Shell implements OnInit {
 ```
 
 
-> 📄 **`frontend/src/app/features/shell/shell.html`** — 74 سطر
+> 📄 **`frontend/src/app/features/shell/shell.html`** — 101 سطر
 
 ```html
 <mat-toolbar class="toolbar">
@@ -8331,6 +8351,33 @@ export class Shell implements OnInit {
     }
   </span>
 
+  @if (branch.multi() && branch.current(); as current) {
+    @if (branch.canChoose()) {
+      <button mat-stroked-button class="branch" [matMenuTriggerFor]="branchMenu" [attr.aria-label]="'Branch: ' + current.name + '. Choose another'"
+        matTooltip="The branch you work in · الفرع الحالي">
+        <mat-icon>storefront</mat-icon>
+        <span class="branch-name">{{ current.name }}</span>
+        <mat-icon class="chevron" iconPositionEnd>expand_more</mat-icon>
+      </button>
+      <mat-menu #branchMenu="matMenu">
+        @for (b of branch.branches(); track b.id) {
+          <button mat-menu-item (click)="b.id !== current.id && branch.choose(b.id)" [class.chosen]="b.id === current.id">
+            <mat-icon>{{ b.id === current.id ? 'check' : 'storefront' }}</mat-icon>
+            <span class="who">
+              <span>{{ b.name }}@if (b.nameAr) { · {{ b.nameAr }}}</span>
+              <small>{{ branchTypes[b.type].en }} · {{ branchTypes[b.type].ar }}</small>
+            </span>
+          </button>
+        }
+      </mat-menu>
+    } @else {
+      <span class="branch fixed" matTooltip="Your branch · فرعك">
+        <mat-icon>storefront</mat-icon>
+        <span class="branch-name">{{ current.name }}</span>
+      </span>
+    }
+  }
+
   <button mat-button [matMenuTriggerFor]="userMenu" class="user">
     <span class="avatar" aria-hidden="true">{{ initials() }}</span>
     <span class="user-name">{{ auth.me()?.fullName }}</span>
@@ -8369,7 +8416,7 @@ export class Shell implements OnInit {
 ```
 
 
-> 📄 **`frontend/src/app/features/shell/shell.scss`** — 270 سطر
+> 📄 **`frontend/src/app/features/shell/shell.scss`** — 298 سطر
 
 ```scss
 :host {
@@ -8642,6 +8689,34 @@ nav {
     padding: 8px;
   }
 }
+
+// The branch worked in, beside the user: chosen by one who works every branch, shown to one kept to it.
+.branch {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: 8px;
+  max-width: 220px;
+
+  .branch-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  &.fixed {
+    padding: 0 10px;
+    height: 36px;
+    border-radius: 18px;
+    background: var(--mat-sys-surface-container-high);
+    font: var(--mat-sys-label-large);
+  }
+}
+
+@media (max-width: 599.98px) {
+  .branch .branch-name {
+    display: none;
+  }
+}
 ```
 
 
@@ -8821,7 +8896,7 @@ export class InfoTip implements OnDestroy {
 ```
 
 
-> 📄 **`frontend/src/app/features/costing/info-tips.ts`** — 1197 سطر
+> 📄 **`frontend/src/app/features/costing/info-tips.ts`** — 1241 سطر
 
 ```ts
 // What each figure on the costing screens is, and how it is worked out, in Arabic and English: the
@@ -9938,6 +10013,50 @@ export const infoTips = {
     {
       en: 'The rows are grouped by their Date and imported oldest first. The file starts on the day after the last closed day whose sales are not in yet, its days follow one another (a closed day is marked on End of the day first), and none is still to come. Previewed first; then every day is recorded, with its end of day as a draft, or none is.',
       ar: 'تُجمع الصفوف حسب التاريخ وتُستورد من الأقدم. يبدأ الملف من أول يوم بعد آخر يوم مُقفل لم تُسجل مبيعاته، والأيام متتالية (يوم الإغلاق يُسجل أولاً من تقفيل اليوم)، ولا يوم في المستقبل. تُعرض معاينة أولاً، ثم تُسجل كل الأيام مع مسودة تقفيل لكل يوم، أو لا يُسجل شيء.',
+    },
+  ),
+  structureOpenSpace: tip(
+    { en: 'Single branch, open space', ar: 'فرع واحد بمساحة مفتوحة' },
+    {
+      en: 'All physical goods are in one place. No internal transfers needed.',
+      ar: 'كل البضاعة في مكان واحد ولا حاجة لأذونات صرف داخلية.',
+    },
+    {
+      en: 'One branch and one implicit store (Main Store). No location lists, no transfer screens, no branch selector: one stock figure and one average cost per material, as the system has always worked.',
+      ar: 'فرع واحد ومخزن واحد ضمني. لا قوائم مواقع ولا شاشات تحويل ولا اختيار فرع: رصيد واحد ومتوسط تكلفة واحد لكل خامة كما يعمل النظام دائماً.',
+    },
+  ),
+  structureSubStores: tip(
+    { en: 'Single branch with sub-stores', ar: 'فرع واحد يحتوي على مخزن ومناطق تشغيل' },
+    {
+      en: 'A single branch containing a locked main warehouse and kitchen operating locations.',
+      ar: 'فرع واحد يحتوي على مخزن رئيسي مغلق وعُهد تشغيل لأقسام المطبخ.',
+    },
+    {
+      en: 'One branch with several inventory locations (Main Store, Kitchen, Bar), added under Locations below. Stock kept per location and internal transfers between them follow in the next release.',
+      ar: 'فرع واحد بعدة مواقع مخزون (المخزن الرئيسي، المطبخ، البار) تُضاف من قسم المواقع. رصيد كل موقع والتحويلات الداخلية بينها في الإصدار القادم.',
+    },
+  ),
+  structureIndependent: tip(
+    { en: 'Several independent branches', ar: 'فروع متعددة تشتري وتعمل بشكل مستقل' },
+    {
+      en: 'Multiple branches, each managing its own purchases and stock independently.',
+      ar: 'فروع متعددة، كل فرع يشتري الخامات ويحسب تكلفته بشكل مستقل.',
+    },
+    {
+      en: 'Branches are added below; a branch selector at the top of the screen lets whoever works every branch choose one, and each user can be kept to theirs. Purchases, sales, the safe, Z reports, waste and counts are recorded under the branch they are entered in, and the lists show that branch’s.',
+      ar: 'تُضاف الفروع من الأسفل، ويظهر اختيار الفرع أعلى الشاشة لمن يعمل في كل الفروع، ويمكن تخصيص فرع لكل مستخدم. تُسجل المشتريات والمبيعات والخزنة وتقارير Z والهالك والجرد باسم الفرع، وتعرض القوائم حركات الفرع.',
+    },
+  ),
+  structureCentralKitchen: tip(
+    { en: 'Branches with a central kitchen', ar: 'فروع متعددة يدعمها مطبخ مركزي / مخزن رئيسي' },
+    {
+      en: 'A Central Kitchen/Warehouse purchases and preps items, then supplies/sells them to the restaurant branches.',
+      ar: 'مطبخ مركزي يشتري ويُصنع الخامات ثم يوردها ويبيعها لباقي الفروع.',
+    },
+    {
+      en: 'Everything several branches have, with a branch of type Central kitchen or Central warehouse. Branch requisitions, Dispatch & Bill and Receive with internal invoices follow in a later release.',
+      ar: 'كل ما في الفروع المتعددة، مع فرع من نوع مطبخ مركزي أو مخزن رئيسي. طلبات الفروع والصرف بفاتورة داخلية والاستلام في إصدار لاحق.',
     },
   ),
   kitchenStation: tip(

@@ -1,4 +1,5 @@
 using Costing.Domain.Common;
+using Costing.Domain.Company;
 
 namespace Costing.Domain.Waste;
 
@@ -7,8 +8,13 @@ namespace Costing.Domain.Waste;
 // the shelves; the cost is the day's. Entered on Waste. AssetItemId and AssetTransactionId name an
 // asset system's own record of it, when one sends it; none for one entered here. What broke is
 // said by its name as it was, and who broke it.
-public sealed class BreakageEntry : AggregateRoot
+public sealed class BreakageEntry : AggregateRoot, IBranchOwned
 {
+    // The branch that keeps it (IBranchOwned): given when it is saved, or kept from its original.
+    public Guid BranchId { get; private set; }
+
+    public void AssignBranch(Guid branchId) => BranchId = branchId;
+
     public const int MaxDescriptionLength = 150;
     public const int MaxNotesLength = 300;
 

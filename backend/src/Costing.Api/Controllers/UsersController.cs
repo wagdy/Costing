@@ -19,14 +19,14 @@ public sealed class UsersController(UserDirectory users) : ControllerBase
 
     [HttpPost]
     public async Task<UserDto> Create(CreateUserRequest request, CancellationToken cancellationToken) =>
-        UserDto.From(await users.CreateAsync(request.Email, request.FullName, request.Role, request.Password, cancellationToken));
+        UserDto.From(await users.CreateAsync(request.Email, request.FullName, request.Role, request.Password, cancellationToken, request.BranchId));
 
     [HttpPut("{userId}")]
     public async Task<UserDto> Update(string userId, UpdateUserRequest request, CancellationToken cancellationToken)
     {
         if (userId == UserClaims.IdOf(User) && (!request.IsActive || request.Role != UserRole.Manager))
             throw new Costing.Domain.Common.DomainException("You cannot take your own manager's rights away: another manager does that.");
-        return UserDto.From(await users.UpdateAsync(userId, request.Email, request.FullName, request.Role, request.IsActive, cancellationToken));
+        return UserDto.From(await users.UpdateAsync(userId, request.Email, request.FullName, request.Role, request.IsActive, cancellationToken, request.BranchId));
     }
 
     // Also lifts a lockout, and signs them out wherever they are signed in.
@@ -38,14 +38,16 @@ public sealed class UsersController(UserDirectory users) : ControllerBase
     }
 }
 
-public sealed record UserDto(string Id, string Email, string FullName, UserRole Role, bool IsActive, DateTime CreatedAtUtc, DateTime? LastSignInAtUtc, bool IsLocked)
+// BranchId: the branch they are kept to; none for every branch. Changed, it signs them out.
+public sealed record UserDto(
+    string Id, string Email, string FullName, UserRole Role, bool IsActive, DateTime CreatedAtUtc, DateTime? LastSignInAtUtc, bool IsLocked, Guid? BranchId = null)
 {
     public static UserDto From(UserAccount u) =>
-        new(u.Id, u.Email, u.FullName, u.Role, u.IsActive, u.CreatedAtUtc, u.LastSignInAtUtc, u.LockedUntilUtc > DateTime.UtcNow);
+        new(u.Id, u.Email, u.FullName, u.Role, u.IsActive, u.CreatedAtUtc, u.LastSignInAtUtc, u.LockedUntilUtc > DateTime.UtcNow, u.BranchId);
 }
 
-public sealed record CreateUserRequest(string Email, string FullName, UserRole Role, string Password);
+public sealed record CreateUserRequest(string Email, string FullName, UserRole Role, string Password, Guid? BranchId = null);
 
-public sealed record UpdateUserRequest(string Email, string FullName, UserRole Role, bool IsActive);
+public sealed record UpdateUserRequest(string Email, string FullName, UserRole Role, bool IsActive, Guid? BranchId = null);
 
 public sealed record ResetPasswordRequest(string Password);

@@ -199,6 +199,14 @@
 
 @@file frontend/src/app/features/settings/hr-integration-page.ts
 
+`CompanyStructurePage` (الإعدادات ← هيكل الشركة): أربع بطاقات للأنماط بعلامة (!) لكل منها (`structureOpenSpace`… في `info-tips.ts`)، الحالي والافتراضي مميزان، واختيار بطاقة يُظهر "تطبيق"؛ ثم جدول الفروع (فرعك فقط في نمط الفرع الواحد) وجدول المواقع (مخفي في المساحة المفتوحة). `BranchContext`: الفروع المفعّلة، وفرع المستخدم المخصص أو اختياره (محفوظ في المتصفح)، و `branchInterceptor` يرسل `X-Branch-Id` مع كل طلب للـ API؛ والشريط العلوي يعرض اختيار الفرع فقط مع عدة فروع ولمن يعمل في كلها، واسم فرعه لمن خُصص له.
+
+@@file frontend/src/app/core/settings/company-structure.ts
+
+@@file frontend/src/app/core/settings/branch-context.ts
+
+@@file frontend/src/app/features/settings/company-structure-page.ts
+
 `PeriodLockPage` (الإعدادات ← إقفال الدفاتر): لوحة حمراء بالحالة بالعربية والإنجليزية؛ "إقفال فترة جديدة" بتاريخ مقترح (نهاية الشهر) والزر معطّل حتى تُكتب `LOCK`؛ "فتح الفترة استثنائياً" لمن يملك `settings.unlock-periods` فقط، بتاريخ أسبق أو رفع الإقفال كله، والسبب إلزامي (5 أحرف على الأقل)؛ وبعد الفتح تقترح "أعد الإقفال حتى …" للتاريخ السابق؛ وتحتها جدول سجل التدقيق. وصفحة الملخصات اليومية تعرض "الدفاتر مقفلة حتى" برابط إليها بدل أزرار الإقفال القديمة.
 
 @@file frontend/src/app/core/settings/period-lock.ts

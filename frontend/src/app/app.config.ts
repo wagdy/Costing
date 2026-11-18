@@ -8,12 +8,13 @@ import { loadCompany } from './core/settings/company';
 import { TabIcon } from './core/settings/tab-icon';
 import { authInterceptor, reachabilityInterceptor } from './core/http/interceptors';
 import { WesternDigits } from './core/ui/western-digits';
+import { branchInterceptor } from './core/settings/branch-context';
 
 export const appConfig: ApplicationConfig = {
   providers: [
     provideBrowserGlobalErrorListeners(),
     provideRouter(routes, withComponentInputBinding()),
-    provideHttpClient(withInterceptors([reachabilityInterceptor, authInterceptor])),
+    provideHttpClient(withInterceptors([reachabilityInterceptor, authInterceptor, branchInterceptor])),
     // Before the first route resolves: who is signed in, as GET /api/auth/me says.
     provideAppInitializer(() => inject(AuthService).restore()),
     // The company's name, logo, money and country, for every screen: the sign-in page's too.

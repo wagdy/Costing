@@ -16,6 +16,7 @@ public static class DependencyInjection
         services.AddScoped<Books.IBooksLock, Books.CompanyBooksLock>();
         services.AddScoped<Books.BooksGuard>();
         services.AddScoped<Books.PeriodLockReader>();
+        services.AddScoped<Company.CompanyStructureReader>();
         // The days of the records each request names.
         foreach (var lookup in typeof(DependencyInjection).Assembly.GetTypes()
                      .Where(t => t is { IsClass: true, IsAbstract: false } && !t.IsGenericTypeDefinition))

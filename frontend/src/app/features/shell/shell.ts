@@ -12,7 +12,9 @@ import { AuthService } from '../../core/auth/auth.service';
 import { CanDirective } from '../../core/auth/can.directive';
 import { Permissions } from '../../core/auth/permissions';
 import { ConnectivityService } from '../../core/connectivity/connectivity.service';
+import { BranchContext } from '../../core/settings/branch-context';
 import { Company } from '../../core/settings/company';
+import { branchTypeLabels } from '../../core/settings/company-structure';
 import { roleLabels } from '../../core/users/users.api';
 import { Approvals } from '../costing/approvals';
 
@@ -33,6 +35,9 @@ export class Shell implements OnInit {
   protected readonly roleLabels = roleLabels;
   // The company's name and logo, beside the sections.
   protected readonly company = inject(Company);
+  // The branch worked in, and the choice of it, once the company has several.
+  protected readonly branch = inject(BranchContext);
+  protected readonly branchTypes = branchTypeLabels;
   // The signed-in user's first letters, in the avatar on their menu.
   protected readonly initials = computed(() =>
     (this.auth.me()?.fullName ?? '')
@@ -53,6 +58,7 @@ export class Shell implements OnInit {
 
   ngOnInit(): void {
     void this.approvals.refresh();
+    void this.branch.load();
   }
 
   protected signOut(): void {

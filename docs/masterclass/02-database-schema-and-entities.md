@@ -198,7 +198,7 @@ public interface IUnitOfWork
 
 `CompanySettings`: صف واحد: الاسم، العملة وموضعها (`L.E 1,400.00` أو `1,400.00 SAR`)، الدولة، المنطقة الزمنية، **ساعة بداية اليوم التجاري** (مطعم يغلق 2 فجرًا: مبيعات 1:30 فجرًا تتبع "أمس"). و `MoneyFormat.Format` يكتب المال بنفس الطريقة في كل مكان.
 
-> 📄 **`backend/src/Costing.Domain/Company/CompanySettings.cs`** — 222 سطر
+> 📄 **`backend/src/Costing.Domain/Company/CompanySettings.cs`** — 239 سطر
 
 ```csharp
 using System.Globalization;
@@ -285,6 +285,9 @@ public sealed class CompanySettings
     // before it is entered, changed or voided, in money or stock. Null: none locked.
     public DateOnly? BooksLockedUntilDate { get; private set; }
 
+    // How the business is built: one open-space shop until a manager says otherwise.
+    public SystemOperatingMode OperatingMode { get; private set; } = SystemOperatingMode.SingleBranch_OpenSpace;
+
     public bool HasLogo => LogoFileName is not null;
 
     public bool IsLocked(DateOnly day) => BooksLockedUntilDate is { } locked && day <= locked;
@@ -366,6 +369,20 @@ public sealed class CompanySettings
                 $"The last day closed is {PeriodLockedException.Format(last)}: lock the books up to it at the latest, the days after it are still to be closed. " +
                 "· لا تقفل بعد آخر يوم مغلق.");
         BooksLockedUntilDate = until;
+    }
+
+    // The company's structure changed: a single-branch mode only while the first branch is the one
+    // in use (the others taken out of use first, their records kept). Returns the mode it was.
+    public SystemOperatingMode ChangeOperatingMode(SystemOperatingMode mode, IReadOnlyCollection<Branch> branches)
+    {
+        if (!Enum.IsDefined(mode))
+            throw new DomainException("Choose how the company is built: one of the four structures.");
+        if (!mode.IsMultiBranch() && branches.Where(b => b.IsActive && !b.IsDefault).Select(b => b.Name).ToList() is { Count: > 0 } others)
+            throw new DomainException(
+                $"Take {string.Join(", ", others)} out of use first: a single-branch company works in its first branch alone. · أوقف الفروع الأخرى أولاً.");
+        var previous = OperatingMode;
+        OperatingMode = mode;
+        return previous;
     }
 
     public const int MinUnlockReasonLength = 5;
@@ -469,7 +486,7 @@ public enum UnitOfMeasure
 - **المخزون يُسمح أن يصبح سالبًا**: البيع حدث فعلًا؛ رفض الخصم لن "يلغي البيع" بل سيضيّع السجل. الرصيد السالب **إشارة**: فاتورة لم تُسجل أو وصفة خاطئة، والجرد يصححه.
 - **`Archive`**: لا حذف؛ أرشفة فقط ورصيده صفر، حتى لا تختفي قيمته من الدفاتر.
 
-> 📄 **`backend/src/Costing.Domain/RawMaterials/RawMaterial.cs`** — 357 سطر
+> 📄 **`backend/src/Costing.Domain/RawMaterials/RawMaterial.cs`** — 360 سطر
 
 ```csharp
 using Costing.Domain.Common;
@@ -771,7 +788,10 @@ public sealed class RawMaterial : AggregateRoot
 
         if (original.Reason is StockMovementReason.Purchase or StockMovementReason.ProductionOutput && original.Quantity > 0)
             UnaverageWith(original.Quantity, original.UnitCost);
-        return Move(-original.Quantity, original.Reason, original.SourceId, original.UnitCost, "Voided", reversedBy, original.Id, original.ResponsibleStationId);
+        var reversal = Move(-original.Quantity, original.Reason, original.SourceId, original.UnitCost, "Voided", reversedBy, original.Id, original.ResponsibleStationId);
+        // Undone in the branch it was entered in, whichever the reversal is made from.
+        reversal.AssignBranch(original.BranchId);
+        return reversal;
     }
 
     // The average as if `quantity` bought at `unitCost` had never come in: the value of the
@@ -1411,18 +1431,24 @@ public static class StaffConsumption
 ```
 
 
-> 📄 **`backend/src/Costing.Domain/StockMovements/StockMovement.cs`** — 65 سطر
+> 📄 **`backend/src/Costing.Domain/StockMovements/StockMovement.cs`** — 71 سطر
 
 ```csharp
 using Costing.Domain.Common;
+using Costing.Domain.Company;
 
 namespace Costing.Domain.StockMovements;
 
 // One entry in the stock ledger. Append-only: a mistake is corrected by a new movement, never
 // by editing an old one, so a material's QuantityOnHand always equals the sum of its
 // movements and can be rebuilt from them.
-public sealed class StockMovement : AggregateRoot
+public sealed class StockMovement : AggregateRoot, IBranchOwned
 {
+    // The branch that keeps it (IBranchOwned): given when it is saved, or kept from its original.
+    public Guid BranchId { get; private set; }
+
+    public void AssignBranch(Guid branchId) => BranchId = branchId;
+
     private StockMovement() { }
 
     // Internal: entries are created only by RawMaterial, together with the balance change
@@ -2702,10 +2728,11 @@ public interface IComboOfferRepository : IRepository<ComboOffer>
 ```
 
 
-> 📄 **`backend/src/Costing.Domain/Sales/SalesReceipt.cs`** — 300 سطر
+> 📄 **`backend/src/Costing.Domain/Sales/SalesReceipt.cs`** — 306 سطر
 
 ```csharp
 using Costing.Domain.Common;
+using Costing.Domain.Company;
 
 namespace Costing.Domain.Sales;
 
@@ -2774,8 +2801,13 @@ public enum SalesSource
 //
 // Its id is made by the app, so a retried entry is recorded once; an imported one also keeps the
 // point of sale's own number (Reference), so a sheet imported twice is recorded once.
-public sealed class SalesReceipt : AggregateRoot
+public sealed class SalesReceipt : AggregateRoot, IBranchOwned
 {
+    // The branch that keeps it (IBranchOwned): given when it is saved, or kept from its original.
+    public Guid BranchId { get; private set; }
+
+    public void AssignBranch(Guid branchId) => BranchId = branchId;
+
     public const int MaxReferenceLength = 64;
 
     private readonly List<SalesReceiptLine> _lines = [];
@@ -3012,12 +3044,13 @@ public interface ISalesReceiptRepository : IRepository<SalesReceipt>
 
 `PurchaseInvoice`: مسودة ⇐ مرحّلة (`Posted`) ⇐ ملغاة (`Voided`). البند: خامة (يدخل المخزون) أو مصروف. `LineTotal` كما كُتب على الورقة، و `Discount` البند، و **`DiscountShare`** حصته من خصم الفاتورة (توزيع بالقرش، الفصل 05)، و `Cost` = الصافي الذي يدخل المتوسط. والدفع: نقدي من الخزنة، أو من إيراد يوم، أو آجل.
 
-> 📄 **`backend/src/Costing.Domain/Purchases/PurchaseInvoice.cs`** — 420 سطر
+> 📄 **`backend/src/Costing.Domain/Purchases/PurchaseInvoice.cs`** — 426 سطر
 
 ```csharp
 using Costing.Domain.Common;
 using Costing.Domain.RawMaterials;
 using Costing.Domain.StockMovements;
+using Costing.Domain.Company;
 
 namespace Costing.Domain.Purchases;
 
@@ -3069,8 +3102,13 @@ public enum PurchaseItemType
 //
 // Its id is made by the till and is the stock movements' SourceId, so a retry after a lost
 // answer posts it once.
-public sealed class PurchaseInvoice : AggregateRoot
+public sealed class PurchaseInvoice : AggregateRoot, IBranchOwned
 {
+    // The branch that keeps it (IBranchOwned): given when it is saved, or kept from its original.
+    public Guid BranchId { get; private set; }
+
+    public void AssignBranch(Guid branchId) => BranchId = branchId;
+
     public const int MaxAttachmentBytes = 10 * 1024 * 1024;
 
     // What a photo or scan of an invoice can be.
@@ -3489,13 +3527,14 @@ public interface IPurchaseAttachmentStore
 
 `StockCount`: مسودة تُحفظ أثناء العد (العد قد يستغرق ساعة والتابلت قد ينام)، ثم تُرحّل. **النوع**: `Opening` (افتتاحي: بداية القيم، لا يُعتبر فرقًا) أو `Periodic` (دوري: الفرق = عجز/زيادة). **النطاق** `Scope`: `Full` (جرد شامل) أو `Spot` (جرد يومي سريع / جزئي) بقائمة `ScopeMaterialIds` (عمود `uuid[]`) واسمها `ScopeLabel`. **المراجعة** `Review`: `Counting` ثم `Submitted` (سُلّم للمراجعة) أو `RecountRequested` (مطلوب إعادة جرد، على سطور بعينها `RecountRequested` مع ملاحظة المراجِع)، والترحيل يمسح علامات إعادة الجرد ويبقى اسم من سلّمه. ولكل سطر ملاحظة العادّ `Note`. وعلى `RawMaterial` علم `IsSpotCheckItem`: صنف يُجرد يوميًا. الشرح المحاسبي في الفصل 05.
 
-> 📄 **`backend/src/Costing.Domain/StockCounts/StockCount.cs`** — 328 سطر
+> 📄 **`backend/src/Costing.Domain/StockCounts/StockCount.cs`** — 334 سطر
 
 ```csharp
 using Costing.Domain.Common;
 using Costing.Domain.Production;
 using Costing.Domain.RawMaterials;
 using Costing.Domain.StockMovements;
+using Costing.Domain.Company;
 
 namespace Costing.Domain.StockCounts;
 
@@ -3561,8 +3600,13 @@ public enum StockCountReview
 // Who counts may count blind (الجرد الأعمى): a storekeeper never sees what the records expect, and
 // hands the count in (Submit); a manager or cost controller reconciles it against them and posts
 // it, or sends lines back to be weighed again (RequestRecount), still without the figure.
-public sealed class StockCount : AggregateRoot
+public sealed class StockCount : AggregateRoot, IBranchOwned
 {
+    // The branch that keeps it (IBranchOwned): given when it is saved, or kept from its original.
+    public Guid BranchId { get; private set; }
+
+    public void AssignBranch(Guid branchId) => BranchId = branchId;
+
     public const int MaxScopeLabelLength = 120;
     public const int MaxNoteLength = 200;
     public const int MaxReviewNoteLength = 300;
@@ -3852,10 +3896,11 @@ public interface IStockCountRepository : IRepository<StockCount>
 
 `BreakageEntry`: الكسر (أطباق، كاسات): ليس مخزونًا؛ تكلفته على اليوم.
 
-> 📄 **`backend/src/Costing.Domain/Waste/BreakageEntry.cs`** — 79 سطر
+> 📄 **`backend/src/Costing.Domain/Waste/BreakageEntry.cs`** — 85 سطر
 
 ```csharp
 using Costing.Domain.Common;
+using Costing.Domain.Company;
 
 namespace Costing.Domain.Waste;
 
@@ -3864,8 +3909,13 @@ namespace Costing.Domain.Waste;
 // the shelves; the cost is the day's. Entered on Waste. AssetItemId and AssetTransactionId name an
 // asset system's own record of it, when one sends it; none for one entered here. What broke is
 // said by its name as it was, and who broke it.
-public sealed class BreakageEntry : AggregateRoot
+public sealed class BreakageEntry : AggregateRoot, IBranchOwned
 {
+    // The branch that keeps it (IBranchOwned): given when it is saved, or kept from its original.
+    public Guid BranchId { get; private set; }
+
+    public void AssignBranch(Guid branchId) => BranchId = branchId;
+
     public const int MaxDescriptionLength = 150;
     public const int MaxNotesLength = 300;
 
@@ -3958,11 +4008,12 @@ public interface IBreakageEntryRepository : IRepository<BreakageEntry>
 
 `SafeTransaction`: كل قيد في الخزنة. **صندوقان** (`CashFund`): الخزنة (`Safe`)، و **درج اليوم** (`DayRevenue`: إيراد يوم لم يُورَّد بعد؛ يمكن الدفع منه مباشرة). الأنواع: رصيد افتتاحي، تمويل، **توريد إيراد** (`RevenueTransfer`: كاش وفيزا **قبل الضريبة** + الضريبة فوقها)، إذن صرف مصروفات، سداد مورد، سداد فاتورة، سلفة موظف، صرف راتب، **سداد ضرائب** (`TaxPayment`)، و **صرف مسير رواتب** (`PayrollPayment`). و `Takings(...)` تفصل الضريبة من مبلغ شامل **بحيث يرجع الجمع للمبلغ المُدخل بالقرش** (الفصل 06).
 
-> 📄 **`backend/src/Costing.Domain/Treasury/SafeTransaction.cs`** — 497 سطر
+> 📄 **`backend/src/Costing.Domain/Treasury/SafeTransaction.cs`** — 505 سطر
 
 ```csharp
 using Costing.Domain.Common;
 using Costing.Domain.Sales;
+using Costing.Domain.Company;
 
 namespace Costing.Domain.Treasury;
 
@@ -4049,8 +4100,13 @@ public enum FundingSource
 // reversing entry dated the day it is voided, so a closed month's balance never moves.
 //
 // Its id is made by the till, so a retried voucher is recorded once.
-public sealed class SafeTransaction : AggregateRoot
+public sealed class SafeTransaction : AggregateRoot, IBranchOwned
 {
+    // The branch that keeps it (IBranchOwned): given when it is saved, or kept from its original.
+    public Guid BranchId { get; private set; }
+
+    public void AssignBranch(Guid branchId) => BranchId = branchId;
+
     // What can be paid out of a day's takings, as well as out of the safe: what the drawer pays
     // before they are entered is taken off them. An array, so EF turns Contains into SQL.
     public static readonly SafeTransactionKind[] PaidOutKinds =
@@ -4409,6 +4465,8 @@ public sealed class SafeTransaction : AggregateRoot
             PayrollRunId = PayrollRunId,
             FixedAssetId = FixedAssetId,
             ReversalOf = Id,
+            // Voided in the branch it was entered in.
+            BranchId = BranchId,
         };
         reversal._discountReasons.AddRange(Discounts.Negated(_discountReasons));
         return reversal;
@@ -5656,7 +5714,7 @@ public static class DatabaseConnection
 - `ConfigureConventions`: كل `decimal` بدقة (10,2) افتراضيًا (والكميات تتجاوزه صراحة بـ `IsQuantity()`).
 - `SaveChangesAsync`: `TouchRootsOfChangedChildren` (تعديل ابن يعلّم أباه معدّلًا ليُفحص `xmin` الخاص به)، وترجمة أخطاء EF/Npgsql (تزامن، تكرار فريد، مفتاح أجنبي) إلى `ConflictException`، فلا تعرف الطبقات العليا شيئًا عن EF.
 
-> 📄 **`backend/src/Costing.Infrastructure/Persistence/CostingDbContext.cs`** — 173 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Persistence/CostingDbContext.cs`** — 175 سطر
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
@@ -5732,6 +5790,8 @@ public sealed class CostingDbContext(DbContextOptions<CostingDbContext> options)
     public DbSet<CostingSettings> CostingSettings => Set<CostingSettings>();
     public DbSet<Domain.Stations.KitchenStation> KitchenStations => Set<Domain.Stations.KitchenStation>();
     public DbSet<Domain.Security.SecurityAuditLog> SecurityAuditLogs => Set<Domain.Security.SecurityAuditLog>();
+    public DbSet<Domain.Company.Branch> Branches => Set<Domain.Company.Branch>();
+    public DbSet<Domain.Company.InventoryLocation> InventoryLocations => Set<Domain.Company.InventoryLocation>();
     public DbSet<FinancialSettings> FinancialSettings => Set<FinancialSettings>();
     public DbSet<SharedCost> SharedCosts => Set<SharedCost>();
     public DbSet<MonthlyExpenses> MonthlyExpenses => Set<MonthlyExpenses>();
@@ -6659,7 +6719,7 @@ internal sealed class EndOfDayPhotoContentConfiguration : IEntityTypeConfigurati
 
 إعدادات الشركة وشعارها (الشعار منفصل حتى لا تُحمّل الصورة مع كل قراءة). وعليها `BooksLockedUntilDate`: الدفاتر مقفلة حتى هذا اليوم (الفصل 03):
 
-> 📄 **`backend/src/Costing.Infrastructure/Company/CompanySettingsStore.cs`** — 75 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Company/CompanySettingsStore.cs`** — 77 سطر
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
@@ -6724,6 +6784,8 @@ internal sealed class CompanySettingsConfiguration : IEntityTypeConfiguration<Co
         builder.Property(s => s.LogoFileName).HasMaxLength(CompanySettings.MaxLogoFileNameLength);
         builder.Property(s => s.LogoContentType).HasMaxLength(50);
         builder.Property(s => s.UpdatedBy).HasMaxLength(200);
+        // An open-space shop until a manager builds the company otherwise.
+        builder.Property(s => s.OperatingMode).IsEnumName().HasDefaultValue(SystemOperatingMode.SingleBranch_OpenSpace);
     }
 }
 
@@ -7799,6 +7861,7 @@ dotnet ef migrations add <Name> \
 | 17 | `20261117103857_AddEndOfDayClosedDaysAndAudit` | Add End Of Day Closed Days And Audit |
 | 18 | `20261118092632_AddKitchenStations` | Add Kitchen Stations |
 | 19 | `20261118122831_AddPeriodLockAndSecurityAudit` | Add Period Lock And Security Audit |
+| 20 | `20261118131754_AddCompanyStructure` | Add Company Structure |
 
 
 ### 14.1 `UnifySafeTakings`: migration تحوّل بيانات لا شكلًا فقط

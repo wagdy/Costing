@@ -268,3 +268,31 @@ nav {
     padding: 8px;
   }
 }
+
+// The branch worked in, beside the user: chosen by one who works every branch, shown to one kept to it.
+.branch {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: 8px;
+  max-width: 220px;
+
+  .branch-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  &.fixed {
+    padding: 0 10px;
+    height: 36px;
+    border-radius: 18px;
+    background: var(--mat-sys-surface-container-high);
+    font: var(--mat-sys-label-large);
+  }
+}
+
+@media (max-width: 599.98px) {
+  .branch .branch-name {
+    display: none;
+  }
+}

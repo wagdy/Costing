@@ -209,4 +209,45 @@ request is IBooksEntry ∧ LockedUntil ≠ null
 
 @@file backend/src/Costing.Api/Controllers/PeriodLockController.cs
 
+## 7. هيكلة الشركة والفروع (Company structure, المرحلة الأولى)
+
+### 7.1 الفكرة
+
+النظام يتكيف مع حجم المكان الفعلي: محل بمساحة مفتوحة لا يرى شيئًا من الفروع أو المواقع، وسلسلة فروع بمطبخ مركزي ترى اختيار الفرع وتسجيل كل حركة باسم فرعها. أربعة أنماط (`SystemOperatingMode`) على إعدادات الشركة، والافتراضي `SingleBranch_OpenSpace`: النظام كما كان تمامًا (رصيد واحد ومتوسط تكلفة واحد لكل خامة). هذه **المرحلة الأولى** فقط: الأرصدة والتكلفة لكل فرع، ثم المطبخ المركزي، ثم الأرباح والخسائر لكل فرع مع الحذف، في إصدارات تالية.
+
+### 7.2 الدومين: الأنماط والفروع والمواقع
+
+- `Branch.DefaultId` و `InventoryLocation.DefaultId`: الفرع الأول ومخزنه الرئيسي (تصنعهما الـ migration)، دائمًا مفعّلان.
+- `CompanySettings.ChangeOperatingMode`: الرجوع لفرع واحد فقط بعد إيقاف الفروع الأخرى.
+- `IBranchOwned`: كل سجل (فاتورة، قيد خزنة، تقرير Z، بيع، حركة مخزون، كسر، جرد) له `BranchId`؛ والعكس (`Reverse`، `Void`) يأخذ فرع الأصل.
+
+@@file backend/src/Costing.Domain/Company/CompanyStructure.cs
+
+### 7.3 فرع الطلب: `ICurrentBranch`
+
+```text
+نمط فرع واحد            ⇐ الفرع الأول دائمًا، ولا تضييق للقوائم (السلوك القديم حرفيًا)
+عدة فروع + مستخدم مخصص   ⇐ فرعه (من التوكن)؛ فرع موقوف ⇐ 403
+عدة فروع + مستخدم عام     ⇐ X-Branch-Id إن كان فرعًا مفعّلًا، وإلا الفرع الأول
+POS و HR (بالمفتاح)       ⇐ الفرع الأول
+```
+
+`BranchScope.NarrowAsync`: يضيّق قائمة السجلات لفرع الطلب (فقط مع عدة فروع).
+
+@@file backend/src/Costing.Application/Company/Structure.cs
+
+### 7.4 الختم عند الحفظ: `BranchStampInterceptor`
+
+`SaveChangesInterceptor` يعطي كل سجل جديد بلا فرع فرعه **قبل الحفظ**: السجلات الأصلية (فاتورة، بيع، جرد…) فرع الطلب، وما يتبع غيره (حركة مخزون بمصدرها، دفعة بفاتورتها) فرع مصدره، فإلغاء فاتورة طنطا من الإسكندرية يُسجل في طنطا. والعمود له قيمة افتراضية (الفرع الأول) فكل سجل قديم صار للفرع الأول بلا تحويل بيانات.
+
+@@file backend/src/Costing.Infrastructure/Persistence/BranchPersistence.cs
+
+### 7.5 الـ API: التوكن والرأس والصفحة
+
+claim `branch` في التوكن، ويُقارن مع قاعدة البيانات في كل طلب (`OnTokenValidated`): تغيير فرع المستخدم يخرجه من كل مكان، فلا يبقى claim قديم. `HttpBranchRequest` يقرأ الفرع من التوكن، أو `X-Branch-Id` لمن يعمل في كل الفروع فقط.
+
+@@file backend/src/Costing.Api/Auth/BranchRequest.cs
+
+@@file backend/src/Costing.Api/Controllers/CompanyStructureController.cs
+
 [الفصل التالي: الخامات والوصفات والمصنعات والمنيو →](04-catalog-materials-recipes-and-menu.md)

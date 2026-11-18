@@ -2,6 +2,7 @@ using Costing.Domain.Common;
 using Costing.Domain.Production;
 using Costing.Domain.RawMaterials;
 using Costing.Domain.StockMovements;
+using Costing.Domain.Company;
 
 namespace Costing.Domain.StockCounts;
 
@@ -67,8 +68,13 @@ public enum StockCountReview
 // Who counts may count blind (الجرد الأعمى): a storekeeper never sees what the records expect, and
 // hands the count in (Submit); a manager or cost controller reconciles it against them and posts
 // it, or sends lines back to be weighed again (RequestRecount), still without the figure.
-public sealed class StockCount : AggregateRoot
+public sealed class StockCount : AggregateRoot, IBranchOwned
 {
+    // The branch that keeps it (IBranchOwned): given when it is saved, or kept from its original.
+    public Guid BranchId { get; private set; }
+
+    public void AssignBranch(Guid branchId) => BranchId = branchId;
+
     public const int MaxScopeLabelLength = 120;
     public const int MaxNoteLength = 200;
     public const int MaxReviewNoteLength = 300;

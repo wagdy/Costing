@@ -60,6 +60,8 @@ internal sealed class CompanySettingsConfiguration : IEntityTypeConfiguration<Co
         builder.Property(s => s.LogoFileName).HasMaxLength(CompanySettings.MaxLogoFileNameLength);
         builder.Property(s => s.LogoContentType).HasMaxLength(50);
         builder.Property(s => s.UpdatedBy).HasMaxLength(200);
+        // An open-space shop until a manager builds the company otherwise.
+        builder.Property(s => s.OperatingMode).IsEnumName().HasDefaultValue(SystemOperatingMode.SingleBranch_OpenSpace);
     }
 }
 

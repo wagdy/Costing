@@ -1,4 +1,5 @@
 using Costing.Domain.Common;
+using Costing.Domain.Company;
 
 namespace Costing.Domain.Sales;
 
@@ -67,8 +68,13 @@ public enum SalesSource
 //
 // Its id is made by the app, so a retried entry is recorded once; an imported one also keeps the
 // point of sale's own number (Reference), so a sheet imported twice is recorded once.
-public sealed class SalesReceipt : AggregateRoot
+public sealed class SalesReceipt : AggregateRoot, IBranchOwned
 {
+    // The branch that keeps it (IBranchOwned): given when it is saved, or kept from its original.
+    public Guid BranchId { get; private set; }
+
+    public void AssignBranch(Guid branchId) => BranchId = branchId;
+
     public const int MaxReferenceLength = 64;
 
     private readonly List<SalesReceiptLine> _lines = [];

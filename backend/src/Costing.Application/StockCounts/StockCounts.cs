@@ -10,6 +10,7 @@ using Costing.Domain.RawMaterials;
 using Costing.Domain.StockCounts;
 using Costing.Domain.StockMovements;
 using Costing.Application.Books;
+using Costing.Application.Company;
 
 namespace Costing.Application.StockCounts;
 
@@ -94,11 +95,11 @@ public sealed record StockCountSummaryDto(
 // The draft first, if there is one, then the posted counts, newest first.
 public sealed record GetStockCountsQuery : IRequest<IReadOnlyList<StockCountSummaryDto>>;
 
-internal sealed class GetStockCountsQueryHandler(IStockCountRepository counts)
+internal sealed class GetStockCountsQueryHandler(IStockCountRepository counts, ICurrentBranch branch)
     : IRequestHandler<GetStockCountsQuery, IReadOnlyList<StockCountSummaryDto>>
 {
     public async Task<IReadOnlyList<StockCountSummaryDto>> Handle(GetStockCountsQuery request, CancellationToken cancellationToken) =>
-        (await counts.GetAllAsync(cancellationToken))
+        (await branch.NarrowAsync(await counts.GetAllAsync(cancellationToken), cancellationToken))
             .OrderBy(c => c.Status)
             .ThenByDescending(c => c.PostedAtUtc ?? c.StartedAtUtc)
             .Select(c => new StockCountSummaryDto(

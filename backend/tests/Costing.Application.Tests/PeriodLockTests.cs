@@ -71,6 +71,8 @@ public class PeriodLockTests
         ["GeneratePosKeyCommand"] = "the POS link", ["GenerateHrKeyCommand"] = "the HR link", ["SaveHrLinkCommand"] = "the HR link",
         ["RetryHrOutboxCommand"] = "the HR link", ["TestHrLinkCommand"] = "the HR link", ["SyncHrEmployeesCommand"] = "staff",
         ["EnsureCompanySettingsCommand"] = "settings",
+        // The company's structure: its mode, branches and locations.
+        ["ChangeOperatingModeCommand"] = "structure", ["SaveBranchCommand"] = "structure", ["SaveInventoryLocationCommand"] = "structure",
     };
 
     [Fact]

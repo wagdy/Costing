@@ -100,7 +100,7 @@ public sealed record SpoilageEntryLine(
 // what the counts and the deliveries say left the stores; standard usage is what the recipes
 // say the sales should have taken. Both are as purchased (before trimming), as stock is kept,
 // so the variance is valued at the average purchase cost, as the template prices it.
-public sealed class VarianceService(CostingDbContext db, SalesLedger ledger)
+public sealed class VarianceService(CostingDbContext db, SalesLedger ledger, Costing.Application.Company.ICurrentBranch branch)
 {
     private static readonly StockMovementReason[] Flows =
         [StockMovementReason.Purchase, StockMovementReason.Waste, StockMovementReason.VoidReturn, StockMovementReason.Spoilage,
@@ -248,8 +248,11 @@ public sealed class VarianceService(CostingDbContext db, SalesLedger ledger)
     // its deletion, and its stock went back) is not listed; the approvals keep its history.
     public async Task<IReadOnlyList<SpoilageEntry>> GetSpoilageAsync(DateTime fromUtc, DateTime toUtc, CancellationToken cancellationToken)
     {
+        // The branch's own, when the company has several.
+        var scope = await branch.ScopeAsync(cancellationToken);
         var movements = await db.StockMovements.AsNoTracking()
             .Where(m => m.Reason == StockMovementReason.Spoilage && m.ReversalOf == null && m.OccurredAtUtc >= fromUtc && m.OccurredAtUtc < toUtc)
+            .Where(m => scope == null || m.BranchId == scope)
             .ToListAsync(cancellationToken);
         var entries = movements.Select(m => m.SourceId).Distinct().ToList();
         var voided = await db.StockMovements.AsNoTracking()

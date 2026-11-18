@@ -23,7 +23,9 @@ public sealed record CompanySettingsDto(
     // Changes whenever the logo does, for the app to ask for the new one.
     long LogoVersion,
     // Where it is, its version in the address (null with none): the tab's icon and the top bar's.
-    string? LogoUrl)
+    string? LogoUrl,
+    // How the company is built: what the app shows (locations, the branch selector) follows it.
+    SystemOperatingMode OperatingMode = SystemOperatingMode.SingleBranch_OpenSpace)
 {
     public const string LogoPath = "/api/company-settings/logo";
 
@@ -32,7 +34,7 @@ public sealed record CompanySettingsDto(
         var version = p.LogoUpdatedAtUtc?.Ticks ?? 0;
         return new(
             p.Name, p.Money.Symbol, p.Money.Position, p.Country, p.TimeZoneId, p.WorkdayStartsAtHour, p.HasLogo, version,
-            p.HasLogo ? $"{LogoPath}?v={version}" : null);
+            p.HasLogo ? $"{LogoPath}?v={version}" : null, p.OperatingMode);
     }
 }
 

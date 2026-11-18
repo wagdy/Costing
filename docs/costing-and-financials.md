@@ -75,8 +75,11 @@ until a manager ticks a user's own:
   nothing moves until then. The modules: recipes, purchase invoices, waste, stock counts, raw
   materials, prep items, production orders, the safe, purchase categories, sales and breakage.
 
-`GET /api/auth/me` gives the user's permissions and their sections (`tabs`); the app shows only
-those. `GET /api/access` lists every user's sections and `PUT /api/access/{userId}` sets them
+- **A user kept to a branch** works in it alone, with several branches (see
+  [Company structure](#company-structure-هيكلة-الشركة-الديناميكية-والمطبخ-المركزي)).
+
+`GET /api/auth/me` gives the user's permissions, their sections (`tabs`) and the branch they are
+kept to (`branchId`, null for every branch); the app shows only those. `GET /api/access` lists every user's sections and `PUT /api/access/{userId}` sets them
 (`{ tabs: [...] }`, or `{ tabs: null }` for their role's), for `users.manage`.
 
 ## Raw materials and expense items in Excel
@@ -1594,6 +1597,83 @@ Each sent with this system's id for it as its idempotency key (in the body and i
 On HR, an advance is recorded as approved on their pay, a deduction as a penalty on their pay,
 and a payroll paid marks the month paid and each employee's pay owed as paid. A month whose pay
 is finalized on HR refuses a void that would change it, and the outbox shows HR's reason.
+
+## Company structure (هيكلة الشركة الديناميكية والمطبخ المركزي)
+
+How the business is built decides what the system shows and keeps apart, so a single open-space
+shop sees nothing of branches or locations. **Settings → Company structure** (a manager's,
+`settings.manage`; `/costing/settings/company-structure` leads there too) shows the four
+structures as cards, each with its bilingual **(!)** tip; a card chosen is applied with **Switch ·
+تطبيق**, and each change is a line of the security audit log
+(`OperatingModeChanged: SingleBranch_OpenSpace → MultiBranch_Independent by Wagdy`).
+
+| Structure (`SystemOperatingMode`) | What it is | What the system does |
+| --- | --- | --- |
+| `SingleBranch_OpenSpace` · فرع واحد بمساحة مفتوحة (**the default**) | All physical goods are in one place. No internal transfers needed. · كل البضاعة في مكان واحد ولا حاجة لأذونات صرف داخلية. | One branch and one implicit Main Store. No location lists, transfer screens or branch selector: one stock figure and one moving-average cost per material, exactly as before. |
+| `SingleBranch_WithSubStores` · فرع واحد يحتوي على مخزن ومناطق تشغيل | A single branch containing a locked main warehouse and kitchen operating locations. · فرع واحد يحتوي على مخزن رئيسي مغلق وعُهد تشغيل لأقسام المطبخ. | One branch; inventory locations (Main Store, Kitchen, Bar…) are added on the page. |
+| `MultiBranch_Independent` · فروع متعددة تشتري وتعمل بشكل مستقل | Multiple branches, each managing its own purchases and stock independently. · فروع متعددة، كل فرع يشتري الخامات ويحسب تكلفته بشكل مستقل. | Branches are added on the page; a branch selector at the top of the screen; records kept and listed by branch. |
+| `MultiBranch_CentralKitchen` · فروع متعددة يدعمها مطبخ مركزي | A Central Kitchen/Warehouse purchases and preps items, then supplies/sells them to the restaurant branches. · مطبخ مركزي يشتري ويُصنع الخامات ثم يوردها ويبيعها لباقي الفروع. | Everything several branches have, with a branch of type Central kitchen or Central warehouse. |
+
+**This is the first phase.** What follows, each in its own release: stock and moving-average cost
+kept per branch and location, with internal transfers (sub-stores and up); the central kitchen's
+hub: branch requisitions, **Dispatch & Bill** with an internal sales invoice and **Receive** with an
+internal purchase invoice; and the P&L by branch or for the company as a whole, inter-branch sales
+and purchases eliminated. Until then, stock, average cost, the safe's balance and every report are
+the company's, whatever the structure; the cards mark what is still to come (*Soon · قريباً*).
+
+### Branches and locations (الفروع ومواقع المخزون)
+
+- **The first branch** (`Branch.DefaultId`), made by the migration and named after the company
+  (*Main branch* on a new install), and its **Main Store** (`InventoryLocation.DefaultId`). Every
+  record made before is theirs. The first branch is always in use, and its main store stays its
+  main store; either may be renamed, in any structure.
+- **Branches** (`Branches`: name, Arabic name, type Restaurant, Central kitchen or Central
+  warehouse, in use) are added once the structure has several; each new branch gets its own
+  **Main Store**. Names are unique. A branch is taken out of use, never deleted: its records stay.
+- **Locations** (`InventoryLocations`: branch, name, Arabic name, kind Main store, Kitchen, Bar or
+  Other, in use) are added once the structure has them (not in an open-space shop), unique by
+  name within their branch.
+- **Back to one branch** (either single-branch structure) only while the first branch is the one in
+  use: *Take Tanta out of use first: a single-branch company works in its first branch alone.*
+
+### The branch of each record (BranchId)
+
+Purchase invoices, safe entries, the POS's Z reports, sales, stock movements (waste among them),
+breakage and stock counts each keep a `BranchId` (`IBranchOwned`), the first branch's by default
+(the column's default, which is what every record before has). Each new record gets the branch of
+the request as it is saved (`BranchStampInterceptor`), except what comes from another record,
+which keeps that record's branch: a stock entry its invoice's, count's or sale's, a payment its
+invoice's, a reversal or void the original's, an invoice correction the corrected invoice's. So a
+manager who works every branch, voiding a Tanta invoice while working in Alexandria, voids it in
+Tanta.
+
+**The branch of a request** (`ICurrentBranch`): in a single-branch structure, always the first
+branch, whatever is asked, and no list narrowed. With several branches: the branch the user is
+kept to; or, for one who works every branch, the one they chose at the top of the screen (sent as
+`X-Branch-Id`; one not in use, or none, is the first branch). A user kept to a branch that is out
+of use is refused (403). The POS and HR, signed in by key, work in the first branch.
+
+With several branches, these lists show the branch's own records: purchase invoices, sales, stock
+counts, spoilage and breakage. Balances and reports stay the company's until the next phases.
+
+### Users and the branch selector
+
+A manager keeps a user to a branch (**Branch · الفرع** on Users, with several branches: a branch, or
+*Every branch*). The token says it (claim `branch`), and every request checks it against the user's
+record, so a change signs them out wherever they are signed in. Someone kept to a branch sees it at
+the top of the screen; someone who works every branch chooses it there (a menu beside their name),
+kept in the browser, and every screen is read again for it.
+
+**Kept** in `costing.Branches`, `costing.InventoryLocations`, `costing.CompanySettings.OperatingMode`
+(`SingleBranch_OpenSpace` by default), `BranchId` on `PurchaseInvoices`, `SafeTransactions`,
+`PosZReports`, `SalesReceipts`, `StockMovements`, `BreakageEntries` and `StockCounts`, and
+`identity.Users.BranchId` (migration `AddCompanyStructure`). `GET /api/settings/company-structure`
+gives `mode`, `branches` (with their locations counted) and `locations`; `PUT
+/api/settings/company-structure/mode` takes `{ mode }`; `PUT /api/settings/branches/{id}` takes `{
+name, nameAr, type, isActive }`; `PUT /api/settings/locations/{id}` takes `{ branchId, name,
+nameAr, kind, isActive }` (all `settings.manage`). `GET /api/branches` gives the mode and the
+branches in use, to anyone signed in; `GET /api/settings` carries `operatingMode`; `POST /api/users`
+and `PUT /api/users/{id}` take `branchId`.
 
 ## Period lock and month-end close (إقفال الفترة المحاسبية وتجميد الدفاتر)
 

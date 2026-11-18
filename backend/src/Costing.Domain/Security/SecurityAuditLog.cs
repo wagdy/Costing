@@ -10,6 +10,9 @@ public enum SecurityAuditAction
 
     // The books' lock rolled back, or lifted, with why.
     PeriodUnlocked = 2,
+
+    // The company's structure changed (its operating mode).
+    OperatingModeChanged = 3,
 }
 
 // The security audit log: who did what to the system's safeguards, and when; kept, never changed
@@ -64,6 +67,13 @@ public sealed class SecurityAuditLog
                 ? $"PeriodUnlocked: rolled back to {Day(day)} by {who}. Reason: {reason}"
                 : $"PeriodUnlocked: lock lifted (was {Day(previous)}) by {who}. Reason: {reason}",
             Iso(previous), Iso(until), reason, who, byUserId);
+    }
+
+    // "OperatingModeChanged: SingleBranch_OpenSpace → MultiBranch_Independent by Wagdy".
+    public static SecurityAuditLog OperatingModeChanged(string previous, string mode, string by, string? byUserId)
+    {
+        var who = Who(by);
+        return new(SecurityAuditAction.OperatingModeChanged, $"OperatingModeChanged: {previous} → {mode} by {who}", previous, mode, null, who, byUserId);
     }
 
     private static string Who(string? by) =>

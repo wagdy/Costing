@@ -71,6 +71,8 @@ public sealed class CostingDbContext(DbContextOptions<CostingDbContext> options)
     public DbSet<CostingSettings> CostingSettings => Set<CostingSettings>();
     public DbSet<Domain.Stations.KitchenStation> KitchenStations => Set<Domain.Stations.KitchenStation>();
     public DbSet<Domain.Security.SecurityAuditLog> SecurityAuditLogs => Set<Domain.Security.SecurityAuditLog>();
+    public DbSet<Domain.Company.Branch> Branches => Set<Domain.Company.Branch>();
+    public DbSet<Domain.Company.InventoryLocation> InventoryLocations => Set<Domain.Company.InventoryLocation>();
     public DbSet<FinancialSettings> FinancialSettings => Set<FinancialSettings>();
     public DbSet<SharedCost> SharedCosts => Set<SharedCost>();
     public DbSet<MonthlyExpenses> MonthlyExpenses => Set<MonthlyExpenses>();

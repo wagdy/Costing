@@ -14,6 +14,8 @@ export interface User {
   createdAtUtc: string;
   lastSignInAtUtc: string | null;
   isLocked: boolean;
+  // The branch they are kept to; none for every branch.
+  branchId?: string | null;
 }
 
 export interface NewUser {
@@ -21,6 +23,7 @@ export interface NewUser {
   fullName: string;
   role: UserRole;
   password: string;
+  branchId?: string | null;
 }
 
 export interface UserChange {
@@ -28,6 +31,8 @@ export interface UserChange {
   fullName: string;
   role: UserRole;
   isActive: boolean;
+  // Changed, it signs them out wherever they are signed in.
+  branchId?: string | null;
 }
 
 // A password is this long at least, as the API asks.

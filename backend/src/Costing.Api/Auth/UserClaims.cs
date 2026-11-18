@@ -16,6 +16,9 @@ public static class UserClaims
     public const string Role = "role";
     public const string PasswordSetAt = "pwd_set";
 
+    // The branch the user is kept to; none for one who works every branch.
+    public const string Branch = "branch";
+
     public static string? IdOf(ClaimsPrincipal user) => user.FindFirstValue(Id);
 
     public static string NameOf(ClaimsPrincipal user) => user.FindFirstValue(Name) ?? string.Empty;
@@ -24,6 +27,9 @@ public static class UserClaims
     // Enum.TryParse would take it.
     public static UserRole? RoleOf(ClaimsPrincipal user) =>
         user.FindFirstValue(Role) is { } value && Enum.GetNames<UserRole>().Contains(value) ? Enum.Parse<UserRole>(value) : null;
+
+    public static Guid? BranchOf(ClaimsPrincipal user) =>
+        Guid.TryParseExact(user.FindFirstValue(Branch), "N", out var branch) ? branch : null;
 
     public static long? PasswordSetAtOf(ClaimsPrincipal user) =>
         long.TryParse(user.FindFirstValue(PasswordSetAt), NumberStyles.None, CultureInfo.InvariantCulture, out var ticks) ? ticks : null;

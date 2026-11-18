@@ -1,6 +1,7 @@
 using Costing.Domain.Common;
 using Costing.Domain.RawMaterials;
 using Costing.Domain.StockMovements;
+using Costing.Domain.Company;
 
 namespace Costing.Domain.Purchases;
 
@@ -52,8 +53,13 @@ public enum PurchaseItemType
 //
 // Its id is made by the till and is the stock movements' SourceId, so a retry after a lost
 // answer posts it once.
-public sealed class PurchaseInvoice : AggregateRoot
+public sealed class PurchaseInvoice : AggregateRoot, IBranchOwned
 {
+    // The branch that keeps it (IBranchOwned): given when it is saved, or kept from its original.
+    public Guid BranchId { get; private set; }
+
+    public void AssignBranch(Guid branchId) => BranchId = branchId;
+
     public const int MaxAttachmentBytes = 10 * 1024 * 1024;
 
     // What a photo or scan of an invoice can be.

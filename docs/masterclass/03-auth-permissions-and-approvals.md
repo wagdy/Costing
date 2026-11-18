@@ -284,7 +284,7 @@ public sealed class FirstManagerOptions
 ```
 
 
-> 📄 **`backend/src/Costing.Api/Auth/UserClaims.cs`** — 30 سطر
+> 📄 **`backend/src/Costing.Api/Auth/UserClaims.cs`** — 36 سطر
 
 ```csharp
 using System.Globalization;
@@ -305,6 +305,9 @@ public static class UserClaims
     public const string Role = "role";
     public const string PasswordSetAt = "pwd_set";
 
+    // The branch the user is kept to; none for one who works every branch.
+    public const string Branch = "branch";
+
     public static string? IdOf(ClaimsPrincipal user) => user.FindFirstValue(Id);
 
     public static string NameOf(ClaimsPrincipal user) => user.FindFirstValue(Name) ?? string.Empty;
@@ -314,13 +317,16 @@ public static class UserClaims
     public static UserRole? RoleOf(ClaimsPrincipal user) =>
         user.FindFirstValue(Role) is { } value && Enum.GetNames<UserRole>().Contains(value) ? Enum.Parse<UserRole>(value) : null;
 
+    public static Guid? BranchOf(ClaimsPrincipal user) =>
+        Guid.TryParseExact(user.FindFirstValue(Branch), "N", out var branch) ? branch : null;
+
     public static long? PasswordSetAtOf(ClaimsPrincipal user) =>
         long.TryParse(user.FindFirstValue(PasswordSetAt), NumberStyles.None, CultureInfo.InvariantCulture, out var ticks) ? ticks : null;
 }
 ```
 
 
-> 📄 **`backend/src/Costing.Api/Auth/TokenService.cs`** — 43 سطر
+> 📄 **`backend/src/Costing.Api/Auth/TokenService.cs`** — 45 سطر
 
 ```csharp
 using System.Globalization;
@@ -341,13 +347,15 @@ public sealed class TokenService(IOptions<AuthOptions> options, TimeProvider tim
 
     private static readonly JsonWebTokenHandler Handler = new();
 
-    // A user's: their id, name and role, and when their password was set.
+    // A user's: their id, name and role, when their password was set, and the branch they are kept
+    // to (none for one who works every branch).
     public (string Token, DateTime ExpiresAtUtc) Issue(UserAccount user) => Create(
     [
         new Claim(UserClaims.Id, user.Id),
         new Claim(UserClaims.Name, user.FullName),
         new Claim(UserClaims.Role, user.Role.ToString()),
         new Claim(UserClaims.PasswordSetAt, user.PasswordSetAtUtc.Ticks.ToString(CultureInfo.InvariantCulture)),
+        .. user.BranchId is { } branch ? [new Claim(UserClaims.Branch, branch.ToString("N"))] : Array.Empty<Claim>(),
     ]);
 
     private (string Token, DateTime ExpiresAtUtc) Create(IReadOnlyList<Claim> claims)
@@ -377,12 +385,13 @@ public sealed class TokenService(IOptions<AuthOptions> options, TimeProvider tim
 4. **السياسة الافتراضية والاحتياطية = "مستخدم مسجّل"**: أي endpoint نُسي عليه `[Authorize]` مغلق تلقائيًا (Secure by Default).
 5. سياسة لكل صلاحية، تُمنح بجدول `RolePermissions` نفسه الذي تقرؤه الواجهة من `/api/auth/me`.
 
-> 📄 **`backend/src/Costing.Api/Auth/AuthenticationSetup.cs`** — 87 سطر
+> 📄 **`backend/src/Costing.Api/Auth/AuthenticationSetup.cs`** — 93 سطر
 
 ```csharp
 using System.Text;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.IdentityModel.Tokens;
 using Costing.Domain.Access;
 using Costing.Infrastructure.Identity;
@@ -395,6 +404,10 @@ internal static class AuthenticationSetup
     {
         var section = configuration.GetSection(AuthOptions.Section);
         var options = section.Get<AuthOptions>() ?? new AuthOptions();
+
+        // The branch of each request, from the user's token or their choice at the top of the screen.
+        services.AddHttpContextAccessor();
+        services.Replace(ServiceDescriptor.Scoped<Costing.Application.Company.IBranchRequest, HttpBranchRequest>());
 
         // The usual floor for HS256. Failing at startup means a misconfigured machine never
         // serves at all, rather than serving forgeable tokens.
@@ -438,8 +451,9 @@ internal static class AuthenticationSetup
                                 .GetActiveAsync(userId, context.HttpContext.RequestAborted);
 
                         if (active is not { } user || user.Role != UserClaims.RoleOf(principal)
-                            || user.PasswordSetAtUtc.Ticks / 10 != UserClaims.PasswordSetAtOf(principal) / 10)
-                            context.Fail("This account has been deactivated, or its role or password has changed. Sign in again.");
+                            || user.PasswordSetAtUtc.Ticks / 10 != UserClaims.PasswordSetAtOf(principal) / 10
+                            || user.BranchId != UserClaims.BranchOf(principal))
+                            context.Fail("This account has been deactivated, or its role, password or branch has changed. Sign in again.");
                     },
                 };
             });
@@ -574,7 +588,7 @@ public sealed class TabCaller(IHttpContextAccessor accessor, IUserTabAccessRepos
 
 `UserDirectory`: PBKDF2 (عبر `PasswordHasher` من ASP.NET Identity) بـ Salt عشوائي، 5 أخطاء ⇐ قفل 5 دقائق، **تحقق وهمي لبريد غير موجود** حتى لا يكشف زمن الرد وجود البريد (Timing Attack)، إعادة تشفير صامتة عند `SuccessRehashNeeded`، أول مدير من الإعدادات، و **يبقى دائمًا مدير نشط واحد** على الأقل.
 
-> 📄 **`backend/src/Costing.Infrastructure/Identity/Users.cs`** — 214 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Identity/Users.cs`** — 231 سطر
 
 ```csharp
 using Microsoft.AspNetCore.Identity;
@@ -621,6 +635,10 @@ public sealed class UserAccount
     public DateTime CreatedAtUtc { get; set; }
 
     public DateTime? LastSignInAtUtc { get; set; }
+
+    // The branch they are kept to (a storekeeper in Tanta); none for one who works every branch and
+    // chooses at the top of the screen. Changed, it signs them out (their token names it).
+    public Guid? BranchId { get; set; }
 }
 
 internal sealed class UserAccountConfiguration : IEntityTypeConfiguration<UserAccount>
@@ -636,6 +654,7 @@ internal sealed class UserAccountConfiguration : IEntityTypeConfiguration<UserAc
         builder.Property(u => u.FullName).HasMaxLength(UserAccount.MaxNameLength);
         builder.Property(u => u.Role).IsEnumName();
         builder.Property(u => u.PasswordHash).HasMaxLength(200);
+        builder.HasOne<Domain.Company.Branch>().WithMany().HasForeignKey(u => u.BranchId).OnDelete(DeleteBehavior.SetNull);
     }
 }
 
@@ -662,12 +681,12 @@ public sealed class UserDirectory(CostingDbContext db, ILogger<UserDirectory> lo
 
     // Null when the user is gone or deactivated. Checked on every request, so a deactivation, a
     // new role or a new password takes effect at once rather than when a token expires.
-    public async Task<(UserRole Role, DateTime PasswordSetAtUtc)?> GetActiveAsync(string id, CancellationToken cancellationToken) =>
+    public async Task<(UserRole Role, DateTime PasswordSetAtUtc, Guid? BranchId)?> GetActiveAsync(string id, CancellationToken cancellationToken) =>
         await db.Users.AsNoTracking()
             .Where(u => u.Id == id && u.IsActive)
-            .Select(u => new { u.Role, u.PasswordSetAtUtc })
+            .Select(u => new { u.Role, u.PasswordSetAtUtc, u.BranchId })
             .SingleOrDefaultAsync(cancellationToken) is { } found
-            ? (found.Role, found.PasswordSetAtUtc)
+            ? (found.Role, found.PasswordSetAtUtc, found.BranchId)
             : null;
 
     public async Task<SignInOutcome> SignInAsync(string? email, string? password, CancellationToken cancellationToken)
@@ -704,23 +723,27 @@ public sealed class UserDirectory(CostingDbContext db, ILogger<UserDirectory> lo
         return new SignInOutcome(user, null);
     }
 
-    public async Task<UserAccount> CreateAsync(string email, string fullName, UserRole role, string password, CancellationToken cancellationToken)
+    public async Task<UserAccount> CreateAsync(
+        string email, string fullName, UserRole role, string password, CancellationToken cancellationToken, Guid? branchId = null)
     {
         var user = new UserAccount { Id = Guid.NewGuid().ToString("N"), CreatedAtUtc = DateTime.UtcNow, IsActive = true };
         await SetDetailsAsync(user, email, fullName, role, cancellationToken);
+        await SetBranchAsync(user, branchId, cancellationToken);
         SetPassword(user, password);
         db.Users.Add(user);
         await db.SaveChangesAsync(cancellationToken);
         return user;
     }
 
-    public async Task<UserAccount> UpdateAsync(string id, string email, string fullName, UserRole role, bool isActive, CancellationToken cancellationToken)
+    public async Task<UserAccount> UpdateAsync(
+        string id, string email, string fullName, UserRole role, bool isActive, CancellationToken cancellationToken, Guid? branchId = null)
     {
         var user = await db.Users.SingleOrDefaultAsync(u => u.Id == id, cancellationToken) ?? throw new NotFoundException("User", id);
         if ((role != UserRole.Manager || !isActive) && user is { Role: UserRole.Manager, IsActive: true }
             && !await db.Users.AnyAsync(u => u.Id != id && u.IsActive && u.Role == UserRole.Manager, cancellationToken))
             throw new DomainException("This is the only active manager: make someone else a manager first.");
         await SetDetailsAsync(user, email, fullName, role, cancellationToken);
+        await SetBranchAsync(user, branchId, cancellationToken);
         user.IsActive = isActive;
         await db.SaveChangesAsync(cancellationToken);
         return user;
@@ -779,6 +802,14 @@ public sealed class UserDirectory(CostingDbContext db, ILogger<UserDirectory> lo
         user.Role = role;
     }
 
+    // Kept to a branch in use, or to none (every branch).
+    private async Task SetBranchAsync(UserAccount user, Guid? branchId, CancellationToken cancellationToken)
+    {
+        if (branchId is { } id && !await db.Branches.AnyAsync(b => b.Id == id && b.IsActive, cancellationToken))
+            throw new DomainException("That branch is not in use: choose one from the list, or every branch.");
+        user.BranchId = branchId;
+    }
+
     private static void SetPassword(UserAccount user, string password)
     {
         if ((password ?? string.Empty).Length < UserAccount.MinPasswordLength)
@@ -796,7 +827,7 @@ public sealed class UserDirectory(CostingDbContext db, ILogger<UserDirectory> lo
 
 `AuthController`: `POST sign-in` (مع حد المحاولات)، `GET me` (المصدر الوحيد للدور والصلاحيات والأقسام في الواجهة)، `POST password` (تغيير كلمة المرور يسقط كل التوكنات القديمة ويعيد توكنًا جديدًا لهذه الجلسة).
 
-> 📄 **`backend/src/Costing.Api/Controllers/AuthController.cs`** — 75 سطر
+> 📄 **`backend/src/Costing.Api/Controllers/AuthController.cs`** — 78 سطر
 
 ```csharp
 using Microsoft.AspNetCore.Authorization;
@@ -847,6 +878,7 @@ public sealed class AuthController(UserDirectory users, TokenService tokens, Bus
         return Me.For(id, user?.FullName ?? User.FindFirst(UserClaims.Name)?.Value ?? string.Empty, user?.Email ?? string.Empty, UserClaims.RoleOf(User)!.Value) with
         {
             Tabs = CostingTabSet.Split(await caller.TabsAsync(cancellationToken)),
+            BranchId = user?.BranchId,
         };
     }
 
@@ -869,7 +901,9 @@ public sealed record SignInResponse(string Token, DateTime ExpiresAtUtc, Me User
 
 public sealed record ChangePasswordRequest(string CurrentPassword, string NewPassword);
 
-public sealed record Me(string Id, string FullName, string Email, UserRole Role, IReadOnlyList<string> Permissions, IReadOnlyList<CostingTabs>? Tabs = null)
+// BranchId: the branch they are kept to; none for one who works every branch.
+public sealed record Me(
+    string Id, string FullName, string Email, UserRole Role, IReadOnlyList<string> Permissions, IReadOnlyList<CostingTabs>? Tabs = null, Guid? BranchId = null)
 {
     public static Me For(string id, string fullName, string email, UserRole role) =>
         new(id, fullName, email, role, RolePermissions.For(role).Order(StringComparer.Ordinal).ToList());
@@ -879,7 +913,7 @@ public sealed record Me(string Id, string FullName, string Email, UserRole Role,
 
 `UsersController`: إضافة، تعديل الدور والحالة، وإعادة تعيين كلمة المرور؛ للمدير فقط.
 
-> 📄 **`backend/src/Costing.Api/Controllers/UsersController.cs`** — 51 سطر
+> 📄 **`backend/src/Costing.Api/Controllers/UsersController.cs`** — 53 سطر
 
 ```csharp
 using Microsoft.AspNetCore.Authorization;
@@ -903,14 +937,14 @@ public sealed class UsersController(UserDirectory users) : ControllerBase
 
     [HttpPost]
     public async Task<UserDto> Create(CreateUserRequest request, CancellationToken cancellationToken) =>
-        UserDto.From(await users.CreateAsync(request.Email, request.FullName, request.Role, request.Password, cancellationToken));
+        UserDto.From(await users.CreateAsync(request.Email, request.FullName, request.Role, request.Password, cancellationToken, request.BranchId));
 
     [HttpPut("{userId}")]
     public async Task<UserDto> Update(string userId, UpdateUserRequest request, CancellationToken cancellationToken)
     {
         if (userId == UserClaims.IdOf(User) && (!request.IsActive || request.Role != UserRole.Manager))
             throw new Costing.Domain.Common.DomainException("You cannot take your own manager's rights away: another manager does that.");
-        return UserDto.From(await users.UpdateAsync(userId, request.Email, request.FullName, request.Role, request.IsActive, cancellationToken));
+        return UserDto.From(await users.UpdateAsync(userId, request.Email, request.FullName, request.Role, request.IsActive, cancellationToken, request.BranchId));
     }
 
     // Also lifts a lockout, and signs them out wherever they are signed in.
@@ -922,15 +956,17 @@ public sealed class UsersController(UserDirectory users) : ControllerBase
     }
 }
 
-public sealed record UserDto(string Id, string Email, string FullName, UserRole Role, bool IsActive, DateTime CreatedAtUtc, DateTime? LastSignInAtUtc, bool IsLocked)
+// BranchId: the branch they are kept to; none for every branch. Changed, it signs them out.
+public sealed record UserDto(
+    string Id, string Email, string FullName, UserRole Role, bool IsActive, DateTime CreatedAtUtc, DateTime? LastSignInAtUtc, bool IsLocked, Guid? BranchId = null)
 {
     public static UserDto From(UserAccount u) =>
-        new(u.Id, u.Email, u.FullName, u.Role, u.IsActive, u.CreatedAtUtc, u.LastSignInAtUtc, u.LockedUntilUtc > DateTime.UtcNow);
+        new(u.Id, u.Email, u.FullName, u.Role, u.IsActive, u.CreatedAtUtc, u.LastSignInAtUtc, u.LockedUntilUtc > DateTime.UtcNow, u.BranchId);
 }
 
-public sealed record CreateUserRequest(string Email, string FullName, UserRole Role, string Password);
+public sealed record CreateUserRequest(string Email, string FullName, UserRole Role, string Password, Guid? BranchId = null);
 
-public sealed record UpdateUserRequest(string Email, string FullName, UserRole Role, bool IsActive);
+public sealed record UpdateUserRequest(string Email, string FullName, UserRole Role, bool IsActive, Guid? BranchId = null);
 
 public sealed record ResetPasswordRequest(string Password);
 ```
@@ -2006,7 +2042,7 @@ internal sealed class RequestDeletionHandler(
 
 `Me`, `SignInResponse`: تطابق DTOs الـ API حرفيًا.
 
-> 📄 **`frontend/src/app/core/api/models.ts`** — 25 سطر
+> 📄 **`frontend/src/app/core/api/models.ts`** — 27 سطر
 
 ```ts
 import { CostingTab } from '../costing/costing-tabs';
@@ -2026,6 +2062,8 @@ export interface Me {
   role: UserRole;
   permissions: string[];
   tabs?: CostingTab[] | null;
+  // The branch they are kept to; none (null) for one who works every branch.
+  branchId?: string | null;
 }
 
 // POST /api/auth/sign-in, and a password changed: the token, good until expiresAtUtc.
@@ -2852,7 +2890,7 @@ public sealed class PeriodLockedException(DateOnly lockedUntil, DateOnly day) : 
 ```
 
 
-> 📄 **`backend/src/Costing.Domain/Security/SecurityAuditLog.cs`** — 84 سطر
+> 📄 **`backend/src/Costing.Domain/Security/SecurityAuditLog.cs`** — 94 سطر
 
 ```csharp
 using System.Globalization;
@@ -2867,6 +2905,9 @@ public enum SecurityAuditAction
 
     // The books' lock rolled back, or lifted, with why.
     PeriodUnlocked = 2,
+
+    // The company's structure changed (its operating mode).
+    OperatingModeChanged = 3,
 }
 
 // The security audit log: who did what to the system's safeguards, and when; kept, never changed
@@ -2921,6 +2962,13 @@ public sealed class SecurityAuditLog
                 ? $"PeriodUnlocked: rolled back to {Day(day)} by {who}. Reason: {reason}"
                 : $"PeriodUnlocked: lock lifted (was {Day(previous)}) by {who}. Reason: {reason}",
             Iso(previous), Iso(until), reason, who, byUserId);
+    }
+
+    // "OperatingModeChanged: SingleBranch_OpenSpace → MultiBranch_Independent by Wagdy".
+    public static SecurityAuditLog OperatingModeChanged(string previous, string mode, string by, string? byUserId)
+    {
+        var who = Who(by);
+        return new(SecurityAuditAction.OperatingModeChanged, $"OperatingModeChanged: {previous} → {mode} by {who}", previous, mode, null, who, byUserId);
     }
 
     private static string Who(string? by) =>
@@ -3387,6 +3435,646 @@ public sealed record LockBooksRequest(DateOnly Until, string? Confirmation);
 
 // Until: the day the books stay closed until; none: the lock lifted.
 public sealed record UnlockBooksRequest(DateOnly? Until, string? Reason);
+```
+
+
+## 7. هيكلة الشركة والفروع (Company structure, المرحلة الأولى)
+
+### 7.1 الفكرة
+
+النظام يتكيف مع حجم المكان الفعلي: محل بمساحة مفتوحة لا يرى شيئًا من الفروع أو المواقع، وسلسلة فروع بمطبخ مركزي ترى اختيار الفرع وتسجيل كل حركة باسم فرعها. أربعة أنماط (`SystemOperatingMode`) على إعدادات الشركة، والافتراضي `SingleBranch_OpenSpace`: النظام كما كان تمامًا (رصيد واحد ومتوسط تكلفة واحد لكل خامة). هذه **المرحلة الأولى** فقط: الأرصدة والتكلفة لكل فرع، ثم المطبخ المركزي، ثم الأرباح والخسائر لكل فرع مع الحذف، في إصدارات تالية.
+
+### 7.2 الدومين: الأنماط والفروع والمواقع
+
+- `Branch.DefaultId` و `InventoryLocation.DefaultId`: الفرع الأول ومخزنه الرئيسي (تصنعهما الـ migration)، دائمًا مفعّلان.
+- `CompanySettings.ChangeOperatingMode`: الرجوع لفرع واحد فقط بعد إيقاف الفروع الأخرى.
+- `IBranchOwned`: كل سجل (فاتورة، قيد خزنة، تقرير Z، بيع، حركة مخزون، كسر، جرد) له `BranchId`؛ والعكس (`Reverse`، `Void`) يأخذ فرع الأصل.
+
+> 📄 **`backend/src/Costing.Domain/Company/CompanyStructure.cs`** — 153 سطر
+
+```csharp
+using Costing.Domain.Common;
+
+namespace Costing.Domain.Company;
+
+// How the business is built (هيكلة الشركة): what the system shows and keeps apart follows it, from
+// one open-space shop to a chain with a central kitchen. Kept on the company's settings.
+public enum SystemOperatingMode
+{
+    // One branch, everything in one place (فرع واحد بمساحة مفتوحة): one stock, no locations, no
+    // transfers, no branch selector. The system as it always was.
+    SingleBranch_OpenSpace = 1,
+
+    // One branch with a locked main store and the kitchen's operating locations (مخزن ومناطق تشغيل).
+    SingleBranch_WithSubStores = 2,
+
+    // Several branches, each buying and costing on its own (فروع مستقلة).
+    MultiBranch_Independent = 3,
+
+    // Several branches supplied by a central kitchen or warehouse (مطبخ مركزي).
+    MultiBranch_CentralKitchen = 4,
+}
+
+public static class OperatingModes
+{
+    public static bool IsMultiBranch(this SystemOperatingMode mode) =>
+        mode is SystemOperatingMode.MultiBranch_Independent or SystemOperatingMode.MultiBranch_CentralKitchen;
+
+    // Inventory locations beyond the one implicit store.
+    public static bool HasLocations(this SystemOperatingMode mode) => mode != SystemOperatingMode.SingleBranch_OpenSpace;
+}
+
+public enum BranchType
+{
+    Restaurant = 1,
+    CentralKitchen = 2,
+    CentralWarehouse = 3,
+}
+
+// A branch of the company (فرع): a restaurant, or the central kitchen or warehouse that supplies
+// them. The first, made by the migration, is every record's until there are others, and is never
+// taken out of use.
+public sealed class Branch : AggregateRoot
+{
+    public const int MaxName = 100;
+
+    public static readonly Guid DefaultId = new("b2a40000-0000-4000-8000-000000000001");
+
+    private Branch() { }
+
+    public Branch(Guid id, string name, string? nameAr, BranchType type, bool isActive = true)
+    {
+        Id = id;
+        Change(name, nameAr, type, isActive);
+    }
+
+    public string Name { get; private set; } = string.Empty;
+    public string? NameAr { get; private set; }
+    public BranchType Type { get; private set; } = BranchType.Restaurant;
+    public bool IsActive { get; private set; } = true;
+
+    public bool IsDefault => Id == DefaultId;
+
+    public void Change(string name, string? nameAr, BranchType type, bool isActive)
+    {
+        var trimmed = name?.Trim() ?? string.Empty;
+        if (trimmed.Length is 0 or > MaxName)
+            throw new DomainException($"Name the branch: {MaxName} characters at most. · اكتب اسم الفرع.");
+        var arabic = string.IsNullOrWhiteSpace(nameAr) ? null : nameAr.Trim();
+        if (arabic?.Length > MaxName)
+            throw new DomainException($"Keep the Arabic name to {MaxName} characters.");
+        if (!Enum.IsDefined(type))
+            throw new DomainException("Choose what the branch is: a restaurant, a central kitchen or a central warehouse.");
+        if (IsDefault && !isActive)
+            throw new DomainException($"{trimmed} is the company's first branch, where every record goes until there are others: it stays in use.");
+        Name = trimmed;
+        NameAr = arabic;
+        Type = type;
+        IsActive = isActive;
+    }
+}
+
+public enum LocationKind
+{
+    MainStore = 1,
+    Kitchen = 2,
+    Bar = 3,
+    Other = 9,
+}
+
+// Where stock is kept inside a branch (موقع المخزون): its main store, the kitchen, the bar. Each
+// branch has its main store, made with it; the first branch's is the one implicit store of an
+// open-space shop.
+public sealed class InventoryLocation : AggregateRoot
+{
+    public const int MaxName = 100;
+
+    public static readonly Guid DefaultId = new("b2a40000-0000-4000-8000-000000000002");
+
+    private InventoryLocation() { }
+
+    public InventoryLocation(Guid id, Guid branchId, string name, string? nameAr, LocationKind kind, bool isActive = true)
+    {
+        Id = id;
+        BranchId = branchId;
+        Change(name, nameAr, kind, isActive);
+    }
+
+    public Guid BranchId { get; private set; }
+    public string Name { get; private set; } = string.Empty;
+    public string? NameAr { get; private set; }
+    public LocationKind Kind { get; private set; } = LocationKind.Other;
+    public bool IsActive { get; private set; } = true;
+
+    public bool IsDefault => Id == DefaultId;
+
+    public void Change(string name, string? nameAr, LocationKind kind, bool isActive)
+    {
+        var trimmed = name?.Trim() ?? string.Empty;
+        if (trimmed.Length is 0 or > MaxName)
+            throw new DomainException($"Name the location: {MaxName} characters at most. · اكتب اسم الموقع.");
+        var arabic = string.IsNullOrWhiteSpace(nameAr) ? null : nameAr.Trim();
+        if (arabic?.Length > MaxName)
+            throw new DomainException($"Keep the Arabic name to {MaxName} characters.");
+        if (!Enum.IsDefined(kind))
+            throw new DomainException("Choose what the location is: the main store, a kitchen, a bar or another.");
+        if (IsDefault && (!isActive || kind != LocationKind.MainStore))
+            throw new DomainException($"{trimmed} is the first branch's main store: it stays its main store, in use.");
+        Name = trimmed;
+        NameAr = arabic;
+        Kind = kind;
+        IsActive = isActive;
+    }
+}
+
+// A record kept by a branch: its purchases, its safe, its Z reports, its sales, its stock
+// movements, waste and counts. Given the branch it is entered in when it is saved, unless it was
+// given one (a reversal keeps its original's).
+public interface IBranchOwned
+{
+    Guid BranchId { get; }
+
+    void AssignBranch(Guid branchId);
+}
+
+public interface IBranchRepository : IRepository<Branch>
+{
+    Task<IReadOnlyList<Branch>> GetAllAsync(CancellationToken cancellationToken = default);
+}
+
+public interface IInventoryLocationRepository : IRepository<InventoryLocation>
+{
+    Task<IReadOnlyList<InventoryLocation>> GetAllAsync(CancellationToken cancellationToken = default);
+}
+```
+
+
+### 7.3 فرع الطلب: `ICurrentBranch`
+
+```text
+نمط فرع واحد            ⇐ الفرع الأول دائمًا، ولا تضييق للقوائم (السلوك القديم حرفيًا)
+عدة فروع + مستخدم مخصص   ⇐ فرعه (من التوكن)؛ فرع موقوف ⇐ 403
+عدة فروع + مستخدم عام     ⇐ X-Branch-Id إن كان فرعًا مفعّلًا، وإلا الفرع الأول
+POS و HR (بالمفتاح)       ⇐ الفرع الأول
+```
+
+`BranchScope.NarrowAsync`: يضيّق قائمة السجلات لفرع الطلب (فقط مع عدة فروع).
+
+> 📄 **`backend/src/Costing.Application/Company/Structure.cs`** — 169 سطر
+
+```csharp
+using MediatR;
+using Costing.Application.Common;
+using Costing.Domain.Common;
+using Costing.Domain.Company;
+using Costing.Domain.Security;
+
+namespace Costing.Application.Company;
+
+// Company structure (هيكل الشركة): how the business is built, its branches, and where each keeps
+// its stock. A manager's (Settings → Company structure). An open-space shop has one branch and one
+// implicit store, made by the migration; a manager adds locations once the structure has them, and
+// branches once it has several. Each change of structure in the security audit log.
+
+// Where what is entered now is written, and what the lists are narrowed to: the company's one
+// branch while it has one (no list narrowed); otherwise the user's own branch, or, for one who
+// works every branch, the branch they chose at the top of the screen.
+public interface ICurrentBranch
+{
+    Task<Guid> BranchIdAsync(CancellationToken cancellationToken = default);
+
+    // Null while the company works in one branch: nothing to narrow.
+    Task<Guid?> ScopeAsync(CancellationToken cancellationToken = default);
+}
+
+// Who is asking, as far as branches go: the branch the user is kept to (their token's), or the one a
+// user of every branch chose at the top of the screen. Neither for the POS, HR or the app itself.
+public interface IBranchRequest
+{
+    Guid? AssignedBranchId { get; }
+
+    Guid? ChosenBranchId { get; }
+}
+
+public static class BranchScope
+{
+    // A list narrowed to the branch being worked in, when there is one to narrow to.
+    public static async Task<IReadOnlyList<T>> NarrowAsync<T>(this ICurrentBranch branch, IEnumerable<T> records, CancellationToken cancellationToken)
+        where T : IBranchOwned =>
+        await branch.ScopeAsync(cancellationToken) is { } scope ? records.Where(r => r.BranchId == scope).ToList() : records.ToList();
+}
+
+public sealed record BranchDto(Guid Id, string Name, string? NameAr, BranchType Type, bool IsActive, bool IsDefault, int Locations)
+{
+    public static BranchDto From(Branch b, int locations) => new(b.Id, b.Name, b.NameAr, b.Type, b.IsActive, b.IsDefault, locations);
+}
+
+public sealed record InventoryLocationDto(Guid Id, Guid BranchId, string Name, string? NameAr, LocationKind Kind, bool IsActive, bool IsDefault)
+{
+    public static InventoryLocationDto From(InventoryLocation l) => new(l.Id, l.BranchId, l.Name, l.NameAr, l.Kind, l.IsActive, l.IsDefault);
+}
+
+public sealed record CompanyStructureDto(SystemOperatingMode Mode, IReadOnlyList<BranchDto> Branches, IReadOnlyList<InventoryLocationDto> Locations);
+
+public sealed record GetCompanyStructureQuery : IRequest<CompanyStructureDto>;
+
+// The company's structure changed.
+public sealed record ChangeOperatingModeCommand(SystemOperatingMode Mode, string StaffId, string StaffName) : IRequest<CompanyStructureDto>;
+
+// A branch added or changed: added only once the structure has several; a new one gets its main store.
+public sealed record SaveBranchCommand(Guid Id, string Name, string? NameAr, BranchType Type, bool IsActive = true) : IRequest<BranchDto>;
+
+// A location added or changed: added only once the structure has locations.
+public sealed record SaveInventoryLocationCommand(Guid Id, Guid BranchId, string Name, string? NameAr, LocationKind Kind, bool IsActive = true)
+    : IRequest<InventoryLocationDto>;
+
+// The branches in use, for the branch selector; the structure with them.
+public sealed record BranchChoicesDto(SystemOperatingMode Mode, IReadOnlyList<BranchDto> Branches);
+
+public sealed record GetBranchChoicesQuery : IRequest<BranchChoicesDto>;
+
+internal sealed class CompanyStructureReader(IBranchRepository branches, IInventoryLocationRepository locations, ICompanyProfile profile)
+{
+    public async Task<CompanyStructureDto> ReadAsync(CancellationToken cancellationToken)
+    {
+        var all = await locations.GetAllAsync(cancellationToken);
+        return new CompanyStructureDto(profile.Current.OperatingMode,
+            (await branches.GetAllAsync(cancellationToken)).Select(b => BranchDto.From(b, all.Count(l => l.BranchId == b.Id))).ToList(),
+            all.Select(InventoryLocationDto.From).ToList());
+    }
+}
+
+internal sealed class GetCompanyStructureHandler(CompanyStructureReader reader) : IRequestHandler<GetCompanyStructureQuery, CompanyStructureDto>
+{
+    public Task<CompanyStructureDto> Handle(GetCompanyStructureQuery request, CancellationToken cancellationToken) => reader.ReadAsync(cancellationToken);
+}
+
+internal sealed class GetBranchChoicesHandler(IBranchRepository branches, ICompanyProfile profile) : IRequestHandler<GetBranchChoicesQuery, BranchChoicesDto>
+{
+    public async Task<BranchChoicesDto> Handle(GetBranchChoicesQuery request, CancellationToken cancellationToken) =>
+        new(profile.Current.OperatingMode, (await branches.GetAllAsync(cancellationToken)).Where(b => b.IsActive).Select(b => BranchDto.From(b, 0)).ToList());
+}
+
+internal sealed class ChangeOperatingModeHandler(
+    ICompanySettingsStore settings,
+    IBranchRepository branches,
+    ISecurityAuditLogRepository audit,
+    ICompanyProfile profile,
+    CompanyStructureReader reader,
+    IUnitOfWork unitOfWork) : IRequestHandler<ChangeOperatingModeCommand, CompanyStructureDto>
+{
+    public async Task<CompanyStructureDto> Handle(ChangeOperatingModeCommand request, CancellationToken cancellationToken)
+    {
+        var company = await settings.GetAsync(cancellationToken) ?? throw new DomainException("Save the company's settings first.");
+        var previous = company.ChangeOperatingMode(request.Mode, await branches.GetAllAsync(cancellationToken));
+        if (previous != request.Mode)
+            audit.Add(SecurityAuditLog.OperatingModeChanged(previous.ToString(), request.Mode.ToString(), request.StaffName, request.StaffId));
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+        profile.Set(CompanyProfile.From(company));
+        return await reader.ReadAsync(cancellationToken);
+    }
+}
+
+internal sealed class SaveBranchHandler(IBranchRepository branches, IInventoryLocationRepository locations, ICompanyProfile profile, IUnitOfWork unitOfWork)
+    : IRequestHandler<SaveBranchCommand, BranchDto>
+{
+    public async Task<BranchDto> Handle(SaveBranchCommand request, CancellationToken cancellationToken)
+    {
+        var all = await branches.GetAllAsync(cancellationToken);
+        var name = request.Name?.Trim() ?? string.Empty;
+        if (all.FirstOrDefault(b => b.Id != request.Id && string.Equals(b.Name, name, StringComparison.CurrentCultureIgnoreCase)) is { } same)
+            throw new DomainException($"There is a branch called {same.Name} already. · يوجد فرع بهذا الاسم.");
+        var branch = all.FirstOrDefault(b => b.Id == request.Id);
+        if (branch is null)
+        {
+            if (!profile.Current.OperatingMode.IsMultiBranch())
+                throw new DomainException("Choose a structure with several branches first, on Company structure. · اختر هيكلاً متعدد الفروع أولاً.");
+            branch = new Branch(request.Id, request.Name!, request.NameAr, request.Type, request.IsActive);
+            branches.Add(branch);
+            // Its main store, made with it: where its stock is kept until it has more.
+            locations.Add(new InventoryLocation(Guid.NewGuid(), branch.Id, "Main Store", "المخزن الرئيسي", LocationKind.MainStore));
+        }
+        else
+        {
+            branch.Change(request.Name!, request.NameAr, request.Type, request.IsActive);
+        }
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+        return BranchDto.From(branch, (await locations.GetAllAsync(cancellationToken)).Count(l => l.BranchId == branch.Id));
+    }
+}
+
+internal sealed class SaveInventoryLocationHandler(
+    IBranchRepository branches, IInventoryLocationRepository locations, ICompanyProfile profile, IUnitOfWork unitOfWork)
+    : IRequestHandler<SaveInventoryLocationCommand, InventoryLocationDto>
+{
+    public async Task<InventoryLocationDto> Handle(SaveInventoryLocationCommand request, CancellationToken cancellationToken)
+    {
+        var all = await locations.GetAllAsync(cancellationToken);
+        var location = all.FirstOrDefault(l => l.Id == request.Id);
+        var branchId = location?.BranchId ?? request.BranchId;
+        if (await branches.GetByIdAsync(branchId, cancellationToken) is not { } branch)
+            throw new DomainException("That branch is no longer there: choose one from the list.");
+        var name = request.Name?.Trim() ?? string.Empty;
+        if (all.FirstOrDefault(l => l.Id != request.Id && l.BranchId == branchId && string.Equals(l.Name, name, StringComparison.CurrentCultureIgnoreCase)) is { } same)
+            throw new DomainException($"{branch.Name} has a location called {same.Name} already. · يوجد موقع بهذا الاسم.");
+        if (location is null)
+        {
+            if (!profile.Current.OperatingMode.HasLocations())
+                throw new DomainException("An open-space shop keeps its stock in one place: choose a structure with locations first. · اختر هيكلاً به مواقع أولاً.");
+            location = new InventoryLocation(request.Id, branchId, request.Name!, request.NameAr, request.Kind, request.IsActive);
+            locations.Add(location);
+        }
+        else
+        {
+            location.Change(request.Name!, request.NameAr, request.Kind, request.IsActive);
+        }
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+        return InventoryLocationDto.From(location);
+    }
+}
+```
+
+
+### 7.4 الختم عند الحفظ: `BranchStampInterceptor`
+
+`SaveChangesInterceptor` يعطي كل سجل جديد بلا فرع فرعه **قبل الحفظ**: السجلات الأصلية (فاتورة، بيع، جرد…) فرع الطلب، وما يتبع غيره (حركة مخزون بمصدرها، دفعة بفاتورتها) فرع مصدره، فإلغاء فاتورة طنطا من الإسكندرية يُسجل في طنطا. والعمود له قيمة افتراضية (الفرع الأول) فكل سجل قديم صار للفرع الأول بلا تحويل بيانات.
+
+> 📄 **`backend/src/Costing.Infrastructure/Persistence/BranchPersistence.cs`** — 189 سطر
+
+```csharp
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.EntityFrameworkCore.Metadata.Builders;
+using Microsoft.Extensions.DependencyInjection;
+using Costing.Application.Common;
+using Costing.Application.Company;
+using Costing.Domain.Common;
+using Costing.Domain.Company;
+using Costing.Domain.Purchases;
+using Costing.Domain.Sales;
+using Costing.Domain.StockCounts;
+using Costing.Domain.StockMovements;
+using Costing.Domain.Treasury;
+using Costing.Domain.Waste;
+using Costing.Infrastructure.Persistence.Configurations;
+
+namespace Costing.Infrastructure.Persistence;
+
+// The company's branches and the locations they keep stock in, and the branch each record is
+// kept by: the first branch's (a default in the column, so every record made before had it) until
+// a manager builds the company otherwise.
+internal sealed class BranchConfiguration : IEntityTypeConfiguration<Branch>
+{
+    public void Configure(EntityTypeBuilder<Branch> builder)
+    {
+        builder.ToTable("Branches", CostingDbContext.CostingSchema);
+        builder.Property(b => b.Name).HasMaxLength(Branch.MaxName);
+        builder.Property(b => b.NameAr).HasMaxLength(Branch.MaxName);
+        builder.Property(b => b.Type).IsEnumName();
+        builder.Property(b => b.IsActive).HasDefaultValue(true);
+        builder.Ignore(b => b.IsDefault);
+    }
+}
+
+internal sealed class InventoryLocationConfiguration : IEntityTypeConfiguration<InventoryLocation>
+{
+    public void Configure(EntityTypeBuilder<InventoryLocation> builder)
+    {
+        builder.ToTable("InventoryLocations", CostingDbContext.CostingSchema);
+        builder.Property(l => l.Name).HasMaxLength(InventoryLocation.MaxName);
+        builder.Property(l => l.NameAr).HasMaxLength(InventoryLocation.MaxName);
+        builder.Property(l => l.Kind).IsEnumName();
+        builder.Property(l => l.IsActive).HasDefaultValue(true);
+        builder.Ignore(l => l.IsDefault);
+        builder.HasOne<Branch>().WithMany().HasForeignKey(l => l.BranchId).OnDelete(DeleteBehavior.Restrict);
+    }
+}
+
+// The branch of each record: the first branch's by default (what every record before had), never
+// one taken away (a branch is taken out of use, never deleted).
+internal sealed class BranchLinksConfiguration :
+    IEntityTypeConfiguration<PurchaseInvoice>, IEntityTypeConfiguration<SafeTransaction>, IEntityTypeConfiguration<Domain.Integrations.PosZReport>,
+    IEntityTypeConfiguration<SalesReceipt>, IEntityTypeConfiguration<StockMovement>, IEntityTypeConfiguration<BreakageEntry>,
+    IEntityTypeConfiguration<StockCount>
+{
+    public void Configure(EntityTypeBuilder<PurchaseInvoice> builder) => Link(builder);
+    public void Configure(EntityTypeBuilder<SafeTransaction> builder) => Link(builder);
+    public void Configure(EntityTypeBuilder<Domain.Integrations.PosZReport> builder) => Link(builder);
+    public void Configure(EntityTypeBuilder<SalesReceipt> builder) => Link(builder);
+    public void Configure(EntityTypeBuilder<StockMovement> builder) => Link(builder);
+    public void Configure(EntityTypeBuilder<BreakageEntry> builder) => Link(builder);
+    public void Configure(EntityTypeBuilder<StockCount> builder) => Link(builder);
+
+    private static void Link<T>(EntityTypeBuilder<T> builder) where T : class, IBranchOwned
+    {
+        builder.Property(e => e.BranchId).HasDefaultValue(Branch.DefaultId).HasSentinel(Guid.Empty);
+        builder.HasOne<Branch>().WithMany().HasForeignKey(e => e.BranchId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasIndex(e => e.BranchId);
+    }
+}
+
+internal sealed class BranchRepository(CostingDbContext db) : IBranchRepository
+{
+    public Task<Branch?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default) =>
+        db.Branches.SingleOrDefaultAsync(b => b.Id == id, cancellationToken);
+
+    public void Add(Branch aggregate) => db.Branches.Add(aggregate);
+
+    // The first branch first, then by name.
+    public async Task<IReadOnlyList<Branch>> GetAllAsync(CancellationToken cancellationToken = default) =>
+        (await db.Branches.ToListAsync(cancellationToken)).OrderByDescending(b => b.IsDefault).ThenBy(b => b.Name, StringComparer.CurrentCultureIgnoreCase).ToList();
+}
+
+internal sealed class InventoryLocationRepository(CostingDbContext db) : IInventoryLocationRepository
+{
+    public Task<InventoryLocation?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default) =>
+        db.InventoryLocations.SingleOrDefaultAsync(l => l.Id == id, cancellationToken);
+
+    public void Add(InventoryLocation aggregate) => db.InventoryLocations.Add(aggregate);
+
+    // Each branch's main store first.
+    public async Task<IReadOnlyList<InventoryLocation>> GetAllAsync(CancellationToken cancellationToken = default) =>
+        (await db.InventoryLocations.ToListAsync(cancellationToken))
+            .OrderBy(l => l.Kind == LocationKind.MainStore ? 0 : 1).ThenBy(l => l.Name, StringComparer.CurrentCultureIgnoreCase).ToList();
+}
+
+// No one asking: the app itself, the POS, HR. The first branch in a single-branch company.
+internal sealed class NoBranchRequest : IBranchRequest
+{
+    public Guid? AssignedBranchId => null;
+
+    public Guid? ChosenBranchId => null;
+}
+
+// The branch of the request, worked out once: the first branch while the company has one; then
+// the user's own (refused if it is out of use), or the one chosen, if it is a branch in use.
+internal sealed class CurrentBranch(ICompanyProfile profile, CostingDbContext db, IBranchRequest request) : ICurrentBranch
+{
+    private Guid? _resolved;
+
+    public async Task<Guid> BranchIdAsync(CancellationToken cancellationToken = default)
+    {
+        if (!profile.Current.OperatingMode.IsMultiBranch())
+            return Branch.DefaultId;
+        return _resolved ??= await ResolveAsync(cancellationToken);
+    }
+
+    public async Task<Guid?> ScopeAsync(CancellationToken cancellationToken = default) =>
+        profile.Current.OperatingMode.IsMultiBranch() ? await BranchIdAsync(cancellationToken) : null;
+
+    private async Task<Guid> ResolveAsync(CancellationToken cancellationToken)
+    {
+        if (request.AssignedBranchId is { } own)
+        {
+            var branch = await db.Branches.AsNoTracking().Where(b => b.Id == own).Select(b => new { b.Name, b.IsActive }).SingleOrDefaultAsync(cancellationToken);
+            if (branch is not { IsActive: true })
+                throw new ForbiddenException(
+                    $"Your branch{(branch is null ? string.Empty : ", " + branch.Name + ",")} is not in use: ask a manager to give you another. · فرعك غير مفعّل.");
+            return own;
+        }
+        if (request.ChosenBranchId is { } chosen && await db.Branches.AsNoTracking().AnyAsync(b => b.Id == chosen && b.IsActive, cancellationToken))
+            return chosen;
+        return Branch.DefaultId;
+    }
+}
+
+// Each record saved new is given its branch: what it comes from keeps it (a stock entry its
+// invoice's, count's or sale's; a payment its invoice's), anything else the branch of the request.
+internal sealed class BranchStampInterceptor(IServiceProvider services) : SaveChangesInterceptor
+{
+    public override async ValueTask<InterceptionResult<int>> SavingChangesAsync(
+        DbContextEventData eventData, InterceptionResult<int> result, CancellationToken cancellationToken = default)
+    {
+        if (eventData.Context is { } context)
+            await StampAsync(context, cancellationToken);
+        return result;
+    }
+
+    public override InterceptionResult<int> SavingChanges(DbContextEventData eventData, InterceptionResult<int> result)
+    {
+        if (eventData.Context is { } context)
+            StampAsync(context, CancellationToken.None).GetAwaiter().GetResult();
+        return result;
+    }
+
+    private async Task StampAsync(DbContext context, CancellationToken cancellationToken)
+    {
+        var added = context.ChangeTracker.Entries<IBranchOwned>()
+            .Where(e => e.State == EntityState.Added && e.Entity.BranchId == Guid.Empty)
+            .Select(e => e.Entity)
+            .ToList();
+        if (added.Count == 0)
+            return;
+        var current = await services.GetRequiredService<ICurrentBranch>().BranchIdAsync(cancellationToken);
+
+        static bool Follows(IBranchOwned record) => record is StockMovement or SafeTransaction { PurchaseInvoiceId: not null };
+        foreach (var record in added.Where(r => !Follows(r)))
+            record.AssignBranch(current);
+
+        var owners = new Dictionary<Guid, Guid>();
+        foreach (var owner in context.ChangeTracker.Entries<IBranchOwned>().Select(e => e.Entity).Where(e => e.BranchId != Guid.Empty))
+        {
+            owners.TryAdd(((Entity)owner).Id, owner.BranchId);
+            if (owner is SalesReceipt sale)
+                foreach (var line in sale.Lines)
+                    owners.TryAdd(line.PublicId, sale.BranchId);
+        }
+        foreach (var record in added.Where(Follows))
+        {
+            Guid? source = record switch
+            {
+                StockMovement m => m.SourceId,
+                SafeTransaction t => t.PurchaseInvoiceId,
+                _ => null,
+            };
+            record.AssignBranch(source is { } id && owners.TryGetValue(id, out var branch) ? branch : current);
+        }
+    }
+}
+```
+
+
+### 7.5 الـ API: التوكن والرأس والصفحة
+
+claim `branch` في التوكن، ويُقارن مع قاعدة البيانات في كل طلب (`OnTokenValidated`): تغيير فرع المستخدم يخرجه من كل مكان، فلا يبقى claim قديم. `HttpBranchRequest` يقرأ الفرع من التوكن، أو `X-Branch-Id` لمن يعمل في كل الفروع فقط.
+
+> 📄 **`backend/src/Costing.Api/Auth/BranchRequest.cs`** — 19 سطر
+
+```csharp
+using Costing.Application.Company;
+
+namespace Costing.Api.Auth;
+
+// Who is asking, as far as branches go: the branch the signed-in user is kept to (their token's),
+// or, for one who works every branch, the one chosen at the top of the screen (X-Branch-Id). The
+// POS and HR, signed in by key, choose none: the first branch.
+public sealed class HttpBranchRequest(IHttpContextAccessor http) : IBranchRequest
+{
+    public const string Header = "X-Branch-Id";
+
+    public Guid? AssignedBranchId => http.HttpContext?.User is { } user && UserClaims.RoleOf(user) is not null ? UserClaims.BranchOf(user) : null;
+
+    public Guid? ChosenBranchId =>
+        http.HttpContext is { } context && UserClaims.RoleOf(context.User) is not null && UserClaims.BranchOf(context.User) is null
+        && Guid.TryParse(context.Request.Headers[Header].ToString(), out var chosen)
+            ? chosen
+            : null;
+}
+```
+
+
+> 📄 **`backend/src/Costing.Api/Controllers/CompanyStructureController.cs`** — 49 سطر
+
+```csharp
+using MediatR;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using Costing.Api.Auth;
+using Costing.Application.Company;
+using Costing.Domain.Access;
+using Costing.Domain.Company;
+
+namespace Costing.Api.Controllers;
+
+// Company structure (هيكل الشركة), on Settings, a manager's (settings.manage): how the business is
+// built, its branches and the locations each keeps stock in. The branches in use, for the branch
+// selector, for anyone signed in.
+[ApiController]
+[Authorize(Policy = Permissions.SettingsManage)]
+public sealed class CompanyStructureController(ISender sender) : ControllerBase
+{
+    [HttpGet("api/settings/company-structure")]
+    public Task<CompanyStructureDto> Get(CancellationToken cancellationToken) => sender.Send(new GetCompanyStructureQuery(), cancellationToken);
+
+    [HttpPut("api/settings/company-structure/mode")]
+    public Task<CompanyStructureDto> ChangeMode(OperatingModeRequest request, CancellationToken cancellationToken) =>
+        sender.Send(new ChangeOperatingModeCommand(request.Mode, UserClaims.IdOf(User) ?? string.Empty, UserClaims.NameOf(User)), cancellationToken);
+
+    // Its id made by the app: added, or changed.
+    [HttpPut("api/settings/branches/{id:guid}")]
+    public Task<BranchDto> SaveBranch(Guid id, BranchRequest request, CancellationToken cancellationToken) =>
+        sender.Send(new SaveBranchCommand(id, request.Name, request.NameAr, request.Type, request.IsActive), cancellationToken);
+
+    [HttpPut("api/settings/locations/{id:guid}")]
+    public Task<InventoryLocationDto> SaveLocation(Guid id, LocationRequest request, CancellationToken cancellationToken) =>
+        sender.Send(new SaveInventoryLocationCommand(id, request.BranchId, request.Name, request.NameAr, request.Kind, request.IsActive), cancellationToken);
+}
+
+// The branches in use and the company's structure, for the branch selector: anyone signed in.
+[ApiController]
+[Route("api/branches")]
+[Authorize]
+public sealed class BranchesController(ISender sender) : ControllerBase
+{
+    [HttpGet]
+    public Task<BranchChoicesDto> Get(CancellationToken cancellationToken) => sender.Send(new GetBranchChoicesQuery(), cancellationToken);
+}
+
+public sealed record OperatingModeRequest(SystemOperatingMode Mode);
+
+public sealed record BranchRequest(string Name, string? NameAr, BranchType Type = BranchType.Restaurant, bool IsActive = true);
+
+public sealed record LocationRequest(Guid BranchId, string Name, string? NameAr, LocationKind Kind = LocationKind.Other, bool IsActive = true);
 ```
 
 

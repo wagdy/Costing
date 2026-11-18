@@ -45,7 +45,9 @@ public static class DependencyInjection
         services.AddSingleton<IBusinessCalendar>(sp => sp.GetRequiredService<BusinessCalendar>());
         services.TryAddSingleton(TimeProvider.System);
 
-        services.AddDbContext<CostingDbContext>(o => o.UseNpgsql(connectionString, CostingDbContext.ConfigureNpgsql));
+        // Each new record given its branch as it is saved (BranchStampInterceptor).
+        services.AddDbContext<CostingDbContext>((sp, o) =>
+            o.UseNpgsql(connectionString, CostingDbContext.ConfigureNpgsql).AddInterceptors(new BranchStampInterceptor(sp)));
         services.AddScoped<IUnitOfWork>(sp => sp.GetRequiredService<CostingDbContext>());
         services.AddTransient(typeof(IPipelineBehavior<,>), typeof(RetryOnConflictBehavior<,>));
 
@@ -100,6 +102,12 @@ public static class DependencyInjection
         services.AddScoped<Costing.Application.Approvals.IRecordDescriptions, RecordDescriptions>();
         services.AddScoped<Costing.Application.Treasury.ITaxRate, FinancialTaxRate>();
         services.AddScoped<Domain.Security.ISecurityAuditLogRepository, SecurityAuditLogRepository>();
+        // The company's structure: its branches and locations, and the branch of each request
+        // (the API says who is asking; anything else is the app itself).
+        services.AddScoped<Domain.Company.IBranchRepository, BranchRepository>();
+        services.AddScoped<Domain.Company.IInventoryLocationRepository, InventoryLocationRepository>();
+        services.AddScoped<Costing.Application.Company.ICurrentBranch, CurrentBranch>();
+        services.TryAddScoped<Costing.Application.Company.IBranchRequest, NoBranchRequest>();
         services.AddScoped<IExpenseItemRepository, ExpenseItemRepository>();
         services.AddScoped<IPrepRecipeRepository, PrepRecipeRepository>();
         services.AddScoped<IProductionOrderRepository, ProductionOrderRepository>();

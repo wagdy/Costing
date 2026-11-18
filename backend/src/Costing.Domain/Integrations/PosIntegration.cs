@@ -1,5 +1,6 @@
 using Costing.Domain.Common;
 using Costing.Domain.Sales;
+using Costing.Domain.Company;
 
 namespace Costing.Domain.Integrations;
 
@@ -39,8 +40,13 @@ public sealed class PosLink : AggregateRoot
 
 // One shift's Z report as the POS sent it, by the POS's own id for it: sent again (the answer was
 // lost), it is the same report; sent changed (the shift was corrected), it replaces what it was.
-public sealed class PosZReport : AggregateRoot
+public sealed class PosZReport : AggregateRoot, IBranchOwned
 {
+    // The branch that keeps it (IBranchOwned): given when it is saved, or kept from its original.
+    public Guid BranchId { get; private set; }
+
+    public void AssignBranch(Guid branchId) => BranchId = branchId;
+
     private PosZReport() { }
 
     public PosZReport(Guid id, DateOnly businessDate, int? shiftNumber, string source, string payloadHash, string payload)

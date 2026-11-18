@@ -249,6 +249,8 @@ const costingChildren: Routes = [
   { path: 'variance', redirectTo: 'reports/variance' },
   { path: 'kpis', redirectTo: 'reports/kpis' },
   { path: 'break-even', redirectTo: 'reports/break-even' },
+  // Company structure is the company's, on Settings.
+  { path: 'settings/company-structure', redirectTo: '/settings/company-structure' },
   {
     // The cost targets, beverage categories, shared costs and monthly expenses.
     path: 'settings',
@@ -310,6 +312,12 @@ export const routes: Routes = [
         path: 'settings/hr-integration',
         canActivate: [permissionGuard(Permissions.SettingsManage)],
         loadComponent: () => import('./features/settings/hr-integration-page').then((m) => m.HrIntegrationPage),
+      },
+      {
+        // Company structure: how the business is built, its branches and locations; a manager's.
+        path: 'settings/company-structure',
+        canActivate: [permissionGuard(Permissions.SettingsManage)],
+        loadComponent: () => import('./features/settings/company-structure-page').then((m) => m.CompanyStructurePage),
       },
       {
         // Period lock & month-end close: the books closed until a day, opened again with why; a manager's.

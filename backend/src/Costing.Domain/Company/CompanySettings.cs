@@ -82,6 +82,9 @@ public sealed class CompanySettings
     // before it is entered, changed or voided, in money or stock. Null: none locked.
     public DateOnly? BooksLockedUntilDate { get; private set; }
 
+    // How the business is built: one open-space shop until a manager says otherwise.
+    public SystemOperatingMode OperatingMode { get; private set; } = SystemOperatingMode.SingleBranch_OpenSpace;
+
     public bool HasLogo => LogoFileName is not null;
 
     public bool IsLocked(DateOnly day) => BooksLockedUntilDate is { } locked && day <= locked;
@@ -163,6 +166,20 @@ public sealed class CompanySettings
                 $"The last day closed is {PeriodLockedException.Format(last)}: lock the books up to it at the latest, the days after it are still to be closed. " +
                 "· لا تقفل بعد آخر يوم مغلق.");
         BooksLockedUntilDate = until;
+    }
+
+    // The company's structure changed: a single-branch mode only while the first branch is the one
+    // in use (the others taken out of use first, their records kept). Returns the mode it was.
+    public SystemOperatingMode ChangeOperatingMode(SystemOperatingMode mode, IReadOnlyCollection<Branch> branches)
+    {
+        if (!Enum.IsDefined(mode))
+            throw new DomainException("Choose how the company is built: one of the four structures.");
+        if (!mode.IsMultiBranch() && branches.Where(b => b.IsActive && !b.IsDefault).Select(b => b.Name).ToList() is { Count: > 0 } others)
+            throw new DomainException(
+                $"Take {string.Join(", ", others)} out of use first: a single-branch company works in its first branch alone. · أوقف الفروع الأخرى أولاً.");
+        var previous = OperatingMode;
+        OperatingMode = mode;
+        return previous;
     }
 
     public const int MinUnlockReasonLength = 5;

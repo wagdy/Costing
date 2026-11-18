@@ -1,6 +1,7 @@
 using System.Text;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.IdentityModel.Tokens;
 using Costing.Domain.Access;
 using Costing.Infrastructure.Identity;
@@ -13,6 +14,10 @@ internal static class AuthenticationSetup
     {
         var section = configuration.GetSection(AuthOptions.Section);
         var options = section.Get<AuthOptions>() ?? new AuthOptions();
+
+        // The branch of each request, from the user's token or their choice at the top of the screen.
+        services.AddHttpContextAccessor();
+        services.Replace(ServiceDescriptor.Scoped<Costing.Application.Company.IBranchRequest, HttpBranchRequest>());
 
         // The usual floor for HS256. Failing at startup means a misconfigured machine never
         // serves at all, rather than serving forgeable tokens.
@@ -56,8 +61,9 @@ internal static class AuthenticationSetup
                                 .GetActiveAsync(userId, context.HttpContext.RequestAborted);
 
                         if (active is not { } user || user.Role != UserClaims.RoleOf(principal)
-                            || user.PasswordSetAtUtc.Ticks / 10 != UserClaims.PasswordSetAtOf(principal) / 10)
-                            context.Fail("This account has been deactivated, or its role or password has changed. Sign in again.");
+                            || user.PasswordSetAtUtc.Ticks / 10 != UserClaims.PasswordSetAtOf(principal) / 10
+                            || user.BranchId != UserClaims.BranchOf(principal))
+                            context.Fail("This account has been deactivated, or its role, password or branch has changed. Sign in again.");
                     },
                 };
             });

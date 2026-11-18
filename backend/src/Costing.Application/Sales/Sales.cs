@@ -10,6 +10,7 @@ using Costing.Domain.Recipes;
 using Costing.Domain.Sales;
 using Costing.Domain.StockMovements;
 using Costing.Application.Books;
+using Costing.Application.Company;
 
 namespace Costing.Application.Sales;
 
@@ -277,7 +278,7 @@ internal sealed class RefundSaleHandler(ISalesReceiptRepository sales, SaleStock
 // The sales of From to To (business days), newest first.
 public sealed record GetSalesQuery(DateOnly From, DateOnly To) : IRequest<SalesReport>;
 
-internal sealed class GetSalesHandler(ISalesReceiptRepository sales) : IRequestHandler<GetSalesQuery, SalesReport>
+internal sealed class GetSalesHandler(ISalesReceiptRepository sales, ICurrentBranch branch) : IRequestHandler<GetSalesQuery, SalesReport>
 {
     public async Task<SalesReport> Handle(GetSalesQuery request, CancellationToken cancellationToken)
     {
@@ -285,7 +286,8 @@ internal sealed class GetSalesHandler(ISalesReceiptRepository sales) : IRequestH
             throw new DomainException("The period ends before it starts.");
         if (request.To.DayNumber - request.From.DayNumber > 92)
             throw new DomainException("Show three months of sales at most.");
-        var receipts = await sales.GetForDaysAsync(request.From, request.To, cancellationToken);
+        // The branch's own, when the company has several.
+        var receipts = await branch.NarrowAsync(await sales.GetForDaysAsync(request.From, request.To, cancellationToken), cancellationToken);
         var counted = receipts.Where(r => !r.IsVoided).ToList();
         var totals = new SalesTotals(
             counted.Count, counted.Sum(r => r.Lines.Where(l => l.OnBill).Sum(l => l.Quantity)), counted.Sum(r => r.BilledSubtotal),

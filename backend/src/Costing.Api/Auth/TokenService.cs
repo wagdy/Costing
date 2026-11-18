@@ -16,13 +16,15 @@ public sealed class TokenService(IOptions<AuthOptions> options, TimeProvider tim
 
     private static readonly JsonWebTokenHandler Handler = new();
 
-    // A user's: their id, name and role, and when their password was set.
+    // A user's: their id, name and role, when their password was set, and the branch they are kept
+    // to (none for one who works every branch).
     public (string Token, DateTime ExpiresAtUtc) Issue(UserAccount user) => Create(
     [
         new Claim(UserClaims.Id, user.Id),
         new Claim(UserClaims.Name, user.FullName),
         new Claim(UserClaims.Role, user.Role.ToString()),
         new Claim(UserClaims.PasswordSetAt, user.PasswordSetAtUtc.Ticks.ToString(CultureInfo.InvariantCulture)),
+        .. user.BranchId is { } branch ? [new Claim(UserClaims.Branch, branch.ToString("N"))] : Array.Empty<Claim>(),
     ]);
 
     private (string Token, DateTime ExpiresAtUtc) Create(IReadOnlyList<Claim> claims)

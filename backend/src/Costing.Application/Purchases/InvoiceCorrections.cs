@@ -136,6 +136,8 @@ internal sealed class InvoiceCorrector(
             track,
             cancellationToken);
         corrected.EnsurePostable();
+        // In the branch of the invoice it replaces, whoever corrects it.
+        corrected.AssignBranch(original.BranchId);
         if (Same(original, corrected))
             throw new DomainException("Nothing has changed: enter the invoice as it should have been.");
         return corrected;

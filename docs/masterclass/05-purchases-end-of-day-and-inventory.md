@@ -46,7 +46,7 @@
 
 `PurchaseInvoices.cs`: `InvoiceRecorder` (حفظ المسودة: التحقق من البنود، الوحدات، المورد، الخصم)، و `InvoicePoster` (الترحيل: يُدخل المخزون بحركات `Purchase` ويحرك المتوسط، ويسجل الدفع: نقدي من الخزنة، أو من إيراد يوم، أو آجل على المورد)، والقراءة. المعرّف يصنعه "الـ till" (المتصفح).
 
-> 📄 **`backend/src/Costing.Application/Purchases/PurchaseInvoices.cs`** — 520 سطر
+> 📄 **`backend/src/Costing.Application/Purchases/PurchaseInvoices.cs`** — 523 سطر
 
 ```csharp
 using MediatR;
@@ -64,6 +64,7 @@ using Costing.Domain.StockMovements;
 using Costing.Domain.Suppliers;
 using Costing.Domain.Treasury;
 using Costing.Application.Books;
+using Costing.Application.Company;
 
 namespace Costing.Application.Purchases;
 
@@ -255,14 +256,16 @@ public sealed record PurchaseInvoiceSummaryDto(
 public sealed record GetPurchaseInvoicesQuery(PurchaseInvoiceStatus Status) : IRequest<IReadOnlyList<PurchaseInvoiceSummaryDto>>;
 
 internal sealed class GetPurchaseInvoicesQueryHandler(
-    IPurchaseInvoiceRepository invoices, ISupplierRepository suppliers, ISafeTransactionRepository safe, IApprovalRequestRepository requests)
+    IPurchaseInvoiceRepository invoices, ISupplierRepository suppliers, ISafeTransactionRepository safe, IApprovalRequestRepository requests,
+    ICurrentBranch branch)
     : IRequestHandler<GetPurchaseInvoicesQuery, IReadOnlyList<PurchaseInvoiceSummaryDto>>
 {
     public async Task<IReadOnlyList<PurchaseInvoiceSummaryDto>> Handle(GetPurchaseInvoicesQuery request, CancellationToken cancellationToken)
     {
         // Archived ones too: an invoice keeps showing who it was from.
         var names = (await suppliers.GetAllAsync(cancellationToken)).ToDictionary(s => s.Id, s => s.Name);
-        var listed = await invoices.GetByStatusAsync(request.Status, cancellationToken);
+        // The branch's own, when the company has several.
+        var listed = await branch.NarrowAsync(await invoices.GetByStatusAsync(request.Status, cancellationToken), cancellationToken);
         var paid = await safe.PaidInvoicesAsync(listed.Select(i => i.Id).ToList(), cancellationToken);
         var pending = (await requests.GetPendingAsync(cancellationToken)).Where(r => r.Module == ApprovalModule.Treasury).Select(r => r.RecordId).ToHashSet();
         return listed
@@ -574,7 +577,7 @@ internal sealed class GetPurchaseInvoiceAttachmentQueryHandler(IPurchaseInvoiceR
 
 `InvoiceCorrections.cs`: **تعديل فاتورة مرحّلة = فاتورة جديدة تسمّي الأصلية**، والأصلية تُلغى (بضاعتها تخرج بحركات عكسية، ونقدها يعود أو دينها يُعكس). المعاينة تعرض أثر التعديل على كل خامة. للمدير فورًا، ولغيره كطلب.
 
-> 📄 **`backend/src/Costing.Application/Purchases/InvoiceCorrections.cs`** — 246 سطر
+> 📄 **`backend/src/Costing.Application/Purchases/InvoiceCorrections.cs`** — 248 سطر
 
 ```csharp
 using System.Globalization;
@@ -715,6 +718,8 @@ internal sealed class InvoiceCorrector(
             track,
             cancellationToken);
         corrected.EnsurePostable();
+        // In the branch of the invoice it replaces, whoever corrects it.
+        corrected.AssignBranch(original.BranchId);
         if (Same(original, corrected))
             throw new DomainException("Nothing has changed: enter the invoice as it should have been.");
         return corrected;
@@ -4426,7 +4431,7 @@ internal sealed class BulkImportSalesHandler(BulkSalesPlanner planner, DailySale
 
 `Sales.cs`: `SaleStockPoster` (الخصم بالوصفات)، `SaleWriter`، والمرتجعات (حركة `VoidReturn` تعيد المخزون)، وتقرير المبيعات.
 
-> 📄 **`backend/src/Costing.Application/Sales/Sales.cs`** — 297 سطر
+> 📄 **`backend/src/Costing.Application/Sales/Sales.cs`** — 299 سطر
 
 ```csharp
 using MediatR;
@@ -4441,6 +4446,7 @@ using Costing.Domain.Recipes;
 using Costing.Domain.Sales;
 using Costing.Domain.StockMovements;
 using Costing.Application.Books;
+using Costing.Application.Company;
 
 namespace Costing.Application.Sales;
 
@@ -4708,7 +4714,7 @@ internal sealed class RefundSaleHandler(ISalesReceiptRepository sales, SaleStock
 // The sales of From to To (business days), newest first.
 public sealed record GetSalesQuery(DateOnly From, DateOnly To) : IRequest<SalesReport>;
 
-internal sealed class GetSalesHandler(ISalesReceiptRepository sales) : IRequestHandler<GetSalesQuery, SalesReport>
+internal sealed class GetSalesHandler(ISalesReceiptRepository sales, ICurrentBranch branch) : IRequestHandler<GetSalesQuery, SalesReport>
 {
     public async Task<SalesReport> Handle(GetSalesQuery request, CancellationToken cancellationToken)
     {
@@ -4716,7 +4722,8 @@ internal sealed class GetSalesHandler(ISalesReceiptRepository sales) : IRequestH
             throw new DomainException("The period ends before it starts.");
         if (request.To.DayNumber - request.From.DayNumber > 92)
             throw new DomainException("Show three months of sales at most.");
-        var receipts = await sales.GetForDaysAsync(request.From, request.To, cancellationToken);
+        // The branch's own, when the company has several.
+        var receipts = await branch.NarrowAsync(await sales.GetForDaysAsync(request.From, request.To, cancellationToken), cancellationToken);
         var counted = receipts.Where(r => !r.IsVoided).ToList();
         var totals = new SalesTotals(
             counted.Count, counted.Sum(r => r.Lines.Where(l => l.OnBill).Sum(l => l.Quantity)), counted.Sum(r => r.BilledSubtotal),
@@ -4754,7 +4761,7 @@ internal sealed class GetSalesHandler(ISalesReceiptRepository sales) : IRequestH
 
 **الجرد الأعمى (Blind):** `StockCountDto.ShowAsync(count, blind, …)` هو المكان الوحيد الذي يقرر ما يُعرض: في المسودة الرصيد الدفتري الحي (`QuantityOnHand`) والتكلفة (`AverageCost`) لمن يراجع، وفي الجرد المرحّل القيم المحفوظة، وفي الوضع الأعمى يُحذفان معًا. والـ API يفرضه: `Blind(asked) => asked || !costing.view`، فأمين المخزن لا يرى الدفتري ولو طلبه. لذلك الترحيل وطلب إعادة الجرد لمن يملك `costing.view` فقط، والعادّ الأعمى **يسلّم للمراجعة** (`SubmitStockCountCommand`). و `GetCountItemsQuery` يعطي ورقة العد الأصناف بلا رصيد ولا تكلفة.
 
-> 📄 **`backend/src/Costing.Application/StockCounts/StockCounts.cs`** — 381 سطر
+> 📄 **`backend/src/Costing.Application/StockCounts/StockCounts.cs`** — 382 سطر
 
 ```csharp
 using System.Globalization;
@@ -4769,6 +4776,7 @@ using Costing.Domain.RawMaterials;
 using Costing.Domain.StockCounts;
 using Costing.Domain.StockMovements;
 using Costing.Application.Books;
+using Costing.Application.Company;
 
 namespace Costing.Application.StockCounts;
 
@@ -4853,11 +4861,11 @@ public sealed record StockCountSummaryDto(
 // The draft first, if there is one, then the posted counts, newest first.
 public sealed record GetStockCountsQuery : IRequest<IReadOnlyList<StockCountSummaryDto>>;
 
-internal sealed class GetStockCountsQueryHandler(IStockCountRepository counts)
+internal sealed class GetStockCountsQueryHandler(IStockCountRepository counts, ICurrentBranch branch)
     : IRequestHandler<GetStockCountsQuery, IReadOnlyList<StockCountSummaryDto>>
 {
     public async Task<IReadOnlyList<StockCountSummaryDto>> Handle(GetStockCountsQuery request, CancellationToken cancellationToken) =>
-        (await counts.GetAllAsync(cancellationToken))
+        (await branch.NarrowAsync(await counts.GetAllAsync(cancellationToken), cancellationToken))
             .OrderBy(c => c.Status)
             .ThenByDescending(c => c.PostedAtUtc ?? c.StartedAtUtc)
             .Select(c => new StockCountSummaryDto(
@@ -5146,7 +5154,7 @@ internal sealed class RecordStockCountCommandHandler(
 - **الهالك (Spoilage):** مخزون تالف (منتهي، فاسد، وقع) ⇐ يخرج من المخزون بحركة بسبب، وتقرير الفروقات يضعه **مقابل العجز**، فالخسارة المعروف سببها لا تُخلط بخسارة بلا سبب. وأطباق أُلغيت بعد أن صنعها المطبخ تُحسب هالكًا أيضًا.
 - **الكسر (Breakage):** أطباق وكاسات ومستهلكات: **ليست مخزونًا**، تكلفتها على اليوم مباشرة (قيد في `BreakageEntries`)، وإلغاؤه عبر موافقة.
 
-> 📄 **`backend/src/Costing.Application/Waste/Breakage.cs`** — 78 سطر
+> 📄 **`backend/src/Costing.Application/Waste/Breakage.cs`** — 80 سطر
 
 ```csharp
 using MediatR;
@@ -5155,6 +5163,7 @@ using Costing.Domain.Common;
 using Costing.Domain.Staff;
 using Costing.Domain.Waste;
 using Costing.Application.Books;
+using Costing.Application.Company;
 
 namespace Costing.Application.Waste;
 
@@ -5180,7 +5189,7 @@ public sealed record BreakageEntryDto(
 // The business days from From to To, voided entries too.
 public sealed record GetBreakageQuery(DateOnly From, DateOnly To) : IRequest<IReadOnlyList<BreakageEntryDto>>;
 
-internal sealed class GetBreakageHandler(IBreakageEntryRepository breakage, IStaffMemberRepository staff)
+internal sealed class GetBreakageHandler(IBreakageEntryRepository breakage, IStaffMemberRepository staff, ICurrentBranch branch)
     : IRequestHandler<GetBreakageQuery, IReadOnlyList<BreakageEntryDto>>
 {
     public async Task<IReadOnlyList<BreakageEntryDto>> Handle(GetBreakageQuery request, CancellationToken cancellationToken)
@@ -5188,7 +5197,8 @@ internal sealed class GetBreakageHandler(IBreakageEntryRepository breakage, ISta
         if (request.To < request.From)
             throw new DomainException("The period ends before it starts.");
         var names = (await staff.GetAllAsync(cancellationToken)).ToDictionary(s => s.Id, s => s.Name);
-        return (await breakage.GetBetweenAsync(request.From, request.To, cancellationToken)).Select(b => BreakageDtos.Of(b, names)).ToList();
+        return (await branch.NarrowAsync(await breakage.GetBetweenAsync(request.From, request.To, cancellationToken), cancellationToken))
+            .Select(b => BreakageDtos.Of(b, names)).ToList();
     }
 }
 

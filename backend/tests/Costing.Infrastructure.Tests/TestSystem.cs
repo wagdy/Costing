@@ -16,6 +16,9 @@ namespace Costing.Infrastructure.Tests;
 public sealed class TestSystem : IAsyncDisposable
 {
     private IHost _host = null!;
+
+    // Who is asking, as far as branches go: no one (the first branch) unless a test says.
+    public TestBranchRequest Branch { get; } = new();
     private string _connectionString = null!;
 
     public static string? DatabaseServer => Environment.GetEnvironmentVariable("COSTING_TEST_DB");
@@ -37,6 +40,7 @@ public sealed class TestSystem : IAsyncDisposable
             ["Company:CurrencySymbol"] = "L.E",
         });
         builder.Services.AddCostingApplication();
+        builder.Services.AddSingleton<Costing.Application.Company.IBranchRequest>(system.Branch);
         builder.Services.AddCostingInfrastructure(builder.Configuration);
         builder.Services.AddMediatR(config => config.RegisterServicesFromAssembly(typeof(TestSystem).Assembly));
         builder.Services.AddSingleton<Till>();
@@ -126,4 +130,12 @@ public static class TestMenu
             SELECT setval(pg_get_serial_sequence('costing."MenuItemVariants"', 'Id'), 1000);
             """);
     }
+}
+
+// The branch a test's requests are kept to, or chose.
+public sealed class TestBranchRequest : Costing.Application.Company.IBranchRequest
+{
+    public Guid? AssignedBranchId { get; set; }
+
+    public Guid? ChosenBranchId { get; set; }
 }

@@ -1,5 +1,6 @@
 using Costing.Domain.Common;
 using Costing.Domain.Sales;
+using Costing.Domain.Company;
 
 namespace Costing.Domain.Treasury;
 
@@ -86,8 +87,13 @@ public enum FundingSource
 // reversing entry dated the day it is voided, so a closed month's balance never moves.
 //
 // Its id is made by the till, so a retried voucher is recorded once.
-public sealed class SafeTransaction : AggregateRoot
+public sealed class SafeTransaction : AggregateRoot, IBranchOwned
 {
+    // The branch that keeps it (IBranchOwned): given when it is saved, or kept from its original.
+    public Guid BranchId { get; private set; }
+
+    public void AssignBranch(Guid branchId) => BranchId = branchId;
+
     // What can be paid out of a day's takings, as well as out of the safe: what the drawer pays
     // before they are entered is taken off them. An array, so EF turns Contains into SQL.
     public static readonly SafeTransactionKind[] PaidOutKinds =
@@ -446,6 +452,8 @@ public sealed class SafeTransaction : AggregateRoot
             PayrollRunId = PayrollRunId,
             FixedAssetId = FixedAssetId,
             ReversalOf = Id,
+            // Voided in the branch it was entered in.
+            BranchId = BranchId,
         };
         reversal._discountReasons.AddRange(Discounts.Negated(_discountReasons));
         return reversal;

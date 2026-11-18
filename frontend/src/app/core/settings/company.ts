@@ -1,6 +1,7 @@
 import { HttpClient } from '@angular/common/http';
 import { Injectable, computed, inject, signal } from '@angular/core';
 import { Observable, firstValueFrom } from 'rxjs';
+import { OperatingMode } from './company-structure';
 
 // Company Settings (إعدادات الشركة), as the API keeps them (/api/settings): read by anyone, the
 // sign-in page too; changed by a manager.
@@ -22,9 +23,11 @@ export interface CompanySettings {
   logoVersion: number;
   // Where it is, its version in the address; null with none.
   logoUrl: string | null;
+  // How the company is built: what the app shows (locations, the branch selector) follows it.
+  operatingMode?: OperatingMode;
 }
 
-export type CompanySettingsInput = Omit<CompanySettings, 'hasCustomLogo' | 'logoVersion' | 'logoUrl'>;
+export type CompanySettingsInput = Omit<CompanySettings, 'hasCustomLogo' | 'logoVersion' | 'logoUrl' | 'operatingMode'>;
 
 export const countryLabels: Record<Country, { en: string; ar: string }> = {
   Egypt: { en: 'Egypt', ar: 'مصر' },
@@ -69,6 +72,8 @@ export class Company {
   readonly currency = computed(() => this.settings().currencySymbol);
   // The company's name, or the system's own until it has one.
   readonly name = computed(() => this.settings().name || 'Costing & Financials');
+  // How the company is built: an open-space shop until a manager says otherwise.
+  readonly mode = computed<OperatingMode>(() => this.settings().operatingMode ?? 'SingleBranch_OpenSpace');
   // The company's logo: the browser tab's icon, the top bar's and the sign-in page's; null with none.
   readonly logoUrl = computed(() => (this.settings().hasCustomLogo ? this.settings().logoUrl : null));
 

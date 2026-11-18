@@ -8,6 +8,7 @@ import { firstValueFrom } from 'rxjs';
 import { AuthService } from '../../core/auth/auth.service';
 import { errorMessage } from '../../core/http/error-message';
 import { NotifyService } from '../../core/ui/notify.service';
+import { BranchContext } from '../../core/settings/branch-context';
 import { NewUser, User, UserChange, UsersApi, roleLabels } from '../../core/users/users.api';
 import { ResetPasswordDialog, UserDialog, UserDialogData } from './user-dialogs';
 
@@ -41,6 +42,9 @@ const rank = (user: User) => (user.role === 'Manager' ? 0 : 1);
               <th>Name<span class="ar">الاسم</span></th>
               <th>Email<span class="ar">البريد الإلكتروني</span></th>
               <th>Role<span class="ar">الدور</span></th>
+              @if (branches.multi()) {
+                <th>Branch<span class="ar">الفرع</span></th>
+              }
               <th>Last signed in<span class="ar">آخر دخول</span></th>
               <th class="num"><span class="visually-hidden">Actions</span></th>
             </tr>
@@ -61,6 +65,9 @@ const rank = (user: User) => (user.role === 'Manager' ? 0 : 1);
                 </td>
                 <td>{{ u.email }}</td>
                 <td>{{ labels[u.role].en }}<span class="ar">{{ labels[u.role].ar }}</span></td>
+                @if (branches.multi()) {
+                  <td class="branch-cell">{{ branchOf(u) }}</td>
+                }
                 <td class="muted">{{ u.lastSignInAtUtc ? (u.lastSignInAtUtc | date: 'd MMM y, HH:mm') : 'Never' }}</td>
                 <td class="num actions">
                   <button mat-stroked-button (click)="change(u)"><mat-icon>edit</mat-icon> Change</button>
@@ -105,6 +112,8 @@ export class UsersPage {
   private readonly dialog = inject(MatDialog);
   private readonly notify = inject(NotifyService);
   protected readonly auth = inject(AuthService);
+  // Each user's branch, once the company has several.
+  protected readonly branches = inject(BranchContext);
 
   protected readonly labels = roleLabels;
   protected readonly users = signal<User[]>([]);
@@ -176,5 +185,9 @@ export class UsersPage {
     } finally {
       this.loading.set(false);
     }
+  }
+
+  protected branchOf(user: User): string {
+    return user.branchId ? (this.branches.branches().find((b) => b.id === user.branchId)?.name ?? '—') : 'Every branch · كل الفروع';
   }
 }

@@ -37,6 +37,33 @@
     }
   </span>
 
+  @if (branch.multi() && branch.current(); as current) {
+    @if (branch.canChoose()) {
+      <button mat-stroked-button class="branch" [matMenuTriggerFor]="branchMenu" [attr.aria-label]="'Branch: ' + current.name + '. Choose another'"
+        matTooltip="The branch you work in · الفرع الحالي">
+        <mat-icon>storefront</mat-icon>
+        <span class="branch-name">{{ current.name }}</span>
+        <mat-icon class="chevron" iconPositionEnd>expand_more</mat-icon>
+      </button>
+      <mat-menu #branchMenu="matMenu">
+        @for (b of branch.branches(); track b.id) {
+          <button mat-menu-item (click)="b.id !== current.id && branch.choose(b.id)" [class.chosen]="b.id === current.id">
+            <mat-icon>{{ b.id === current.id ? 'check' : 'storefront' }}</mat-icon>
+            <span class="who">
+              <span>{{ b.name }}@if (b.nameAr) { · {{ b.nameAr }}}</span>
+              <small>{{ branchTypes[b.type].en }} · {{ branchTypes[b.type].ar }}</small>
+            </span>
+          </button>
+        }
+      </mat-menu>
+    } @else {
+      <span class="branch fixed" matTooltip="Your branch · فرعك">
+        <mat-icon>storefront</mat-icon>
+        <span class="branch-name">{{ current.name }}</span>
+      </span>
+    }
+  }
+
   <button mat-button [matMenuTriggerFor]="userMenu" class="user">
     <span class="avatar" aria-hidden="true">{{ initials() }}</span>
     <span class="user-name">{{ auth.me()?.fullName }}</span>

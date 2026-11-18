@@ -4308,11 +4308,12 @@ export const recipeSheetRules: { en: string; ar: string }[] = [
 6. **يوم أُدخل يدويًا يُترك:** إن كان ملخص اليوم أو توريده مُدخلًا يدويًا (أو بالشيت)، يُرفض التقرير 422 مع تسمية ما يمنعه. ألغِ اليدوي لتسمح بالتقرير.
 7. تصادم مع تعديل آخر في نفس اللحظة ⇐ يُعاد تلقائيًا؛ إن استمر ⇐ 503 فيعيد الـ POS الإرسال لاحقًا.
 
-> 📄 **`backend/src/Costing.Domain/Integrations/PosIntegration.cs`** — 209 سطر
+> 📄 **`backend/src/Costing.Domain/Integrations/PosIntegration.cs`** — 215 سطر
 
 ```csharp
 using Costing.Domain.Common;
 using Costing.Domain.Sales;
+using Costing.Domain.Company;
 
 namespace Costing.Domain.Integrations;
 
@@ -4352,8 +4353,13 @@ public sealed class PosLink : AggregateRoot
 
 // One shift's Z report as the POS sent it, by the POS's own id for it: sent again (the answer was
 // lost), it is the same report; sent changed (the shift was corrected), it replaces what it was.
-public sealed class PosZReport : AggregateRoot
+public sealed class PosZReport : AggregateRoot, IBranchOwned
 {
+    // The branch that keeps it (IBranchOwned): given when it is saved, or kept from its original.
+    public Guid BranchId { get; private set; }
+
+    public void AssignBranch(Guid branchId) => BranchId = branchId;
+
     private PosZReport() { }
 
     public PosZReport(Guid id, DateOnly businessDate, int? shiftNumber, string source, string payloadHash, string payload)
