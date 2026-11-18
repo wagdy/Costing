@@ -443,7 +443,7 @@ export const appConfig: ApplicationConfig = {
 
 كل قسم بـ `canActivate: [costingTabGuard('Materials')]` و `loadComponent` كسول، والأقسام الفرعية (الوصفات، المشتريات، الماليات، التقارير، التحليلات) كأبناء لـ Shell خاص بها، والمسار الفارغ يفتح أول قسم يملكه المستخدم.
 
-> 📄 **`frontend/src/app/app.routes.ts`** — 322 سطر
+> 📄 **`frontend/src/app/app.routes.ts`** — 328 سطر
 
 ```ts
 import { Routes } from '@angular/router';
@@ -758,6 +758,12 @@ export const routes: Routes = [
         path: 'settings/hr-integration',
         canActivate: [permissionGuard(Permissions.SettingsManage)],
         loadComponent: () => import('./features/settings/hr-integration-page').then((m) => m.HrIntegrationPage),
+      },
+      {
+        // Period lock & month-end close: the books closed until a day, opened again with why; a manager's.
+        path: 'settings/period-lock',
+        canActivate: [permissionGuard(Permissions.SettingsManage)],
+        loadComponent: () => import('./features/settings/period-lock-page').then((m) => m.PeriodLockPage),
       },
       {
         // Their own account and password; where a user working no section lands.
@@ -1417,7 +1423,7 @@ function insert(field: HTMLInputElement, text: string): void {
 
 `costing.api.ts`: أكبر ملف: كل الأنواع والنداءات لـ `api/costing` و `api/inventory` و `api/financials` (الخامات، التكاليف، الوصفات، المصنعات، الإنتاج، المشتريات، الجرد، الهالك، الخزنة، التقارير، الموافقات…). الأنواع تطابق DTOs الـ API، والـ enums كـ union types، وقواميس التسميات ثنائية اللغة (`Record<Kind, { en; ar }>`) تجبر TypeScript على تسمية كل حالة.
 
-> 📄 **`frontend/src/app/core/costing/costing.api.ts`** — 3530 سطر
+> 📄 **`frontend/src/app/core/costing/costing.api.ts`** — 3526 سطر
 
 ```ts
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
@@ -3534,11 +3540,6 @@ export class CostingApi {
     return this.http.put<FinancialSettings>('/api/financials/settings', taxPercent === undefined ? { servicePercent } : { servicePercent, taxPercent });
   }
 
-  // A manager's: the books locked until a day (up to the last closed day), or unlocked (null).
-  lockBooks(lockedUntil: string | null): Observable<FinancialSettings> {
-    return this.http.put<FinancialSettings>('/api/financials/books-lock', { lockedUntil });
-  }
-
   expenseVouchers(from: string, to: string): Observable<ExpenseVoucherReport> {
     return this.http.get<ExpenseVoucherReport>('/api/financials/expense-vouchers', { params: { from, to } });
   }
@@ -4621,7 +4622,8 @@ export interface FinancialSettings {
   servicePercent: number;
   updatedBy: string | null;
   updatedAtUtc: string | null;
-  // The books locked until this day (إقفال الدفاتر): no day on or before it is closed or undone.
+  // The books closed until this day (Settings → Period lock): nothing on or before it is entered,
+  // changed or voided.
   booksLockedUntil?: string | null;
 }
 

@@ -199,6 +199,12 @@
 
 @@file frontend/src/app/features/settings/hr-integration-page.ts
 
+`PeriodLockPage` (الإعدادات ← إقفال الدفاتر): لوحة حمراء بالحالة بالعربية والإنجليزية؛ "إقفال فترة جديدة" بتاريخ مقترح (نهاية الشهر) والزر معطّل حتى تُكتب `LOCK`؛ "فتح الفترة استثنائياً" لمن يملك `settings.unlock-periods` فقط، بتاريخ أسبق أو رفع الإقفال كله، والسبب إلزامي (5 أحرف على الأقل)؛ وبعد الفتح تقترح "أعد الإقفال حتى …" للتاريخ السابق؛ وتحتها جدول سجل التدقيق. وصفحة الملخصات اليومية تعرض "الدفاتر مقفلة حتى" برابط إليها بدل أزرار الإقفال القديمة.
+
+@@file frontend/src/app/core/settings/period-lock.ts
+
+@@file frontend/src/app/features/settings/period-lock-page.ts
+
 ---
 
 ## 5. الاختبارات

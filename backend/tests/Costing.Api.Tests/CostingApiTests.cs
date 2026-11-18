@@ -901,6 +901,12 @@ public class CostingApiTests
             return await response.Content.ReadAsStringAsync(Cancel);
         }
 
+        async Task<string> Locked(HttpResponseMessage response)
+        {
+            Assert.Equal(HttpStatusCode.Locked, response.StatusCode);
+            return await response.Content.ReadAsStringAsync(Cancel);
+        }
+
         // Nothing closed yet: any day up to today starts it.
         var none = await Sequence();
         Assert.Equal((JsonValueKind.Null, false), (none.GetProperty("nextExpectedDate").ValueKind, none.GetProperty("allClosed").GetBoolean()));
@@ -984,14 +990,14 @@ public class CostingApiTests
         Assert.Equal(HttpStatusCode.Forbidden, (await branch.PostAsJsonAsync("/api/costing/end-of-day/void-last", new { date = Iso(today) }, Cancel)).StatusCode);
         Assert.Contains("Only the last closed day",
             await Refused(await manager.PostAsJsonAsync("/api/costing/end-of-day/void-last", new { date = Iso(today.AddDays(-1)) }, Cancel)));
-        var locked = await Json(await manager.PutAsJsonAsync("/api/financials/books-lock", new { lockedUntil = Iso(today) }, Cancel));
-        Assert.Equal(Iso(today), locked.GetProperty("booksLockedUntil").GetString());
-        Assert.Contains("The books are locked until",
-            await Refused(await manager.PostAsJsonAsync("/api/costing/end-of-day/void-last", new { date = Iso(today) }, Cancel)));
+        var locked = await Json(await manager.PostAsJsonAsync("/api/settings/period-lock/lock", new { until = Iso(today), confirmation = "LOCK" }, Cancel));
+        Assert.Equal(Iso(today), locked.GetProperty("lockedUntil").GetString());
+        Assert.Contains("Books closed until",
+            await Locked(await manager.PostAsJsonAsync("/api/costing/end-of-day/void-last", new { date = Iso(today) }, Cancel)));
         Assert.True((await Sequence()).GetProperty("lastClosed").GetProperty("locked").GetBoolean());
         Assert.Contains("up to today at the latest",
-            await Refused(await manager.PutAsJsonAsync("/api/financials/books-lock", new { lockedUntil = Iso(today.AddDays(1)) }, Cancel)));
-        await Json(await manager.PutAsJsonAsync("/api/financials/books-lock", new { lockedUntil = Iso(today.AddDays(-1)) }, Cancel));
+            await Refused(await manager.PostAsJsonAsync("/api/settings/period-lock/lock", new { until = Iso(today.AddDays(1)), confirmation = "LOCK" }, Cancel)));
+        await Json(await manager.PostAsJsonAsync("/api/settings/period-lock/unlock", new { until = Iso(today.AddDays(-1)), reason = "Cash counted twice" }, Cancel));
 
         var voided = await Json(await manager.PostAsJsonAsync("/api/costing/end-of-day/void-last", new { date = Iso(today), reason = "Cash counted twice" }, Cancel));
         Assert.Equal((true, true, 1), (voided.GetProperty("takingsVoided").GetBoolean(), voided.GetProperty("salesVoided").GetBoolean(),
@@ -1004,7 +1010,7 @@ public class CostingApiTests
         Assert.Equal((Iso(today.AddDays(-1)), Iso(today), false), (after.GetProperty("lastClosedDate").GetString(),
             after.GetProperty("nextExpectedDate").GetString(), after.GetProperty("allClosed").GetBoolean()));
         // Yesterday is in the books locked: not undone, and today is handed in again.
-        Assert.Contains("The books are locked until", await Refused(await manager.PostAsJsonAsync("/api/end-of-day/void-last", new { }, Cancel)));
+        Assert.Contains("Books closed until", await Locked(await manager.PostAsJsonAsync("/api/end-of-day/void-last", new { }, Cancel)));
         Assert.Equal("Submitted", (await Json(await branch.PostAsync($"{Day(today)}/submit", null, Cancel))).GetProperty("status").GetString());
     }
 

@@ -37,7 +37,12 @@ public static class Permissions
     // Company Settings: the name and logo, the currency, the country, the time zone, the tax.
     public const string SettingsManage = "settings.manage";
 
-    public static IReadOnlyList<string> All { get; } = [InventoryView, InventoryManage, CostingView, ApprovalDecide, UsersManage, SettingsManage];
+    // Opening a closed period again (فتح الفترة استثنائياً): the owner's alone, the manager role
+    // here; closing one is any manager's (SettingsManage).
+    public const string SettingsUnlockPeriods = "settings.unlock-periods";
+
+    public static IReadOnlyList<string> All { get; } =
+        [InventoryView, InventoryManage, CostingView, ApprovalDecide, UsersManage, SettingsManage, SettingsUnlockPeriods];
 }
 
 // What each role may do. Fail closed: a role missing here gets nothing.

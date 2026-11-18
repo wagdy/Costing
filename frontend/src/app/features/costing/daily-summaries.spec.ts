@@ -1,7 +1,7 @@
 import { TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
 import { of } from 'rxjs';
-import { CostingApi } from '../../core/costing/costing.api';
+import { AuthService } from '../../core/auth/auth.service';
 import { EndOfDay, EndOfDayApi, EndOfDaySequence, EndOfDayUndoPreview } from '../../core/costing/end-of-day.api';
 import { NotifyService } from '../../core/ui/notify.service';
 import { Approvals } from './approvals';
@@ -35,7 +35,6 @@ function sequence(over: Partial<EndOfDaySequence> = {}): EndOfDaySequence {
 
 describe('the daily summaries', () => {
   const api = { sequence: vi.fn(), days: vi.fn() };
-  const lockBooks = vi.fn();
   const undo = vi.fn();
   const notify = { info: vi.fn(), error: vi.fn() };
   let manager = true;
@@ -45,7 +44,7 @@ describe('the daily summaries', () => {
       providers: [
         provideRouter([]),
         { provide: EndOfDayApi, useValue: api },
-        { provide: CostingApi, useValue: { lockBooks } },
+        { provide: AuthService, useValue: { can: () => manager } },
         { provide: EndOfDayUndo, useValue: { undo } },
         { provide: Approvals, useValue: { canApprove: () => manager } },
         { provide: NotifyService, useValue: notify },
@@ -61,7 +60,6 @@ describe('the daily summaries', () => {
 
   beforeEach(() => {
     Object.values(api).forEach((f) => f.mockReset());
-    lockBooks.mockReset();
     undo.mockReset();
     notify.info.mockReset();
     manager = true;
@@ -99,8 +97,6 @@ describe('the daily summaries', () => {
     fixture.detectChanges();
     expect(undo).toHaveBeenCalledWith(preview);
     expect(api.days).toHaveBeenCalledTimes(2);
-    // The lock offered up to the new last closed day, never the one undone.
-    expect(el.querySelector<HTMLInputElement>('input[aria-label="Lock the books until"]')!.value).toBe('2026-11-03');
     expect(text(el.querySelector('tbody tr:nth-child(2) td.action')!)).toBe('undo Undo & Reopen Day · إلغاء وفتح اليوم');
   });
 
@@ -108,7 +104,7 @@ describe('the daily summaries', () => {
     manager = false;
     let { el } = await render();
     expect(el.querySelector('button.undo')).toBeNull();
-    expect(el.querySelector('.lock')).toBeNull();
+    expect([...el.querySelectorAll('a')].map(text)).not.toContain('lock_clock Period lock · إقفال الدفاتر');
     expect(text(el.querySelector('p.muted.small')!)).toBe('A manager undoes the last closed day to correct it.');
 
     TestBed.resetTestingModule();
@@ -120,20 +116,12 @@ describe('the daily summaries', () => {
     expect(text(el.querySelectorAll('.fact strong')[2])).toBe('4 Nov 2026');
   });
 
-  it('locks the books up to a day and unlocks them, a manager’s', async () => {
-    api.sequence.mockReturnValue(of(sequence({ booksLockedUntil: '2026-11-01' })));
-    const { fixture, el } = await render();
-    lockBooks.mockReturnValue(of({ booksLockedUntil: '2026-11-03' }));
-    const page = fixture.componentInstance as unknown as { lock(until: string | null): Promise<void> };
-    await page.lock('2026-11-03');
-    expect(lockBooks).toHaveBeenCalledWith('2026-11-03');
-    expect(notify.info).toHaveBeenCalledWith('The books are locked until 2026-11-03. · تم إقفال الدفاتر.');
-
-    lockBooks.mockReturnValue(of({ booksLockedUntil: null }));
-    fixture.detectChanges();
-    [...el.querySelectorAll<HTMLButtonElement>('.lock button')].find((b) => text(b).includes('Unlock'))!.click();
-    await new Promise((r) => setTimeout(r));
-    expect(lockBooks).toHaveBeenLastCalledWith(null);
-    expect(notify.info).toHaveBeenLastCalledWith('The books are unlocked. · تم فتح الدفاتر.');
+  it('shows how far the books are closed and sends a manager to Settings → Period lock to close or open them', async () => {
+    api.sequence.mockReturnValue(of(sequence({ booksLockedUntil: '2026-10-31' })));
+    const { el } = await render();
+    expect(text(el.querySelectorAll('.fact strong')[2])).toBe('31 Oct 2026');
+    const link = [...el.querySelectorAll('a')].find((a) => text(a) === 'lock_clock Period lock · إقفال الدفاتر')!;
+    expect(link.getAttribute('href')).toBe('/settings/period-lock');
+    expect(el.querySelector('input[aria-label="Lock the books until"]')).toBeNull();
   });
 });

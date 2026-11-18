@@ -161,7 +161,7 @@ NextExpectedDate = LastClosedDate + 1                   (EndOfDaySequence.NextAf
 
 EndOfDaySequence.Check(date, lastClosed, today, lockedUntil):
   date > today                     ⇐ "That day has not come yet"            (القاعدة 2)
-  date ≤ BooksLockedUntil          ⇐ "The books are locked until …"
+  date ≤ BooksLockedUntilDate      ⇐ PeriodLockedException (423): "Cannot modify records before the locked period …"
   lastClosed ≠ null و date ≤ last  ⇐ "… is closed already, or before the last closed day"
   lastClosed ≠ null و date > last+1⇐ "Close {next} first: days are closed in exact order"  (القاعدة 1)
   lastClosed = null                ⇐ أي يوم حتى اليوم يبدأ التسلسل
@@ -170,7 +170,7 @@ EndOfDaySequence.Check(date, lastClosed, today, lockedUntil):
 - الفحص في **مكانين**: عند فتح يوم جديد (`OpenAsync`: أول بند لا يصنع يومًا خارج الدور) وعند التسليم (`CheckSequenceAsync`). اليوم الموجود سلفًا (مسودة قديمة) يُعدّل، لكن لا يُسلّم إلا في دوره.
 - **يوم بلا مبيعات:** `Submit(by, zeroSales)` يرفض `NetSales ≤ 0` إلا مع `zeroSales`، والمعالج يرفضه لو لليوم ملخص مبيعات (من الـ POS أو يدوي) أو توريد في الخزنة: لا يُخفى بيعٌ حقيقي تحت "بدون مبيعات".
 - **تحذيرات لا تمنع** (`WarningsAsync`): فواتير مشتريات مسودة بتاريخ ≤ اليوم، وعُهد نقدية (سلف معلقة بلا اسم) أقدم من 48 ساعة في آخر 30 يومًا. تظهر في `GET sequence` لليوم التالي وفي رد التسليم.
-- **إقفال الدفاتر** (`FinancialSettings.BooksLockedUntil`): لا تقفيل ولا إلغاء ليوم ≤ تاريخ الإقفال. يضعه المدير حتى آخر يوم مقفول على الأكثر، ولا يتجاوز اليوم.
+- **إقفال الدفاتر** (`CompanySettings.BooksLockedUntilDate`، من الإعدادات ← إقفال الدفاتر): لا تقفيل ولا تعديل ولا إلغاء ليوم ≤ تاريخ الإقفال، ولا أي حركة أخرى بتاريخه (الفصل 03). يضعه المدير حتى آخر يوم مقفول على الأكثر، ولا يتجاوز اليوم.
 
 **إلغاء تقفيل آخر يوم** (`UndoLastEndOfDayCommand`، للمدير): آخر يوم فقط، فتبقى الأيام قبله كما هي، وبالتاريخ الذي رآه المدير (لو أُقفل يوم بعده في الأثناء يُرفض). في وحدة واحدة، بتاريخ اليوم:
 

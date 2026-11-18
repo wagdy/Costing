@@ -8,6 +8,7 @@ using Costing.Domain.Approvals;
 using Costing.Domain.Production;
 using Costing.Domain.RawMaterials;
 using Costing.Domain.StockMovements;
+using Costing.Application.Books;
 
 namespace Costing.Application.Production;
 
@@ -279,7 +280,10 @@ internal sealed class PreviewProductionQueryHandler(ProductionWriter production)
 // changes nothing.
 public sealed record MakeProductionOrderCommand(
     Guid OrderId, Guid PrepItemId, decimal PlannedQuantity, decimal ProducedQuantity, string? Notes = null, string StaffName = "")
-    : IRequest<ProductionOrderDto>, IRetryOnConflict;
+    : IRequest<ProductionOrderDto>, IRetryOnConflict, IBooksEntry
+{
+    bool IBooksEntry.WritesToday => true;
+}
 
 internal sealed class MakeProductionOrderCommandHandler(
     IProductionOrderRepository orders,
@@ -358,7 +362,10 @@ public sealed record ReviseProductionOrderCommand(
     string? Reason,
     string StaffId,
     string StaffName,
-    bool CanApprove) : IRequest<ApprovalResultDto>, IRetryOnConflict;
+    bool CanApprove) : IRequest<ApprovalResultDto>, IRetryOnConflict, IBooksEntry
+{
+    bool IBooksEntry.WritesToday => true;
+}
 
 internal sealed class ReviseProductionOrderHandler(
     IApprovalRequestRepository requests,

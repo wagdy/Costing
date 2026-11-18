@@ -14,6 +14,8 @@ export const Permissions = {
   UsersManage: 'users.manage',
   // Company Settings: the name and logo, the currency, the country, the time zone.
   SettingsManage: 'settings.manage',
+  // Opening a closed period again (فتح الفترة استثنائياً): the owner's alone, the manager role here.
+  SettingsUnlockPeriods: 'settings.unlock-periods',
 } as const;
 
 export type Permission = (typeof Permissions)[keyof typeof Permissions];

@@ -65,7 +65,7 @@
 
 @@file backend/src/Costing.Domain/Common/DomainEvent.cs
 
-الاستثناءات: `DomainException` (قاعدة عمل رفضت، رسالتها للمستخدم ⇐ 422)، و `NotFound`/`Forbidden`/`Conflict`، و `IRetryOnConflict` (أمر آمن لإعادة التنفيذ).
+الاستثناءات: `DomainException` (قاعدة عمل رفضت، رسالتها للمستخدم ⇐ 422؛ ومنها `PeriodLockedException` ⇐ 423 للدفاتر المقفلة، الفصل 03)، و `NotFound`/`Forbidden`/`Conflict`، و `IRetryOnConflict` (أمر آمن لإعادة التنفيذ).
 
 @@file backend/src/Costing.Domain/Common/DomainException.cs
 
@@ -286,9 +286,13 @@ ExpectedIntoSafe   = إجمالي الإيراد − CashPaidOut                
 
 @@file backend/src/Costing.Infrastructure/Persistence/Configurations/EndOfDayConfigurations.cs
 
-إعدادات الشركة وشعارها (الشعار منفصل حتى لا تُحمّل الصورة مع كل قراءة):
+إعدادات الشركة وشعارها (الشعار منفصل حتى لا تُحمّل الصورة مع كل قراءة). وعليها `BooksLockedUntilDate`: الدفاتر مقفلة حتى هذا اليوم (الفصل 03):
 
 @@file backend/src/Costing.Infrastructure/Company/CompanySettingsStore.cs
+
+سجل التدقيق الأمني: `Action` نصًا (`PeriodLocked`، `PeriodUnlocked`)، وفهرس على الوقت للقراءة الأحدث أولًا، ولا تعديل ولا حذف في المستودع:
+
+@@file backend/src/Costing.Infrastructure/Persistence/SecurityPersistence.cs
 
 جداول التقارير والإعدادات: نسبة تكلفة الطعام المستهدفة (30% افتراضيًا)، إعدادات الضريبة والخدمة، المصروفات الشهرية، التكاليف المشتركة، وورقة المبيعات اليدوية:
 
@@ -339,7 +343,11 @@ WHERE "Kind" = 'RevenueTransfer';
 
 إضافية بحتة: عمود `OpeningFloat` في `EndOfDayReports`، وجدول `EndOfDayPayouts` (سداد الموردين وسلف الموظفين من الدرج، كلٌّ بإيصاله في `EndOfDayPhotos` بمفتاح الدفعة).
 
-### 14.3 التطبيق التلقائي عند التشغيل
+### 14.3 `AddPeriodLockAndSecurityAudit`: نقل الإقفال القديم
+
+الإقفال كان في `FinancialSettings.BooksLockedUntil` (يمنع تقفيل اليوم وإلغاءه فقط). الـ migration تضيف `CompanySettings.BooksLockedUntilDate` وجدول `SecurityAuditLogs`، ثم **تنقل القيمة القديمة** وتكتب لها سطرًا في السجل (`PeriodLocked: … by System (carried over from the earlier books lock)`)، ثم تحذف العمود القديم؛ و `Down` تعيدها. اختُبرت ذهابًا وإيابًا على قاعدة حقيقية (Infrastructure.Tests: `PeriodLockTests`).
+
+### 14.4 التطبيق التلقائي عند التشغيل
 
 `DatabaseStartup`: `MigrateAsync()` (ما لم يُعطّل)، ثم إعدادات الشركة، ثم أول مدير.
 

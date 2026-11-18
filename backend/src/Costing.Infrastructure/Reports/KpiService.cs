@@ -154,7 +154,8 @@ public sealed record DiscountImpact(
 // from the till; losses from the stock ledger; wages, hours and overheads from what the manager
 // enters for the month.
 public sealed class KpiService(
-    CostingDbContext db, IBusinessCalendar clock, CostingService costing, SalesLedger ledger, PurchaseSpendingService spending, FixedAssetService fixedAssets)
+    CostingDbContext db, IBusinessCalendar clock, CostingService costing, SalesLedger ledger, PurchaseSpendingService spending, FixedAssetService fixedAssets,
+    Costing.Application.Books.BooksGuard books)
 {
     // The template's healthy ranges.
     private static readonly (decimal From, decimal To) FoodCostRange = (28, 35);
@@ -356,6 +357,10 @@ public sealed class KpiService(
 
     public async Task<MonthlyExpensesDto> SaveExpensesAsync(int year, int month, MonthlyExpensesDto request, string? by, CancellationToken cancellationToken)
     {
+        if (month is < 1 or > 12 || year is < 2000 or > 2100)
+            throw new DomainException("Choose a month.");
+        // A month in the books closed keeps its expenses.
+        await books.EnsureMonthOpenAsync(year, month, cancellationToken);
         var row = await db.MonthlyExpenses.SingleOrDefaultAsync(e => e.Year == year && e.Month == month, cancellationToken);
         if (row is null)
             db.MonthlyExpenses.Add(row = new MonthlyExpenses { Year = year, Month = month });

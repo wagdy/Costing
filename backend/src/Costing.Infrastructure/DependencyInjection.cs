@@ -99,7 +99,7 @@ public static class DependencyInjection
         services.AddScoped<ISupplierLedgerRepository, SupplierLedgerRepository>();
         services.AddScoped<Costing.Application.Approvals.IRecordDescriptions, RecordDescriptions>();
         services.AddScoped<Costing.Application.Treasury.ITaxRate, FinancialTaxRate>();
-        services.AddScoped<Costing.Application.EndOfDay.IBooksLock, FinancialBooksLock>();
+        services.AddScoped<Domain.Security.ISecurityAuditLogRepository, SecurityAuditLogRepository>();
         services.AddScoped<IExpenseItemRepository, ExpenseItemRepository>();
         services.AddScoped<IPrepRecipeRepository, PrepRecipeRepository>();
         services.AddScoped<IProductionOrderRepository, ProductionOrderRepository>();

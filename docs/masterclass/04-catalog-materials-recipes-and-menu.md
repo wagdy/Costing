@@ -2991,7 +2991,7 @@ internal sealed class AssignRecipeStationHandler(IKitchenStationRepository stati
 - **للمدير فقط:** غيره يطلب، ولا شيء يتحرك حتى الموافقة، وتُنفذ **بمتوسطات لحظة الموافقة**.
 - **لا تعديل لدفعة:** التصحيح = عكس حركاتها وإنشاء دفعة جديدة تسمّي ما استبدلته.
 
-> 📄 **`backend/src/Costing.Application/Production/ProductionOrders.cs`** — 433 سطر
+> 📄 **`backend/src/Costing.Application/Production/ProductionOrders.cs`** — 440 سطر
 
 ```csharp
 using System.Globalization;
@@ -3004,6 +3004,7 @@ using Costing.Domain.Approvals;
 using Costing.Domain.Production;
 using Costing.Domain.RawMaterials;
 using Costing.Domain.StockMovements;
+using Costing.Application.Books;
 
 namespace Costing.Application.Production;
 
@@ -3275,7 +3276,10 @@ internal sealed class PreviewProductionQueryHandler(ProductionWriter production)
 // changes nothing.
 public sealed record MakeProductionOrderCommand(
     Guid OrderId, Guid PrepItemId, decimal PlannedQuantity, decimal ProducedQuantity, string? Notes = null, string StaffName = "")
-    : IRequest<ProductionOrderDto>, IRetryOnConflict;
+    : IRequest<ProductionOrderDto>, IRetryOnConflict, IBooksEntry
+{
+    bool IBooksEntry.WritesToday => true;
+}
 
 internal sealed class MakeProductionOrderCommandHandler(
     IProductionOrderRepository orders,
@@ -3354,7 +3358,10 @@ public sealed record ReviseProductionOrderCommand(
     string? Reason,
     string StaffId,
     string StaffName,
-    bool CanApprove) : IRequest<ApprovalResultDto>, IRetryOnConflict;
+    bool CanApprove) : IRequest<ApprovalResultDto>, IRetryOnConflict, IBooksEntry
+{
+    bool IBooksEntry.WritesToday => true;
+}
 
 internal sealed class ReviseProductionOrderHandler(
     IApprovalRequestRepository requests,
@@ -3938,7 +3945,7 @@ internal static class SaleRecipes
 - **التقرير النظري (`TheoreticalCostReport`):** لكل صنف مُباع في الفترة: الكمية × تكلفة وصفته = تكلفة المبيعات النظرية، مقابل إيراده. (يُستخدم في الـ KPIs والفروقات، الفصل 06.)
 - **ورقة المبيعات اليدوية** والإعدادات (الهدف، التكاليف المشتركة).
 
-> 📄 **`backend/src/Costing.Infrastructure/Reports/CostingService.cs`** — 822 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Reports/CostingService.cs`** — 824 سطر
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
@@ -4166,7 +4173,7 @@ public sealed record SaveSharedCostRequest(string Name, Guid? RawMaterialId, dec
 // report (Pillar 2). Costs come from the stock module: each material's weighted average cost,
 // and the cost each sale's stock movements recorded when they happened. Prices are the menu's,
 // which are before tax, so net sales need no VAT taken off.
-public sealed partial class CostingService(CostingDbContext db, IBusinessCalendar clock, SalesLedger ledger)
+public sealed partial class CostingService(CostingDbContext db, IBusinessCalendar clock, SalesLedger ledger, Costing.Application.Books.BooksGuard books)
 {
     // ---- Materials ----
 
@@ -4384,6 +4391,8 @@ public sealed partial class CostingService(CostingDbContext db, IBusinessCalenda
     {
         if (month is < 1 or > 12 || year is < 2000 or > 2100)
             throw new DomainException("Choose a month.");
+        // A month in the books closed keeps its sheet.
+        await books.EnsureMonthOpenAsync(year, month, cancellationToken);
         if (lines.GroupBy(l => (l.Kind, l.ItemId)).Any(g => g.Count() > 1))
             throw new DomainException("Each item goes on the sheet once.");
         var items = await ManualItemsAsync(cancellationToken);

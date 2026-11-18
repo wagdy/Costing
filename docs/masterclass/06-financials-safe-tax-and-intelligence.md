@@ -57,7 +57,7 @@
 - `PayPurchaseInvoiceCommand`، `SetSupplierOpeningBalanceCommand`.
 - `ITaxRate`: نسبة الضريبة الحالية من إعدادات الضريبة والخدمة.
 
-> 📄 **`backend/src/Costing.Application/Treasury/Treasury.cs`** — 912 سطر
+> 📄 **`backend/src/Costing.Application/Treasury/Treasury.cs`** — 923 سطر
 
 ```csharp
 using System.Globalization;
@@ -73,6 +73,7 @@ using Costing.Domain.Purchases;
 using Costing.Domain.Sales;
 using Costing.Domain.Suppliers;
 using Costing.Domain.Treasury;
+using Costing.Application.Books;
 
 namespace Costing.Application.Treasury;
 
@@ -835,7 +836,10 @@ public static class TreasuryNames
 // (Request). RequestId is made by the till: a retry finds what was made.
 public sealed record RecordSafeVoucherCommand(
     Guid RequestId, SafeVoucher Voucher, string? Reason, string StaffId, string StaffName, bool CanApprove)
-    : IRequest<SafeVoucherResultDto>, IRetryOnConflict;
+    : IRequest<SafeVoucherResultDto>, IRetryOnConflict, IBooksEntry
+{
+    IEnumerable<DateOnly?> IBooksEntry.BooksDays => [Voucher.Date, Voucher.RevenueDate];
+}
 
 public sealed record SafeVoucherResultDto(ApprovalOutcome Outcome, SafeTransactionDto? Transaction, ApprovalRequestDto? Request);
 
@@ -878,7 +882,10 @@ internal sealed class RecordSafeVoucherHandler(
 // What a supplier was owed when the treasury started, from invoices before it. No cash moves, so
 // it is entered at once. EntryId is made by the till.
 public sealed record SetSupplierOpeningBalanceCommand(Guid EntryId, Guid SupplierId, decimal Owed, DateOnly Date, string StaffName)
-    : IRequest, IRetryOnConflict;
+    : IRequest, IRetryOnConflict, IBooksEntry
+{
+    IEnumerable<DateOnly?> IBooksEntry.BooksDays => [Date];
+}
 
 internal sealed class SetSupplierOpeningBalanceHandler(
     ISupplierLedgerRepository ledger, ISupplierRepository suppliers, IUnitOfWork unitOfWork)
@@ -942,7 +949,11 @@ public static class InvoicePayments
 // owed to its supplier.
 public sealed record PayPurchaseInvoiceCommand(
     Guid RequestId, Guid InvoiceId, PurchasePaymentMethod Method, DateOnly? RevenueDate, string StaffId, string StaffName, bool CanApprove)
-    : IRequest<InvoicePaymentStatus>, IRetryOnConflict;
+    : IRequest<InvoicePaymentStatus>, IRetryOnConflict, IBooksEntry
+{
+    IEnumerable<DateOnly?> IBooksEntry.BooksDays => [RevenueDate];
+    bool IBooksEntry.WritesToday => true;
+}
 
 internal sealed class PayPurchaseInvoiceHandler(
     IPurchaseInvoiceRepository invoices,
@@ -979,7 +990,7 @@ internal sealed class PayPurchaseInvoiceHandler(
 
 الدفتر بشهر (`SafeMonth`: الكاش، الفيزا، الضريبة، الصافي، التمويل، إجمالي الداخل والخارج، **الضريبة المستحقة الآن**)، مصادر التمويل، **المطابقة** (`DayRevenue`: صافي مبيعات اليوم A مقابل قيمة مبيعاته بأسعار المنيو B؛ الفرق خصومات أو وجبات موظفين أو كاش ناقص، أو أصناف لم تُدخل)، **يومية الإيراد** (إجمالي اليوم ناقص ما دُفع من درجه مباشرة = ما وصل الخزنة)، وتحليلات الخزنة لأي فترة (من أين جاء المال وأين ذهب، ونسب المدفوع من الدرج لكل نوع).
 
-> 📄 **`backend/src/Costing.Infrastructure/Reports/TreasuryService.cs`** — 982 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Reports/TreasuryService.cs`** — 964 سطر
 
 ```csharp
 using System.Globalization;
@@ -1691,27 +1702,9 @@ public sealed class TreasuryService(CostingDbContext db, IBusinessCalendar clock
     public async Task<FinancialSettingsDto> GetSettingsAsync(CancellationToken cancellationToken)
     {
         var row = await db.FinancialSettings.AsNoTracking().SingleOrDefaultAsync(cancellationToken);
-        return new FinancialSettingsDto(await TaxPercentAsync(cancellationToken), row?.ServicePercent ?? 0, row?.UpdatedBy, row?.UpdatedAtUtc, row?.BooksLockedUntil);
-    }
-
-    // The books locked until a day, or unlocked (null): a manager's. Never a day still to come, and
-    // never past the last day closed, which would leave the next day closed out.
-    public async Task<FinancialSettingsDto> LockBooksAsync(DateOnly? until, string by, CancellationToken cancellationToken)
-    {
-        if (until > Today)
-            throw new DomainException("The books are locked up to today at the latest. · الإقفال حتى اليوم على الأكثر.");
-        var lastClosed = await db.EndOfDayReports.Where(d => d.Status == Domain.EndOfDay.EndOfDayStatus.Submitted).MaxAsync(d => (DateOnly?)d.Date, cancellationToken);
-        if (until is { } day && lastClosed is { } last && day > last)
-            throw new DomainException(
-                $"The last day closed is {last.ToString("d MMM yyyy", Invariant)}: lock the books up to it at the latest, the days after it are still to be closed. · لا تقفل بعد آخر يوم مغلق.");
-        var row = await db.FinancialSettings.SingleOrDefaultAsync(cancellationToken);
-        if (row is null)
-            db.FinancialSettings.Add(row = new FinancialSettings());
-        row.BooksLockedUntil = until;
-        row.UpdatedBy = by;
-        row.UpdatedAtUtc = DateTime.UtcNow;
-        await db.SaveChangesAsync(cancellationToken);
-        return await GetSettingsAsync(cancellationToken);
+        // The books' lock is the company's (Settings → Period lock), shown here as it is.
+        var locked = await db.CompanySettings.AsNoTracking().Select(c => c.BooksLockedUntilDate).FirstOrDefaultAsync(cancellationToken);
+        return new FinancialSettingsDto(await TaxPercentAsync(cancellationToken), row?.ServicePercent ?? 0, row?.UpdatedBy, row?.UpdatedAtUtc, locked);
     }
 
     public async Task<FinancialSettingsDto> SaveSettingsAsync(SaveFinancialSettingsRequest request, string by, CancellationToken cancellationToken)
@@ -2327,7 +2320,7 @@ public interface IFixedAssetRepository : IRepository<FixedAsset>
 
 ما لا يحرك نقدًا للمدير وحده: أصل قائم قبل السجل، تعديل البيانات (تكلفة وتاريخ الأصل المدفوع لقيد شرائه)، الاستبعاد بلا مقابل والتراجع عنه، وحذف الأصل القائم.
 
-> 📄 **`backend/src/Costing.Application/FixedAssets/FixedAssets.cs`** — 140 سطر
+> 📄 **`backend/src/Costing.Application/FixedAssets/FixedAssets.cs`** — 147 سطر
 
 ```csharp
 using MediatR;
@@ -2335,6 +2328,7 @@ using Costing.Application.Common;
 using Costing.Application.Treasury;
 using Costing.Domain.Common;
 using Costing.Domain.FixedAssets;
+using Costing.Application.Books;
 
 namespace Costing.Application.FixedAssets;
 
@@ -2349,22 +2343,28 @@ public sealed record FixedAssetSaved(Guid Id, string AssetCode);
 // Owned already: on the register at what it cost and when, paid before it and through no entry here.
 // AssetId is made by the till: a retry finds the asset made.
 public sealed record RegisterOwnedAssetCommand(Guid AssetId, FixedAssetInput Asset, DateOnly PurchaseDate, decimal PurchaseCost, string By)
-    : IRequest<FixedAssetSaved>, IRetryOnConflict;
+    : IRequest<FixedAssetSaved>, IRetryOnConflict, IBooksEntry
+{
+    IEnumerable<DateOnly?> IBooksEntry.BooksDays => [PurchaseDate];
+}
 
 // What it is and what its depreciation is worked out from; for one owned already, its cost and the
 // day it was bought too (a paid one's are its payment's).
 public sealed record ChangeFixedAssetCommand(Guid AssetId, FixedAssetInput Asset, DateOnly? PurchaseDate, decimal? PurchaseCost, string By)
-    : IRequest<FixedAssetSaved>, IRetryOnConflict;
+    : IRequest<FixedAssetSaved>, IRetryOnConflict, IBooksEntry;
 
 // Disposed of with nothing for it (استبعاد): its depreciation stops, what was left of its cost is the
 // month's loss. Sold for money is a safe entry instead.
-public sealed record WriteOffFixedAssetCommand(Guid AssetId, DateOnly Date, string? Notes, string By) : IRequest<FixedAssetSaved>, IRetryOnConflict;
+public sealed record WriteOffFixedAssetCommand(Guid AssetId, DateOnly Date, string? Notes, string By) : IRequest<FixedAssetSaved>, IRetryOnConflict, IBooksEntry
+{
+    IEnumerable<DateOnly?> IBooksEntry.BooksDays => [Date];
+}
 
 // A write-off undone: in use again, depreciated from where it stopped.
-public sealed record ReinstateFixedAssetCommand(Guid AssetId, string By) : IRequest<FixedAssetSaved>, IRetryOnConflict;
+public sealed record ReinstateFixedAssetCommand(Guid AssetId, string By) : IRequest<FixedAssetSaved>, IRetryOnConflict, IBooksEntry;
 
 // One owned already, off the register (entered by mistake). A paid one goes with its purchase voided.
-public sealed record RemoveFixedAssetCommand(Guid AssetId, string By) : IRequest, IRetryOnConflict;
+public sealed record RemoveFixedAssetCommand(Guid AssetId, string By) : IRequest, IRetryOnConflict, IBooksEntry;
 
 internal sealed class RegisterOwnedAssetHandler(IFixedAssetRepository assets, TreasuryWriter treasury, IUnitOfWork unitOfWork)
     : IRequestHandler<RegisterOwnedAssetCommand, FixedAssetSaved>
@@ -3064,7 +3064,7 @@ internal sealed class AddLocalStaffMemberHandler(IStaffMemberRepository staff, I
 
 `FinancialsController` (`api/financials`): الدفتر، التمويل، المطابقة، يومية الإيراد، المصروفات، ديون الموردين وكشوفهم، السلف، الضريبة، وتسجيل القيود.
 
-> 📄 **`backend/src/Costing.Api/Controllers/FinancialsController.cs`** — 182 سطر
+> 📄 **`backend/src/Costing.Api/Controllers/FinancialsController.cs`** — 174 سطر
 
 ```csharp
 using MediatR;
@@ -3143,13 +3143,6 @@ public sealed class FinancialsController(ISender sender, TreasuryService treasur
     [Authorize(Policy = Permissions.ApprovalDecide)]
     public Task<FinancialSettingsDto> SaveSettings(SaveFinancialSettingsRequest request, CancellationToken cancellationToken) =>
         treasury.SaveSettingsAsync(request, StaffName, cancellationToken);
-
-    // The books locked until a day (إقفال الدفاتر), or unlocked: a manager's.
-    [HttpPut("books-lock")]
-    [CostingTab(CostingTabs.Financials)]
-    [Authorize(Policy = Permissions.ApprovalDecide)]
-    public Task<FinancialSettingsDto> LockBooks(BooksLockRequest request, CancellationToken cancellationToken) =>
-        treasury.LockBooksAsync(request.LockedUntil, StaffName, cancellationToken);
 
     [HttpGet("expense-vouchers")]
     [CostingTab(CostingTabs.Financials)]
@@ -3246,7 +3239,6 @@ public sealed record SafeVoucherRequest(
     decimal? DiscountsAmount = null,
     IReadOnlyList<Costing.Domain.Sales.DiscountReason>? DiscountReasons = null);
 
-public sealed record BooksLockRequest(DateOnly? LockedUntil);
 
 public sealed record SupplierOpeningBalanceRequest(Guid EntryId, decimal Owed, DateOnly? Date = null);
 ```
@@ -6544,7 +6536,7 @@ public sealed record ProfitAndLoss(
 
 كل مؤشر بحالته (`KpiStatus`: صحي، خارج المدى، ناقص) **وسبب النقص** ("أدخل توريد الشهر"). و **Prime Cost** (طعام + عمالة) يُقرأ من `FoodCost` + `LabourCost`؛ ليس مؤشرًا منفصلًا في الكود.
 
-> 📄 **`backend/src/Costing.Infrastructure/Reports/KpiService.cs`** — 388 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Reports/KpiService.cs`** — 393 سطر
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
@@ -6703,7 +6695,8 @@ public sealed record DiscountImpact(
 // from the till; losses from the stock ledger; wages, hours and overheads from what the manager
 // enters for the month.
 public sealed class KpiService(
-    CostingDbContext db, IBusinessCalendar clock, CostingService costing, SalesLedger ledger, PurchaseSpendingService spending, FixedAssetService fixedAssets)
+    CostingDbContext db, IBusinessCalendar clock, CostingService costing, SalesLedger ledger, PurchaseSpendingService spending, FixedAssetService fixedAssets,
+    Costing.Application.Books.BooksGuard books)
 {
     // The template's healthy ranges.
     private static readonly (decimal From, decimal To) FoodCostRange = (28, 35);
@@ -6905,6 +6898,10 @@ public sealed class KpiService(
 
     public async Task<MonthlyExpensesDto> SaveExpensesAsync(int year, int month, MonthlyExpensesDto request, string? by, CancellationToken cancellationToken)
     {
+        if (month is < 1 or > 12 || year is < 2000 or > 2100)
+            throw new DomainException("Choose a month.");
+        // A month in the books closed keeps its expenses.
+        await books.EnsureMonthOpenAsync(year, month, cancellationToken);
         var row = await db.MonthlyExpenses.SingleOrDefaultAsync(e => e.Year == year && e.Month == month, cancellationToken);
         if (row is null)
             db.MonthlyExpenses.Add(row = new MonthlyExpenses { Year = year, Month = month });

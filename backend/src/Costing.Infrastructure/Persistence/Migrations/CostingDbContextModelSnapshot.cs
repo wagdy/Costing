@@ -194,6 +194,9 @@ namespace Costing.Infrastructure.Persistence.Migrations
                     b.Property<int>("Id")
                         .HasColumnType("integer");
 
+                    b.Property<DateOnly?>("BooksLockedUntilDate")
+                        .HasColumnType("date");
+
                     b.Property<string>("Country")
                         .IsRequired()
                         .HasMaxLength(32)
@@ -2066,6 +2069,52 @@ namespace Costing.Infrastructure.Persistence.Migrations
                     b.ToTable("SalesReceipts", "costing");
                 });
 
+            modelBuilder.Entity("Costing.Domain.Security.SecurityAuditLog", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Action")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<string>("By")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<string>("ByUserId")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<string>("Description")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
+
+                    b.Property<string>("NewValue")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<DateTime>("OccurredAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("PreviousValue")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<string>("Reason")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("OccurredAtUtc");
+
+                    b.ToTable("SecurityAuditLogs", "costing");
+                });
+
             modelBuilder.Entity("Costing.Domain.Staff.PayrollRun", b =>
                 {
                     b.Property<Guid>("Id")
@@ -2998,9 +3047,6 @@ namespace Costing.Infrastructure.Persistence.Migrations
                 {
                     b.Property<int>("Id")
                         .HasColumnType("integer");
-
-                    b.Property<DateOnly?>("BooksLockedUntil")
-                        .HasColumnType("date");
 
                     b.Property<decimal>("ServicePercent")
                         .HasPrecision(5, 2)

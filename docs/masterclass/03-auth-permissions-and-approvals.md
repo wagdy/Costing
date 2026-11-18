@@ -22,7 +22,7 @@
 
 **مبدأ "يُغلق افتراضيًا" (Fail Closed):** دور غير موجود في جدول `RolePermissions` لا يحصل على أي شيء.
 
-> 📄 **`backend/src/Costing.Domain/Access/Permissions.cs`** — 60 سطر
+> 📄 **`backend/src/Costing.Domain/Access/Permissions.cs`** — 65 سطر
 
 ```csharp
 namespace Costing.Domain.Access;
@@ -64,7 +64,12 @@ public static class Permissions
     // Company Settings: the name and logo, the currency, the country, the time zone, the tax.
     public const string SettingsManage = "settings.manage";
 
-    public static IReadOnlyList<string> All { get; } = [InventoryView, InventoryManage, CostingView, ApprovalDecide, UsersManage, SettingsManage];
+    // Opening a closed period again (فتح الفترة استثنائياً): the owner's alone, the manager role
+    // here; closing one is any manager's (SettingsManage).
+    public const string SettingsUnlockPeriods = "settings.unlock-periods";
+
+    public static IReadOnlyList<string> All { get; } =
+        [InventoryView, InventoryManage, CostingView, ApprovalDecide, UsersManage, SettingsManage, SettingsUnlockPeriods];
 }
 
 // What each role may do. Fail closed: a role missing here gets nothing.
@@ -1288,7 +1293,7 @@ public interface IApprovalRequestRepository : IRepository<ApprovalRequest>
 - `RejectRequestCommand`: يرفض بملاحظة، والسجل يبقى كما هو ويُفتح قفله.
 - `IRecordDescriptions`: كل وحدة تصف سجلاتها للمدير.
 
-> 📄 **`backend/src/Costing.Application/Approvals/ApprovalRequests.cs`** — 270 سطر
+> 📄 **`backend/src/Costing.Application/Approvals/ApprovalRequests.cs`** — 271 سطر
 
 ```csharp
 using System.Text.Json;
@@ -1306,6 +1311,7 @@ using Costing.Domain.Purchases;
 using Costing.Domain.RawMaterials;
 using Costing.Domain.Recipes;
 using Costing.Domain.StockMovements;
+using Costing.Application.Books;
 
 namespace Costing.Application.Approvals;
 
@@ -1406,7 +1412,7 @@ internal static class ApprovalPayload
 // the request closed, together. Approving again, after a lost answer, changes nothing. When it
 // can no longer be done (a price missing, an ingredient gone), it stays waiting, for the manager
 // to put right or reject.
-public sealed record ApproveRequestCommand(Guid RequestId, string StaffName, string StaffId = "") : IRequest<ApprovalRequestDto>, IRetryOnConflict;
+public sealed record ApproveRequestCommand(Guid RequestId, string StaffName, string StaffId = "") : IRequest<ApprovalRequestDto>, IRetryOnConflict, IBooksEntry;
 
 internal sealed class ApproveRequestHandler(
     IApprovalRequestRepository requests,
@@ -1568,7 +1574,7 @@ internal sealed class GetApprovalPreviewHandler(IApprovalRequestRepository reque
 
 **في الدفاتر لا يُحذف شيء مُرحّل؛ يُلغى (Void).** حذف فاتورة مرحّلة = حركات مخزون عكسية بنفس تكلفتها + عكس قيد الخزنة أو حساب المورد. حذف قيد خزنة = قيد عكسي بتاريخ اليوم. `DeletionTargets` يعرف لكل وحدة كيف "يلغي" سجلها، و `RequestDeletionCommand`: من يملك القرار يلغي فورًا (ويُسجل كموافَق منه)، وغيره يطلب. نقطة النهاية `POST api/inventory/deletion-requests` في `InventoryController` (الفصل 05).
 
-> 📄 **`backend/src/Costing.Application/Approvals/Deletions.cs`** — 390 سطر
+> 📄 **`backend/src/Costing.Application/Approvals/Deletions.cs`** — 422 سطر
 
 ```csharp
 using System.Globalization;
@@ -1589,6 +1595,7 @@ using Costing.Domain.StockCounts;
 using Costing.Domain.StockMovements;
 using Costing.Domain.Suppliers;
 using Costing.Domain.Treasury;
+using Costing.Application.Books;
 
 namespace Costing.Application.Approvals;
 
@@ -1633,6 +1640,37 @@ internal sealed class DeletionTargets(
         ApprovalModule.Breakage => DescribeBreakage(await BreakageAsync(recordId, cancellationToken)),
         _ => throw new DomainException("That cannot be deleted here."),
     };
+
+    // The business days a record's deletion changes, for the books' lock (Books): its own day, and
+    // the takings it was paid from. A recipe, a material or a prep item has none.
+    public async Task<IEnumerable<DateOnly?>> DaysAsync(ApprovalModule module, Guid recordId, CancellationToken cancellationToken)
+    {
+        switch (module)
+        {
+            case ApprovalModule.PurchaseInvoice:
+            {
+                var invoice = await InvoiceAsync(recordId, cancellationToken);
+                return [invoice.InvoiceDate ?? descriptions.BusinessDateOf(invoice.PostedAtUtc ?? invoice.CreatedAtUtc), invoice.RevenueDate];
+            }
+            case ApprovalModule.Waste:
+                return (await WasteAsync(recordId, cancellationToken)).Select(m => (DateOnly?)descriptions.BusinessDateOf(m.OccurredAtUtc)).ToList();
+            case ApprovalModule.StockCount:
+                return [descriptions.BusinessDateOf((await CountAsync(recordId, cancellationToken)).PostedAtUtc!.Value)];
+            case ApprovalModule.ProductionOrder:
+                return [descriptions.BusinessDateOf((await BatchAsync(recordId, cancellationToken)).ProducedAtUtc)];
+            case ApprovalModule.Treasury:
+            {
+                var entry = await SafeEntryAsync(recordId, cancellationToken);
+                return [entry.BusinessDate, entry.RevenueDate];
+            }
+            case ApprovalModule.Sale:
+                return [(await SaleAsync(recordId, cancellationToken)).BusinessDate];
+            case ApprovalModule.Breakage:
+                return [(await BreakageAsync(recordId, cancellationToken)).BusinessDate];
+            default:
+                return [];
+        }
+    }
 
     // Returns the ledger entries a void adds, for the caller to save with the decision.
     public async Task<IReadOnlyList<StockMovement>> DeleteAsync(ApprovalModule module, Guid recordId, string by, CancellationToken cancellationToken)
@@ -1914,7 +1952,7 @@ internal sealed class DeletionTargets(
 // by the till: a retry after a lost answer finds the request already made.
 public sealed record RequestDeletionCommand(
     Guid RequestId, ApprovalModule Module, Guid RecordId, string? Reason, string StaffId, string StaffName, bool CanApprove)
-    : IRequest<ApprovalResultDto>, IRetryOnConflict;
+    : IRequest<ApprovalResultDto>, IRetryOnConflict, IBooksEntry;
 
 internal sealed class RequestDeletionHandler(
     IApprovalRequestRepository requests,
@@ -2113,7 +2151,7 @@ function readStoredToken(): string | null {
 ```
 
 
-> 📄 **`frontend/src/app/core/auth/permissions.ts`** — 19 سطر
+> 📄 **`frontend/src/app/core/auth/permissions.ts`** — 21 سطر
 
 ```ts
 // The API's Permissions (Costing.Domain.Access), by the same strings. A role's set arrives from
@@ -2132,6 +2170,8 @@ export const Permissions = {
   UsersManage: 'users.manage',
   // Company Settings: the name and logo, the currency, the country, the time zone.
   SettingsManage: 'settings.manage',
+  // Opening a closed period again (فتح الفترة استثنائياً): the owner's alone, the manager role here.
+  SettingsUnlockPeriods: 'settings.unlock-periods',
 } as const;
 
 export type Permission = (typeof Permissions)[keyof typeof Permissions];
@@ -2770,6 +2810,583 @@ export class SignInPage {
     transition: none;
   }
 }
+```
+
+
+## 6. إقفال الفترة المحاسبية وتجميد الدفاتر (Period lock & month-end close)
+
+### 6.1 الفكرة المحاسبية
+
+بعد إقفال الشهر تصبح أرقامه هي المُعلنة والمُراجَعة؛ لو تغيّرت فاتورة في أكتوبر بعد تسليم تقرير أكتوبر للمراجع، يختلف التقرير عن الدفاتر دون أن يلاحظ أحد. فالقاعدة: **كل حركة بتاريخ ≤ تاريخ الإقفال لا تُضاف ولا تُعدل ولا تُلغى**، والرد `423 Locked`.
+
+- **الإقفال** للمدير (`settings.manage`) بكتابة كلمة `LOCK`، للأمام فقط، وحتى اليوم وآخر يوم مقفول في تقفيل اليوم على الأكثر.
+- **الفتح الاستثنائي** للمالك وحده (`settings.unlock-periods`، دور المدير هنا) **بسبب مكتوب**، لتاريخ أسبق أو رفع الإقفال كله.
+- كل تغيير سطر في **سجل التدقيق الأمني** (`SecurityAuditLogs`)، يُضاف إليه فقط.
+
+### 6.2 الدومين: الإقفال على إعدادات الشركة، والسجل، والاستثناء
+
+`CompanySettings.LockBooks` و `UnlockBooks` يحملان القواعد (الفصل 02 لبقية الكيان). `PeriodLockedException` يرث `DomainException` (لهذا لم يعد `sealed`): كل `catch (DomainException)` موجود (سجل مزامنة الـ POS و HR) يلتقطه ويسجّله، والـ API يرد عليه 423 بـ `lockedUntil` و `day`.
+
+> 📄 **`backend/src/Costing.Domain/Common/PeriodLockedException.cs`** — 19 سطر
+
+```csharp
+using System.Globalization;
+
+namespace Costing.Domain.Common;
+
+// Refused: the request writes on, changes or voids a day in the books locked (إقفال الفترة
+// المحاسبية). The API answers it 423 Locked; a refusal like any other to whatever catches one.
+public sealed class PeriodLockedException(DateOnly lockedUntil, DateOnly day) : DomainException(Describe(lockedUntil, day))
+{
+    public DateOnly LockedUntil { get; } = lockedUntil;
+
+    // The day in the books locked the request would have written on (the earliest, of several).
+    public DateOnly Day { get; } = day;
+
+    public static string Describe(DateOnly lockedUntil, DateOnly day) =>
+        $"Cannot modify records before the locked period (Books closed until {Format(lockedUntil)}): {Format(day)} is in it. " +
+        "· لا يمكن تعديل أو إضافة حركات في فترة محاسبية تم إقفالها.";
+
+    public static string Format(DateOnly day) => day.ToString("d MMM yyyy", CultureInfo.InvariantCulture);
+}
+```
+
+
+> 📄 **`backend/src/Costing.Domain/Security/SecurityAuditLog.cs`** — 84 سطر
+
+```csharp
+using System.Globalization;
+
+namespace Costing.Domain.Security;
+
+// What is written to the security audit log (سجل التدقيق الأمني).
+public enum SecurityAuditAction
+{
+    // The books closed until a day.
+    PeriodLocked = 1,
+
+    // The books' lock rolled back, or lifted, with why.
+    PeriodUnlocked = 2,
+}
+
+// The security audit log: who did what to the system's safeguards, and when; kept, never changed
+// or removed. Description is the line as it reads ("PeriodLocked: 31-Oct-2026 by Wagdy"); the
+// values before and after, and the reason, kept apart as well, to be listed and searched.
+public sealed class SecurityAuditLog
+{
+    public const int MaxByLength = 200;
+
+    private static readonly CultureInfo Invariant = CultureInfo.InvariantCulture;
+
+    private SecurityAuditLog() { }
+
+    private SecurityAuditLog(SecurityAuditAction action, string description, string? previousValue, string? newValue, string? reason, string by,
+        string? byUserId)
+    {
+        Id = Guid.NewGuid();
+        OccurredAtUtc = DateTime.UtcNow;
+        Action = action;
+        Description = description;
+        PreviousValue = previousValue;
+        NewValue = newValue;
+        Reason = reason;
+        By = by;
+        ByUserId = string.IsNullOrWhiteSpace(byUserId) ? null : byUserId;
+    }
+
+    public Guid Id { get; private set; }
+    public DateTime OccurredAtUtc { get; private set; }
+    public SecurityAuditAction Action { get; private set; }
+    public string Description { get; private set; } = string.Empty;
+    public string? PreviousValue { get; private set; }
+    public string? NewValue { get; private set; }
+    public string? Reason { get; private set; }
+    public string By { get; private set; } = string.Empty;
+    public string? ByUserId { get; private set; }
+
+    // "PeriodLocked: 31-Oct-2026 by Wagdy".
+    public static SecurityAuditLog PeriodLocked(DateOnly? previous, DateOnly until, string by, string? byUserId)
+    {
+        var who = Who(by);
+        return new(SecurityAuditAction.PeriodLocked, $"PeriodLocked: {Day(until)} by {who}", Iso(previous), Iso(until), null, who, byUserId);
+    }
+
+    // "PeriodUnlocked: rolled back to 30-Sep-2026 by Wagdy. Reason: Auditor adjustment"; lifted
+    // altogether, "PeriodUnlocked: lock lifted (was 31-Oct-2026) by Wagdy. Reason: …".
+    public static SecurityAuditLog PeriodUnlocked(DateOnly previous, DateOnly? until, string reason, string by, string? byUserId)
+    {
+        var who = Who(by);
+        return new(SecurityAuditAction.PeriodUnlocked,
+            until is { } day
+                ? $"PeriodUnlocked: rolled back to {Day(day)} by {who}. Reason: {reason}"
+                : $"PeriodUnlocked: lock lifted (was {Day(previous)}) by {who}. Reason: {reason}",
+            Iso(previous), Iso(until), reason, who, byUserId);
+    }
+
+    private static string Who(string? by) =>
+        string.IsNullOrWhiteSpace(by) ? "(unknown)" : by.Trim()[..Math.Min(by.Trim().Length, MaxByLength)];
+
+    private static string Day(DateOnly day) => day.ToString("dd-MMM-yyyy", Invariant);
+
+    private static string? Iso(DateOnly? day) => day?.ToString("yyyy-MM-dd", Invariant);
+}
+
+// The log, added to only.
+public interface ISecurityAuditLogRepository
+{
+    void Add(SecurityAuditLog entry);
+
+    // The latest first.
+    Task<IReadOnlyList<SecurityAuditLog>> GetLatestAsync(int count, CancellationToken cancellationToken = default);
+}
+```
+
+
+### 6.3 الجدار الناري: `BooksLock.cs`
+
+كل أمر يكتب في الدفاتر يحمل `IBooksEntry` ويقول أيامه بثلاث طرق مجتمعة: الأيام التي يحملها (`BooksDays`)، أو "اليوم" (`WritesToday`: هالك، جرد، إنتاج)، أو `IBooksDays<T>` يبحث عن أيام السجلات التي يسميها (الفاتورة التي يرحّلها أو يلغيها، البيع الذي يسترده، الطلب الذي يوافق عليه). `BooksLockBehavior` في خط MediatR يفحصها **قبل** المعالج، ولا يبحث عن شيء والدفاتر مفتوحة.
+
+```text
+request is IBooksEntry ∧ LockedUntil ≠ null
+  days = BooksDays ∪ (WritesToday ? Today) ∪ lookups(request)
+  min(d ∈ days | d ≤ LockedUntil) ⇒ PeriodLockedException(LockedUntil, d)   → 423
+```
+
+- **الإلغاء بتاريخ اليوم لا يكفي:** إلغاء فاتورة أكتوبر يضيف حركات عكسية بتاريخ اليوم، لكنه يغيّر فاتورة أكتوبر نفسها، فيُحكم بتاريخها.
+- **الأرقام الشهرية** (المصروفات، ورقة المبيعات اليدوية، رواتب HR) تُحسب بآخر يوم في الشهر: الشهر مقفل حين يُقفل آخر يوم فيه (`BooksGuard.EnsureMonthOpenAsync`).
+- `IChecksBooksItself`: تقرير Z والرواتب وإلغاء آخر يوم تفحص داخل معالجها لأن رفضها يُسجّل في سجل المزامنة؛ وتقرير Z المُعاد إرساله بلا تغيير يُجاب "Unchanged" كما كان.
+- **اختبار التصنيف** (`PeriodLockTests` في Application.Tests): كل أمر إمّا `IBooksEntry` يقول أيامه، أو مذكور في قائمة "ليس من الدفاتر" بسببه؛ أمر جديد لا يمر حتى يُصنَّف.
+
+> 📄 **`backend/src/Costing.Application/Books/BooksLock.cs`** — 106 سطر
+
+```csharp
+using MediatR;
+using Costing.Application.Common;
+using Costing.Domain.Common;
+
+namespace Costing.Application.Books;
+
+// The firewall of the books closed (إقفال الفترة المحاسبية وتجميد الدفاتر): whatever writes to the
+// ledgers of money and stock (invoices, sales, the end of day, the safe, waste, counts, production,
+// fixed assets, payroll) says the business days it writes on, or whose records it changes or
+// voids; on or before the day the books are closed until, it is refused whole, before anything is
+// done, as PeriodLockedException (423 Locked).
+//
+// A request says its days in up to three ways, together: the days it carries (BooksDays), the
+// business day now (WritesToday: what is posted as it happens: waste, a count, a batch), and the
+// days of the records it names, looked up by an IBooksDays<T> of its own. A request that writes
+// nothing to the books (the menu, recipes, materials, users) is not an IBooksEntry; the
+// classification test holds every command to one or the other.
+public interface IBooksEntry
+{
+    IEnumerable<DateOnly?> BooksDays => [];
+
+    bool WritesToday => false;
+}
+
+// A request that writes to the books but checks the lock in its own handler, where its refusal is
+// logged for whoever sent it: the POS's Z report, HR's payroll run, the undo of the last day closed.
+public interface IChecksBooksItself;
+
+// The days of the records a request names, looked up: the invoice it posts or voids, the sale it
+// refunds, the request it approves.
+public interface IBooksDays<in TRequest>
+{
+    Task<IEnumerable<DateOnly?>> DaysAsync(TRequest request, CancellationToken cancellationToken);
+}
+
+// The day the books are closed until; null when none are.
+public interface IBooksLock
+{
+    Task<DateOnly?> LockedUntilAsync(CancellationToken cancellationToken);
+}
+
+// The check itself, for the pipeline and for what checks for itself: a webhook that logs its
+// refusals, a monthly figure saved outside the pipeline.
+public sealed class BooksGuard(IBooksLock books, IBusinessCalendar calendar)
+{
+    public DateOnly Today => calendar.BusinessDateOf(DateTime.UtcNow);
+
+    public Task<DateOnly?> LockedUntilAsync(CancellationToken cancellationToken) => books.LockedUntilAsync(cancellationToken);
+
+    public async Task EnsureOpenAsync(IEnumerable<DateOnly?> days, CancellationToken cancellationToken)
+    {
+        if (await books.LockedUntilAsync(cancellationToken) is { } locked)
+            EnsureOpen(locked, days);
+    }
+
+    // A month's figure (its expenses, its payroll, its sales sheet) is the month's last day: the
+    // month closed once the books are closed through its end.
+    public Task EnsureMonthOpenAsync(int year, int month, CancellationToken cancellationToken) =>
+        EnsureOpenAsync([MonthEnd(year, month)], cancellationToken);
+
+    public static DateOnly MonthEnd(int year, int month) => new DateOnly(year, month, 1).AddMonths(1).AddDays(-1);
+
+    // The month to close next: the latest month's end on or before what may be locked (today, and
+    // the last end of day closed), past the lock; none while the next month's end is still to come.
+    public static DateOnly? SuggestedClose(DateOnly? locked, DateOnly today, DateOnly? lastClosed)
+    {
+        var cap = lastClosed is { } last && last < today ? last : today;
+        var monthEnd = MonthEnd(cap.Year, cap.Month);
+        if (monthEnd > cap)
+            monthEnd = new DateOnly(cap.Year, cap.Month, 1).AddDays(-1);
+        return locked is { } l && monthEnd <= l ? null : monthEnd;
+    }
+
+    public static void EnsureOpen(DateOnly locked, IEnumerable<DateOnly?> days)
+    {
+        DateOnly? closed = null;
+        foreach (var day in days)
+        {
+            if (day is { } d && d <= locked && (closed is null || d < closed))
+                closed = d;
+        }
+        if (closed is { } first)
+            throw new PeriodLockedException(locked, first);
+    }
+}
+
+// The firewall in the pipeline: before the handler, so nothing is touched when it refuses. With the
+// books open, no record is looked up.
+internal sealed class BooksLockBehavior<TRequest, TResponse>(BooksGuard guard, IEnumerable<IBooksDays<TRequest>> lookups)
+    : IPipelineBehavior<TRequest, TResponse>
+    where TRequest : notnull
+{
+    public async Task<TResponse> Handle(TRequest request, RequestHandlerDelegate<TResponse> next, CancellationToken cancellationToken)
+    {
+        if (request is IBooksEntry entry && await guard.LockedUntilAsync(cancellationToken) is { } locked)
+        {
+            var days = new List<DateOnly?>(entry.BooksDays);
+            if (entry.WritesToday)
+                days.Add(guard.Today);
+            foreach (var lookup in lookups)
+                days.AddRange(await lookup.DaysAsync(request, cancellationToken));
+            BooksGuard.EnsureOpen(locked, days);
+        }
+        return await next(cancellationToken);
+    }
+}
+```
+
+
+> 📄 **`backend/src/Costing.Application/Books/BooksDays.cs`** — 159 سطر
+
+```csharp
+using Costing.Application.Approvals;
+using Costing.Application.Common;
+using Costing.Application.EndOfDay;
+using Costing.Application.FixedAssets;
+using Costing.Application.Integrations;
+using Costing.Application.Production;
+using Costing.Application.Purchases;
+using Costing.Application.Sales;
+using Costing.Application.Treasury;
+using Costing.Domain.Approvals;
+using Costing.Domain.EndOfDay;
+using Costing.Domain.FixedAssets;
+using Costing.Domain.Production;
+using Costing.Domain.Purchases;
+using Costing.Domain.Sales;
+using Costing.Domain.Staff;
+
+namespace Costing.Application.Books;
+
+// The days of the records a request names, for the books' lock: what it posts, voids, refunds,
+// moves or approves belongs to the day it was entered on, whenever the request is made. Each looks
+// up what it needs and nothing more, and only once the books are locked at all.
+
+internal static class InvoiceDays
+{
+    public static IEnumerable<DateOnly?> Of(PurchaseInvoice invoice, IBusinessCalendar calendar) =>
+        [invoice.InvoiceDate ?? calendar.BusinessDateOf(invoice.PostedAtUtc ?? invoice.CreatedAtUtc), invoice.RevenueDate];
+}
+
+// A draft posted: its date, and the takings it is paid from.
+internal sealed class PostPurchaseInvoiceDays(IPurchaseInvoiceRepository invoices, IBusinessCalendar calendar) : IBooksDays<PostPurchaseInvoiceCommand>
+{
+    public async Task<IEnumerable<DateOnly?>> DaysAsync(PostPurchaseInvoiceCommand request, CancellationToken cancellationToken) =>
+        await invoices.GetByIdAsync(request.InvoiceId, cancellationToken) is { } invoice ? InvoiceDays.Of(invoice, calendar) : [];
+}
+
+// A correction voids the original: its day as well as the correction's.
+internal sealed class CorrectPurchaseInvoiceDays(IPurchaseInvoiceRepository invoices, IBusinessCalendar calendar)
+    : IBooksDays<CorrectPurchaseInvoiceCommand>
+{
+    public async Task<IEnumerable<DateOnly?>> DaysAsync(CorrectPurchaseInvoiceCommand request, CancellationToken cancellationToken) =>
+        await invoices.GetByIdAsync(request.InvoiceId, cancellationToken) is { } invoice ? InvoiceDays.Of(invoice, calendar) : [];
+}
+
+// Paid in cash today; on credit, owed to the supplier from the invoice's own day.
+internal sealed class PayPurchaseInvoiceDays(IPurchaseInvoiceRepository invoices, IBusinessCalendar calendar) : IBooksDays<PayPurchaseInvoiceCommand>
+{
+    public async Task<IEnumerable<DateOnly?>> DaysAsync(PayPurchaseInvoiceCommand request, CancellationToken cancellationToken) =>
+        request.Method == PurchasePaymentMethod.Credit && await invoices.GetByIdAsync(request.InvoiceId, cancellationToken) is { } invoice
+            ? InvoiceDays.Of(invoice, calendar).Take(1)
+            : [];
+}
+
+// A refund changes the sale, of its own day.
+internal sealed class RefundSaleDays(ISalesReceiptRepository sales) : IBooksDays<RefundSaleCommand>
+{
+    public async Task<IEnumerable<DateOnly?>> DaysAsync(RefundSaleCommand request, CancellationToken cancellationToken) =>
+        await sales.GetByIdAsync(request.SaleId, cancellationToken) is { } sale ? [sale.BusinessDate] : [];
+}
+
+// A draft moved off a day: the day it leaves.
+internal sealed class ReassignEndOfDayDays(IEndOfDayRepository days) : IBooksDays<ReassignEndOfDayDateCommand>
+{
+    public async Task<IEnumerable<DateOnly?>> DaysAsync(ReassignEndOfDayDateCommand request, CancellationToken cancellationToken) =>
+        await days.GetByIdAsync(request.Id, cancellationToken) is { } day ? [day.Date] : [];
+}
+
+internal sealed class VoidStaffDeductionDays(IStaffDeductionRepository deductions) : IBooksDays<VoidStaffDeductionCommand>
+{
+    public async Task<IEnumerable<DateOnly?>> DaysAsync(VoidStaffDeductionCommand request, CancellationToken cancellationToken) =>
+        await deductions.GetByIdAsync(request.Id, cancellationToken) is { } deduction ? [deduction.Date] : [];
+}
+
+// A batch corrected: the batch it replaces is voided on its own day.
+internal sealed class ReviseProductionOrderDays(IProductionOrderRepository orders, IBusinessCalendar calendar)
+    : IBooksDays<ReviseProductionOrderCommand>
+{
+    public async Task<IEnumerable<DateOnly?>> DaysAsync(ReviseProductionOrderCommand request, CancellationToken cancellationToken) =>
+        await orders.GetByIdAsync(request.OrderId, cancellationToken) is { } order ? [calendar.BusinessDateOf(order.ProducedAtUtc)] : [];
+}
+
+// An asset's purchase restated (its day, its cost, its life or salvage, which its depreciation
+// follows from the day bought): that day. Its name, place or notes alone: none.
+internal sealed class ChangeFixedAssetDays(IFixedAssetRepository assets) : IBooksDays<ChangeFixedAssetCommand>
+{
+    public async Task<IEnumerable<DateOnly?>> DaysAsync(ChangeFixedAssetCommand request, CancellationToken cancellationToken)
+    {
+        if (await assets.GetByIdAsync(request.AssetId, cancellationToken) is not { } asset)
+            return [];
+        var restated = (request.PurchaseDate is { } day && day != asset.PurchaseDate) || (request.PurchaseCost is { } cost && cost != asset.PurchaseCost)
+            || request.Asset.UsefulLifeMonths != asset.UsefulLifeMonths || request.Asset.SalvageValue != asset.SalvageValue;
+        return restated ? [asset.PurchaseDate, request.PurchaseDate] : [];
+    }
+}
+
+internal sealed class RemoveFixedAssetDays(IFixedAssetRepository assets) : IBooksDays<RemoveFixedAssetCommand>
+{
+    public async Task<IEnumerable<DateOnly?>> DaysAsync(RemoveFixedAssetCommand request, CancellationToken cancellationToken) =>
+        await assets.GetByIdAsync(request.AssetId, cancellationToken) is { } asset ? [asset.PurchaseDate, asset.DisposalDate] : [];
+}
+
+internal sealed class ReinstateFixedAssetDays(IFixedAssetRepository assets) : IBooksDays<ReinstateFixedAssetCommand>
+{
+    public async Task<IEnumerable<DateOnly?>> DaysAsync(ReinstateFixedAssetCommand request, CancellationToken cancellationToken) =>
+        await assets.GetByIdAsync(request.AssetId, cancellationToken) is { } asset ? [asset.DisposalDate] : [];
+}
+
+// A deletion, asked for or done at once: the record's own day.
+internal sealed class RequestDeletionDays(DeletionTargets deletions) : IBooksDays<RequestDeletionCommand>
+{
+    public Task<IEnumerable<DateOnly?>> DaysAsync(RequestDeletionCommand request, CancellationToken cancellationToken) =>
+        request.Module == ApprovalModule.PurchaseCategory ? Task.FromResult<IEnumerable<DateOnly?>>([]) : deletions.DaysAsync(request.Module, request.RecordId, cancellationToken);
+}
+
+// A manager's yes does what was asked, so it is held to the days of what it does: what it deletes,
+// the voucher it pays, the invoice it posts or corrects, the batch it makes (today) or replaces.
+internal sealed class ApproveRequestDays(
+    IApprovalRequestRepository requests,
+    DeletionTargets deletions,
+    IPurchaseInvoiceRepository invoices,
+    IProductionOrderRepository orders,
+    IBusinessCalendar calendar) : IBooksDays<ApproveRequestCommand>
+{
+    public async Task<IEnumerable<DateOnly?>> DaysAsync(ApproveRequestCommand request, CancellationToken cancellationToken)
+    {
+        if (await requests.GetByIdAsync(request.RequestId, cancellationToken) is not { IsPending: true } approval)
+            return [];
+        var today = calendar.BusinessDateOf(DateTime.UtcNow);
+        switch (approval.Action, approval.Module)
+        {
+            case (ApprovalAction.Delete, ApprovalModule.PurchaseCategory):
+                return [];
+            case (ApprovalAction.Delete, _):
+                return await deletions.DaysAsync(approval.Module, approval.RecordId, cancellationToken);
+            case (ApprovalAction.Create, ApprovalModule.ProductionOrder):
+                return [today];
+            case (ApprovalAction.Create, ApprovalModule.Treasury):
+            {
+                var voucher = ApprovalPayload.Read<SafeVoucher>(approval);
+                return [voucher.Date, voucher.RevenueDate];
+            }
+            case (ApprovalAction.Create, ApprovalModule.PurchaseInvoice):
+                return await invoices.GetByIdAsync(approval.RecordId, cancellationToken) is { } posted ? InvoiceDays.Of(posted, calendar) : [];
+            case (ApprovalAction.Update, ApprovalModule.PurchaseInvoice):
+            {
+                var correction = ApprovalPayload.Read<InvoiceCorrection>(approval);
+                var original = await invoices.GetByIdAsync(approval.RecordId, cancellationToken);
+                return (original is null ? [] : InvoiceDays.Of(original, calendar)).Concat([correction.InvoiceDate, correction.RevenueDate]);
+            }
+            case (ApprovalAction.Update, ApprovalModule.ProductionOrder):
+                return await orders.GetByIdAsync(approval.RecordId, cancellationToken) is { } order
+                    ? [calendar.BusinessDateOf(order.ProducedAtUtc), today]
+                    : [today];
+            default:
+                // A purchase order, a prep item, a material's unit: none of the books.
+                return [];
+        }
+    }
+}
+```
+
+
+### 6.4 الإقفال والفتح وسجلهما: `PeriodLock.cs` و `PeriodLockController`
+
+`LockBooksCommand` يتحقق من `LOCK` على الخادم أيضًا (لا يكفي زر في الواجهة)، و `UnlockBooksCommand` من السبب (5–500 حرف). `SuggestedClose`: آخر نهاية شهر يمكن إقفالها الآن بعد الإقفال الحالي.
+
+> 📄 **`backend/src/Costing.Application/Books/PeriodLock.cs`** — 103 سطر
+
+```csharp
+using MediatR;
+using Costing.Domain.Common;
+using Costing.Domain.Company;
+using Costing.Domain.EndOfDay;
+using Costing.Domain.Security;
+
+namespace Costing.Application.Books;
+
+// Month-end close (إقفال الفترة المحاسبية): the books closed until a day, by a manager who types
+// LOCK to confirm; rolled back, or lifted, by the owner alone (SettingsUnlockPeriods), with why.
+// Each, and only each that is done, written to the security audit log.
+
+public sealed record SecurityAuditEntryDto(
+    Guid Id, DateTime OccurredAtUtc, SecurityAuditAction Action, string Description, string? PreviousValue, string? NewValue, string? Reason, string By)
+{
+    public static SecurityAuditEntryDto From(SecurityAuditLog entry) =>
+        new(entry.Id, entry.OccurredAtUtc, entry.Action, entry.Description, entry.PreviousValue, entry.NewValue, entry.Reason, entry.By);
+}
+
+// LockedUntil: the books closed until; LastClosedDay: the last end of day closed, the latest a lock
+// may go (none closed: today); SuggestedUntil: the latest month's end that can be closed now,
+// past the lock; History: the lock's changes, the latest first.
+public sealed record PeriodLockDto(
+    DateOnly? LockedUntil,
+    DateOnly Today,
+    DateOnly? LastClosedDay,
+    DateOnly? SuggestedUntil,
+    IReadOnlyList<SecurityAuditEntryDto> History);
+
+public sealed record GetPeriodLockQuery(int History = 20) : IRequest<PeriodLockDto>;
+
+// A period closed. Confirmation: the word LOCK, typed.
+public sealed record LockBooksCommand(DateOnly Until, string? Confirmation, string StaffId, string StaffName) : IRequest<PeriodLockDto>;
+
+// An exceptional unlock: back to Until, or lifted (null); Reason, why.
+public sealed record UnlockBooksCommand(DateOnly? Until, string? Reason, string StaffId, string StaffName) : IRequest<PeriodLockDto>;
+
+internal sealed class PeriodLockReader(ICompanySettingsStore settings, IEndOfDayRepository days, ISecurityAuditLogRepository audit, BooksGuard guard)
+{
+    public async Task<PeriodLockDto> ReadAsync(int history, CancellationToken cancellationToken)
+    {
+        var locked = (await settings.GetAsync(cancellationToken))?.BooksLockedUntilDate;
+        var today = guard.Today;
+        var lastClosed = await days.LastSubmittedDateAsync(cancellationToken);
+        return new PeriodLockDto(locked, today, lastClosed, BooksGuard.SuggestedClose(locked, today, lastClosed),
+            (await audit.GetLatestAsync(Math.Clamp(history, 1, 200), cancellationToken)).Select(SecurityAuditEntryDto.From).ToList());
+    }
+}
+
+internal sealed class GetPeriodLockHandler(PeriodLockReader reader) : IRequestHandler<GetPeriodLockQuery, PeriodLockDto>
+{
+    public Task<PeriodLockDto> Handle(GetPeriodLockQuery request, CancellationToken cancellationToken) =>
+        reader.ReadAsync(request.History, cancellationToken);
+}
+
+internal sealed class LockBooksHandler(
+    ICompanySettingsStore settings,
+    IEndOfDayRepository days,
+    ISecurityAuditLogRepository audit,
+    BooksGuard guard,
+    PeriodLockReader reader,
+    IUnitOfWork unitOfWork) : IRequestHandler<LockBooksCommand, PeriodLockDto>
+{
+    public const string ConfirmationWord = "LOCK";
+
+    public async Task<PeriodLockDto> Handle(LockBooksCommand request, CancellationToken cancellationToken)
+    {
+        if (!string.Equals(request.Confirmation?.Trim(), ConfirmationWord, StringComparison.Ordinal))
+            throw new DomainException($"Type {ConfirmationWord} to confirm closing the books. · اكتب {ConfirmationWord} لتأكيد الإقفال.");
+        var company = await settings.GetAsync(cancellationToken)
+            ?? throw new DomainException("Save the company's settings first.");
+        var previous = company.BooksLockedUntilDate;
+        company.LockBooks(request.Until, guard.Today, await days.LastSubmittedDateAsync(cancellationToken));
+        audit.Add(SecurityAuditLog.PeriodLocked(previous, request.Until, request.StaffName, request.StaffId));
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+        return await reader.ReadAsync(20, cancellationToken);
+    }
+}
+
+internal sealed class UnlockBooksHandler(
+    ICompanySettingsStore settings,
+    ISecurityAuditLogRepository audit,
+    PeriodLockReader reader,
+    IUnitOfWork unitOfWork) : IRequestHandler<UnlockBooksCommand, PeriodLockDto>
+{
+    public async Task<PeriodLockDto> Handle(UnlockBooksCommand request, CancellationToken cancellationToken)
+    {
+        var company = await settings.GetAsync(cancellationToken)
+            ?? throw new DomainException("The books are not locked: there is nothing to unlock. · الدفاتر غير مقفلة.");
+        var previous = company.BooksLockedUntilDate;
+        var reason = company.UnlockBooks(request.Until, request.Reason);
+        audit.Add(SecurityAuditLog.PeriodUnlocked(previous!.Value, request.Until, reason, request.StaffName, request.StaffId));
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+        return await reader.ReadAsync(20, cancellationToken);
+    }
+}
+
+// The lock as the company's settings keep it.
+internal sealed class CompanyBooksLock(ICompanySettingsStore settings) : IBooksLock
+{
+    public async Task<DateOnly?> LockedUntilAsync(CancellationToken cancellationToken) =>
+        (await settings.GetAsync(cancellationToken))?.BooksLockedUntilDate;
+}
+```
+
+
+> 📄 **`backend/src/Costing.Api/Controllers/PeriodLockController.cs`** — 37 سطر
+
+```csharp
+using MediatR;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using Costing.Api.Auth;
+using Costing.Application.Books;
+using Costing.Domain.Access;
+
+namespace Costing.Api.Controllers;
+
+// Period lock & month-end close (إقفال الفترة المحاسبية وتجميد الدفاتر), on Settings: the books
+// closed until a day, by a manager (settings.manage) who types LOCK; rolled back or lifted by the
+// owner (settings.unlock-periods) with a reason. Each change in the security audit log, listed here.
+[ApiController]
+[Route("api/settings/period-lock")]
+[Authorize(Policy = Permissions.SettingsManage)]
+public sealed class PeriodLockController(ISender sender) : ControllerBase
+{
+    [HttpGet]
+    public Task<PeriodLockDto> Get([FromQuery] int history = 20, CancellationToken cancellationToken = default) =>
+        sender.Send(new GetPeriodLockQuery(history), cancellationToken);
+
+    [HttpPost("lock")]
+    public Task<PeriodLockDto> Lock(LockBooksRequest request, CancellationToken cancellationToken) =>
+        sender.Send(new LockBooksCommand(request.Until, request.Confirmation, UserClaims.IdOf(User) ?? string.Empty, UserClaims.NameOf(User)),
+            cancellationToken);
+
+    [HttpPost("unlock")]
+    [Authorize(Policy = Permissions.SettingsUnlockPeriods)]
+    public Task<PeriodLockDto> Unlock(UnlockBooksRequest request, CancellationToken cancellationToken) =>
+        sender.Send(new UnlockBooksCommand(request.Until, request.Reason, UserClaims.IdOf(User) ?? string.Empty, UserClaims.NameOf(User)),
+            cancellationToken);
+}
+
+public sealed record LockBooksRequest(DateOnly Until, string? Confirmation);
+
+// Until: the day the books stay closed until; none: the lock lifted.
+public sealed record UnlockBooksRequest(DateOnly? Until, string? Reason);
 ```
 
 

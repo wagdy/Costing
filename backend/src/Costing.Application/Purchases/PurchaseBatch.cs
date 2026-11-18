@@ -13,6 +13,7 @@ using Costing.Domain.Purchases;
 using Costing.Domain.RawMaterials;
 using Costing.Domain.Suppliers;
 using Costing.Domain.Treasury;
+using Costing.Application.Books;
 
 namespace Costing.Application.Purchases;
 
@@ -70,7 +71,10 @@ public sealed record PostPurchaseBatchCommand(
     string StaffId = "",
     bool CanApprove = true,
     IReadOnlyList<BatchPayment>? Payments = null,
-    IReadOnlyList<BatchAdvance>? Advances = null) : IRequest<PurchaseBatchResult>, IRetryOnConflict;
+    IReadOnlyList<BatchAdvance>? Advances = null) : IRequest<PurchaseBatchResult>, IRetryOnConflict, IBooksEntry
+{
+    IEnumerable<DateOnly?> IBooksEntry.BooksDays => [InvoiceDate, RevenueDate];
+}
 
 internal sealed class PostPurchaseBatchHandler(
     IPurchaseInvoiceRepository invoices,

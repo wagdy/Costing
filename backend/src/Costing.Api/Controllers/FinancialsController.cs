@@ -75,13 +75,6 @@ public sealed class FinancialsController(ISender sender, TreasuryService treasur
     public Task<FinancialSettingsDto> SaveSettings(SaveFinancialSettingsRequest request, CancellationToken cancellationToken) =>
         treasury.SaveSettingsAsync(request, StaffName, cancellationToken);
 
-    // The books locked until a day (إقفال الدفاتر), or unlocked: a manager's.
-    [HttpPut("books-lock")]
-    [CostingTab(CostingTabs.Financials)]
-    [Authorize(Policy = Permissions.ApprovalDecide)]
-    public Task<FinancialSettingsDto> LockBooks(BooksLockRequest request, CancellationToken cancellationToken) =>
-        treasury.LockBooksAsync(request.LockedUntil, StaffName, cancellationToken);
-
     [HttpGet("expense-vouchers")]
     [CostingTab(CostingTabs.Financials)]
     public Task<ExpenseVoucherReport> GetExpenseVouchers([FromQuery] DateOnly from, [FromQuery] DateOnly to, CancellationToken cancellationToken) =>
@@ -177,6 +170,5 @@ public sealed record SafeVoucherRequest(
     decimal? DiscountsAmount = null,
     IReadOnlyList<Costing.Domain.Sales.DiscountReason>? DiscountReasons = null);
 
-public sealed record BooksLockRequest(DateOnly? LockedUntil);
 
 public sealed record SupplierOpeningBalanceRequest(Guid EntryId, decimal Owed, DateOnly? Date = null);

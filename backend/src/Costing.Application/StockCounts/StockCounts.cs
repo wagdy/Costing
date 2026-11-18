@@ -9,6 +9,7 @@ using Costing.Domain.Production;
 using Costing.Domain.RawMaterials;
 using Costing.Domain.StockCounts;
 using Costing.Domain.StockMovements;
+using Costing.Application.Books;
 
 namespace Costing.Application.StockCounts;
 
@@ -258,7 +259,10 @@ internal sealed class SetSpotCheckItemCommandHandler(IRawMaterialRepository mate
 }
 
 // Posting again, after an answer was lost, returns the posted count and changes nothing.
-public sealed record PostStockCountCommand(Guid StockCountId, string StaffName = "") : IRequest<StockCountDto>, IRetryOnConflict;
+public sealed record PostStockCountCommand(Guid StockCountId, string StaffName = "") : IRequest<StockCountDto>, IRetryOnConflict, IBooksEntry
+{
+    bool IBooksEntry.WritesToday => true;
+}
 
 internal sealed class PostStockCountCommandHandler(
     IStockCountRepository counts,
@@ -341,7 +345,10 @@ internal sealed class DiscardStockCountCommandHandler(IStockCountRepository coun
 // materials, and for scripts; the screens use a draft.
 public sealed record RecordStockCountCommand(
     Guid StockCountId, IReadOnlyList<StockCountLine> Lines, string StaffName = "", StockCountKind Kind = StockCountKind.Periodic)
-    : IRequest<IReadOnlyList<RawMaterialDto>>, IRetryOnConflict;
+    : IRequest<IReadOnlyList<RawMaterialDto>>, IRetryOnConflict, IBooksEntry
+{
+    bool IBooksEntry.WritesToday => true;
+}
 
 internal sealed class RecordStockCountCommandHandler(
     IStockCountRepository counts,

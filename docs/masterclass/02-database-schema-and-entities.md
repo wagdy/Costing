@@ -115,16 +115,17 @@ public abstract record DomainEvent
 ```
 
 
-الاستثناءات: `DomainException` (قاعدة عمل رفضت، رسالتها للمستخدم ⇐ 422)، و `NotFound`/`Forbidden`/`Conflict`، و `IRetryOnConflict` (أمر آمن لإعادة التنفيذ).
+الاستثناءات: `DomainException` (قاعدة عمل رفضت، رسالتها للمستخدم ⇐ 422؛ ومنها `PeriodLockedException` ⇐ 423 للدفاتر المقفلة، الفصل 03)، و `NotFound`/`Forbidden`/`Conflict`، و `IRetryOnConflict` (أمر آمن لإعادة التنفيذ).
 
-> 📄 **`backend/src/Costing.Domain/Common/DomainException.cs`** — 5 سطر
+> 📄 **`backend/src/Costing.Domain/Common/DomainException.cs`** — 6 سطر
 
 ```csharp
 namespace Costing.Domain.Common;
 
 // A business rule refused the call. Messages are written to be shown to the user as they
-// are; the API maps this type to a 4xx, never a 500.
-public sealed class DomainException(string message) : Exception(message);
+// are; the API maps this type to a 4xx, never a 500. Open for the refusals that need a status
+// of their own (PeriodLockedException: 423), so whatever catches a refusal catches those too.
+public class DomainException(string message) : Exception(message);
 ```
 
 
@@ -197,7 +198,7 @@ public interface IUnitOfWork
 
 `CompanySettings`: صف واحد: الاسم، العملة وموضعها (`L.E 1,400.00` أو `1,400.00 SAR`)، الدولة، المنطقة الزمنية، **ساعة بداية اليوم التجاري** (مطعم يغلق 2 فجرًا: مبيعات 1:30 فجرًا تتبع "أمس"). و `MoneyFormat.Format` يكتب المال بنفس الطريقة في كل مكان.
 
-> 📄 **`backend/src/Costing.Domain/Company/CompanySettings.cs`** — 177 سطر
+> 📄 **`backend/src/Costing.Domain/Company/CompanySettings.cs`** — 222 سطر
 
 ```csharp
 using System.Globalization;
@@ -280,7 +281,13 @@ public sealed class CompanySettings
     public string? UpdatedBy { get; private set; }
     public DateTime? UpdatedAtUtc { get; private set; }
 
+    // The books closed until this day (إقفال الفترة المحاسبية وتجميد الدفاتر): nothing dated on or
+    // before it is entered, changed or voided, in money or stock. Null: none locked.
+    public DateOnly? BooksLockedUntilDate { get; private set; }
+
     public bool HasLogo => LogoFileName is not null;
+
+    public bool IsLocked(DateOnly day) => BooksLockedUntilDate is { } locked && day <= locked;
 
     public MoneyFormat Money => new(CurrencySymbol, CurrencyPosition);
 
@@ -341,6 +348,45 @@ public sealed class CompanySettings
         LogoUpdatedAtUtc = DateTime.UtcNow;
         UpdatedBy = updatedBy;
         UpdatedAtUtc = LogoUpdatedAtUtc;
+    }
+
+    // A period closed (إقفال فترة جديدة): the lock moved forward to a day, a month's end as a rule.
+    // Never back (that is an unlock, with its reason), never a day still to come, and never past the
+    // last end of day closed, which would leave the days after it unclosable.
+    public void LockBooks(DateOnly until, DateOnly today, DateOnly? lastClosedDay)
+    {
+        if (BooksLockedUntilDate is { } current && until <= current)
+            throw new DomainException(
+                $"The books are closed until {PeriodLockedException.Format(current)} already: choose a later day. To go back, unlock with a reason. " +
+                "· الدفاتر مقفلة حتى هذا التاريخ بالفعل.");
+        if (until > today)
+            throw new DomainException("The books are locked up to today at the latest. · الإقفال حتى اليوم على الأكثر.");
+        if (lastClosedDay is { } last && until > last)
+            throw new DomainException(
+                $"The last day closed is {PeriodLockedException.Format(last)}: lock the books up to it at the latest, the days after it are still to be closed. " +
+                "· لا تقفل بعد آخر يوم مغلق.");
+        BooksLockedUntilDate = until;
+    }
+
+    public const int MinUnlockReasonLength = 5;
+    public const int MaxUnlockReasonLength = 500;
+
+    // An exceptional unlock (فتح الفترة استثنائياً): the lock rolled back to an earlier day, or
+    // lifted (null), always with why. Returns the reason as kept.
+    public string UnlockBooks(DateOnly? until, string? reason)
+    {
+        if (BooksLockedUntilDate is not { } current)
+            throw new DomainException("The books are not locked: there is nothing to unlock. · الدفاتر غير مقفلة.");
+        if (until >= current)
+            throw new DomainException(
+                $"The books are closed until {PeriodLockedException.Format(current)}: an unlock goes back to an earlier day. · الفتح يكون لتاريخ سابق.");
+        var why = reason?.Trim() ?? string.Empty;
+        if (why.Length < MinUnlockReasonLength)
+            throw new DomainException("Say why the period is opened: an unlock needs its reason. · يجب ذكر سبب الفتح الاستثنائي.");
+        if (why.Length > MaxUnlockReasonLength)
+            throw new DomainException($"Keep the reason to {MaxUnlockReasonLength} characters.");
+        BooksLockedUntilDate = until;
+        return why;
     }
 
     public static bool IsTimeZone(string timeZoneId)
@@ -5174,7 +5220,7 @@ public static class EndOfDaySequence
         if (date > today)
             throw new DomainException("That day has not come yet: close a day once it is over. · هذا اليوم لم يأتِ بعد.");
         if (lockedUntil is { } locked && date <= locked)
-            throw new DomainException($"The books are locked until {Day(locked)}: that day is not closed or changed any more. · الدفاتر مقفلة حتى {Day(locked)}.");
+            throw new PeriodLockedException(locked, date);
         if (lastClosed is not { } last)
             return;
         var next = last.AddDays(1);
@@ -5610,7 +5656,7 @@ public static class DatabaseConnection
 - `ConfigureConventions`: كل `decimal` بدقة (10,2) افتراضيًا (والكميات تتجاوزه صراحة بـ `IsQuantity()`).
 - `SaveChangesAsync`: `TouchRootsOfChangedChildren` (تعديل ابن يعلّم أباه معدّلًا ليُفحص `xmin` الخاص به)، وترجمة أخطاء EF/Npgsql (تزامن، تكرار فريد، مفتاح أجنبي) إلى `ConflictException`، فلا تعرف الطبقات العليا شيئًا عن EF.
 
-> 📄 **`backend/src/Costing.Infrastructure/Persistence/CostingDbContext.cs`** — 172 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Persistence/CostingDbContext.cs`** — 173 سطر
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
@@ -5685,6 +5731,7 @@ public sealed class CostingDbContext(DbContextOptions<CostingDbContext> options)
     public DbSet<BreakageEntry> BreakageEntries => Set<BreakageEntry>();
     public DbSet<CostingSettings> CostingSettings => Set<CostingSettings>();
     public DbSet<Domain.Stations.KitchenStation> KitchenStations => Set<Domain.Stations.KitchenStation>();
+    public DbSet<Domain.Security.SecurityAuditLog> SecurityAuditLogs => Set<Domain.Security.SecurityAuditLog>();
     public DbSet<FinancialSettings> FinancialSettings => Set<FinancialSettings>();
     public DbSet<SharedCost> SharedCosts => Set<SharedCost>();
     public DbSet<MonthlyExpenses> MonthlyExpenses => Set<MonthlyExpenses>();
@@ -6610,7 +6657,7 @@ internal sealed class EndOfDayPhotoContentConfiguration : IEntityTypeConfigurati
 ```
 
 
-إعدادات الشركة وشعارها (الشعار منفصل حتى لا تُحمّل الصورة مع كل قراءة):
+إعدادات الشركة وشعارها (الشعار منفصل حتى لا تُحمّل الصورة مع كل قراءة). وعليها `BooksLockedUntilDate`: الدفاتر مقفلة حتى هذا اليوم (الفصل 03):
 
 > 📄 **`backend/src/Costing.Infrastructure/Company/CompanySettingsStore.cs`** — 75 سطر
 
@@ -6693,9 +6740,50 @@ internal sealed class CompanyLogoConfiguration : IEntityTypeConfiguration<Compan
 ```
 
 
+سجل التدقيق الأمني: `Action` نصًا (`PeriodLocked`، `PeriodUnlocked`)، وفهرس على الوقت للقراءة الأحدث أولًا، ولا تعديل ولا حذف في المستودع:
+
+> 📄 **`backend/src/Costing.Infrastructure/Persistence/SecurityPersistence.cs`** — 33 سطر
+
+```csharp
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata.Builders;
+using Costing.Domain.Security;
+using Costing.Infrastructure.Persistence.Configurations;
+
+namespace Costing.Infrastructure.Persistence;
+
+// The security audit log: added to, read the latest first; never changed or removed here.
+internal sealed class SecurityAuditLogConfiguration : IEntityTypeConfiguration<SecurityAuditLog>
+{
+    public void Configure(EntityTypeBuilder<SecurityAuditLog> builder)
+    {
+        builder.ToTable("SecurityAuditLogs", CostingDbContext.CostingSchema);
+        builder.HasKey(e => e.Id);
+        builder.Property(e => e.Id).ValueGeneratedNever();
+        builder.Property(e => e.Action).IsEnumName();
+        builder.Property(e => e.Description).HasMaxLength(1000);
+        builder.Property(e => e.PreviousValue).HasMaxLength(100);
+        builder.Property(e => e.NewValue).HasMaxLength(100);
+        builder.Property(e => e.Reason).HasMaxLength(Domain.Company.CompanySettings.MaxUnlockReasonLength);
+        builder.Property(e => e.By).HasMaxLength(SecurityAuditLog.MaxByLength);
+        builder.Property(e => e.ByUserId).HasMaxLength(100);
+        builder.HasIndex(e => e.OccurredAtUtc);
+    }
+}
+
+internal sealed class SecurityAuditLogRepository(CostingDbContext db) : ISecurityAuditLogRepository
+{
+    public void Add(SecurityAuditLog entry) => db.SecurityAuditLogs.Add(entry);
+
+    public async Task<IReadOnlyList<SecurityAuditLog>> GetLatestAsync(int count, CancellationToken cancellationToken = default) =>
+        await db.SecurityAuditLogs.AsNoTracking().OrderByDescending(e => e.OccurredAtUtc).ThenByDescending(e => e.Id).Take(count).ToListAsync(cancellationToken);
+}
+```
+
+
 جداول التقارير والإعدادات: نسبة تكلفة الطعام المستهدفة (30% افتراضيًا)، إعدادات الضريبة والخدمة، المصروفات الشهرية، التكاليف المشتركة، وورقة المبيعات اليدوية:
 
-> 📄 **`backend/src/Costing.Infrastructure/Reports/CostingTables.cs`** — 249 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Reports/CostingTables.cs`** — 245 سطر
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
@@ -6762,10 +6850,6 @@ public sealed class FinancialSettings
     // The bills' tax (VAT) rate: what a day's takings entered with tax have taken off them. Null
     // until it is set.
     public decimal? TaxPercent { get; set; }
-
-    // The books locked until this day (إقفال الدفاتر), a manager's: no end of day on or before it is
-    // closed or undone. Null: none locked.
-    public DateOnly? BooksLockedUntil { get; set; }
 
     public string? UpdatedBy { get; set; }
     public DateTime? UpdatedAtUtc { get; set; }
@@ -7434,7 +7518,7 @@ internal sealed class BreakageEntryRepository(CostingDbContext db) : IBreakageEn
 ```
 
 
-> 📄 **`backend/src/Costing.Infrastructure/Persistence/MenuSalesRepositories.cs`** — 139 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Persistence/MenuSalesRepositories.cs`** — 133 سطر
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
@@ -7545,12 +7629,6 @@ internal sealed class UserTabAccessRepository(CostingDbContext db) : IUserTabAcc
 
 // The rate the treasury takes off a day's takings entered with the tax in them: the bills' own, as
 // set on Tax & service.
-internal sealed class FinancialBooksLock(CostingDbContext db) : Costing.Application.EndOfDay.IBooksLock
-{
-    public async Task<DateOnly?> LockedUntilAsync(CancellationToken cancellationToken) =>
-        (await db.FinancialSettings.AsNoTracking().SingleOrDefaultAsync(cancellationToken))?.BooksLockedUntil;
-}
-
 internal sealed class FinancialTaxRate(CostingDbContext db) : Costing.Application.Treasury.ITaxRate
 {
     public async Task<decimal> PercentAsync(CancellationToken cancellationToken) =>
@@ -7720,6 +7798,7 @@ dotnet ef migrations add <Name> \
 | 16 | `20261117092011_AddEndOfDaySequence` | Add End Of Day Sequence |
 | 17 | `20261117103857_AddEndOfDayClosedDaysAndAudit` | Add End Of Day Closed Days And Audit |
 | 18 | `20261118092632_AddKitchenStations` | Add Kitchen Stations |
+| 19 | `20261118122831_AddPeriodLockAndSecurityAudit` | Add Period Lock And Security Audit |
 
 
 ### 14.1 `UnifySafeTakings`: migration تحوّل بيانات لا شكلًا فقط
@@ -7740,7 +7819,11 @@ WHERE "Kind" = 'RevenueTransfer';
 
 إضافية بحتة: عمود `OpeningFloat` في `EndOfDayReports`، وجدول `EndOfDayPayouts` (سداد الموردين وسلف الموظفين من الدرج، كلٌّ بإيصاله في `EndOfDayPhotos` بمفتاح الدفعة).
 
-### 14.3 التطبيق التلقائي عند التشغيل
+### 14.3 `AddPeriodLockAndSecurityAudit`: نقل الإقفال القديم
+
+الإقفال كان في `FinancialSettings.BooksLockedUntil` (يمنع تقفيل اليوم وإلغاءه فقط). الـ migration تضيف `CompanySettings.BooksLockedUntilDate` وجدول `SecurityAuditLogs`، ثم **تنقل القيمة القديمة** وتكتب لها سطرًا في السجل (`PeriodLocked: … by System (carried over from the earlier books lock)`)، ثم تحذف العمود القديم؛ و `Down` تعيدها. اختُبرت ذهابًا وإيابًا على قاعدة حقيقية (Infrastructure.Tests: `PeriodLockTests`).
+
+### 14.4 التطبيق التلقائي عند التشغيل
 
 `DatabaseStartup`: `MigrateAsync()` (ما لم يُعطّل)، ثم إعدادات الشركة، ثم أول مدير.
 

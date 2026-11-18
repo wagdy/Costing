@@ -3,6 +3,7 @@ using Costing.Application.Common;
 using Costing.Application.Treasury;
 using Costing.Domain.Common;
 using Costing.Domain.FixedAssets;
+using Costing.Application.Books;
 
 namespace Costing.Application.FixedAssets;
 
@@ -17,22 +18,28 @@ public sealed record FixedAssetSaved(Guid Id, string AssetCode);
 // Owned already: on the register at what it cost and when, paid before it and through no entry here.
 // AssetId is made by the till: a retry finds the asset made.
 public sealed record RegisterOwnedAssetCommand(Guid AssetId, FixedAssetInput Asset, DateOnly PurchaseDate, decimal PurchaseCost, string By)
-    : IRequest<FixedAssetSaved>, IRetryOnConflict;
+    : IRequest<FixedAssetSaved>, IRetryOnConflict, IBooksEntry
+{
+    IEnumerable<DateOnly?> IBooksEntry.BooksDays => [PurchaseDate];
+}
 
 // What it is and what its depreciation is worked out from; for one owned already, its cost and the
 // day it was bought too (a paid one's are its payment's).
 public sealed record ChangeFixedAssetCommand(Guid AssetId, FixedAssetInput Asset, DateOnly? PurchaseDate, decimal? PurchaseCost, string By)
-    : IRequest<FixedAssetSaved>, IRetryOnConflict;
+    : IRequest<FixedAssetSaved>, IRetryOnConflict, IBooksEntry;
 
 // Disposed of with nothing for it (استبعاد): its depreciation stops, what was left of its cost is the
 // month's loss. Sold for money is a safe entry instead.
-public sealed record WriteOffFixedAssetCommand(Guid AssetId, DateOnly Date, string? Notes, string By) : IRequest<FixedAssetSaved>, IRetryOnConflict;
+public sealed record WriteOffFixedAssetCommand(Guid AssetId, DateOnly Date, string? Notes, string By) : IRequest<FixedAssetSaved>, IRetryOnConflict, IBooksEntry
+{
+    IEnumerable<DateOnly?> IBooksEntry.BooksDays => [Date];
+}
 
 // A write-off undone: in use again, depreciated from where it stopped.
-public sealed record ReinstateFixedAssetCommand(Guid AssetId, string By) : IRequest<FixedAssetSaved>, IRetryOnConflict;
+public sealed record ReinstateFixedAssetCommand(Guid AssetId, string By) : IRequest<FixedAssetSaved>, IRetryOnConflict, IBooksEntry;
 
 // One owned already, off the register (entered by mistake). A paid one goes with its purchase voided.
-public sealed record RemoveFixedAssetCommand(Guid AssetId, string By) : IRequest, IRetryOnConflict;
+public sealed record RemoveFixedAssetCommand(Guid AssetId, string By) : IRequest, IRetryOnConflict, IBooksEntry;
 
 internal sealed class RegisterOwnedAssetHandler(IFixedAssetRepository assets, TreasuryWriter treasury, IUnitOfWork unitOfWork)
     : IRequestHandler<RegisterOwnedAssetCommand, FixedAssetSaved>

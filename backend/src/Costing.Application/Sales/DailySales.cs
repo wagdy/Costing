@@ -7,6 +7,7 @@ using Costing.Domain.Common;
 using Costing.Domain.Menu;
 using Costing.Domain.Recipes;
 using Costing.Domain.Sales;
+using Costing.Application.Books;
 
 namespace Costing.Application.Sales;
 
@@ -22,7 +23,10 @@ namespace Costing.Application.Sales;
 public sealed record DailySaleLine(int MenuItemId, int? VariantId, int Quantity);
 
 public sealed record RecordDailySalesCommand(Guid Id, DateOnly Date, IReadOnlyList<DailySaleLine> Lines, string StaffName)
-    : IRequest<SalesReceiptDto>, IRetryOnConflict;
+    : IRequest<SalesReceiptDto>, IRetryOnConflict, IBooksEntry
+{
+    IEnumerable<DateOnly?> IBooksEntry.BooksDays => [Date];
+}
 
 // A row of the sales sheet: its day (the Date column; the day chosen on a one-day import), the item,
 // by its code or name (or chosen from the list), and how many sold; or a discount given that day
@@ -40,7 +44,10 @@ public sealed record DailySalesImportResult(
     DateOnly Date, Guid? SaleId, int Items, int Quantity, decimal Value, IReadOnlyList<SkippedSheetRow> Skipped, decimal Discounts = 0);
 
 public sealed record ImportDailySalesCommand(DateOnly Date, IReadOnlyList<DailySaleRow> Rows, string StaffName)
-    : IRequest<DailySalesImportResult>, IRetryOnConflict;
+    : IRequest<DailySalesImportResult>, IRetryOnConflict, IBooksEntry
+{
+    IEnumerable<DateOnly?> IBooksEntry.BooksDays => [Date];
+}
 
 // The menu as the day's sheet lists it: every item, each size of one sold by size, by its code.
 public sealed record DailySalesSheet(IReadOnlyList<string> Items);

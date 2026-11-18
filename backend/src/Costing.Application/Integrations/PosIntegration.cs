@@ -17,6 +17,7 @@ using Costing.Domain.Recipes;
 using Costing.Domain.Sales;
 using Costing.Domain.StockMovements;
 using Costing.Domain.Treasury;
+using Costing.Application.Books;
 
 namespace Costing.Application.Integrations;
 
@@ -163,7 +164,7 @@ public sealed record ZReportResultDto(
     Guid ZReportId, DateOnly Date, PosSyncOutcome Outcome, Guid? SaleId, Guid? TakingsId, int Items, int Quantity, int Wasted,
     decimal SalesValue, decimal Cash, decimal Card, decimal Tax, IReadOnlyList<string> Warnings);
 
-public sealed record ReceiveZReportCommand(ZReportInput Report, string Source) : IRequest<ZReportResultDto>, IRetryOnConflict;
+public sealed record ReceiveZReportCommand(ZReportInput Report, string Source) : IRequest<ZReportResultDto>, IRetryOnConflict, IChecksBooksItself;
 
 internal sealed class ReceiveZReportHandler(
     IPosZReportRepository reports,
@@ -179,6 +180,7 @@ internal sealed class ReceiveZReportHandler(
     DeletionTargets deletions,
     IBusinessCalendar calendar,
     IPosSyncJournal journal,
+    BooksGuard guard,
     IUnitOfWork unitOfWork) : IRequestHandler<ReceiveZReportCommand, ZReportResultDto>
 {
     public const string By = "POS";
@@ -235,6 +237,9 @@ internal sealed class ReceiveZReportHandler(
             var day = await days.GetByDateAsync(existing.BusinessDate, cancellationToken);
             return Result(report, PosSyncOutcome.Unchanged, day?.SaleId, day?.TakingsId, await SaleAsync(day?.SaleId, cancellationToken), []);
         }
+
+        // A day in the books closed is not written, nor one a report moves off: refused, and logged.
+        await guard.EnsureOpenAsync([report.Date, existing?.BusinessDate], cancellationToken);
 
         var known = await SaleWriter.Menu.LoadAsync(menu, cancellationToken);
         var targets = new MenuTargets(known.Items.Values.ToList(), known.AddOns.Values.ToList());

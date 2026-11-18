@@ -7,6 +7,7 @@ using Costing.Domain.Categories;
 using Costing.Domain.Purchases;
 using Costing.Domain.RawMaterials;
 using Costing.Domain.StockMovements;
+using Costing.Application.Books;
 
 namespace Costing.Application.RawMaterials;
 
@@ -18,7 +19,10 @@ namespace Costing.Application.RawMaterials;
 // Paid from the safe: for a manager at once, and asked of one for anyone else, as an invoice is.
 public sealed record ReceivePurchaseCommand(
     Guid PurchaseId, IReadOnlyList<PurchaseLine> Lines, string RecordedBy = "", string StaffId = "", bool CanApprove = true)
-    : IRequest<IReadOnlyList<RawMaterialDto>>, IRetryOnConflict;
+    : IRequest<IReadOnlyList<RawMaterialDto>>, IRetryOnConflict, IBooksEntry
+{
+    bool IBooksEntry.WritesToday => true;
+}
 
 // Quantity in the material's own unit (grams, millilitres, pieces). Cost: what the line cost in
 // all, from the invoice; it moves the material's average cost. Without it, only stock changes.
@@ -66,7 +70,10 @@ internal sealed class ReceivePurchaseCommandHandler(
 // Thrown-away raw stock, as a manager records it. SpoilageId works as PurchaseId does, and
 // RecordedBy is set by the API from who is signed in.
 public sealed record RecordSpoilageCommand(Guid SpoilageId, IReadOnlyList<SpoilageLine> Lines, string RecordedBy = "")
-    : IRequest<IReadOnlyList<RawMaterialDto>>, IRetryOnConflict;
+    : IRequest<IReadOnlyList<RawMaterialDto>>, IRetryOnConflict, IBooksEntry
+{
+    bool IBooksEntry.WritesToday => true;
+}
 
 // Quantity in the material's own unit. Reason: expired, spoiled, dropped, damaged packaging.
 // ResponsibleStationId: the kitchen or bar station held to account for it (القسم المسؤول), the

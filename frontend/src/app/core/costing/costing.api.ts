@@ -2112,11 +2112,6 @@ export class CostingApi {
     return this.http.put<FinancialSettings>('/api/financials/settings', taxPercent === undefined ? { servicePercent } : { servicePercent, taxPercent });
   }
 
-  // A manager's: the books locked until a day (up to the last closed day), or unlocked (null).
-  lockBooks(lockedUntil: string | null): Observable<FinancialSettings> {
-    return this.http.put<FinancialSettings>('/api/financials/books-lock', { lockedUntil });
-  }
-
   expenseVouchers(from: string, to: string): Observable<ExpenseVoucherReport> {
     return this.http.get<ExpenseVoucherReport>('/api/financials/expense-vouchers', { params: { from, to } });
   }
@@ -3199,7 +3194,8 @@ export interface FinancialSettings {
   servicePercent: number;
   updatedBy: string | null;
   updatedAtUtc: string | null;
-  // The books locked until this day (إقفال الدفاتر): no day on or before it is closed or undone.
+  // The books closed until this day (Settings → Period lock): nothing on or before it is entered,
+  // changed or voided.
   booksLockedUntil?: string | null;
 }
 

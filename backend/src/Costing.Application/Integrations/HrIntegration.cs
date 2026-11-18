@@ -12,6 +12,7 @@ using Costing.Domain.EndOfDay;
 using Costing.Domain.Integrations;
 using Costing.Domain.Staff;
 using Costing.Domain.Treasury;
+using Costing.Application.Books;
 
 namespace Costing.Application.Integrations;
 
@@ -479,9 +480,9 @@ public sealed record PayrollRunDto(
 
 public sealed record PayrollRunResultDto(HrSyncOutcome Outcome, Guid Id, DateOnly Period, decimal NetCashPayable, decimal LaborCost);
 
-public sealed record ReceivePayrollRunCommand(PayrollRunInput Run) : IRequest<PayrollRunResultDto>, IRetryOnConflict;
+public sealed record ReceivePayrollRunCommand(PayrollRunInput Run) : IRequest<PayrollRunResultDto>, IRetryOnConflict, IChecksBooksItself;
 
-internal sealed class ReceivePayrollRunHandler(IPayrollRunRepository runs, IHrSyncJournal journal, IUnitOfWork unitOfWork)
+internal sealed class ReceivePayrollRunHandler(IPayrollRunRepository runs, IHrSyncJournal journal, BooksGuard guard, IUnitOfWork unitOfWork)
     : IRequestHandler<ReceivePayrollRunCommand, PayrollRunResultDto>
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
@@ -519,6 +520,11 @@ internal sealed class ReceivePayrollRunHandler(IPayrollRunRepository runs, IHrSy
         var run = await runs.GetByIdAsync(input.IdempotencyKey, cancellationToken);
         if (run is not null && run.PayloadHash == hash)
             return Result(run, HrSyncOutcome.Unchanged);
+
+        // A month's labour cost is its last day's: a month in the books closed, or one a run moves
+        // off, is not written; refused, and logged.
+        await guard.EnsureOpenAsync(
+            [BooksGuard.MonthEnd(period.Year, period.Month), run is null ? null : BooksGuard.MonthEnd(run.Period.Year, run.Period.Month)], cancellationToken);
 
         // Another run of the same month: replaced while it is still to be paid; once paid, refused.
         if (await runs.GetForPeriodAsync(period, cancellationToken) is { } other && other.Id != input.IdempotencyKey)
@@ -563,7 +569,10 @@ internal sealed class GetPayrollRunsHandler(IPayrollRunRepository runs, IApprova
 // A payroll from HR paid out of the safe in one entry, its net cash payable: a manager's at once,
 // anyone else's asked of a manager. TransactionId (the entry's) and RequestId are made by the app.
 public sealed record DisbursePayrollRunCommand(Guid RunId, Guid TransactionId, Guid RequestId, string StaffId, string StaffName, bool CanApprove)
-    : IRequest<SafeVoucherResultDto>, IRetryOnConflict;
+    : IRequest<SafeVoucherResultDto>, IRetryOnConflict, IBooksEntry
+{
+    bool IBooksEntry.WritesToday => true;
+}
 
 internal sealed class DisbursePayrollRunHandler(
     IPayrollRunRepository runs, TreasuryWriter treasury, ISafeTransactionRepository safe, IApprovalRequestRepository requests, IUnitOfWork unitOfWork)
@@ -612,9 +621,12 @@ public sealed record GetStaffDeductionsQuery(DateOnly From, DateOnly To) : IRequ
 
 // Made by the app (Id), so one sent again is recorded once.
 public sealed record RecordStaffDeductionCommand(
-    Guid Id, Guid EmployeeId, DateOnly Date, StaffDeductionKind Kind, decimal Amount, string? Reason, string StaffName) : IRequest<StaffDeductionDto>;
+    Guid Id, Guid EmployeeId, DateOnly Date, StaffDeductionKind Kind, decimal Amount, string? Reason, string StaffName) : IRequest<StaffDeductionDto>, IBooksEntry
+{
+    IEnumerable<DateOnly?> IBooksEntry.BooksDays => [Date];
+}
 
-public sealed record VoidStaffDeductionCommand(Guid Id, string StaffName) : IRequest<StaffDeductionDto>;
+public sealed record VoidStaffDeductionCommand(Guid Id, string StaffName) : IRequest<StaffDeductionDto>, IBooksEntry;
 
 internal sealed class StaffDeductionReading(IStaffMemberRepository staff, ISyncedEmployeeRepository synced)
 {

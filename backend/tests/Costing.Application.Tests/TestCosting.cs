@@ -40,7 +40,7 @@ public sealed class TestCosting
     public MenuStore Menu { get; } = new();
     public ComboStore Combos { get; } = new();
     public FixedAssetStore FixedAssets { get; } = new();
-    public BooksLockStore BooksLock { get; } = new();
+    public AuditStore Audit { get; } = new();
     public StationStore Stations { get; } = new();
     public PurchaseOrderStore PurchaseOrders { get; } = new();
     public SalesStore Sales { get; } = new();
@@ -67,7 +67,7 @@ public sealed class TestCosting
         services.AddSingleton<IUnitOfWork>(new NoUnitOfWork());
         services.AddSingleton<IBusinessCalendar>(new TestCalendar());
         services.AddSingleton<Costing.Application.Treasury.ITaxRate>(TaxRate);
-        services.AddSingleton<Costing.Application.EndOfDay.IBooksLock>(BooksLock);
+        services.AddSingleton<Costing.Domain.Security.ISecurityAuditLogRepository>(Audit);
         services.AddSingleton<Costing.Domain.Stations.IKitchenStationRepository>(Stations);
         services.AddSingleton<IRawMaterialRepository>(Inventory);
         services.AddSingleton<IRecipeRepository>(Inventory.Recipes);
@@ -115,6 +115,18 @@ public sealed class TestCosting
         Menu.SeedTestMenu();
     }
 
+    // The company's settings, as a first start makes them; the books closed until a day, as a
+    // manager's LOCK does (the end of day's sequence aside).
+    public Costing.Domain.Company.CompanySettings Company()
+    {
+        if (Settings.Row is null)
+            Settings.Add(new Costing.Domain.Company.CompanySettings("Test Bistro", "L.E", Costing.Domain.Company.CurrencyPosition.Before,
+                Costing.Domain.Company.Country.Egypt, "Africa/Cairo", 6));
+        return Settings.Row!;
+    }
+
+    public void CloseBooksUntil(DateOnly until) => Company().LockBooks(until, TestCalendar.Today, lastClosedDay: null);
+
     public async Task<T> Send<T>(IRequest<T> request)
     {
         using var scope = _services.CreateScope();
@@ -155,14 +167,18 @@ public sealed class TestCalendar : IBusinessCalendar
     }
 }
 
-// The bills' tax, 14% unless a test changes it.
-public sealed class BooksLockStore : Costing.Application.EndOfDay.IBooksLock
+// The security audit log, kept in order.
+public sealed class AuditStore : Costing.Domain.Security.ISecurityAuditLogRepository
 {
-    public DateOnly? LockedUntil { get; set; }
+    public List<Costing.Domain.Security.SecurityAuditLog> All { get; } = [];
 
-    public Task<DateOnly?> LockedUntilAsync(CancellationToken cancellationToken) => Task.FromResult(LockedUntil);
+    public void Add(Costing.Domain.Security.SecurityAuditLog entry) => All.Add(entry);
+
+    public Task<IReadOnlyList<Costing.Domain.Security.SecurityAuditLog>> GetLatestAsync(int count, CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyList<Costing.Domain.Security.SecurityAuditLog>>(Enumerable.Reverse(All).Take(count).ToList());
 }
 
+// The bills' tax, 14% unless a test changes it.
 public sealed class FixedTaxRate(decimal percent) : Costing.Application.Treasury.ITaxRate
 {
     public decimal Percent { get; set; } = percent;

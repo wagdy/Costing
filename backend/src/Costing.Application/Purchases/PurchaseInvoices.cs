@@ -12,6 +12,7 @@ using Costing.Domain.RawMaterials;
 using Costing.Domain.StockMovements;
 using Costing.Domain.Suppliers;
 using Costing.Domain.Treasury;
+using Costing.Application.Books;
 
 namespace Costing.Application.Purchases;
 
@@ -256,7 +257,10 @@ public sealed record SavePurchaseInvoiceCommand(
     decimal Discount = 0,
     // The purchase order it delivers, and whether it closes it with what came (no backorder).
     Guid? PurchaseOrderId = null,
-    bool ClosesPurchaseOrder = false) : IRequest<PurchaseInvoiceDto>;
+    bool ClosesPurchaseOrder = false) : IRequest<PurchaseInvoiceDto>, IBooksEntry
+{
+    IEnumerable<DateOnly?> IBooksEntry.BooksDays => [InvoiceDate, RevenueDate];
+}
 
 // The checks and the recording of an invoice as entered, for a draft saved on its own and for each
 // invoice of a daily batch alike. Tracked, for the caller to save.
@@ -366,7 +370,7 @@ internal sealed class SavePurchaseInvoiceCommandHandler(
 // supplier; in cash, paid for a manager and asked of one for anyone else (the stock is in either
 // way). Posting again, after an answer was lost, returns the posted invoice and changes nothing.
 public sealed record PostPurchaseInvoiceCommand(Guid InvoiceId, string StaffName = "", string StaffId = "", bool CanApprove = true)
-    : IRequest<PurchaseInvoiceDto>, IRetryOnConflict;
+    : IRequest<PurchaseInvoiceDto>, IRetryOnConflict, IBooksEntry;
 
 // Posting an invoice: its stock in and its payment settled, for an invoice posted on its own and for
 // each invoice of a daily batch alike. Tracked, for the caller to save.

@@ -11,6 +11,7 @@ using Costing.Domain.Purchases;
 using Costing.Domain.Sales;
 using Costing.Domain.Suppliers;
 using Costing.Domain.Treasury;
+using Costing.Application.Books;
 
 namespace Costing.Application.Treasury;
 
@@ -773,7 +774,10 @@ public static class TreasuryNames
 // (Request). RequestId is made by the till: a retry finds what was made.
 public sealed record RecordSafeVoucherCommand(
     Guid RequestId, SafeVoucher Voucher, string? Reason, string StaffId, string StaffName, bool CanApprove)
-    : IRequest<SafeVoucherResultDto>, IRetryOnConflict;
+    : IRequest<SafeVoucherResultDto>, IRetryOnConflict, IBooksEntry
+{
+    IEnumerable<DateOnly?> IBooksEntry.BooksDays => [Voucher.Date, Voucher.RevenueDate];
+}
 
 public sealed record SafeVoucherResultDto(ApprovalOutcome Outcome, SafeTransactionDto? Transaction, ApprovalRequestDto? Request);
 
@@ -816,7 +820,10 @@ internal sealed class RecordSafeVoucherHandler(
 // What a supplier was owed when the treasury started, from invoices before it. No cash moves, so
 // it is entered at once. EntryId is made by the till.
 public sealed record SetSupplierOpeningBalanceCommand(Guid EntryId, Guid SupplierId, decimal Owed, DateOnly Date, string StaffName)
-    : IRequest, IRetryOnConflict;
+    : IRequest, IRetryOnConflict, IBooksEntry
+{
+    IEnumerable<DateOnly?> IBooksEntry.BooksDays => [Date];
+}
 
 internal sealed class SetSupplierOpeningBalanceHandler(
     ISupplierLedgerRepository ledger, ISupplierRepository suppliers, IUnitOfWork unitOfWork)
@@ -880,7 +887,11 @@ public static class InvoicePayments
 // owed to its supplier.
 public sealed record PayPurchaseInvoiceCommand(
     Guid RequestId, Guid InvoiceId, PurchasePaymentMethod Method, DateOnly? RevenueDate, string StaffId, string StaffName, bool CanApprove)
-    : IRequest<InvoicePaymentStatus>, IRetryOnConflict;
+    : IRequest<InvoicePaymentStatus>, IRetryOnConflict, IBooksEntry
+{
+    IEnumerable<DateOnly?> IBooksEntry.BooksDays => [RevenueDate];
+    bool IBooksEntry.WritesToday => true;
+}
 
 internal sealed class PayPurchaseInvoiceHandler(
     IPurchaseInvoiceRepository invoices,

@@ -5,6 +5,7 @@ using Costing.Domain.Common;
 using Costing.Domain.EndOfDay;
 using Costing.Domain.Menu;
 using Costing.Domain.Sales;
+using Costing.Application.Books;
 
 namespace Costing.Application.Sales;
 
@@ -35,7 +36,10 @@ public sealed record BulkSalesImport(
 
 public sealed record PreviewBulkSalesImportQuery(IReadOnlyList<DailySaleRow> Rows) : IRequest<BulkSalesImport>;
 
-public sealed record BulkImportSalesCommand(IReadOnlyList<DailySaleRow> Rows, string StaffName) : IRequest<BulkSalesImport>, IRetryOnConflict;
+public sealed record BulkImportSalesCommand(IReadOnlyList<DailySaleRow> Rows, string StaffName) : IRequest<BulkSalesImport>, IRetryOnConflict, IBooksEntry
+{
+    IEnumerable<DateOnly?> IBooksEntry.BooksDays => Rows.Select(r => r.Date);
+}
 
 internal sealed class BulkSalesPlanner(IMenuRepository menu, ISalesReceiptRepository sales, IEndOfDayRepository days, IBusinessCalendar calendar)
 {

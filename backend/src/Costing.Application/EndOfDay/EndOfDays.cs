@@ -10,6 +10,7 @@ using Costing.Domain.Sales;
 using Costing.Domain.Staff;
 using Costing.Domain.Suppliers;
 using Costing.Domain.Treasury;
+using Costing.Application.Books;
 
 namespace Costing.Application.EndOfDay;
 
@@ -174,13 +175,6 @@ public sealed record EndOfDayUndoPreview(
 public sealed record EndOfDayUndone(
     EndOfDayDto Day, bool TakingsVoided, bool SalesVoided, int InvoicesVoided, int PayoutsVoided, int RequestsRefused, int ZReports = 0);
 
-// The date the books are locked until (إقفال الدفاتر), set on Financials → Tax & service: no day on
-// or before it is closed or undone.
-public interface IBooksLock
-{
-    Task<DateOnly?> LockedUntilAsync(CancellationToken cancellationToken);
-}
-
 public sealed record EndOfDayPhotoFile(string FileName, string ContentType, byte[] Content);
 
 public sealed record GetEndOfDayQuery(DateOnly Date) : IRequest<EndOfDayDto?>;
@@ -191,7 +185,10 @@ public sealed record GetEndOfDaysQuery(DateOnly From, DateOnly To) : IRequest<IR
 public sealed record SaveEndOfDaySalesCommand(
     DateOnly Date, decimal? CashAmount, decimal? CardAmount, decimal? TaxAmount, decimal? VoidsAmount, string? Notes, string StaffName = "",
     decimal? OpeningFloat = null, decimal? DiscountsAmount = null, IReadOnlyList<DiscountReason>? DiscountReasons = null)
-    : IRequest<EndOfDayDto>;
+    : IRequest<EndOfDayDto>, IBooksEntry
+{
+    IEnumerable<DateOnly?> IBooksEntry.BooksDays => [Date];
+}
 
 public sealed record AddEndOfDayInvoiceCommand(
     DateOnly Date,
@@ -204,44 +201,71 @@ public sealed record AddEndOfDayInvoiceCommand(
     string ContentType,
     byte[] Content,
     string StaffName = "",
-    Guid? PurchaseOrderId = null) : IRequest<EndOfDayDto>;
+    Guid? PurchaseOrderId = null) : IRequest<EndOfDayDto>, IBooksEntry
+{
+    IEnumerable<DateOnly?> IBooksEntry.BooksDays => [Date];
+}
 
 public sealed record ChangeEndOfDayInvoiceCommand(
     DateOnly Date, Guid InvoiceId, EndOfDayInvoiceKind Kind, Guid SupplierId, decimal ReportedTotal, string? Note, string StaffName = "",
     Guid? PurchaseOrderId = null)
-    : IRequest<EndOfDayDto>;
+    : IRequest<EndOfDayDto>, IBooksEntry
+{
+    IEnumerable<DateOnly?> IBooksEntry.BooksDays => [Date];
+}
 
 public sealed record ReplaceEndOfDayInvoicePhotoCommand(DateOnly Date, Guid InvoiceId, string FileName, string ContentType, byte[] Content, string StaffName = "")
-    : IRequest<EndOfDayDto>;
+    : IRequest<EndOfDayDto>, IBooksEntry
+{
+    IEnumerable<DateOnly?> IBooksEntry.BooksDays => [Date];
+}
 
-public sealed record RemoveEndOfDayInvoiceCommand(DateOnly Date, Guid InvoiceId, string StaffName = "") : IRequest<EndOfDayDto>;
+public sealed record RemoveEndOfDayInvoiceCommand(DateOnly Date, Guid InvoiceId, string StaffName = "") : IRequest<EndOfDayDto>, IBooksEntry
+{
+    IEnumerable<DateOnly?> IBooksEntry.BooksDays => [Date];
+}
 
 public sealed record AttachEndOfDaySalesPhotoCommand(DateOnly Date, string FileName, string ContentType, byte[] Content, string StaffName = "")
-    : IRequest<EndOfDayDto>;
+    : IRequest<EndOfDayDto>, IBooksEntry
+{
+    IEnumerable<DateOnly?> IBooksEntry.BooksDays => [Date];
+}
 
-public sealed record RemoveEndOfDaySalesPhotoCommand(DateOnly Date, string StaffName = "") : IRequest<EndOfDayDto>;
+public sealed record RemoveEndOfDaySalesPhotoCommand(DateOnly Date, string StaffName = "") : IRequest<EndOfDayDto>, IBooksEntry
+{
+    IEnumerable<DateOnly?> IBooksEntry.BooksDays => [Date];
+}
 
 // Handed in: its payments and advances made the safe's entries (CanApprove, a manager), or asked of
 // a manager (StaffId, who asks). Only the next day in the sequence; with no sales, only once
 // confirmed as a day that sold nothing (ZeroSales) and when nothing was sold on it.
 public sealed record SubmitEndOfDayCommand(DateOnly Date, string StaffName = "", string StaffId = "", bool CanApprove = false, bool ZeroSales = false)
-    : IRequest<EndOfDayDto>, IRetryOnConflict;
+    : IRequest<EndOfDayDto>, IRetryOnConflict, IBooksEntry
+{
+    IEnumerable<DateOnly?> IBooksEntry.BooksDays => [Date];
+}
 
 public sealed record GetEndOfDaySequenceQuery : IRequest<EndOfDaySequenceDto>;
 
 // A day the restaurant did not trade (تسجيل يوم إغلاق أو صيانة): the day to close next, closed with
 // nothing on it and why, so the days go on.
-public sealed record MarkClosedDayCommand(DateOnly Date, string? Reason, string StaffName = "") : IRequest<EndOfDayDto>, IRetryOnConflict;
+public sealed record MarkClosedDayCommand(DateOnly Date, string? Reason, string StaffName = "") : IRequest<EndOfDayDto>, IRetryOnConflict, IBooksEntry
+{
+    IEnumerable<DateOnly?> IBooksEntry.BooksDays => [Date];
+}
 
 // A manager's: a draft entered under the wrong date moved to the day to close next (TargetDate, the
 // one the manager saw), with the reason, which is required and written into it.
 public sealed record ReassignEndOfDayDateCommand(Guid Id, DateOnly TargetDate, string? AuditReason, string StaffName = "")
-    : IRequest<EndOfDayReassigned>, IRetryOnConflict;
+    : IRequest<EndOfDayReassigned>, IRetryOnConflict, IBooksEntry
+{
+    IEnumerable<DateOnly?> IBooksEntry.BooksDays => [TargetDate];
+}
 
 // A manager's: the last day closed, undone and back to a draft (Date: the one the manager saw, so
 // a day closed since is never undone by mistake).
 public sealed record UndoLastEndOfDayCommand(DateOnly? Date, string? Reason, string StaffName = "", string StaffId = "")
-    : IRequest<EndOfDayUndone>, IRetryOnConflict;
+    : IRequest<EndOfDayUndone>, IRetryOnConflict, IChecksBooksItself;
 
 // Cash paid out of the till: PayeeId the supplier paid or the employee advanced; PayoutId made by the
 // till, so one sent again is not added twice.
@@ -255,15 +279,27 @@ public sealed record AddEndOfDayPayoutCommand(
     string FileName,
     string ContentType,
     byte[] Content,
-    string StaffName = "") : IRequest<EndOfDayDto>;
+    string StaffName = "") : IRequest<EndOfDayDto>, IBooksEntry
+{
+    IEnumerable<DateOnly?> IBooksEntry.BooksDays => [Date];
+}
 
 public sealed record ChangeEndOfDayPayoutCommand(DateOnly Date, Guid PayoutId, Guid PayeeId, decimal Amount, string? Note, string StaffName = "")
-    : IRequest<EndOfDayDto>;
+    : IRequest<EndOfDayDto>, IBooksEntry
+{
+    IEnumerable<DateOnly?> IBooksEntry.BooksDays => [Date];
+}
 
 public sealed record ReplaceEndOfDayPayoutReceiptCommand(DateOnly Date, Guid PayoutId, string FileName, string ContentType, byte[] Content, string StaffName = "")
-    : IRequest<EndOfDayDto>;
+    : IRequest<EndOfDayDto>, IBooksEntry
+{
+    IEnumerable<DateOnly?> IBooksEntry.BooksDays => [Date];
+}
 
-public sealed record RemoveEndOfDayPayoutCommand(DateOnly Date, Guid PayoutId, string StaffName = "") : IRequest<EndOfDayDto>;
+public sealed record RemoveEndOfDayPayoutCommand(DateOnly Date, Guid PayoutId, string StaffName = "") : IRequest<EndOfDayDto>, IBooksEntry
+{
+    IEnumerable<DateOnly?> IBooksEntry.BooksDays => [Date];
+}
 
 
 // A photo of the day: an invoice's or a payment's receipt by its id, the sales report's by the day's.
@@ -822,8 +858,7 @@ internal sealed class UndoLastEndOfDayHandler(
                 $"Only the last closed day, {last.ToString("d MMM yyyy", CultureInfo.InvariantCulture)}, is undone: the days before it stay as they are. " +
                 "· يُلغى تقفيل آخر يوم فقط.");
         if (await books.LockedUntilAsync(cancellationToken) is { } locked && last <= locked)
-            throw new DomainException(
-                $"The books are locked until {locked.ToString("d MMM yyyy", CultureInfo.InvariantCulture)}: that day is not undone. · الدفاتر مقفلة.");
+            throw new PeriodLockedException(locked, last);
         var day = await shared.GetAsync(last, cancellationToken);
         var by = request.StaffName;
 

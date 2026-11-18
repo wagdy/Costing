@@ -8,7 +8,8 @@ import { MatInputModule } from '@angular/material/input';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { RouterLink } from '@angular/router';
 import { firstValueFrom } from 'rxjs';
-import { CostingApi } from '../../core/costing/costing.api';
+import { AuthService } from '../../core/auth/auth.service';
+import { Permissions } from '../../core/auth/permissions';
 import { EndOfDay, EndOfDayApi, EndOfDaySequence, endOfDayStatusLabels } from '../../core/costing/end-of-day.api';
 import { errorMessage } from '../../core/http/error-message';
 import { MoneyPipe } from '../../core/ui/money.pipe';
@@ -56,19 +57,8 @@ import { EndOfDayUndo } from './end-of-day-undo';
         <div class="fact">
           <span class="label">Books locked until <span class="inline-ar">الدفاتر مقفلة حتى</span></span>
           <strong>{{ s.booksLockedUntil ? (s.booksLockedUntil | date: 'd MMM y') : 'Not locked' }}</strong>
-          @if (canDecide() && s.lastClosedDate) {
-            <div class="lock">
-              <mat-form-field subscriptSizing="dynamic">
-                <mat-label>Lock until · إقفال حتى</mat-label>
-                <input matInput type="date" [(ngModel)]="lockUntil" [max]="s.lastClosedDate" aria-label="Lock the books until" />
-              </mat-form-field>
-              <button mat-stroked-button (click)="lock(lockUntil)" [disabled]="busy() || !lockUntil || lockUntil === s.booksLockedUntil">
-                <mat-icon>lock</mat-icon> Lock
-              </button>
-              @if (s.booksLockedUntil) {
-                <button mat-button (click)="lock(null)" [disabled]="busy()"><mat-icon>lock_open</mat-icon> Unlock</button>
-              }
-            </div>
+          @if (canClose) {
+            <a mat-button routerLink="/settings/period-lock"><mat-icon>lock_clock</mat-icon> Period lock · إقفال الدفاتر</a>
           }
         </div>
       </section>
@@ -192,13 +182,6 @@ import { EndOfDayUndo } from './end-of-day-undo';
         justify-self: start;
       }
     }
-    .lock {
-      display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      gap: 6px;
-      margin-top: 4px;
-    }
     .nowrap {
       white-space: nowrap;
     }
@@ -223,7 +206,6 @@ import { EndOfDayUndo } from './end-of-day-undo';
 })
 export class DailySummariesPage {
   private readonly api = inject(EndOfDayApi);
-  private readonly costing = inject(CostingApi);
   private readonly notify = inject(NotifyService);
   private readonly undoer = inject(EndOfDayUndo);
   private readonly approvals = inject(Approvals);
@@ -237,7 +219,8 @@ export class DailySummariesPage {
   protected readonly from = signal('');
   protected readonly to = signal('');
   protected readonly canDecide = computed(() => this.approvals.canApprove());
-  protected lockUntil = '';
+  // Closing a period (and opening one again) is on Settings → Period lock, a manager's.
+  protected readonly canClose = inject(AuthService).can(Permissions.SettingsManage);
 
   constructor() {
     void this.start();
@@ -264,19 +247,6 @@ export class DailySummariesPage {
     }
   }
 
-  protected async lock(until: string | null): Promise<void> {
-    this.busy.set(true);
-    try {
-      const saved = await firstValueFrom(this.costing.lockBooks(until || null));
-      this.notify.info(saved.booksLockedUntil ? `The books are locked until ${saved.booksLockedUntil}. · تم إقفال الدفاتر.` : 'The books are unlocked. · تم فتح الدفاتر.');
-      await this.load();
-    } catch (error) {
-      this.notify.error(error, 'The books could not be locked.');
-    } finally {
-      this.busy.set(false);
-    }
-  }
-
   protected setFrom(day: string): void {
     if (day) {
       this.from.set(day);
@@ -295,7 +265,6 @@ export class DailySummariesPage {
     try {
       const s = await firstValueFrom(this.api.sequence());
       this.sequence.set(s);
-      this.lockUntil = s.booksLockedUntil ?? s.lastClosedDate ?? '';
       this.to.set(s.today);
       this.from.set(addDays(s.today, -30));
     } catch (error) {
@@ -313,10 +282,6 @@ export class DailySummariesPage {
       const [sequence, days] = await Promise.all([firstValueFrom(this.api.sequence()), firstValueFrom(this.api.days(this.from(), this.to()))]);
       this.sequence.set(sequence);
       this.days.set(days);
-      // Never past the last closed day: one undone since is open again.
-      if (!this.lockUntil || (sequence.lastClosedDate && this.lockUntil > sequence.lastClosedDate)) {
-        this.lockUntil = sequence.booksLockedUntil ?? sequence.lastClosedDate ?? '';
-      }
     } catch (error) {
       this.error.set(errorMessage(error, 'The days could not be loaded.'));
     } finally {

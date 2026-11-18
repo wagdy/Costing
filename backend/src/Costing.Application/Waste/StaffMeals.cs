@@ -6,6 +6,7 @@ using Costing.Domain.Menu;
 using Costing.Domain.RawMaterials;
 using Costing.Domain.Recipes;
 using Costing.Domain.StockMovements;
+using Costing.Application.Books;
 
 namespace Costing.Application.Waste;
 
@@ -29,7 +30,10 @@ public sealed record StaffConsumptionLine(Guid? RawMaterialId, Guid? RecipeId, d
 // set by the API from who is signed in.
 public sealed record RecordStaffConsumptionCommand(
     Guid EntryId, StaffConsumptionKind Kind, IReadOnlyList<StaffConsumptionLine> Lines, string? Note = null, string RecordedBy = "")
-    : IRequest<Guid>, IRetryOnConflict;
+    : IRequest<Guid>, IRetryOnConflict, IBooksEntry
+{
+    bool IBooksEntry.WritesToday => true;
+}
 
 public static class StaffConsumptionKinds
 {

@@ -312,6 +312,12 @@ export const routes: Routes = [
         loadComponent: () => import('./features/settings/hr-integration-page').then((m) => m.HrIntegrationPage),
       },
       {
+        // Period lock & month-end close: the books closed until a day, opened again with why; a manager's.
+        path: 'settings/period-lock',
+        canActivate: [permissionGuard(Permissions.SettingsManage)],
+        loadComponent: () => import('./features/settings/period-lock-page').then((m) => m.PeriodLockPage),
+      },
+      {
         // Their own account and password; where a user working no section lands.
         path: 'account',
         loadComponent: () => import('./features/account/account-page').then((m) => m.AccountPage),

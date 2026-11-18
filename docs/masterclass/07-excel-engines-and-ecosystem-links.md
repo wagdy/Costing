@@ -4523,7 +4523,7 @@ public interface IPosSyncJournal
 ```
 
 
-> 📄 **`backend/src/Costing.Application/Integrations/PosIntegration.cs`** — 535 سطر
+> 📄 **`backend/src/Costing.Application/Integrations/PosIntegration.cs`** — 540 سطر
 
 ```csharp
 using System.Globalization;
@@ -4545,6 +4545,7 @@ using Costing.Domain.Recipes;
 using Costing.Domain.Sales;
 using Costing.Domain.StockMovements;
 using Costing.Domain.Treasury;
+using Costing.Application.Books;
 
 namespace Costing.Application.Integrations;
 
@@ -4691,7 +4692,7 @@ public sealed record ZReportResultDto(
     Guid ZReportId, DateOnly Date, PosSyncOutcome Outcome, Guid? SaleId, Guid? TakingsId, int Items, int Quantity, int Wasted,
     decimal SalesValue, decimal Cash, decimal Card, decimal Tax, IReadOnlyList<string> Warnings);
 
-public sealed record ReceiveZReportCommand(ZReportInput Report, string Source) : IRequest<ZReportResultDto>, IRetryOnConflict;
+public sealed record ReceiveZReportCommand(ZReportInput Report, string Source) : IRequest<ZReportResultDto>, IRetryOnConflict, IChecksBooksItself;
 
 internal sealed class ReceiveZReportHandler(
     IPosZReportRepository reports,
@@ -4707,6 +4708,7 @@ internal sealed class ReceiveZReportHandler(
     DeletionTargets deletions,
     IBusinessCalendar calendar,
     IPosSyncJournal journal,
+    BooksGuard guard,
     IUnitOfWork unitOfWork) : IRequestHandler<ReceiveZReportCommand, ZReportResultDto>
 {
     public const string By = "POS";
@@ -4763,6 +4765,9 @@ internal sealed class ReceiveZReportHandler(
             var day = await days.GetByDateAsync(existing.BusinessDate, cancellationToken);
             return Result(report, PosSyncOutcome.Unchanged, day?.SaleId, day?.TakingsId, await SaleAsync(day?.SaleId, cancellationToken), []);
         }
+
+        // A day in the books closed is not written, nor one a report moves off: refused, and logged.
+        await guard.EnsureOpenAsync([report.Date, existing?.BusinessDate], cancellationToken);
 
         var known = await SaleWriter.Menu.LoadAsync(menu, cancellationToken);
         var targets = new MenuTargets(known.Items.Values.ToList(), known.AddOns.Values.ToList());
@@ -5756,7 +5761,7 @@ public interface IHrSyncJournal
 ```
 
 
-> 📄 **`backend/src/Costing.Application/Integrations/HrIntegration.cs`** — 675 سطر
+> 📄 **`backend/src/Costing.Application/Integrations/HrIntegration.cs`** — 687 سطر
 
 ```csharp
 using System.Globalization;
@@ -5773,6 +5778,7 @@ using Costing.Domain.EndOfDay;
 using Costing.Domain.Integrations;
 using Costing.Domain.Staff;
 using Costing.Domain.Treasury;
+using Costing.Application.Books;
 
 namespace Costing.Application.Integrations;
 
@@ -6240,9 +6246,9 @@ public sealed record PayrollRunDto(
 
 public sealed record PayrollRunResultDto(HrSyncOutcome Outcome, Guid Id, DateOnly Period, decimal NetCashPayable, decimal LaborCost);
 
-public sealed record ReceivePayrollRunCommand(PayrollRunInput Run) : IRequest<PayrollRunResultDto>, IRetryOnConflict;
+public sealed record ReceivePayrollRunCommand(PayrollRunInput Run) : IRequest<PayrollRunResultDto>, IRetryOnConflict, IChecksBooksItself;
 
-internal sealed class ReceivePayrollRunHandler(IPayrollRunRepository runs, IHrSyncJournal journal, IUnitOfWork unitOfWork)
+internal sealed class ReceivePayrollRunHandler(IPayrollRunRepository runs, IHrSyncJournal journal, BooksGuard guard, IUnitOfWork unitOfWork)
     : IRequestHandler<ReceivePayrollRunCommand, PayrollRunResultDto>
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
@@ -6280,6 +6286,11 @@ internal sealed class ReceivePayrollRunHandler(IPayrollRunRepository runs, IHrSy
         var run = await runs.GetByIdAsync(input.IdempotencyKey, cancellationToken);
         if (run is not null && run.PayloadHash == hash)
             return Result(run, HrSyncOutcome.Unchanged);
+
+        // A month's labour cost is its last day's: a month in the books closed, or one a run moves
+        // off, is not written; refused, and logged.
+        await guard.EnsureOpenAsync(
+            [BooksGuard.MonthEnd(period.Year, period.Month), run is null ? null : BooksGuard.MonthEnd(run.Period.Year, run.Period.Month)], cancellationToken);
 
         // Another run of the same month: replaced while it is still to be paid; once paid, refused.
         if (await runs.GetForPeriodAsync(period, cancellationToken) is { } other && other.Id != input.IdempotencyKey)
@@ -6324,7 +6335,10 @@ internal sealed class GetPayrollRunsHandler(IPayrollRunRepository runs, IApprova
 // A payroll from HR paid out of the safe in one entry, its net cash payable: a manager's at once,
 // anyone else's asked of a manager. TransactionId (the entry's) and RequestId are made by the app.
 public sealed record DisbursePayrollRunCommand(Guid RunId, Guid TransactionId, Guid RequestId, string StaffId, string StaffName, bool CanApprove)
-    : IRequest<SafeVoucherResultDto>, IRetryOnConflict;
+    : IRequest<SafeVoucherResultDto>, IRetryOnConflict, IBooksEntry
+{
+    bool IBooksEntry.WritesToday => true;
+}
 
 internal sealed class DisbursePayrollRunHandler(
     IPayrollRunRepository runs, TreasuryWriter treasury, ISafeTransactionRepository safe, IApprovalRequestRepository requests, IUnitOfWork unitOfWork)
@@ -6373,9 +6387,12 @@ public sealed record GetStaffDeductionsQuery(DateOnly From, DateOnly To) : IRequ
 
 // Made by the app (Id), so one sent again is recorded once.
 public sealed record RecordStaffDeductionCommand(
-    Guid Id, Guid EmployeeId, DateOnly Date, StaffDeductionKind Kind, decimal Amount, string? Reason, string StaffName) : IRequest<StaffDeductionDto>;
+    Guid Id, Guid EmployeeId, DateOnly Date, StaffDeductionKind Kind, decimal Amount, string? Reason, string StaffName) : IRequest<StaffDeductionDto>, IBooksEntry
+{
+    IEnumerable<DateOnly?> IBooksEntry.BooksDays => [Date];
+}
 
-public sealed record VoidStaffDeductionCommand(Guid Id, string StaffName) : IRequest<StaffDeductionDto>;
+public sealed record VoidStaffDeductionCommand(Guid Id, string StaffName) : IRequest<StaffDeductionDto>, IBooksEntry;
 
 internal sealed class StaffDeductionReading(IStaffMemberRepository staff, ISyncedEmployeeRepository synced)
 {

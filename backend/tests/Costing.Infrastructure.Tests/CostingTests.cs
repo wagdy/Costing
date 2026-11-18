@@ -2307,7 +2307,9 @@ public class CostingTests
         var ct = TestContext.Current.CancellationToken;
         var collision = () => new ConflictException("Someone else changed this at the same time.");
 
-        var purchase = Assert.Single(node.Service<IEnumerable<IPipelineBehavior<ReceivePurchaseCommand, IReadOnlyList<RawMaterialDto>>>>(scope));
+        // The retry, among the pipeline's behaviors (the books' lock is another).
+        var purchase = Assert.Single(node.Service<IEnumerable<IPipelineBehavior<ReceivePurchaseCommand, IReadOnlyList<RawMaterialDto>>>>(scope),
+            b => b.GetType().Name.StartsWith("RetryOnConflictBehavior", StringComparison.Ordinal));
         var calls = 0;
         await purchase.Handle(new ReceivePurchaseCommand(Guid.NewGuid(), []),
             _ => ++calls == 1 ? throw collision() : Task.FromResult<IReadOnlyList<RawMaterialDto>>([]), ct);
@@ -2320,7 +2322,8 @@ public class CostingTests
         Assert.Equal(3, calls);
 
         // A draft count saved from two tablets is not retried: the second should see the first.
-        var draft = Assert.Single(node.Service<IEnumerable<IPipelineBehavior<SaveStockCountCommand, StockCountDto>>>(scope));
+        var draft = Assert.Single(node.Service<IEnumerable<IPipelineBehavior<SaveStockCountCommand, StockCountDto>>>(scope),
+            b => b.GetType().Name.StartsWith("RetryOnConflictBehavior", StringComparison.Ordinal));
         calls = 0;
         await Assert.ThrowsAsync<ConflictException>(() => draft.Handle(new SaveStockCountCommand(Guid.NewGuid(), []),
             _ => { calls++; throw collision(); }, ct));

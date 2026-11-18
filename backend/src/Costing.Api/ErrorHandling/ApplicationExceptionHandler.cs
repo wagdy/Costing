@@ -22,6 +22,8 @@ internal sealed class ApplicationExceptionHandler(
 
         var (status, title, detail) = exception switch
         {
+            // A day in the books closed: 423 Locked, the lock's day with it.
+            PeriodLockedException => (StatusCodes.Status423Locked, "The books are closed for that period.", exception.Message),
             DomainException => (StatusCodes.Status422UnprocessableEntity, "The request breaks a business rule.", exception.Message),
             NotFoundException => (StatusCodes.Status404NotFound, "Not found.", exception.Message),
             ForbiddenException => (StatusCodes.Status403Forbidden, "Not allowed.", exception.Message),
@@ -46,7 +48,13 @@ internal sealed class ApplicationExceptionHandler(
         {
             HttpContext = httpContext,
             Exception = exception,
-            ProblemDetails = { Status = status, Title = title, Detail = detail },
+            ProblemDetails =
+            {
+                Status = status, Title = title, Detail = detail,
+                Extensions = exception is PeriodLockedException locked
+                    ? new Dictionary<string, object?> { ["lockedUntil"] = locked.LockedUntil.ToString("yyyy-MM-dd"), ["day"] = locked.Day.ToString("yyyy-MM-dd") }
+                    : new Dictionary<string, object?>(),
+            },
         });
     }
 

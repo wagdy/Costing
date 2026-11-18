@@ -196,7 +196,9 @@ public class EndOfDayTests
         EndOfDaySequence.Check(new DateOnly(2026, 11, 16), last, today, null);
         Assert.Contains("Close Mon 16 Nov 2026 first", Assert.Throws<DomainException>(() => EndOfDaySequence.Check(today, last, today, null)).Message);
         Assert.Contains("closed already", Assert.Throws<DomainException>(() => EndOfDaySequence.Check(last, last, today, null)).Message);
-        Assert.Contains("locked", Assert.Throws<DomainException>(() => EndOfDaySequence.Check(new DateOnly(2026, 11, 16), last, today, new DateOnly(2026, 11, 16))).Message);
+        var locked = Assert.Throws<PeriodLockedException>(() => EndOfDaySequence.Check(new DateOnly(2026, 11, 16), last, today, new DateOnly(2026, 11, 16)));
+        Assert.Equal((new DateOnly(2026, 11, 16), new DateOnly(2026, 11, 16)), (locked.LockedUntil, locked.Day));
+        Assert.StartsWith("Cannot modify records before the locked period (Books closed until 16 Nov 2026)", locked.Message);
         Assert.Equal(new DateOnly(2026, 11, 16), EndOfDaySequence.NextAfter(last));
     }
 

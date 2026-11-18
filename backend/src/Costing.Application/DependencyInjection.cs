@@ -7,7 +7,22 @@ public static class DependencyInjection
     // Infrastructure supplies the repositories, the unit of work and the clock.
     public static IServiceCollection AddCostingApplication(this IServiceCollection services)
     {
-        services.AddMediatR(config => config.RegisterServicesFromAssembly(typeof(DependencyInjection).Assembly));
+        services.AddMediatR(config =>
+        {
+            config.RegisterServicesFromAssembly(typeof(DependencyInjection).Assembly);
+            // The books' lock: every request that writes to them, before its handler.
+            config.AddOpenBehavior(typeof(Books.BooksLockBehavior<,>));
+        });
+        services.AddScoped<Books.IBooksLock, Books.CompanyBooksLock>();
+        services.AddScoped<Books.BooksGuard>();
+        services.AddScoped<Books.PeriodLockReader>();
+        // The days of the records each request names.
+        foreach (var lookup in typeof(DependencyInjection).Assembly.GetTypes()
+                     .Where(t => t is { IsClass: true, IsAbstract: false } && !t.IsGenericTypeDefinition))
+        {
+            foreach (var contract in lookup.GetInterfaces().Where(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(Books.IBooksDays<>)))
+                services.AddScoped(contract, lookup);
+        }
         services.AddScoped<Sales.SaleStockPoster>();
         services.AddScoped<Sales.SaleWriter>();
         services.AddScoped<Sales.DailySalesWriter>();

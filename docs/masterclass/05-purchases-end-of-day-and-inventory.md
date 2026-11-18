@@ -46,7 +46,7 @@
 
 `PurchaseInvoices.cs`: `InvoiceRecorder` (حفظ المسودة: التحقق من البنود، الوحدات، المورد، الخصم)، و `InvoicePoster` (الترحيل: يُدخل المخزون بحركات `Purchase` ويحرك المتوسط، ويسجل الدفع: نقدي من الخزنة، أو من إيراد يوم، أو آجل على المورد)، والقراءة. المعرّف يصنعه "الـ till" (المتصفح).
 
-> 📄 **`backend/src/Costing.Application/Purchases/PurchaseInvoices.cs`** — 516 سطر
+> 📄 **`backend/src/Costing.Application/Purchases/PurchaseInvoices.cs`** — 520 سطر
 
 ```csharp
 using MediatR;
@@ -63,6 +63,7 @@ using Costing.Domain.RawMaterials;
 using Costing.Domain.StockMovements;
 using Costing.Domain.Suppliers;
 using Costing.Domain.Treasury;
+using Costing.Application.Books;
 
 namespace Costing.Application.Purchases;
 
@@ -307,7 +308,10 @@ public sealed record SavePurchaseInvoiceCommand(
     decimal Discount = 0,
     // The purchase order it delivers, and whether it closes it with what came (no backorder).
     Guid? PurchaseOrderId = null,
-    bool ClosesPurchaseOrder = false) : IRequest<PurchaseInvoiceDto>;
+    bool ClosesPurchaseOrder = false) : IRequest<PurchaseInvoiceDto>, IBooksEntry
+{
+    IEnumerable<DateOnly?> IBooksEntry.BooksDays => [InvoiceDate, RevenueDate];
+}
 
 // The checks and the recording of an invoice as entered, for a draft saved on its own and for each
 // invoice of a daily batch alike. Tracked, for the caller to save.
@@ -417,7 +421,7 @@ internal sealed class SavePurchaseInvoiceCommandHandler(
 // supplier; in cash, paid for a manager and asked of one for anyone else (the stock is in either
 // way). Posting again, after an answer was lost, returns the posted invoice and changes nothing.
 public sealed record PostPurchaseInvoiceCommand(Guid InvoiceId, string StaffName = "", string StaffId = "", bool CanApprove = true)
-    : IRequest<PurchaseInvoiceDto>, IRetryOnConflict;
+    : IRequest<PurchaseInvoiceDto>, IRetryOnConflict, IBooksEntry;
 
 // Posting an invoice: its stock in and its payment settled, for an invoice posted on its own and for
 // each invoice of a daily batch alike. Tracked, for the caller to save.
@@ -570,7 +574,7 @@ internal sealed class GetPurchaseInvoiceAttachmentQueryHandler(IPurchaseInvoiceR
 
 `InvoiceCorrections.cs`: **تعديل فاتورة مرحّلة = فاتورة جديدة تسمّي الأصلية**، والأصلية تُلغى (بضاعتها تخرج بحركات عكسية، ونقدها يعود أو دينها يُعكس). المعاينة تعرض أثر التعديل على كل خامة. للمدير فورًا، ولغيره كطلب.
 
-> 📄 **`backend/src/Costing.Application/Purchases/InvoiceCorrections.cs`** — 242 سطر
+> 📄 **`backend/src/Costing.Application/Purchases/InvoiceCorrections.cs`** — 246 سطر
 
 ```csharp
 using System.Globalization;
@@ -585,6 +589,7 @@ using Costing.Domain.Purchases;
 using Costing.Domain.RawMaterials;
 using Costing.Domain.StockMovements;
 using Costing.Domain.Suppliers;
+using Costing.Application.Books;
 
 namespace Costing.Application.Purchases;
 
@@ -610,7 +615,10 @@ public sealed record InvoiceCorrection(
 
 public sealed record CorrectPurchaseInvoiceCommand(
     Guid RequestId, Guid InvoiceId, InvoiceCorrection Correction, string? Reason, string StaffId, string StaffName, bool CanApprove)
-    : IRequest<ApprovalResultDto>, IRetryOnConflict;
+    : IRequest<ApprovalResultDto>, IRetryOnConflict, IBooksEntry
+{
+    IEnumerable<DateOnly?> IBooksEntry.BooksDays => [Correction.InvoiceDate, Correction.RevenueDate];
+}
 
 internal sealed class CorrectPurchaseInvoiceHandler(IApprovalRequestRepository requests, InvoiceCorrector corrector, IUnitOfWork unitOfWork)
     : IRequestHandler<CorrectPurchaseInvoiceCommand, ApprovalResultDto>
@@ -827,7 +835,7 @@ internal sealed class InvoiceCorrector(
 - صورة الورقة تُرفع بعد الترحيل (لا تُحفظ في `localStorage`)،
 - وسلف الموظفين من نفس الشاشة.
 
-> 📄 **`backend/src/Costing.Application/Purchases/PurchaseBatch.cs`** — 302 سطر
+> 📄 **`backend/src/Costing.Application/Purchases/PurchaseBatch.cs`** — 306 سطر
 
 ```csharp
 using System.Globalization;
@@ -845,6 +853,7 @@ using Costing.Domain.Purchases;
 using Costing.Domain.RawMaterials;
 using Costing.Domain.Suppliers;
 using Costing.Domain.Treasury;
+using Costing.Application.Books;
 
 namespace Costing.Application.Purchases;
 
@@ -902,7 +911,10 @@ public sealed record PostPurchaseBatchCommand(
     string StaffId = "",
     bool CanApprove = true,
     IReadOnlyList<BatchPayment>? Payments = null,
-    IReadOnlyList<BatchAdvance>? Advances = null) : IRequest<PurchaseBatchResult>, IRetryOnConflict;
+    IReadOnlyList<BatchAdvance>? Advances = null) : IRequest<PurchaseBatchResult>, IRetryOnConflict, IBooksEntry
+{
+    IEnumerable<DateOnly?> IBooksEntry.BooksDays => [InvoiceDate, RevenueDate];
+}
 
 internal sealed class PostPurchaseBatchHandler(
     IPurchaseInvoiceRepository invoices,
@@ -2291,7 +2303,7 @@ public sealed record CreatePurchaseOrdersRequest(IReadOnlyList<NewPurchaseOrder>
 
 `ReceivePurchaseCommand` (استلام بإذن) و `RecordSpoilageCommand` (هالك: يخرج المخزون بحركة `Spoilage` بالمتوسط). والمعرّف من المتصفح: الضغط مرتين على شبكة ضعيفة يجد الحركة نفسها ولا يكررها.
 
-> 📄 **`backend/src/Costing.Application/RawMaterials/StockIntake.cs`** — 102 سطر
+> 📄 **`backend/src/Costing.Application/RawMaterials/StockIntake.cs`** — 109 سطر
 
 ```csharp
 using MediatR;
@@ -2303,6 +2315,7 @@ using Costing.Domain.Categories;
 using Costing.Domain.Purchases;
 using Costing.Domain.RawMaterials;
 using Costing.Domain.StockMovements;
+using Costing.Application.Books;
 
 namespace Costing.Application.RawMaterials;
 
@@ -2314,7 +2327,10 @@ namespace Costing.Application.RawMaterials;
 // Paid from the safe: for a manager at once, and asked of one for anyone else, as an invoice is.
 public sealed record ReceivePurchaseCommand(
     Guid PurchaseId, IReadOnlyList<PurchaseLine> Lines, string RecordedBy = "", string StaffId = "", bool CanApprove = true)
-    : IRequest<IReadOnlyList<RawMaterialDto>>, IRetryOnConflict;
+    : IRequest<IReadOnlyList<RawMaterialDto>>, IRetryOnConflict, IBooksEntry
+{
+    bool IBooksEntry.WritesToday => true;
+}
 
 // Quantity in the material's own unit (grams, millilitres, pieces). Cost: what the line cost in
 // all, from the invoice; it moves the material's average cost. Without it, only stock changes.
@@ -2362,7 +2378,10 @@ internal sealed class ReceivePurchaseCommandHandler(
 // Thrown-away raw stock, as a manager records it. SpoilageId works as PurchaseId does, and
 // RecordedBy is set by the API from who is signed in.
 public sealed record RecordSpoilageCommand(Guid SpoilageId, IReadOnlyList<SpoilageLine> Lines, string RecordedBy = "")
-    : IRequest<IReadOnlyList<RawMaterialDto>>, IRetryOnConflict;
+    : IRequest<IReadOnlyList<RawMaterialDto>>, IRetryOnConflict, IBooksEntry
+{
+    bool IBooksEntry.WritesToday => true;
+}
 
 // Quantity in the material's own unit. Reason: expired, spoiled, dropped, damaged packaging.
 // ResponsibleStationId: the kitchen or bar station held to account for it (القسم المسؤول), the
@@ -2604,7 +2623,7 @@ NextExpectedDate = LastClosedDate + 1                   (EndOfDaySequence.NextAf
 
 EndOfDaySequence.Check(date, lastClosed, today, lockedUntil):
   date > today                     ⇐ "That day has not come yet"            (القاعدة 2)
-  date ≤ BooksLockedUntil          ⇐ "The books are locked until …"
+  date ≤ BooksLockedUntilDate      ⇐ PeriodLockedException (423): "Cannot modify records before the locked period …"
   lastClosed ≠ null و date ≤ last  ⇐ "… is closed already, or before the last closed day"
   lastClosed ≠ null و date > last+1⇐ "Close {next} first: days are closed in exact order"  (القاعدة 1)
   lastClosed = null                ⇐ أي يوم حتى اليوم يبدأ التسلسل
@@ -2613,7 +2632,7 @@ EndOfDaySequence.Check(date, lastClosed, today, lockedUntil):
 - الفحص في **مكانين**: عند فتح يوم جديد (`OpenAsync`: أول بند لا يصنع يومًا خارج الدور) وعند التسليم (`CheckSequenceAsync`). اليوم الموجود سلفًا (مسودة قديمة) يُعدّل، لكن لا يُسلّم إلا في دوره.
 - **يوم بلا مبيعات:** `Submit(by, zeroSales)` يرفض `NetSales ≤ 0` إلا مع `zeroSales`، والمعالج يرفضه لو لليوم ملخص مبيعات (من الـ POS أو يدوي) أو توريد في الخزنة: لا يُخفى بيعٌ حقيقي تحت "بدون مبيعات".
 - **تحذيرات لا تمنع** (`WarningsAsync`): فواتير مشتريات مسودة بتاريخ ≤ اليوم، وعُهد نقدية (سلف معلقة بلا اسم) أقدم من 48 ساعة في آخر 30 يومًا. تظهر في `GET sequence` لليوم التالي وفي رد التسليم.
-- **إقفال الدفاتر** (`FinancialSettings.BooksLockedUntil`): لا تقفيل ولا إلغاء ليوم ≤ تاريخ الإقفال. يضعه المدير حتى آخر يوم مقفول على الأكثر، ولا يتجاوز اليوم.
+- **إقفال الدفاتر** (`CompanySettings.BooksLockedUntilDate`، من الإعدادات ← إقفال الدفاتر): لا تقفيل ولا تعديل ولا إلغاء ليوم ≤ تاريخ الإقفال، ولا أي حركة أخرى بتاريخه (الفصل 03). يضعه المدير حتى آخر يوم مقفول على الأكثر، ولا يتجاوز اليوم.
 
 **إلغاء تقفيل آخر يوم** (`UndoLastEndOfDayCommand`، للمدير): آخر يوم فقط، فتبقى الأيام قبله كما هي، وبالتاريخ الذي رآه المدير (لو أُقفل يوم بعده في الأثناء يُرفض). في وحدة واحدة، بتاريخ اليوم:
 
@@ -2650,7 +2669,7 @@ EndOfDaySequence.Check(date, lastClosed, today, lockedUntil):
 
 **لماذا `MoveTo` قبل الفواتير؟** في الاختبار ظهر أن محاولة مرفوضة (بلا سبب) غيّرت تاريخ الفاتورة قبل أن يُفحص السبب: EF لا يحفظها، لكن التحقق يجب أن يسبق أي تغيير. **ولماذا `AuditTrail` منفصل؟** الملاحظات يكتب فيها المستخدم ويمكنه مسح السطر؛ السجل لا يغيره أحد. وُسّعت الملاحظات (2000 لليوم، 1000 للفاتورة) لتتسع لأسطر التدقيق، وبقيت ملاحظة الدفعة 200. حذف اليوم الفارغ وتغيير تاريخ المسودة إلى نفس التاريخ (فهرس فريد على `Date`) في `SaveChanges` واحد: EF يرتب الحذف قبل التحديث، واختُبر على قاعدة حقيقية.
 
-> 📄 **`backend/src/Costing.Application/EndOfDay/EndOfDays.cs`** — 969 سطر
+> 📄 **`backend/src/Costing.Application/EndOfDay/EndOfDays.cs`** — 1004 سطر
 
 ```csharp
 using System.Globalization;
@@ -2665,6 +2684,7 @@ using Costing.Domain.Sales;
 using Costing.Domain.Staff;
 using Costing.Domain.Suppliers;
 using Costing.Domain.Treasury;
+using Costing.Application.Books;
 
 namespace Costing.Application.EndOfDay;
 
@@ -2829,13 +2849,6 @@ public sealed record EndOfDayUndoPreview(
 public sealed record EndOfDayUndone(
     EndOfDayDto Day, bool TakingsVoided, bool SalesVoided, int InvoicesVoided, int PayoutsVoided, int RequestsRefused, int ZReports = 0);
 
-// The date the books are locked until (إقفال الدفاتر), set on Financials → Tax & service: no day on
-// or before it is closed or undone.
-public interface IBooksLock
-{
-    Task<DateOnly?> LockedUntilAsync(CancellationToken cancellationToken);
-}
-
 public sealed record EndOfDayPhotoFile(string FileName, string ContentType, byte[] Content);
 
 public sealed record GetEndOfDayQuery(DateOnly Date) : IRequest<EndOfDayDto?>;
@@ -2846,7 +2859,10 @@ public sealed record GetEndOfDaysQuery(DateOnly From, DateOnly To) : IRequest<IR
 public sealed record SaveEndOfDaySalesCommand(
     DateOnly Date, decimal? CashAmount, decimal? CardAmount, decimal? TaxAmount, decimal? VoidsAmount, string? Notes, string StaffName = "",
     decimal? OpeningFloat = null, decimal? DiscountsAmount = null, IReadOnlyList<DiscountReason>? DiscountReasons = null)
-    : IRequest<EndOfDayDto>;
+    : IRequest<EndOfDayDto>, IBooksEntry
+{
+    IEnumerable<DateOnly?> IBooksEntry.BooksDays => [Date];
+}
 
 public sealed record AddEndOfDayInvoiceCommand(
     DateOnly Date,
@@ -2859,44 +2875,71 @@ public sealed record AddEndOfDayInvoiceCommand(
     string ContentType,
     byte[] Content,
     string StaffName = "",
-    Guid? PurchaseOrderId = null) : IRequest<EndOfDayDto>;
+    Guid? PurchaseOrderId = null) : IRequest<EndOfDayDto>, IBooksEntry
+{
+    IEnumerable<DateOnly?> IBooksEntry.BooksDays => [Date];
+}
 
 public sealed record ChangeEndOfDayInvoiceCommand(
     DateOnly Date, Guid InvoiceId, EndOfDayInvoiceKind Kind, Guid SupplierId, decimal ReportedTotal, string? Note, string StaffName = "",
     Guid? PurchaseOrderId = null)
-    : IRequest<EndOfDayDto>;
+    : IRequest<EndOfDayDto>, IBooksEntry
+{
+    IEnumerable<DateOnly?> IBooksEntry.BooksDays => [Date];
+}
 
 public sealed record ReplaceEndOfDayInvoicePhotoCommand(DateOnly Date, Guid InvoiceId, string FileName, string ContentType, byte[] Content, string StaffName = "")
-    : IRequest<EndOfDayDto>;
+    : IRequest<EndOfDayDto>, IBooksEntry
+{
+    IEnumerable<DateOnly?> IBooksEntry.BooksDays => [Date];
+}
 
-public sealed record RemoveEndOfDayInvoiceCommand(DateOnly Date, Guid InvoiceId, string StaffName = "") : IRequest<EndOfDayDto>;
+public sealed record RemoveEndOfDayInvoiceCommand(DateOnly Date, Guid InvoiceId, string StaffName = "") : IRequest<EndOfDayDto>, IBooksEntry
+{
+    IEnumerable<DateOnly?> IBooksEntry.BooksDays => [Date];
+}
 
 public sealed record AttachEndOfDaySalesPhotoCommand(DateOnly Date, string FileName, string ContentType, byte[] Content, string StaffName = "")
-    : IRequest<EndOfDayDto>;
+    : IRequest<EndOfDayDto>, IBooksEntry
+{
+    IEnumerable<DateOnly?> IBooksEntry.BooksDays => [Date];
+}
 
-public sealed record RemoveEndOfDaySalesPhotoCommand(DateOnly Date, string StaffName = "") : IRequest<EndOfDayDto>;
+public sealed record RemoveEndOfDaySalesPhotoCommand(DateOnly Date, string StaffName = "") : IRequest<EndOfDayDto>, IBooksEntry
+{
+    IEnumerable<DateOnly?> IBooksEntry.BooksDays => [Date];
+}
 
 // Handed in: its payments and advances made the safe's entries (CanApprove, a manager), or asked of
 // a manager (StaffId, who asks). Only the next day in the sequence; with no sales, only once
 // confirmed as a day that sold nothing (ZeroSales) and when nothing was sold on it.
 public sealed record SubmitEndOfDayCommand(DateOnly Date, string StaffName = "", string StaffId = "", bool CanApprove = false, bool ZeroSales = false)
-    : IRequest<EndOfDayDto>, IRetryOnConflict;
+    : IRequest<EndOfDayDto>, IRetryOnConflict, IBooksEntry
+{
+    IEnumerable<DateOnly?> IBooksEntry.BooksDays => [Date];
+}
 
 public sealed record GetEndOfDaySequenceQuery : IRequest<EndOfDaySequenceDto>;
 
 // A day the restaurant did not trade (تسجيل يوم إغلاق أو صيانة): the day to close next, closed with
 // nothing on it and why, so the days go on.
-public sealed record MarkClosedDayCommand(DateOnly Date, string? Reason, string StaffName = "") : IRequest<EndOfDayDto>, IRetryOnConflict;
+public sealed record MarkClosedDayCommand(DateOnly Date, string? Reason, string StaffName = "") : IRequest<EndOfDayDto>, IRetryOnConflict, IBooksEntry
+{
+    IEnumerable<DateOnly?> IBooksEntry.BooksDays => [Date];
+}
 
 // A manager's: a draft entered under the wrong date moved to the day to close next (TargetDate, the
 // one the manager saw), with the reason, which is required and written into it.
 public sealed record ReassignEndOfDayDateCommand(Guid Id, DateOnly TargetDate, string? AuditReason, string StaffName = "")
-    : IRequest<EndOfDayReassigned>, IRetryOnConflict;
+    : IRequest<EndOfDayReassigned>, IRetryOnConflict, IBooksEntry
+{
+    IEnumerable<DateOnly?> IBooksEntry.BooksDays => [TargetDate];
+}
 
 // A manager's: the last day closed, undone and back to a draft (Date: the one the manager saw, so
 // a day closed since is never undone by mistake).
 public sealed record UndoLastEndOfDayCommand(DateOnly? Date, string? Reason, string StaffName = "", string StaffId = "")
-    : IRequest<EndOfDayUndone>, IRetryOnConflict;
+    : IRequest<EndOfDayUndone>, IRetryOnConflict, IChecksBooksItself;
 
 // Cash paid out of the till: PayeeId the supplier paid or the employee advanced; PayoutId made by the
 // till, so one sent again is not added twice.
@@ -2910,15 +2953,27 @@ public sealed record AddEndOfDayPayoutCommand(
     string FileName,
     string ContentType,
     byte[] Content,
-    string StaffName = "") : IRequest<EndOfDayDto>;
+    string StaffName = "") : IRequest<EndOfDayDto>, IBooksEntry
+{
+    IEnumerable<DateOnly?> IBooksEntry.BooksDays => [Date];
+}
 
 public sealed record ChangeEndOfDayPayoutCommand(DateOnly Date, Guid PayoutId, Guid PayeeId, decimal Amount, string? Note, string StaffName = "")
-    : IRequest<EndOfDayDto>;
+    : IRequest<EndOfDayDto>, IBooksEntry
+{
+    IEnumerable<DateOnly?> IBooksEntry.BooksDays => [Date];
+}
 
 public sealed record ReplaceEndOfDayPayoutReceiptCommand(DateOnly Date, Guid PayoutId, string FileName, string ContentType, byte[] Content, string StaffName = "")
-    : IRequest<EndOfDayDto>;
+    : IRequest<EndOfDayDto>, IBooksEntry
+{
+    IEnumerable<DateOnly?> IBooksEntry.BooksDays => [Date];
+}
 
-public sealed record RemoveEndOfDayPayoutCommand(DateOnly Date, Guid PayoutId, string StaffName = "") : IRequest<EndOfDayDto>;
+public sealed record RemoveEndOfDayPayoutCommand(DateOnly Date, Guid PayoutId, string StaffName = "") : IRequest<EndOfDayDto>, IBooksEntry
+{
+    IEnumerable<DateOnly?> IBooksEntry.BooksDays => [Date];
+}
 
 
 // A photo of the day: an invoice's or a payment's receipt by its id, the sales report's by the day's.
@@ -3477,8 +3532,7 @@ internal sealed class UndoLastEndOfDayHandler(
                 $"Only the last closed day, {last.ToString("d MMM yyyy", CultureInfo.InvariantCulture)}, is undone: the days before it stay as they are. " +
                 "· يُلغى تقفيل آخر يوم فقط.");
         if (await books.LockedUntilAsync(cancellationToken) is { } locked && last <= locked)
-            throw new DomainException(
-                $"The books are locked until {locked.ToString("d MMM yyyy", CultureInfo.InvariantCulture)}: that day is not undone. · الدفاتر مقفلة.");
+            throw new PeriodLockedException(locked, last);
         var day = await shared.GetAsync(last, cancellationToken);
         var by = request.StaffName;
 
@@ -3941,7 +3995,7 @@ public sealed class EndOfDayInvoiceForm
 
 ملخص واحد لكل يوم (`SalesSource.DailySummary`) كما يعطيه تقرير Z: الصنف (أو حجمه بكوده `6101-2`) والكمية. يُدخل يدويًا أو من شيت المبيعات (الفصل 07؛ وعدة أيام بملف واحد في 3.3) أو يأتي من الـ POS (الفصل 07). ملخص ثانٍ لنفس اليوم يُرفض (ألغِ الأول ثم أدخل). الأسطر تُقيَّم بأسعار المنيو للمطابقة (الفصل 06).
 
-> 📄 **`backend/src/Costing.Application/Sales/DailySales.cs`** — 216 سطر
+> 📄 **`backend/src/Costing.Application/Sales/DailySales.cs`** — 223 سطر
 
 ```csharp
 using System.Globalization;
@@ -3953,6 +4007,7 @@ using Costing.Domain.Common;
 using Costing.Domain.Menu;
 using Costing.Domain.Recipes;
 using Costing.Domain.Sales;
+using Costing.Application.Books;
 
 namespace Costing.Application.Sales;
 
@@ -3968,7 +4023,10 @@ namespace Costing.Application.Sales;
 public sealed record DailySaleLine(int MenuItemId, int? VariantId, int Quantity);
 
 public sealed record RecordDailySalesCommand(Guid Id, DateOnly Date, IReadOnlyList<DailySaleLine> Lines, string StaffName)
-    : IRequest<SalesReceiptDto>, IRetryOnConflict;
+    : IRequest<SalesReceiptDto>, IRetryOnConflict, IBooksEntry
+{
+    IEnumerable<DateOnly?> IBooksEntry.BooksDays => [Date];
+}
 
 // A row of the sales sheet: its day (the Date column; the day chosen on a one-day import), the item,
 // by its code or name (or chosen from the list), and how many sold; or a discount given that day
@@ -3986,7 +4044,10 @@ public sealed record DailySalesImportResult(
     DateOnly Date, Guid? SaleId, int Items, int Quantity, decimal Value, IReadOnlyList<SkippedSheetRow> Skipped, decimal Discounts = 0);
 
 public sealed record ImportDailySalesCommand(DateOnly Date, IReadOnlyList<DailySaleRow> Rows, string StaffName)
-    : IRequest<DailySalesImportResult>, IRetryOnConflict;
+    : IRequest<DailySalesImportResult>, IRetryOnConflict, IBooksEntry
+{
+    IEnumerable<DateOnly?> IBooksEntry.BooksDays => [Date];
+}
 
 // The menu as the day's sheet lists it: every item, each size of one sold by size, by its code.
 public sealed record DailySalesSheet(IReadOnlyList<string> Items);
@@ -4183,7 +4244,7 @@ internal sealed record DailySheet(
 
 التسجيل (`BulkImportSalesHandler`): يعيد الخطة، يرفض بـ 422 لو فيها مشاكل، ثم لكل يوم من الأقدم: `DailySalesWriter.RecordAsync` (المخزون بالوصفات والكومبو، بالمتوسط المتحرك وقت التسجيل: المبيعات لا تحرّكه) ومسودة تقفيل فارغة لليوم لو لم يبدأ. **`SaveChangesAsync` واحد** في النهاية: كل الأيام أو لا شيء. ولأن هذه المسودات الفارغة بعد اليوم التالي المتوقع مقصودة، صار تعريف "المسودة العالقة" (`StrandedDrafts`) = مسودة بعد اليوم التالي **وعليها بيانات** (`HasEntries` أو ملاحظات).
 
-> 📄 **`backend/src/Costing.Application/Sales/BulkDailySales.cs`** — 170 سطر
+> 📄 **`backend/src/Costing.Application/Sales/BulkDailySales.cs`** — 174 سطر
 
 ```csharp
 using MediatR;
@@ -4193,6 +4254,7 @@ using Costing.Domain.Common;
 using Costing.Domain.EndOfDay;
 using Costing.Domain.Menu;
 using Costing.Domain.Sales;
+using Costing.Application.Books;
 
 namespace Costing.Application.Sales;
 
@@ -4223,7 +4285,10 @@ public sealed record BulkSalesImport(
 
 public sealed record PreviewBulkSalesImportQuery(IReadOnlyList<DailySaleRow> Rows) : IRequest<BulkSalesImport>;
 
-public sealed record BulkImportSalesCommand(IReadOnlyList<DailySaleRow> Rows, string StaffName) : IRequest<BulkSalesImport>, IRetryOnConflict;
+public sealed record BulkImportSalesCommand(IReadOnlyList<DailySaleRow> Rows, string StaffName) : IRequest<BulkSalesImport>, IRetryOnConflict, IBooksEntry
+{
+    IEnumerable<DateOnly?> IBooksEntry.BooksDays => Rows.Select(r => r.Date);
+}
 
 internal sealed class BulkSalesPlanner(IMenuRepository menu, ISalesReceiptRepository sales, IEndOfDayRepository days, IBusinessCalendar calendar)
 {
@@ -4361,7 +4426,7 @@ internal sealed class BulkImportSalesHandler(BulkSalesPlanner planner, DailySale
 
 `Sales.cs`: `SaleStockPoster` (الخصم بالوصفات)، `SaleWriter`، والمرتجعات (حركة `VoidReturn` تعيد المخزون)، وتقرير المبيعات.
 
-> 📄 **`backend/src/Costing.Application/Sales/Sales.cs`** — 290 سطر
+> 📄 **`backend/src/Costing.Application/Sales/Sales.cs`** — 297 سطر
 
 ```csharp
 using MediatR;
@@ -4375,6 +4440,7 @@ using Costing.Domain.RawMaterials;
 using Costing.Domain.Recipes;
 using Costing.Domain.Sales;
 using Costing.Domain.StockMovements;
+using Costing.Application.Books;
 
 namespace Costing.Application.Sales;
 
@@ -4582,7 +4648,10 @@ internal sealed class SaleWriter(IMenuRepository menu, ISalesReceiptRepository s
     }
 }
 
-public sealed record RecordSaleCommand(SaleInput Sale, string StaffName) : IRequest<SalesReceiptDto>, IRetryOnConflict;
+public sealed record RecordSaleCommand(SaleInput Sale, string StaffName) : IRequest<SalesReceiptDto>, IRetryOnConflict, IBooksEntry
+{
+    IEnumerable<DateOnly?> IBooksEntry.BooksDays => [Sale.Date];
+}
 
 internal sealed class RecordSaleHandler(ISalesReceiptRepository sales, SaleWriter writer, IUnitOfWork unitOfWork)
     : IRequestHandler<RecordSaleCommand, SalesReceiptDto>
@@ -4604,7 +4673,10 @@ internal sealed class RecordSaleHandler(ISalesReceiptRepository sales, SaleWrite
 
 // Handed back after it was paid: Quantity of a line, or the whole sale (no line). Its money is
 // added to the refund, its ingredients put back into stock. Entered as it happened, as a sale is.
-public sealed record RefundSaleCommand(Guid SaleId, Guid? LinePublicId, int? Quantity, string StaffName) : IRequest<SalesReceiptDto>, IRetryOnConflict;
+public sealed record RefundSaleCommand(Guid SaleId, Guid? LinePublicId, int? Quantity, string StaffName) : IRequest<SalesReceiptDto>, IRetryOnConflict, IBooksEntry
+{
+    bool IBooksEntry.WritesToday => true;
+}
 
 internal sealed class RefundSaleHandler(ISalesReceiptRepository sales, SaleStockPoster poster, IUnitOfWork unitOfWork)
     : IRequestHandler<RefundSaleCommand, SalesReceiptDto>
@@ -4682,7 +4754,7 @@ internal sealed class GetSalesHandler(ISalesReceiptRepository sales) : IRequestH
 
 **الجرد الأعمى (Blind):** `StockCountDto.ShowAsync(count, blind, …)` هو المكان الوحيد الذي يقرر ما يُعرض: في المسودة الرصيد الدفتري الحي (`QuantityOnHand`) والتكلفة (`AverageCost`) لمن يراجع، وفي الجرد المرحّل القيم المحفوظة، وفي الوضع الأعمى يُحذفان معًا. والـ API يفرضه: `Blind(asked) => asked || !costing.view`، فأمين المخزن لا يرى الدفتري ولو طلبه. لذلك الترحيل وطلب إعادة الجرد لمن يملك `costing.view` فقط، والعادّ الأعمى **يسلّم للمراجعة** (`SubmitStockCountCommand`). و `GetCountItemsQuery` يعطي ورقة العد الأصناف بلا رصيد ولا تكلفة.
 
-> 📄 **`backend/src/Costing.Application/StockCounts/StockCounts.cs`** — 374 سطر
+> 📄 **`backend/src/Costing.Application/StockCounts/StockCounts.cs`** — 381 سطر
 
 ```csharp
 using System.Globalization;
@@ -4696,6 +4768,7 @@ using Costing.Domain.Production;
 using Costing.Domain.RawMaterials;
 using Costing.Domain.StockCounts;
 using Costing.Domain.StockMovements;
+using Costing.Application.Books;
 
 namespace Costing.Application.StockCounts;
 
@@ -4945,7 +5018,10 @@ internal sealed class SetSpotCheckItemCommandHandler(IRawMaterialRepository mate
 }
 
 // Posting again, after an answer was lost, returns the posted count and changes nothing.
-public sealed record PostStockCountCommand(Guid StockCountId, string StaffName = "") : IRequest<StockCountDto>, IRetryOnConflict;
+public sealed record PostStockCountCommand(Guid StockCountId, string StaffName = "") : IRequest<StockCountDto>, IRetryOnConflict, IBooksEntry
+{
+    bool IBooksEntry.WritesToday => true;
+}
 
 internal sealed class PostStockCountCommandHandler(
     IStockCountRepository counts,
@@ -5028,7 +5104,10 @@ internal sealed class DiscardStockCountCommandHandler(IStockCountRepository coun
 // materials, and for scripts; the screens use a draft.
 public sealed record RecordStockCountCommand(
     Guid StockCountId, IReadOnlyList<StockCountLine> Lines, string StaffName = "", StockCountKind Kind = StockCountKind.Periodic)
-    : IRequest<IReadOnlyList<RawMaterialDto>>, IRetryOnConflict;
+    : IRequest<IReadOnlyList<RawMaterialDto>>, IRetryOnConflict, IBooksEntry
+{
+    bool IBooksEntry.WritesToday => true;
+}
 
 internal sealed class RecordStockCountCommandHandler(
     IStockCountRepository counts,
@@ -5067,7 +5146,7 @@ internal sealed class RecordStockCountCommandHandler(
 - **الهالك (Spoilage):** مخزون تالف (منتهي، فاسد، وقع) ⇐ يخرج من المخزون بحركة بسبب، وتقرير الفروقات يضعه **مقابل العجز**، فالخسارة المعروف سببها لا تُخلط بخسارة بلا سبب. وأطباق أُلغيت بعد أن صنعها المطبخ تُحسب هالكًا أيضًا.
 - **الكسر (Breakage):** أطباق وكاسات ومستهلكات: **ليست مخزونًا**، تكلفتها على اليوم مباشرة (قيد في `BreakageEntries`)، وإلغاؤه عبر موافقة.
 
-> 📄 **`backend/src/Costing.Application/Waste/Breakage.cs`** — 74 سطر
+> 📄 **`backend/src/Costing.Application/Waste/Breakage.cs`** — 78 سطر
 
 ```csharp
 using MediatR;
@@ -5075,6 +5154,7 @@ using Costing.Application.Common;
 using Costing.Domain.Common;
 using Costing.Domain.Staff;
 using Costing.Domain.Waste;
+using Costing.Application.Books;
 
 namespace Costing.Application.Waste;
 
@@ -5115,7 +5195,10 @@ internal sealed class GetBreakageHandler(IBreakageEntryRepository breakage, ISta
 // Its id is made by the app, so a retried entry is recorded once.
 public sealed record RecordBreakageCommand(
     Guid Id, DateOnly Date, string Description, int Quantity, decimal? UnitCost, Guid? EmployeeId, string? Notes, string StaffName)
-    : IRequest<BreakageEntryDto>, IRetryOnConflict;
+    : IRequest<BreakageEntryDto>, IRetryOnConflict, IBooksEntry
+{
+    IEnumerable<DateOnly?> IBooksEntry.BooksDays => [Date];
+}
 
 internal sealed class RecordBreakageHandler(IBreakageEntryRepository breakage, IStaffMemberRepository staff, IBusinessCalendar calendar, IUnitOfWork unitOfWork)
     : IRequestHandler<RecordBreakageCommand, BreakageEntryDto>
@@ -5149,7 +5232,7 @@ internal static class BreakageDtos
 
 - **وجبات العاملين والضيافة وتجارب الوصفات:** ما يخرج من المخزون **عن قصد** ليس هالكًا ولا عجزًا. لكل نوع سبب حركة مستقل (`StaffMeal` و`Hospitality` و`RecipeTasting`، ومجموعتها `StaffConsumption.Reasons`)، فتقرير الاستهلاك والفروقات يخرجه من "غير المبرر" في عمود خاص. السطر إما خامة/مصنع بكميته بوحدته، أو **وصفة بأطباق كاملة** تأخذ مكوناتها كما يأخذها البيع (`RequirementsFor`: المصنعات من مخزونها، لا تُفكّ لخاماتها). و `EntryId` يجعل إعادة الإرسال تسجّل مرة واحدة، والإلغاء بنفس موافقة الهالك (`Deletions.cs` يبحث بسبب الهالك ثم أسباب العاملين ويعكس بسبب أول قيد). وجبة العاملين تذهب لتكلفة العمالة، والضيافة والتجارب لمصروفات مستقلة.
 
-> 📄 **`backend/src/Costing.Application/Waste/StaffMeals.cs`** — 97 سطر
+> 📄 **`backend/src/Costing.Application/Waste/StaffMeals.cs`** — 101 سطر
 
 ```csharp
 using MediatR;
@@ -5160,6 +5243,7 @@ using Costing.Domain.Menu;
 using Costing.Domain.RawMaterials;
 using Costing.Domain.Recipes;
 using Costing.Domain.StockMovements;
+using Costing.Application.Books;
 
 namespace Costing.Application.Waste;
 
@@ -5183,7 +5267,10 @@ public sealed record StaffConsumptionLine(Guid? RawMaterialId, Guid? RecipeId, d
 // set by the API from who is signed in.
 public sealed record RecordStaffConsumptionCommand(
     Guid EntryId, StaffConsumptionKind Kind, IReadOnlyList<StaffConsumptionLine> Lines, string? Note = null, string RecordedBy = "")
-    : IRequest<Guid>, IRetryOnConflict;
+    : IRequest<Guid>, IRetryOnConflict, IBooksEntry
+{
+    bool IBooksEntry.WritesToday => true;
+}
 
 public static class StaffConsumptionKinds
 {

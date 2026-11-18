@@ -10,6 +10,7 @@ using Costing.Domain.Purchases;
 using Costing.Domain.RawMaterials;
 using Costing.Domain.StockMovements;
 using Costing.Domain.Suppliers;
+using Costing.Application.Books;
 
 namespace Costing.Application.Purchases;
 
@@ -35,7 +36,10 @@ public sealed record InvoiceCorrection(
 
 public sealed record CorrectPurchaseInvoiceCommand(
     Guid RequestId, Guid InvoiceId, InvoiceCorrection Correction, string? Reason, string StaffId, string StaffName, bool CanApprove)
-    : IRequest<ApprovalResultDto>, IRetryOnConflict;
+    : IRequest<ApprovalResultDto>, IRetryOnConflict, IBooksEntry
+{
+    IEnumerable<DateOnly?> IBooksEntry.BooksDays => [Correction.InvoiceDate, Correction.RevenueDate];
+}
 
 internal sealed class CorrectPurchaseInvoiceHandler(IApprovalRequestRepository requests, InvoiceCorrector corrector, IUnitOfWork unitOfWork)
     : IRequestHandler<CorrectPurchaseInvoiceCommand, ApprovalResultDto>

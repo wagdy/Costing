@@ -16,6 +16,7 @@ using Costing.Domain.StockCounts;
 using Costing.Domain.StockMovements;
 using Costing.Domain.Suppliers;
 using Costing.Domain.Treasury;
+using Costing.Application.Books;
 
 namespace Costing.Application.Approvals;
 
@@ -60,6 +61,37 @@ internal sealed class DeletionTargets(
         ApprovalModule.Breakage => DescribeBreakage(await BreakageAsync(recordId, cancellationToken)),
         _ => throw new DomainException("That cannot be deleted here."),
     };
+
+    // The business days a record's deletion changes, for the books' lock (Books): its own day, and
+    // the takings it was paid from. A recipe, a material or a prep item has none.
+    public async Task<IEnumerable<DateOnly?>> DaysAsync(ApprovalModule module, Guid recordId, CancellationToken cancellationToken)
+    {
+        switch (module)
+        {
+            case ApprovalModule.PurchaseInvoice:
+            {
+                var invoice = await InvoiceAsync(recordId, cancellationToken);
+                return [invoice.InvoiceDate ?? descriptions.BusinessDateOf(invoice.PostedAtUtc ?? invoice.CreatedAtUtc), invoice.RevenueDate];
+            }
+            case ApprovalModule.Waste:
+                return (await WasteAsync(recordId, cancellationToken)).Select(m => (DateOnly?)descriptions.BusinessDateOf(m.OccurredAtUtc)).ToList();
+            case ApprovalModule.StockCount:
+                return [descriptions.BusinessDateOf((await CountAsync(recordId, cancellationToken)).PostedAtUtc!.Value)];
+            case ApprovalModule.ProductionOrder:
+                return [descriptions.BusinessDateOf((await BatchAsync(recordId, cancellationToken)).ProducedAtUtc)];
+            case ApprovalModule.Treasury:
+            {
+                var entry = await SafeEntryAsync(recordId, cancellationToken);
+                return [entry.BusinessDate, entry.RevenueDate];
+            }
+            case ApprovalModule.Sale:
+                return [(await SaleAsync(recordId, cancellationToken)).BusinessDate];
+            case ApprovalModule.Breakage:
+                return [(await BreakageAsync(recordId, cancellationToken)).BusinessDate];
+            default:
+                return [];
+        }
+    }
 
     // Returns the ledger entries a void adds, for the caller to save with the decision.
     public async Task<IReadOnlyList<StockMovement>> DeleteAsync(ApprovalModule module, Guid recordId, string by, CancellationToken cancellationToken)
@@ -341,7 +373,7 @@ internal sealed class DeletionTargets(
 // by the till: a retry after a lost answer finds the request already made.
 public sealed record RequestDeletionCommand(
     Guid RequestId, ApprovalModule Module, Guid RecordId, string? Reason, string StaffId, string StaffName, bool CanApprove)
-    : IRequest<ApprovalResultDto>, IRetryOnConflict;
+    : IRequest<ApprovalResultDto>, IRetryOnConflict, IBooksEntry;
 
 internal sealed class RequestDeletionHandler(
     IApprovalRequestRepository requests,

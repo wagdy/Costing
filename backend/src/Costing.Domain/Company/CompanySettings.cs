@@ -78,7 +78,13 @@ public sealed class CompanySettings
     public string? UpdatedBy { get; private set; }
     public DateTime? UpdatedAtUtc { get; private set; }
 
+    // The books closed until this day (إقفال الفترة المحاسبية وتجميد الدفاتر): nothing dated on or
+    // before it is entered, changed or voided, in money or stock. Null: none locked.
+    public DateOnly? BooksLockedUntilDate { get; private set; }
+
     public bool HasLogo => LogoFileName is not null;
+
+    public bool IsLocked(DateOnly day) => BooksLockedUntilDate is { } locked && day <= locked;
 
     public MoneyFormat Money => new(CurrencySymbol, CurrencyPosition);
 
@@ -139,6 +145,45 @@ public sealed class CompanySettings
         LogoUpdatedAtUtc = DateTime.UtcNow;
         UpdatedBy = updatedBy;
         UpdatedAtUtc = LogoUpdatedAtUtc;
+    }
+
+    // A period closed (إقفال فترة جديدة): the lock moved forward to a day, a month's end as a rule.
+    // Never back (that is an unlock, with its reason), never a day still to come, and never past the
+    // last end of day closed, which would leave the days after it unclosable.
+    public void LockBooks(DateOnly until, DateOnly today, DateOnly? lastClosedDay)
+    {
+        if (BooksLockedUntilDate is { } current && until <= current)
+            throw new DomainException(
+                $"The books are closed until {PeriodLockedException.Format(current)} already: choose a later day. To go back, unlock with a reason. " +
+                "· الدفاتر مقفلة حتى هذا التاريخ بالفعل.");
+        if (until > today)
+            throw new DomainException("The books are locked up to today at the latest. · الإقفال حتى اليوم على الأكثر.");
+        if (lastClosedDay is { } last && until > last)
+            throw new DomainException(
+                $"The last day closed is {PeriodLockedException.Format(last)}: lock the books up to it at the latest, the days after it are still to be closed. " +
+                "· لا تقفل بعد آخر يوم مغلق.");
+        BooksLockedUntilDate = until;
+    }
+
+    public const int MinUnlockReasonLength = 5;
+    public const int MaxUnlockReasonLength = 500;
+
+    // An exceptional unlock (فتح الفترة استثنائياً): the lock rolled back to an earlier day, or
+    // lifted (null), always with why. Returns the reason as kept.
+    public string UnlockBooks(DateOnly? until, string? reason)
+    {
+        if (BooksLockedUntilDate is not { } current)
+            throw new DomainException("The books are not locked: there is nothing to unlock. · الدفاتر غير مقفلة.");
+        if (until >= current)
+            throw new DomainException(
+                $"The books are closed until {PeriodLockedException.Format(current)}: an unlock goes back to an earlier day. · الفتح يكون لتاريخ سابق.");
+        var why = reason?.Trim() ?? string.Empty;
+        if (why.Length < MinUnlockReasonLength)
+            throw new DomainException("Say why the period is opened: an unlock needs its reason. · يجب ذكر سبب الفتح الاستثنائي.");
+        if (why.Length > MaxUnlockReasonLength)
+            throw new DomainException($"Keep the reason to {MaxUnlockReasonLength} characters.");
+        BooksLockedUntilDate = until;
+        return why;
     }
 
     public static bool IsTimeZone(string timeZoneId)

@@ -612,7 +612,7 @@ internal static class SpaHosting
 
 `ApplicationExceptionHandler`: `DomainException` ⇐ 422، `NotFoundException` ⇐ 404، `ForbiddenException` ⇐ 403، `ConflictException` ⇐ 409؛ وأي خطأ آخر يُسجَّل برقم مرجعي ويصل للمتصفح بلا Stack Trace. ويضيف `errors: [detail]` الذي تقرؤه الواجهة.
 
-> 📄 **`backend/src/Costing.Api/ErrorHandling/ApplicationExceptionHandler.cs`** — 75 سطر
+> 📄 **`backend/src/Costing.Api/ErrorHandling/ApplicationExceptionHandler.cs`** — 83 سطر
 
 ```csharp
 using Microsoft.AspNetCore.Diagnostics;
@@ -639,6 +639,8 @@ internal sealed class ApplicationExceptionHandler(
 
         var (status, title, detail) = exception switch
         {
+            // A day in the books closed: 423 Locked, the lock's day with it.
+            PeriodLockedException => (StatusCodes.Status423Locked, "The books are closed for that period.", exception.Message),
             DomainException => (StatusCodes.Status422UnprocessableEntity, "The request breaks a business rule.", exception.Message),
             NotFoundException => (StatusCodes.Status404NotFound, "Not found.", exception.Message),
             ForbiddenException => (StatusCodes.Status403Forbidden, "Not allowed.", exception.Message),
@@ -663,7 +665,13 @@ internal sealed class ApplicationExceptionHandler(
         {
             HttpContext = httpContext,
             Exception = exception,
-            ProblemDetails = { Status = status, Title = title, Detail = detail },
+            ProblemDetails =
+            {
+                Status = status, Title = title, Detail = detail,
+                Extensions = exception is PeriodLockedException locked
+                    ? new Dictionary<string, object?> { ["lockedUntil"] = locked.LockedUntil.ToString("yyyy-MM-dd"), ["day"] = locked.Day.ToString("yyyy-MM-dd") }
+                    : new Dictionary<string, object?>(),
+            },
         });
     }
 
@@ -697,7 +705,7 @@ internal sealed class ApplicationExceptionHandler(
 
 طبقة التطبيق: MediatR يجد الـ Handlers تلقائيًا، والخدمات الداخلية المشتركة (`TreasuryWriter`, `InvoicePoster`, `HrOutbox`, …) بعمر `Scoped`.
 
-> 📄 **`backend/src/Costing.Application/DependencyInjection.cs`** — 32 سطر
+> 📄 **`backend/src/Costing.Application/DependencyInjection.cs`** — 47 سطر
 
 ```csharp
 using Microsoft.Extensions.DependencyInjection;
@@ -709,7 +717,22 @@ public static class DependencyInjection
     // Infrastructure supplies the repositories, the unit of work and the clock.
     public static IServiceCollection AddCostingApplication(this IServiceCollection services)
     {
-        services.AddMediatR(config => config.RegisterServicesFromAssembly(typeof(DependencyInjection).Assembly));
+        services.AddMediatR(config =>
+        {
+            config.RegisterServicesFromAssembly(typeof(DependencyInjection).Assembly);
+            // The books' lock: every request that writes to them, before its handler.
+            config.AddOpenBehavior(typeof(Books.BooksLockBehavior<,>));
+        });
+        services.AddScoped<Books.IBooksLock, Books.CompanyBooksLock>();
+        services.AddScoped<Books.BooksGuard>();
+        services.AddScoped<Books.PeriodLockReader>();
+        // The days of the records each request names.
+        foreach (var lookup in typeof(DependencyInjection).Assembly.GetTypes()
+                     .Where(t => t is { IsClass: true, IsAbstract: false } && !t.IsGenericTypeDefinition))
+        {
+            foreach (var contract in lookup.GetInterfaces().Where(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(Books.IBooksDays<>)))
+                services.AddScoped(contract, lookup);
+        }
         services.AddScoped<Sales.SaleStockPoster>();
         services.AddScoped<Sales.SaleWriter>();
         services.AddScoped<Sales.DailySalesWriter>();
@@ -841,7 +864,7 @@ public static class DependencyInjection
         services.AddScoped<ISupplierLedgerRepository, SupplierLedgerRepository>();
         services.AddScoped<Costing.Application.Approvals.IRecordDescriptions, RecordDescriptions>();
         services.AddScoped<Costing.Application.Treasury.ITaxRate, FinancialTaxRate>();
-        services.AddScoped<Costing.Application.EndOfDay.IBooksLock, FinancialBooksLock>();
+        services.AddScoped<Domain.Security.ISecurityAuditLogRepository, SecurityAuditLogRepository>();
         services.AddScoped<IExpenseItemRepository, ExpenseItemRepository>();
         services.AddScoped<IPrepRecipeRepository, PrepRecipeRepository>();
         services.AddScoped<IProductionOrderRepository, ProductionOrderRepository>();
@@ -1440,6 +1463,7 @@ Costing/
                     IntelligenceController.cs
                     InventoryController.cs
                     MenuSalesController.cs
+                    PeriodLockController.cs
                     PosIntegrationController.cs
                     PurchaseOrdersController.cs
                     SettingsController.cs
@@ -1464,6 +1488,10 @@ Costing/
                 Approvals/
                     ApprovalRequests.cs
                     Deletions.cs
+                Books/
+                    BooksDays.cs
+                    BooksLock.cs
+                    PeriodLock.cs
                 Categories/
                     CategoryDeletion.cs
                     PurchaseCategories.cs
@@ -1547,6 +1575,7 @@ Costing/
                     Entity.cs
                     IRepository.cs
                     IUnitOfWork.cs
+                    PeriodLockedException.cs
                 Company/
                     CompanySettings.cs
                 Costing.Domain.csproj
@@ -1588,6 +1617,8 @@ Costing/
                 Sales/
                     Discounts.cs
                     SalesReceipt.cs
+                Security/
+                    SecurityAuditLog.cs
                 Staff/
                     PayrollRun.cs
                     StaffMember.cs
@@ -1663,10 +1694,12 @@ Costing/
                         20261117092011_AddEndOfDaySequence.cs
                         20261117103857_AddEndOfDayClosedDaysAndAudit.cs
                         20261118092632_AddKitchenStations.cs
+                        20261118122831_AddPeriodLockAndSecurityAudit.cs
                         CostingDbContextModelSnapshot.cs
                     PosIntegrationPersistence.cs
                     PurchaseOrderPersistence.cs
                     RetryOnConflictBehavior.cs
+                    SecurityPersistence.cs
                     StationPersistence.cs
                 Reports/
                     BreakEvenService.cs
@@ -1703,6 +1736,7 @@ Costing/
                 DailyBreakEvenApiTests.cs
                 FixedAssetsApiTests.cs
                 HrIntegrationApiTests.cs
+                PeriodLockApiTests.cs
                 PosIntegrationApiTests.cs
                 PurchaseOrdersApiTests.cs
                 SettingsApiTests.cs
@@ -1722,6 +1756,7 @@ Costing/
                 KitchenStationTests.cs
                 MenuSalesFlowTests.cs
                 OpeningStockTests.cs
+                PeriodLockTests.cs
                 PrepItemImportTests.cs
                 PrepRecipeSheetTests.cs
                 RawMaterialImportTests.cs
@@ -1741,6 +1776,7 @@ Costing/
                 KitchenStationTests.cs
                 MaterialExplosionTests.cs
                 MenuSalesTests.cs
+                PeriodLockTests.cs
                 PlateCostTests.cs
                 ProductionTests.cs
                 PurchaseInvoiceTests.cs
@@ -1763,6 +1799,7 @@ Costing/
                 DatabaseTests.cs
                 FixedAssetsTests.cs
                 IntelligenceTests.cs
+                PeriodLockTests.cs
                 PosIntegrationTests.cs
                 PurchaseOrdersTests.cs
                 StaffMealsAndInflationTests.cs
@@ -1824,6 +1861,7 @@ Costing/
                         company.spec.ts
                         company.ts
                         hr-integration.ts
+                        period-lock.ts
                         pos-integration.ts
                         tab-icon.spec.ts
                         tab-icon.ts
@@ -2026,6 +2064,8 @@ Costing/
                     settings/
                         hr-integration-page.spec.ts
                         hr-integration-page.ts
+                        period-lock-page.spec.ts
+                        period-lock-page.ts
                         pos-integration-page.spec.ts
                         pos-integration-page.ts
                         settings-page.spec.ts

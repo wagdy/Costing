@@ -650,7 +650,7 @@ public static class EndOfDaySequence
         if (date > today)
             throw new DomainException("That day has not come yet: close a day once it is over. · هذا اليوم لم يأتِ بعد.");
         if (lockedUntil is { } locked && date <= locked)
-            throw new DomainException($"The books are locked until {Day(locked)}: that day is not closed or changed any more. · الدفاتر مقفلة حتى {Day(locked)}.");
+            throw new PeriodLockedException(locked, date);
         if (lastClosed is not { } last)
             return;
         var next = last.AddDays(1);

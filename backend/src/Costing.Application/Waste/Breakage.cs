@@ -3,6 +3,7 @@ using Costing.Application.Common;
 using Costing.Domain.Common;
 using Costing.Domain.Staff;
 using Costing.Domain.Waste;
+using Costing.Application.Books;
 
 namespace Costing.Application.Waste;
 
@@ -43,7 +44,10 @@ internal sealed class GetBreakageHandler(IBreakageEntryRepository breakage, ISta
 // Its id is made by the app, so a retried entry is recorded once.
 public sealed record RecordBreakageCommand(
     Guid Id, DateOnly Date, string Description, int Quantity, decimal? UnitCost, Guid? EmployeeId, string? Notes, string StaffName)
-    : IRequest<BreakageEntryDto>, IRetryOnConflict;
+    : IRequest<BreakageEntryDto>, IRetryOnConflict, IBooksEntry
+{
+    IEnumerable<DateOnly?> IBooksEntry.BooksDays => [Date];
+}
 
 internal sealed class RecordBreakageHandler(IBreakageEntryRepository breakage, IStaffMemberRepository staff, IBusinessCalendar calendar, IUnitOfWork unitOfWork)
     : IRequestHandler<RecordBreakageCommand, BreakageEntryDto>

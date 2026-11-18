@@ -164,4 +164,49 @@
 
 @@file frontend/src/app/features/sign-in/sign-in-page.scss
 
+## 6. إقفال الفترة المحاسبية وتجميد الدفاتر (Period lock & month-end close)
+
+### 6.1 الفكرة المحاسبية
+
+بعد إقفال الشهر تصبح أرقامه هي المُعلنة والمُراجَعة؛ لو تغيّرت فاتورة في أكتوبر بعد تسليم تقرير أكتوبر للمراجع، يختلف التقرير عن الدفاتر دون أن يلاحظ أحد. فالقاعدة: **كل حركة بتاريخ ≤ تاريخ الإقفال لا تُضاف ولا تُعدل ولا تُلغى**، والرد `423 Locked`.
+
+- **الإقفال** للمدير (`settings.manage`) بكتابة كلمة `LOCK`، للأمام فقط، وحتى اليوم وآخر يوم مقفول في تقفيل اليوم على الأكثر.
+- **الفتح الاستثنائي** للمالك وحده (`settings.unlock-periods`، دور المدير هنا) **بسبب مكتوب**، لتاريخ أسبق أو رفع الإقفال كله.
+- كل تغيير سطر في **سجل التدقيق الأمني** (`SecurityAuditLogs`)، يُضاف إليه فقط.
+
+### 6.2 الدومين: الإقفال على إعدادات الشركة، والسجل، والاستثناء
+
+`CompanySettings.LockBooks` و `UnlockBooks` يحملان القواعد (الفصل 02 لبقية الكيان). `PeriodLockedException` يرث `DomainException` (لهذا لم يعد `sealed`): كل `catch (DomainException)` موجود (سجل مزامنة الـ POS و HR) يلتقطه ويسجّله، والـ API يرد عليه 423 بـ `lockedUntil` و `day`.
+
+@@file backend/src/Costing.Domain/Common/PeriodLockedException.cs
+
+@@file backend/src/Costing.Domain/Security/SecurityAuditLog.cs
+
+### 6.3 الجدار الناري: `BooksLock.cs`
+
+كل أمر يكتب في الدفاتر يحمل `IBooksEntry` ويقول أيامه بثلاث طرق مجتمعة: الأيام التي يحملها (`BooksDays`)، أو "اليوم" (`WritesToday`: هالك، جرد، إنتاج)، أو `IBooksDays<T>` يبحث عن أيام السجلات التي يسميها (الفاتورة التي يرحّلها أو يلغيها، البيع الذي يسترده، الطلب الذي يوافق عليه). `BooksLockBehavior` في خط MediatR يفحصها **قبل** المعالج، ولا يبحث عن شيء والدفاتر مفتوحة.
+
+```text
+request is IBooksEntry ∧ LockedUntil ≠ null
+  days = BooksDays ∪ (WritesToday ? Today) ∪ lookups(request)
+  min(d ∈ days | d ≤ LockedUntil) ⇒ PeriodLockedException(LockedUntil, d)   → 423
+```
+
+- **الإلغاء بتاريخ اليوم لا يكفي:** إلغاء فاتورة أكتوبر يضيف حركات عكسية بتاريخ اليوم، لكنه يغيّر فاتورة أكتوبر نفسها، فيُحكم بتاريخها.
+- **الأرقام الشهرية** (المصروفات، ورقة المبيعات اليدوية، رواتب HR) تُحسب بآخر يوم في الشهر: الشهر مقفل حين يُقفل آخر يوم فيه (`BooksGuard.EnsureMonthOpenAsync`).
+- `IChecksBooksItself`: تقرير Z والرواتب وإلغاء آخر يوم تفحص داخل معالجها لأن رفضها يُسجّل في سجل المزامنة؛ وتقرير Z المُعاد إرساله بلا تغيير يُجاب "Unchanged" كما كان.
+- **اختبار التصنيف** (`PeriodLockTests` في Application.Tests): كل أمر إمّا `IBooksEntry` يقول أيامه، أو مذكور في قائمة "ليس من الدفاتر" بسببه؛ أمر جديد لا يمر حتى يُصنَّف.
+
+@@file backend/src/Costing.Application/Books/BooksLock.cs
+
+@@file backend/src/Costing.Application/Books/BooksDays.cs
+
+### 6.4 الإقفال والفتح وسجلهما: `PeriodLock.cs` و `PeriodLockController`
+
+`LockBooksCommand` يتحقق من `LOCK` على الخادم أيضًا (لا يكفي زر في الواجهة)، و `UnlockBooksCommand` من السبب (5–500 حرف). `SuggestedClose`: آخر نهاية شهر يمكن إقفالها الآن بعد الإقفال الحالي.
+
+@@file backend/src/Costing.Application/Books/PeriodLock.cs
+
+@@file backend/src/Costing.Api/Controllers/PeriodLockController.cs
+
 [الفصل التالي: الخامات والوصفات والمصنعات والمنيو →](04-catalog-materials-recipes-and-menu.md)

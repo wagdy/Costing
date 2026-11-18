@@ -57,7 +57,7 @@ until a manager ticks a user's own:
 
 | Role | Permissions | Sections, until a manager ticks theirs |
 | --- | --- | --- |
-| Manager (مدير) | All: `inventory.view`, `inventory.manage`, `costing.view`, `approval.decide`, `users.manage`, `settings.manage` | Every section, always |
+| Manager (مدير) | All: `inventory.view`, `inventory.manage`, `costing.view`, `approval.decide`, `users.manage`, `settings.manage`, `settings.unlock-periods` | Every section, always |
 | Accountant (محاسب) | `inventory.view`, `inventory.manage`, `costing.view` | Raw materials, Material & demand intelligence, End of the day, Expense items, Purchases, Financials, Sales, Reports |
 | Cost Controller (مراقب تكاليف) | `inventory.view`, `inventory.manage`, `costing.view` | Raw materials, Recipes, Production, Menu, Material & demand intelligence, Sales, Stock counts, Waste, Reports, Cost settings |
 | Storekeeper (أمين المخزن) | `inventory.view`, `inventory.manage` | Raw materials, End of the day, Purchases, Stock counts, Waste, Production |
@@ -907,7 +907,7 @@ batch invoice names `endOfDayInvoiceId` and `onCredit`. Kept in `costing.EndOfDa
 `OpeningFloat`, `ReopenReason`, `IsClosedDay`, `ClosedDayReason`, `AuditTrail`), `EndOfDayInvoices`,
 `EndOfDayPayouts` (with `VoucherId`; migrations `AddEndOfDayPayouts`, `AddEndOfDaySequence`,
 `AddEndOfDayClosedDaysAndAudit`) and `EndOfDayPhotos`; the books' lock in
-`costing.FinancialSettings.BooksLockedUntil`.
+`costing.CompanySettings.BooksLockedUntilDate` (see [Period lock and month-end close](#period-lock-and-month-end-close-إقفال-الفترة-المحاسبية-وتجميد-الدفاتر)).
 
 ### Strict sequentiality and the manager's undo (التسلسل الزمني وإلغاء التقفيل)
 
@@ -922,10 +922,10 @@ day** (`LastClosedDate`) is the latest submitted, and the **next expected day**
   Before any day is closed, any day up to today starts the sequence.
 - **Rule 2, never ahead:** no day after today (the business day, as the till keeps it) is opened
   or handed in (*That day has not come yet*).
-- **The books' lock:** no day on or before the date the books are locked until
-  (`BooksLockedUntil`, إقفال الدفاتر) is closed or undone. A manager locks them up to the last
-  closed day at the latest, and never past today, or unlocks them (`PUT
-  /api/financials/books-lock` with `lockedUntil`, or null), on Reports → Daily summaries.
+- **The books' lock:** no day on or before the date the books are closed until
+  (`BooksLockedUntilDate`, إقفال الدفاتر) is closed, changed or undone: refused 423 Locked. A
+  manager closes them on **Settings → Period lock**, up to the last closed day at the latest and
+  never past today; Reports → Daily summaries shows how far, with a link there.
 - **No entries out of order:** an invoice, payment, sales report or photo makes a new day only for
   the next expected day; a draft made before the rules came in can still be changed, but is handed
   in only in its turn.
@@ -1521,6 +1521,9 @@ reason, amount, count }`. A combo is sold by its code, as any item.
 - **A day entered by hand is left alone**: if its sales summary or its takings were entered here
   by hand (or by sheet), the report is refused, 422, naming which. Void them here to let the POS's
   report in.
+- **A day in the books closed** (Settings → Period lock) is not written: the report is refused,
+  **423 Locked**, with the lock's day, and the sync log shows it refused. Sent again unchanged, it
+  is answered *unchanged* as before.
 - A report that collides with another change at the same moment is tried again; if it still
   cannot be saved, the answer is 503 so the POS sends it again later.
 
@@ -1566,7 +1569,8 @@ nothing is heard. **Settings → HR Integration** (a manager's, `SettingsManage`
     "netCashPayable": 2070, "departments": [{ "department": "Hall", "employees": 2, … }] }
   ```
 
-  Kept as a `PayrollRun` by HR's id for it, one a month: its **labor cost** (gross + additions −
+  A month in the books closed (its last day on or before the lock) is refused, 423 Locked, and
+  logged as refused. Kept as a `PayrollRun` by HR's id for it, one a month: its **labor cost** (gross + additions −
   penalties) is the month's wages on the KPIs and the profit and loss (in place of the salaries
   paid for it), and its **net cash payable** is to be paid out of the safe. The advances already
   paid out of the safe during the month are off that net cash, so none is paid twice, and they
@@ -1590,6 +1594,93 @@ Each sent with this system's id for it as its idempotency key (in the body and i
 On HR, an advance is recorded as approved on their pay, a deduction as a penalty on their pay,
 and a payroll paid marks the month paid and each employee's pay owed as paid. A month whose pay
 is finalized on HR refuses a void that would change it, and the outbox shows HR's reason.
+
+## Period lock and month-end close (إقفال الفترة المحاسبية وتجميد الدفاتر)
+
+Once a month is closed, its figures are the ones reported and audited: nothing dated in it may be
+added, changed or voided afterwards. **Settings → Period lock** (a manager's, `settings.manage`)
+keeps how far the books are closed, in red:
+
+- **The status.** *All books are locked up to October 31, 2026. No changes allowed before this
+  date.* (in English and Arabic), or *No period is locked*; what a lock holds, said under it.
+- **Lock a new period (إقفال فترة جديدة).** A day, offered as the latest month's end that can be
+  closed (*Month end: 31 Oct 2026*), and **Lock books · إقفال الدفاتر** once the word `LOCK` is
+  typed in the box under it (checked by the API too). A lock moves forward only: to a day after
+  the one closed, never past today, and never past the last end of day closed (the days after it
+  could not be closed any more). Earlier is an unlock.
+- **Temporary unlock (فتح الفترة استثنائياً).** The owner's alone (`settings.unlock-periods`, the
+  Manager role here; any other manager sees *Only the owner can open a closed period again*): the
+  lock rolled back to an earlier day (*Keep the books closed until*), or lifted altogether, always
+  with **the reason (سبب الفتح الاستثنائي)**, 5 to 500 characters. Opened again, the page offers to
+  close it again to where it was (*Lock again until 31 Oct 2026*) once the adjustment is done.
+- **Audit history (سجل التدقيق).** Under it, every change, the latest first: when, locked or
+  unlocked, from which day to which, who, and why.
+
+Every change is a line of the **security audit log** (`costing.SecurityAuditLogs`): added to,
+never changed or removed, with the line as it reads, the lock's day before and after, the reason,
+who (name and user id) and when:
+
+| Action | Line |
+| --- | --- |
+| `PeriodLocked` | `PeriodLocked: 31-Oct-2026 by Wagdy` |
+| `PeriodUnlocked` | `PeriodUnlocked: rolled back to 30-Sep-2026 by Wagdy. Reason: Auditor adjustment` |
+| `PeriodUnlocked` (lifted) | `PeriodUnlocked: lock lifted (was 31-Oct-2026) by Wagdy. Reason: …` |
+
+### The firewall: what a closed day refuses
+
+Whatever writes to the books of money or stock says the business days it writes on, and the days
+of the records it changes or voids; if any is on or before the day the books are closed until, the
+whole request is refused before anything is done, **423 Locked**:
+
+> Cannot modify records before the locked period (Books closed until 31 Oct 2026): 12 Oct 2026 is
+> in it. · لا يمكن تعديل أو إضافة حركات في فترة محاسبية تم إقفالها.
+
+The ProblemDetails carries it as `detail` and `errors[0]` (what the screens show), with
+`lockedUntil` and `day` (the earliest day refused).
+
+| What | The day held to the lock |
+| --- | --- |
+| Purchase invoices: entered, posted, the daily batch, corrected, voided (asked or done, and the approval) | The invoice's date and the takings day it is paid from; a correction, the original's too |
+| Paying an invoice | Today and the takings day; on credit, the invoice's own date (the supplier's line is dated by it) |
+| Receiving against a purchase order | Today |
+| Sales: a sale, the day's sales, the one-day and multi-day Excel imports, a refund, a sale voided | The sale's day (a refund, today as well) |
+| The POS's Z report | Its business day, and the day a corrected report moves off |
+| End of the day: every entry, photo and payout, handing in, a closed day, moving a draft, the undo | The day (both days of a move) |
+| The safe: vouchers (the Z report's takings, payments, transfers, an asset bought), a supplier's opening balance, payroll paid, staff deductions and their voids | The voucher's day and its takings day; payroll paid, today |
+| Waste: spoilage, staff meals and hospitality; breakage | Today; breakage, its day |
+| Stock counts: posted, opening stock, voided | Today; a void, the day it was posted |
+| Production: a batch made, corrected, voided | Today; the batch replaced or voided, its own day |
+| Fixed assets: registered, restated, written off, removed, reinstated | The purchase day (restated: only when its day, cost, life or salvage change, which its depreciation follows), the write-off day |
+| A month's figures: its expenses (Reports → KPIs), its manual sales sheet, HR's payroll run | The month's last day: a month is closed once its last day is |
+| A manager approving a request | The days of what it does |
+
+Not held, since they are what things are rather than what happened: the menu, recipes, raw
+materials, prep items, suppliers, categories, stations, purchase orders, drafts (a draft invoice or
+count may still be saved, submitted and discarded; posting it is held), documents attached to an
+invoice, settings and users. With the books closed through today, nothing more is entered today.
+
+The POS is answered 423 for a closed day's Z report and the sync log shows it **Refused** with the
+reason; a report sent again unchanged is answered *unchanged* as before. HR's payroll run for a
+closed month is refused and logged likewise.
+
+**How it is held.** Each command that writes to the books is an `IBooksEntry`: it says the days it
+carries (`BooksDays`), that it writes today (`WritesToday`), and an `IBooksDays<T>` looks up the
+days of the records it names (the invoice it posts or voids, the sale it refunds, the request it
+approves). The MediatR pipeline's `BooksLockBehavior` checks them before the handler, and looks
+nothing up while the books are open. The Z report, the payroll run and the undo of the last day
+check inside their handlers (`IChecksBooksItself`), where their refusals are logged; a month's
+expenses and sales sheet through `BooksGuard`. A test holds every command to one or the other: a
+new command that writes to the books cannot be added without saying its days.
+
+**Kept** in `costing.CompanySettings.BooksLockedUntilDate` and `costing.SecurityAuditLogs`
+(migration `AddPeriodLockAndSecurityAudit`, which carries a lock set before on Financials over
+from `FinancialSettings.BooksLockedUntil`, with the line *PeriodLocked: … by System (carried over
+from the earlier books lock)*). `GET /api/settings/period-lock` (`settings.manage`) gives
+`lockedUntil`, `today`, `lastClosedDay`, `suggestedUntil` and `history`; `POST
+/api/settings/period-lock/lock` takes `{ until, confirmation: "LOCK" }` (`settings.manage`);
+`POST /api/settings/period-lock/unlock` takes `{ until, reason }`, `until` null to lift it
+(`settings.unlock-periods`). `GET /api/financials/settings` and the end of day's sequence show
+`booksLockedUntil` too.
 
 ## Company settings and the business day
 

@@ -223,7 +223,7 @@ public sealed record SaveSharedCostRequest(string Name, Guid? RawMaterialId, dec
 // report (Pillar 2). Costs come from the stock module: each material's weighted average cost,
 // and the cost each sale's stock movements recorded when they happened. Prices are the menu's,
 // which are before tax, so net sales need no VAT taken off.
-public sealed partial class CostingService(CostingDbContext db, IBusinessCalendar clock, SalesLedger ledger)
+public sealed partial class CostingService(CostingDbContext db, IBusinessCalendar clock, SalesLedger ledger, Costing.Application.Books.BooksGuard books)
 {
     // ---- Materials ----
 
@@ -441,6 +441,8 @@ public sealed partial class CostingService(CostingDbContext db, IBusinessCalenda
     {
         if (month is < 1 or > 12 || year is < 2000 or > 2100)
             throw new DomainException("Choose a month.");
+        // A month in the books closed keeps its sheet.
+        await books.EnsureMonthOpenAsync(year, month, cancellationToken);
         if (lines.GroupBy(l => (l.Kind, l.ItemId)).Any(g => g.Count() > 1))
             throw new DomainException("Each item goes on the sheet once.");
         var items = await ManualItemsAsync(cancellationToken);

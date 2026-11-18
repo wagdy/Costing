@@ -707,27 +707,9 @@ public sealed class TreasuryService(CostingDbContext db, IBusinessCalendar clock
     public async Task<FinancialSettingsDto> GetSettingsAsync(CancellationToken cancellationToken)
     {
         var row = await db.FinancialSettings.AsNoTracking().SingleOrDefaultAsync(cancellationToken);
-        return new FinancialSettingsDto(await TaxPercentAsync(cancellationToken), row?.ServicePercent ?? 0, row?.UpdatedBy, row?.UpdatedAtUtc, row?.BooksLockedUntil);
-    }
-
-    // The books locked until a day, or unlocked (null): a manager's. Never a day still to come, and
-    // never past the last day closed, which would leave the next day closed out.
-    public async Task<FinancialSettingsDto> LockBooksAsync(DateOnly? until, string by, CancellationToken cancellationToken)
-    {
-        if (until > Today)
-            throw new DomainException("The books are locked up to today at the latest. · الإقفال حتى اليوم على الأكثر.");
-        var lastClosed = await db.EndOfDayReports.Where(d => d.Status == Domain.EndOfDay.EndOfDayStatus.Submitted).MaxAsync(d => (DateOnly?)d.Date, cancellationToken);
-        if (until is { } day && lastClosed is { } last && day > last)
-            throw new DomainException(
-                $"The last day closed is {last.ToString("d MMM yyyy", Invariant)}: lock the books up to it at the latest, the days after it are still to be closed. · لا تقفل بعد آخر يوم مغلق.");
-        var row = await db.FinancialSettings.SingleOrDefaultAsync(cancellationToken);
-        if (row is null)
-            db.FinancialSettings.Add(row = new FinancialSettings());
-        row.BooksLockedUntil = until;
-        row.UpdatedBy = by;
-        row.UpdatedAtUtc = DateTime.UtcNow;
-        await db.SaveChangesAsync(cancellationToken);
-        return await GetSettingsAsync(cancellationToken);
+        // The books' lock is the company's (Settings → Period lock), shown here as it is.
+        var locked = await db.CompanySettings.AsNoTracking().Select(c => c.BooksLockedUntilDate).FirstOrDefaultAsync(cancellationToken);
+        return new FinancialSettingsDto(await TaxPercentAsync(cancellationToken), row?.ServicePercent ?? 0, row?.UpdatedBy, row?.UpdatedAtUtc, locked);
     }
 
     public async Task<FinancialSettingsDto> SaveSettingsAsync(SaveFinancialSettingsRequest request, string by, CancellationToken cancellationToken)

@@ -13,6 +13,7 @@ using Costing.Domain.Purchases;
 using Costing.Domain.RawMaterials;
 using Costing.Domain.Recipes;
 using Costing.Domain.StockMovements;
+using Costing.Application.Books;
 
 namespace Costing.Application.Approvals;
 
@@ -113,7 +114,7 @@ internal static class ApprovalPayload
 // the request closed, together. Approving again, after a lost answer, changes nothing. When it
 // can no longer be done (a price missing, an ingredient gone), it stays waiting, for the manager
 // to put right or reject.
-public sealed record ApproveRequestCommand(Guid RequestId, string StaffName, string StaffId = "") : IRequest<ApprovalRequestDto>, IRetryOnConflict;
+public sealed record ApproveRequestCommand(Guid RequestId, string StaffName, string StaffId = "") : IRequest<ApprovalRequestDto>, IRetryOnConflict, IBooksEntry;
 
 internal sealed class ApproveRequestHandler(
     IApprovalRequestRepository requests,

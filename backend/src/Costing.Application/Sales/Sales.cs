@@ -9,6 +9,7 @@ using Costing.Domain.RawMaterials;
 using Costing.Domain.Recipes;
 using Costing.Domain.Sales;
 using Costing.Domain.StockMovements;
+using Costing.Application.Books;
 
 namespace Costing.Application.Sales;
 
@@ -216,7 +217,10 @@ internal sealed class SaleWriter(IMenuRepository menu, ISalesReceiptRepository s
     }
 }
 
-public sealed record RecordSaleCommand(SaleInput Sale, string StaffName) : IRequest<SalesReceiptDto>, IRetryOnConflict;
+public sealed record RecordSaleCommand(SaleInput Sale, string StaffName) : IRequest<SalesReceiptDto>, IRetryOnConflict, IBooksEntry
+{
+    IEnumerable<DateOnly?> IBooksEntry.BooksDays => [Sale.Date];
+}
 
 internal sealed class RecordSaleHandler(ISalesReceiptRepository sales, SaleWriter writer, IUnitOfWork unitOfWork)
     : IRequestHandler<RecordSaleCommand, SalesReceiptDto>
@@ -238,7 +242,10 @@ internal sealed class RecordSaleHandler(ISalesReceiptRepository sales, SaleWrite
 
 // Handed back after it was paid: Quantity of a line, or the whole sale (no line). Its money is
 // added to the refund, its ingredients put back into stock. Entered as it happened, as a sale is.
-public sealed record RefundSaleCommand(Guid SaleId, Guid? LinePublicId, int? Quantity, string StaffName) : IRequest<SalesReceiptDto>, IRetryOnConflict;
+public sealed record RefundSaleCommand(Guid SaleId, Guid? LinePublicId, int? Quantity, string StaffName) : IRequest<SalesReceiptDto>, IRetryOnConflict, IBooksEntry
+{
+    bool IBooksEntry.WritesToday => true;
+}
 
 internal sealed class RefundSaleHandler(ISalesReceiptRepository sales, SaleStockPoster poster, IUnitOfWork unitOfWork)
     : IRequestHandler<RefundSaleCommand, SalesReceiptDto>
