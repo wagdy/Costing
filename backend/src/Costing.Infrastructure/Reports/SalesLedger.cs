@@ -20,6 +20,9 @@ public sealed record SaleOrder(bool Online, decimal DiscountAmount, decimal Bill
 
     // The business day it counts on: a day's sales summary, the day it is for.
     public DateOnly BusinessDate { get; init; }
+
+    // The branch it was sold in.
+    public Guid BranchId { get; init; }
 }
 
 // OnBill: still charged. A line refunded after payment was sold, and took its stock; one voided
@@ -33,13 +36,15 @@ public sealed record SaleLine(
 }
 
 // Every sale in a period for the cost reports: the receipts entered or imported on the Sales tab,
-// by when they were paid, voided ones left out. From inclusive, to exclusive.
+// by when they were paid, voided ones left out; one branch's, when one is named. From inclusive,
+// to exclusive.
 public sealed class SalesLedger(CostingDbContext db)
 {
-    public async Task<IReadOnlyList<SaleOrder>> GetAsync(DateTime fromUtc, DateTime toUtc, CancellationToken cancellationToken)
+    public async Task<IReadOnlyList<SaleOrder>> GetAsync(DateTime fromUtc, DateTime toUtc, CancellationToken cancellationToken, Guid? branchId = null)
     {
         var receipts = await db.SalesReceipts.AsNoTracking()
             .Where(r => r.VoidedAtUtc == null && r.SoldAtUtc >= fromUtc && r.SoldAtUtc < toUtc)
+            .Where(r => branchId == null || r.BranchId == branchId)
             .ToListAsync(cancellationToken);
 
         return receipts.Select(r => new SaleOrder(
@@ -55,6 +60,7 @@ public sealed class SalesLedger(CostingDbContext db)
                 Points = r.PointsAmount,
                 Refunded = r.RefundedAmount,
                 BusinessDate = r.BusinessDate,
+                BranchId = r.BranchId,
             })
             .ToList();
     }

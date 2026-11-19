@@ -132,8 +132,9 @@ public sealed class PurchaseSpendingService(CostingDbContext db, IBusinessCalend
 
     // The period's expense lines by category: overheads for the profit and loss. Stock lines are
     // left out; they are cost of sales once the recipes use them.
-    public async Task<IReadOnlyList<LoggedExpense>> LoggedExpensesAsync(DateOnly from, DateOnly to, CancellationToken cancellationToken) =>
-        (await PostedLinesAsync(from, to, cancellationToken))
+    // One branch's, when one is named: its invoices and the vouchers paid from its safe.
+    public async Task<IReadOnlyList<LoggedExpense>> LoggedExpensesAsync(DateOnly from, DateOnly to, CancellationToken cancellationToken, Guid? branchId = null) =>
+        (await PostedLinesAsync(from, to, cancellationToken, branchId))
             .Where(l => l.ItemType == PurchaseItemType.Expense && l.Cost is not null)
             .GroupBy(l => l.Category?.Id ?? PurchaseCategory.GeneralId)
             .Select(g => new LoggedExpense(
@@ -186,7 +187,7 @@ public sealed class PurchaseSpendingService(CostingDbContext db, IBusinessCalend
             standing.Count - priced.Count);
     }
 
-    private async Task<IReadOnlyList<PostedLine>> PostedLinesAsync(DateOnly from, DateOnly to, CancellationToken cancellationToken)
+    private async Task<IReadOnlyList<PostedLine>> PostedLinesAsync(DateOnly from, DateOnly to, CancellationToken cancellationToken, Guid? branchId = null)
     {
         var (fromUtc, _) = clock.Bounds(from);
         var (_, toUtc) = clock.Bounds(to);
@@ -194,11 +195,13 @@ public sealed class PurchaseSpendingService(CostingDbContext db, IBusinessCalend
             .Where(i => i.Status == PurchaseInvoiceStatus.Posted
                 && ((i.InvoiceDate != null && i.InvoiceDate >= from && i.InvoiceDate <= to)
                     || (i.InvoiceDate == null && i.PostedAtUtc >= fromUtc && i.PostedAtUtc < toUtc)))
+            .Where(i => branchId == null || i.BranchId == branchId)
             .ToListAsync(cancellationToken);
         // Expense vouchers that stand: a voided one leaves the reports of its own date.
         var vouchers = await db.SafeTransactions.AsNoTracking()
             .Where(t => t.Kind == SafeTransactionKind.ExpenseVoucher && t.ReversalOf == null && t.VoidedAtUtc == null
                 && t.BusinessDate >= from && t.BusinessDate <= to)
+            .Where(t => branchId == null || t.BranchId == branchId)
             .Select(t => new { t.Id, t.ExpenseItemId, t.Amount })
             .ToListAsync(cancellationToken);
         if (invoices.Count == 0 && vouchers.Count == 0)

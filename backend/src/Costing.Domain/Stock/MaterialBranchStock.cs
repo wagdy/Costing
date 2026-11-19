@@ -23,23 +23,58 @@ public sealed class MaterialBranchStock
     public Guid BranchId { get; private set; }
     public decimal? AverageCost { get; private set; }
 
-    public void Mirror(decimal? companyAverage) => AverageCost = companyAverage;
+    // The same average at what the company paid (التكلفة على الشركة): what the branch received from
+    // another branch counted at the sender's cost, not the transfer price it was billed. Null while
+    // the two are the same, as they are for every branch that buys and makes its own.
+    public decimal? CompanyAverageCost { get; private set; }
+
+    public decimal? CostToCompany => CompanyAverageCost ?? AverageCost;
+
+    public void Mirror(decimal? companyAverage)
+    {
+        AverageCost = companyAverage;
+        CompanyAverageCost = null;
+    }
 
     // A delivery or a batch in: weighted by quantity against what the branch has on its shelves
-    // (stock below zero counts as none), as the company's average is.
-    public void AverageWith(decimal onHand, decimal quantity, decimal unitCost) =>
+    // (stock below zero counts as none), as the company's average is. CompanyUnitCost: what it cost
+    // the company, when that is not its price here (a shipment from the central kitchen).
+    public void AverageWith(decimal onHand, decimal quantity, decimal unitCost, decimal? companyUnitCost = null)
+    {
+        var company = MovingAverage.With(CostToCompany, onHand, quantity, companyUnitCost ?? unitCost);
         AverageCost = MovingAverage.With(AverageCost, onHand, quantity, unitCost);
+        KeepCompany(company);
+    }
 
     // One taken back out (a voided delivery or batch), as far as the stock left can carry it.
-    public void UnaverageWith(decimal onHand, decimal quantity, decimal? unitCost) =>
+    public void UnaverageWith(decimal onHand, decimal quantity, decimal? unitCost, decimal? companyUnitCost = null)
+    {
+        var company = MovingAverage.Without(CostToCompany, onHand, quantity, companyUnitCost ?? unitCost);
         AverageCost = MovingAverage.Without(AverageCost, onHand, quantity, unitCost);
+        KeepCompany(company);
+    }
 
     // Its first cost, from an opening count, when it has none.
     public void Open(decimal? unitCost)
     {
         if ((AverageCost ?? 0) == 0 && unitCost is { } cost and >= 0)
+        {
             AverageCost = cost;
+            CompanyAverageCost = null;
+        }
     }
+
+    // What one unit taken from here at `unitCost` (its price here) cost the company: the same share
+    // of it as the branch's average is of the company's. Null: the same.
+    public decimal? CompanyCostOf(decimal? unitCost)
+    {
+        if (CompanyAverageCost is not { } company || AverageCost is not { } average || average == 0 || unitCost is not { } cost)
+            return null;
+        return cost == average ? company : Math.Round(cost * company / average, 6, MidpointRounding.AwayFromZero);
+    }
+
+    private void KeepCompany(decimal? company) =>
+        CompanyAverageCost = company is { } c && AverageCost is { } a && Math.Abs(c - a) < 0.000001m ? null : company;
 }
 
 // The moving average's arithmetic: the company's (RawMaterial) and each branch's alike.

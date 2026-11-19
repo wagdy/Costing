@@ -362,6 +362,7 @@ public sealed class RawMaterial : AggregateRoot
         // Undone in the branch and the location it was entered in, whichever the reversal is made from.
         reversal.AssignBranch(original.BranchId);
         reversal.AssignLocation(original.LocationId);
+        reversal.CostToCompany(original.CompanyUnitCost);
         return reversal;
     }
 

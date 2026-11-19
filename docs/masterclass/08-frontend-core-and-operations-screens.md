@@ -1450,7 +1450,7 @@ function insert(field: HTMLInputElement, text: string): void {
 
 `costing.api.ts`: أكبر ملف: كل الأنواع والنداءات لـ `api/costing` و `api/inventory` و `api/financials` (الخامات، التكاليف، الوصفات، المصنعات، الإنتاج، المشتريات، الجرد، الهالك، الخزنة، التقارير، الموافقات…). الأنواع تطابق DTOs الـ API، والـ enums كـ union types، وقواميس التسميات ثنائية اللغة (`Record<Kind, { en; ar }>`) تجبر TypeScript على تسمية كل حالة.
 
-> 📄 **`frontend/src/app/core/costing/costing.api.ts`** — 3546 سطر
+> 📄 **`frontend/src/app/core/costing/costing.api.ts`** — 3628 سطر
 
 ```ts
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
@@ -1907,6 +1907,77 @@ export interface MonthStatement {
   assetDepreciation?: number;
   depreciationExpense?: number;
   disposalGainOrLoss?: number;
+  // With several branches: what a supplying branch sold the others (in its revenue) and what those
+  // goods cost it (in its cost of sales); what a receiving branch was billed for that never came.
+  interBranchSales?: number;
+  interBranchCostOfGoods?: number;
+  transitLosses?: number;
+}
+
+// Whose P&L: the company's while it has one branch; with several, a branch's or the company's as
+// a whole, consolidated. canChoose: the one asking works every branch.
+export type PnlView = 'Company' | 'Branch' | 'Consolidated';
+
+export interface PnlBranch {
+  id: string;
+  name: string;
+  nameAr: string | null;
+  type: 'Restaurant' | 'CentralKitchen' | 'CentralWarehouse';
+  isActive: boolean;
+}
+
+export interface PnlScope {
+  view: PnlView;
+  branchId: string | null;
+  branch: string | null;
+  branchAr: string | null;
+  branchType: PnlBranch['type'] | null;
+  canChoose: boolean;
+  branches: PnlBranch[];
+}
+
+// A branch's month with the others: sent (sales at the transfer prices, their cost, the margin) and
+// received (billed, into stock, but for what never arrived).
+export interface InterBranchFigures {
+  sales: number;
+  costOfGoodsSent: number;
+  margin: number;
+  shipments: number;
+  purchases: number;
+  transitLosses: number;
+  receipts: number;
+}
+
+// What the consolidated P&L takes out of its branches' added up.
+export interface Eliminations {
+  interBranchSales: number;
+  costOfGoodsSent: number;
+  markupInCostOfSales: number;
+  markupInExpenses: number;
+  interBranchPurchases: number;
+  grossProfit: number;
+}
+
+// What no branch keeps: HR's payroll (null without one), the fixed assets register's month.
+export interface CompanyCosts {
+  payroll: number | null;
+  assetDepreciation: number;
+  disposalGainOrLoss: number;
+}
+
+export type PnlColumnKind = 'Branch' | 'CompanyCosts' | 'Eliminations' | 'Consolidated';
+
+export interface PnlColumn {
+  kind: PnlColumnKind;
+  branchId: string | null;
+  name: string;
+  nameAr: string | null;
+  revenue: number;
+  costOfSales: number;
+  grossProfit: number;
+  operatingExpenses: number;
+  ebitda: number | null;
+  netProfit: number | null;
 }
 
 export interface LoggedExpense {
@@ -2067,6 +2138,12 @@ export interface KpiReport {
   salesWithoutRecipe: number;
   // What the month's discounts and promos did to the margin.
   discounts?: DiscountImpact | null;
+  // Whose P&L, and with several branches what it is made of.
+  scope?: PnlScope | null;
+  interBranch?: InterBranchFigures | null;
+  eliminations?: Eliminations | null;
+  columns?: PnlColumn[] | null;
+  companyCosts?: CompanyCosts | null;
 }
 
 // Why a day's discounts were given (أسباب الخصومات), with what each took off (0 when only its reason
@@ -3391,12 +3468,13 @@ export class CostingApi {
       : this.http.post('/api/inventory/raw-materials', material);
   }
 
-  kpis(year: number, month: number): Observable<KpiReport> {
-    return this.http.get<KpiReport>('/api/costing/kpis', { params: { year, month } });
+  // A branch's, or (none) the company's, consolidated once it has several.
+  kpis(year: number, month: number, branchId: string | null = null): Observable<KpiReport> {
+    return this.http.get<KpiReport>('/api/costing/kpis', { params: branchId ? { year, month, branchId } : { year, month } });
   }
 
-  profitAndLoss(year: number, month: number): Observable<ProfitAndLoss> {
-    return this.http.get<ProfitAndLoss>('/api/costing/reports/pnl', { params: { year, month } });
+  profitAndLoss(year: number, month: number, branchId: string | null = null): Observable<ProfitAndLoss> {
+    return this.http.get<ProfitAndLoss>('/api/costing/reports/pnl', { params: branchId ? { year, month, branchId } : { year, month } });
   }
 
   // The fixed assets register at the end of a month (this one when none).
@@ -3430,8 +3508,9 @@ export class CostingApi {
   }
 
   // The whole month each time: a figure left empty is not known yet.
-  saveExpenses(year: number, month: number, expenses: MonthlyExpenses): Observable<MonthlyExpenses> {
-    return this.http.put<MonthlyExpenses>(`/api/costing/expenses/${year}/${month}`, expenses);
+  // A branch's, with several.
+  saveExpenses(year: number, month: number, expenses: MonthlyExpenses, branchId: string | null = null): Observable<MonthlyExpenses> {
+    return this.http.put<MonthlyExpenses>(`/api/costing/expenses/${year}/${month}`, expenses, { params: branchId ? { branchId } : {} });
   }
 
   // A run of months, inclusive; one month is from = to. Months are 'YYYY-MM'.
@@ -4658,6 +4737,9 @@ export interface ProfitAndLoss {
   netMarginPercent: number | null;
   lines: PnlLine[];
   missing: string | null;
+  // Whose, and for the company's as a whole what it took out between branches.
+  scope?: PnlScope | null;
+  eliminations?: Eliminations | null;
 }
 
 // Tax and service (إعدادات الضريبة والخدمة): the till's tax rate, as the delivery system set it
@@ -8929,7 +9011,7 @@ export class InfoTip implements OnDestroy {
 ```
 
 
-> 📄 **`frontend/src/app/features/costing/info-tips.ts`** — 1366 سطر
+> 📄 **`frontend/src/app/features/costing/info-tips.ts`** — 1443 سطر
 
 ```ts
 // What each figure on the costing screens is, and how it is worked out, in Arabic and English: the
@@ -10160,6 +10242,83 @@ export const infoTips = {
     {
       en: 'Inter-company: it moves money between branches, not in or out of the company. Voided invoices are not counted.',
       ar: 'بين فروع الشركة: لا تدخل أو تخرج من الشركة. لا تُحسب الفواتير الملغاة.',
+    },
+  ),
+  pnlScope: tip(
+    { en: 'P&L for', ar: 'قائمة الدخل لـ' },
+    {
+      en: 'One branch’s P&L, from its own sales, takings, stock and costs at its own prices; or the company as a whole, consolidated: every branch’s added up, with what they sold and bought from each other taken out.',
+      ar: 'قائمة دخل فرع واحد من مبيعاته وإيراده ومخزونه وتكاليفه بأسعاره، أو الشركة ككل: مجموع الفروع بعد استبعاد ما باعته واشترته من بعضها.',
+    },
+    {
+      en: 'Only someone who works every branch chooses; a user kept to a branch sees their own. Each branch’s monthly costs are entered on its own P&L.',
+      ar: 'يختار من يعمل على كل الفروع فقط، ومستخدم الفرع يرى فرعه. تُدخل التكاليف الشهرية لكل فرع في قائمته.',
+    },
+  ),
+  pnlInterBranchSales: tip(
+    { en: 'Inter-branch sales', ar: 'مبيعات داخلية للفروع' },
+    {
+      en: 'What this branch sold the other branches this month on its internal sales invoices, at their transfer prices: its revenue, not the company’s.',
+      ar: 'ما باعه هذا الفرع لباقي الفروع هذا الشهر بفواتير البيع الداخلية بسعر التحويل: إيراد للفرع وليس للشركة.',
+    },
+    {
+      en: 'By the day each was dispatched; voided ones are not counted. The consolidated P&L takes all of it out of the revenue.',
+      ar: 'بتاريخ الصرف، ولا تُحسب الملغاة. وتستبعدها قائمة الشركة ككل من الإيرادات.',
+    },
+  ),
+  pnlCostOfGoodsSent: tip(
+    { en: 'Cost of goods sent to branches', ar: 'تكلفة البضاعة المحولة للفروع' },
+    {
+      en: 'What the goods sent to other branches cost this branch, at its moving average when they left: their cost of sales here, against the inter-branch sales.',
+      ar: 'تكلفة البضاعة المرسلة للفروع بمتوسط تكلفة هذا الفرع عند الصرف: تكلفة مبيعاتها هنا مقابل المبيعات الداخلية.',
+    },
+    {
+      en: 'Inter-branch sales − this = the internal margin. Neither is the company’s: the goods never left it.',
+      ar: 'المبيعات الداخلية − هذه = الهامش الداخلي، ولا يخص أيهما الشركة لأن البضاعة لم تخرج منها.',
+    },
+  ),
+  pnlTransitLosses: tip(
+    { en: 'Transit losses', ar: 'عجز النقل بين الفروع' },
+    {
+      en: 'What this branch was billed for that never arrived: the short quantity on its internal purchase invoices × the transfer price.',
+      ar: 'ما فُوتر على الفرع ولم يصل: الكمية الناقصة في فواتير الشراء الداخلية × سعر التحويل.',
+    },
+    {
+      en: 'By the day each was received. The consolidated P&L counts it at what the goods cost the company, without the markup.',
+      ar: 'بتاريخ الاستلام. وتحسبه قائمة الشركة ككل بتكلفة البضاعة على الشركة بدون الهامش.',
+    },
+  ),
+  pnlEliminations: tip(
+    { en: 'Eliminations between branches', ar: 'الاستبعادات بين الفروع' },
+    {
+      en: 'What the company’s P&L takes out of its branches’ added up, so nothing is counted twice: the branches’ sales to each other, out of the revenue, and the same goods’ cost, out of the costs.',
+      ar: 'ما تستبعده قائمة الشركة ككل من مجموع الفروع حتى لا يُحسب شيء مرتين: مبيعات الفروع لبعضها من الإيرادات، وتكلفة نفس البضاعة من التكاليف.',
+    },
+    {
+      en: 'Purchases out: the goods’ cost to the sending branch, and the markup the receiving branches paid on what they sold, lost or used this month. Markup still on a branch’s shelves is in no P&L until it is used.',
+      ar: 'المشتريات المستبعدة: تكلفة البضاعة على الفرع المرسل، والهامش الذي دفعته الفروع المستلمة فيما باعته أو فقدته أو استخدمته هذا الشهر. والهامش الباقي في مخزون الفرع لا يدخل أي قائمة حتى يُستخدم.',
+    },
+  ),
+  pnlByBranch: tip(
+    { en: 'By branch', ar: 'حسب الفرع' },
+    {
+      en: 'Each branch’s P&L at its own costs, the company’s own costs, and the eliminations: together, the consolidated P&L.',
+      ar: 'قائمة كل فرع بتكاليفه، ومصروفات الشركة، والاستبعادات: مجموعها قائمة الشركة ككل.',
+    },
+    {
+      en: 'Branches + company costs + eliminations = consolidated. EBITDA and the net profit show — for a branch whose wages are not in.',
+      ar: 'الفروع + مصروفات الشركة + الاستبعادات = الشركة ككل. ويظهر — للفرع الذي لم تُدخل رواتبه.',
+    },
+  ),
+  pnlCompanyCosts: tip(
+    { en: 'Company costs', ar: 'مصروفات على مستوى الشركة' },
+    {
+      en: 'What no branch keeps: the month’s payroll from HR and the fixed assets register’s depreciation and disposals. On the company’s P&L, never on a branch’s.',
+      ar: 'ما لا يخص فرعًا بعينه: مسير رواتب الشهر من الموارد البشرية وإهلاك سجل الأصول الثابتة واستبعاداتها. في قائمة الشركة وليس الفرع.',
+    },
+    {
+      en: 'A branch’s own wages, rent and overheads are its own: entered on its monthly costs, or paid on its invoices and from its safe.',
+      ar: 'رواتب الفرع وإيجاره ومصروفاته تخصه: تُدخل في تكاليفه الشهرية أو تُدفع بفواتيره ومن خزنته.',
     },
   ),
   locationStations: tip(

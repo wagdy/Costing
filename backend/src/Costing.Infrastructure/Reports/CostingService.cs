@@ -156,7 +156,10 @@ public sealed record TheoreticalCostRow(
     int QuantityCostedNow,
     string? Unit = null,
     Guid? RecipeId = null,
-    Guid? PrepItemId = null);
+    Guid? PrepItemId = null,
+    // Of the theoretical cost, what a branch paid another branch over its cost (the central
+    // kitchen's markup, in the branch's average when sold): not a cost to the company.
+    decimal InternalMarkup = 0);
 
 // The Monthly Theoretical Cost report: what the month's sales should have cost by their recipes,
 // with no waste and no mistakes. Source says whose sales: the till's, costed as they were sold, or
@@ -367,8 +370,10 @@ public sealed partial class CostingService(CostingDbContext db, IBusinessCalenda
 
     // ---- Pillar 2: the monthly theoretical cost report ----
 
+    // One branch's sales alone, when one is named; the shared costs per meal are the company's, so
+    // each branch's meals carry them as the company's do.
     public async Task<TheoreticalCostReport> GetTheoreticalCostAsync(
-        int year, int month, CancellationToken cancellationToken, TheoreticalSource source = TheoreticalSource.Pos)
+        int year, int month, CancellationToken cancellationToken, TheoreticalSource source = TheoreticalSource.Pos, Guid? branchId = null)
     {
         if (month is < 1 or > 12 || year is < 2000 or > 2100)
             throw new DomainException("Choose a month.");
@@ -382,6 +387,7 @@ public sealed partial class CostingService(CostingDbContext db, IBusinessCalenda
         var target = settings.FoodCostTargetPercent;
 
         var rows = sales
+            .Where(s => branchId is null || s.BranchId == branchId)
             .GroupBy(s => (s.MenuItemId, s.VariantId))
             .Select(g =>
             {
@@ -399,7 +405,7 @@ public sealed partial class CostingService(CostingDbContext db, IBusinessCalenda
                 return new TheoreticalCostRow(
                     ItemCode(any.MenuItemId, any.VariantId), any.MenuItemId, any.VariantId, any.Name, any.NameAr, any.Category,
                     quantity, Money(netSales), Money(theoretical / quantity), Money(theoretical), Money(sharedCost), foodCost, status,
-                    g.Where(s => s.CostedNow).Sum(s => s.Quantity));
+                    g.Where(s => s.CostedNow).Sum(s => s.Quantity), InternalMarkup: Money(g.Sum(s => s.Markup)));
             })
             .OrderBy(r => r.MenuItemId).ThenBy(r => r.VariantId)
             .ToList();
@@ -699,9 +705,11 @@ public sealed partial class CostingService(CostingDbContext db, IBusinessCalenda
     // One sold line of a settled order in the month, net of refunds, with what its ingredients
     // cost when it was sold: the stock movements its sale posted. CostedNow: sold before its dish
     // had a recipe, so costed by today's recipe at today's prices instead.
+    // Markup: of the ingredient cost, what the branch paid another branch over its cost. BranchId:
+    // where it was sold.
     private sealed record SoldLine(
         int MenuItemId, int? VariantId, string Name, string? NameAr, string Category, int Quantity, decimal NetSales,
-        decimal IngredientCost, bool HasRecipe, bool MissingPrice, bool CostedNow);
+        decimal IngredientCost, bool HasRecipe, bool MissingPrice, bool CostedNow, decimal Markup = 0, Guid BranchId = default);
 
     private async Task<IReadOnlyList<SoldLine>> SalesAsync(DateOnly first, DateOnly last, CancellationToken cancellationToken)
     {
@@ -711,16 +719,18 @@ public sealed partial class CostingService(CostingDbContext db, IBusinessCalenda
         // Paid at the till or online, billed and not refunded: a line voided before payment was
         // never charged, and a refunded one is not a sale. An order's own discount is not shared
         // out across its items.
-        var lines = (await ledger.GetAsync(from, to, cancellationToken)).SelectMany(o => o.Lines).Where(l => l.OnBill).ToList();
+        var orders = await ledger.GetAsync(from, to, cancellationToken);
+        var lines = orders.SelectMany(o => o.Lines).Where(l => l.OnBill).ToList();
         if (lines.Count == 0)
             return [];
+        var soldIn = orders.SelectMany(o => o.Lines.Select(l => (l.PublicId, o.BranchId))).ToDictionary(x => x.PublicId, x => x.BranchId);
 
         // A sale's movements are posted just after the order closes; a day either side catches
         // the ones at the month's edges, and the line's id picks out its own.
         var ids = lines.Select(l => l.PublicId).ToHashSet();
         var movements = (await db.StockMovements.AsNoTracking()
                 .Where(m => m.Reason == StockMovementReason.Sale && m.OccurredAtUtc >= from.AddDays(-1) && m.OccurredAtUtc < to.AddDays(1))
-                .Select(m => new { m.SourceId, m.RawMaterialId, m.Quantity, m.UnitCost })
+                .Select(m => new { m.SourceId, m.RawMaterialId, m.Quantity, m.UnitCost, m.CompanyUnitCost })
                 .ToListAsync(cancellationToken))
             .Where(m => ids.Contains(m.SourceId))
             .ToLookup(m => m.SourceId);
@@ -755,13 +765,17 @@ public sealed partial class CostingService(CostingDbContext db, IBusinessCalenda
                 return new SoldLine(l.MenuItemId, l.VariantId, name, nameAr, item?.Category ?? string.Empty, l.Quantity, l.LineTotal,
                     posted.Sum(m => -m.Quantity * (UnitCost(m.RawMaterialId, m.UnitCost) ?? 0)) * l.PostedShare, true,
                     posted.Any(m => UnitCost(m.RawMaterialId, m.UnitCost) is null || (m.UnitCost is null && costs.Of(m.RawMaterialId).Missing.Count > 0)),
-                    costedNow);
+                    costedNow,
+                    posted.Where(m => m is { UnitCost: not null, CompanyUnitCost: not null })
+                        .Sum(m => -m.Quantity * (m.UnitCost!.Value - m.CompanyUnitCost!.Value)) * l.PostedShare,
+                    soldIn.GetValueOrDefault(l.PublicId));
             }
 
+            // Costed now at the company's average: no branch's markup in it.
             var needs = StockRequirements.For(new SoldItem(l.MenuItemId, l.VariantId, l.AddOnIds, l.Quantity), recipes, combos);
             return new SoldLine(l.MenuItemId, l.VariantId, name, nameAr, item?.Category ?? string.Empty, l.Quantity, l.LineTotal,
                 needs.Sum(n => n.Value * (costs.Of(n.Key).PerUnit ?? 0)), needs.Count > 0,
-                needs.Keys.Any(id => costs.Of(id).Missing.Count > 0), needs.Count > 0);
+                needs.Keys.Any(id => costs.Of(id).Missing.Count > 0), needs.Count > 0, BranchId: soldIn.GetValueOrDefault(l.PublicId));
         }).ToList();
     }
 

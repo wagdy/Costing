@@ -773,7 +773,7 @@ internal sealed class MaterialUnitWriter(IMaterialUnits units)
 ```
 
 
-> 📄 **`backend/src/Costing.Infrastructure/Persistence/MaterialUnits.cs`** — 70 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Persistence/MaterialUnits.cs`** — 92 سطر
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
@@ -816,11 +816,13 @@ internal sealed class MaterialUnits(CostingDbContext db) : IMaterialUnits
     public async Task RestateAndSaveAsync(RawMaterial material, decimal oneNewIsOld, CancellationToken cancellationToken)
     {
         var (id, r) = (material.Id, oneNewIsOld);
+        var unit = material.Unit.ToString();
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
 
         await db.StockMovements.Where(m => m.RawMaterialId == id).ExecuteUpdateAsync(s => s
             .SetProperty(m => m.Quantity, m => Math.Round(m.Quantity / r, 3))
-            .SetProperty(m => m.UnitCost, m => m.UnitCost * r), cancellationToken);
+            .SetProperty(m => m.UnitCost, m => m.UnitCost * r)
+            .SetProperty(m => m.CompanyUnitCost, m => m.CompanyUnitCost * r), cancellationToken);
         await db.Set<PurchaseInvoiceLine>().Where(l => l.RawMaterialId == id).ExecuteUpdateAsync(s => s
             .SetProperty(l => l.Quantity, l => Math.Round(l.Quantity / r, 3))
             .SetProperty(l => l.UnitSize, l => Math.Round(l.UnitSize / r, 3)), cancellationToken);
@@ -837,10 +839,30 @@ internal sealed class MaterialUnits(CostingDbContext db) : IMaterialUnits
             .SetProperty(l => l.UnitCost, l => l.UnitCost * r), cancellationToken);
         // Each branch's cost, and what was moved between locations, in the new unit too.
         await db.MaterialBranchStocks.Where(b => b.RawMaterialId == id).ExecuteUpdateAsync(s => s
-            .SetProperty(b => b.AverageCost, b => b.AverageCost * r), cancellationToken);
+            .SetProperty(b => b.AverageCost, b => b.AverageCost * r)
+            .SetProperty(b => b.CompanyAverageCost, b => b.CompanyAverageCost * r), cancellationToken);
         await db.Set<Domain.Stock.InternalTransferLine>().Where(l => l.RawMaterialId == id).ExecuteUpdateAsync(s => s
             .SetProperty(l => l.Quantity, l => Math.Round(l.Quantity / r, 3))
-            .SetProperty(l => l.UnitCostSnapshot, l => l.UnitCostSnapshot * r), cancellationToken);
+            .SetProperty(l => l.UnitCostSnapshot, l => l.UnitCostSnapshot * r)
+            .SetProperty(l => l.Unit, unit), cancellationToken);
+        // What branches asked for, were sent and received, and at what price.
+        await db.Set<Domain.InterBranch.InterBranchRequisitionLine>().Where(l => l.RawMaterialId == id).ExecuteUpdateAsync(s => s
+            .SetProperty(l => l.RequestedQuantity, l => Math.Round(l.RequestedQuantity / r, 3))
+            .SetProperty(l => l.DispatchedQuantity, l => Math.Round(l.DispatchedQuantity / r, 3))
+            .SetProperty(l => l.ReceivedQuantity, l => Math.Round(l.ReceivedQuantity / r, 3))
+            .SetProperty(l => l.Unit, unit), cancellationToken);
+        await db.Set<Domain.InterBranch.InternalSalesInvoiceLine>().Where(l => l.RawMaterialId == id).ExecuteUpdateAsync(s => s
+            .SetProperty(l => l.Quantity, l => Math.Round(l.Quantity / r, 3))
+            .SetProperty(l => l.ReceivedQuantity, l => l.ReceivedQuantity == null ? null : Math.Round(l.ReceivedQuantity.Value / r, 3))
+            .SetProperty(l => l.UnitCost, l => l.UnitCost * r)
+            .SetProperty(l => l.TransferUnitPrice, l => l.TransferUnitPrice * r)
+            .SetProperty(l => l.Unit, unit), cancellationToken);
+        await db.Set<Domain.InterBranch.InternalPurchaseInvoiceLine>().Where(l => l.RawMaterialId == id).ExecuteUpdateAsync(s => s
+            .SetProperty(l => l.DispatchedQuantity, l => Math.Round(l.DispatchedQuantity / r, 3))
+            .SetProperty(l => l.ReceivedQuantity, l => Math.Round(l.ReceivedQuantity / r, 3))
+            .SetProperty(l => l.ShortQuantity, l => Math.Round(l.ShortQuantity / r, 3))
+            .SetProperty(l => l.TransferUnitPrice, l => l.TransferUnitPrice * r)
+            .SetProperty(l => l.Unit, unit), cancellationToken);
 
         await db.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
@@ -3957,7 +3979,7 @@ internal static class SaleRecipes
 - **التقرير النظري (`TheoreticalCostReport`):** لكل صنف مُباع في الفترة: الكمية × تكلفة وصفته = تكلفة المبيعات النظرية، مقابل إيراده. (يُستخدم في الـ KPIs والفروقات، الفصل 06.)
 - **ورقة المبيعات اليدوية** والإعدادات (الهدف، التكاليف المشتركة).
 
-> 📄 **`backend/src/Costing.Infrastructure/Reports/CostingService.cs`** — 824 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Reports/CostingService.cs`** — 838 سطر
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
@@ -4118,7 +4140,10 @@ public sealed record TheoreticalCostRow(
     int QuantityCostedNow,
     string? Unit = null,
     Guid? RecipeId = null,
-    Guid? PrepItemId = null);
+    Guid? PrepItemId = null,
+    // Of the theoretical cost, what a branch paid another branch over its cost (the central
+    // kitchen's markup, in the branch's average when sold): not a cost to the company.
+    decimal InternalMarkup = 0);
 
 // The Monthly Theoretical Cost report: what the month's sales should have cost by their recipes,
 // with no waste and no mistakes. Source says whose sales: the till's, costed as they were sold, or
@@ -4329,8 +4354,10 @@ public sealed partial class CostingService(CostingDbContext db, IBusinessCalenda
 
     // ---- Pillar 2: the monthly theoretical cost report ----
 
+    // One branch's sales alone, when one is named; the shared costs per meal are the company's, so
+    // each branch's meals carry them as the company's do.
     public async Task<TheoreticalCostReport> GetTheoreticalCostAsync(
-        int year, int month, CancellationToken cancellationToken, TheoreticalSource source = TheoreticalSource.Pos)
+        int year, int month, CancellationToken cancellationToken, TheoreticalSource source = TheoreticalSource.Pos, Guid? branchId = null)
     {
         if (month is < 1 or > 12 || year is < 2000 or > 2100)
             throw new DomainException("Choose a month.");
@@ -4344,6 +4371,7 @@ public sealed partial class CostingService(CostingDbContext db, IBusinessCalenda
         var target = settings.FoodCostTargetPercent;
 
         var rows = sales
+            .Where(s => branchId is null || s.BranchId == branchId)
             .GroupBy(s => (s.MenuItemId, s.VariantId))
             .Select(g =>
             {
@@ -4361,7 +4389,7 @@ public sealed partial class CostingService(CostingDbContext db, IBusinessCalenda
                 return new TheoreticalCostRow(
                     ItemCode(any.MenuItemId, any.VariantId), any.MenuItemId, any.VariantId, any.Name, any.NameAr, any.Category,
                     quantity, Money(netSales), Money(theoretical / quantity), Money(theoretical), Money(sharedCost), foodCost, status,
-                    g.Where(s => s.CostedNow).Sum(s => s.Quantity));
+                    g.Where(s => s.CostedNow).Sum(s => s.Quantity), InternalMarkup: Money(g.Sum(s => s.Markup)));
             })
             .OrderBy(r => r.MenuItemId).ThenBy(r => r.VariantId)
             .ToList();
@@ -4661,9 +4689,11 @@ public sealed partial class CostingService(CostingDbContext db, IBusinessCalenda
     // One sold line of a settled order in the month, net of refunds, with what its ingredients
     // cost when it was sold: the stock movements its sale posted. CostedNow: sold before its dish
     // had a recipe, so costed by today's recipe at today's prices instead.
+    // Markup: of the ingredient cost, what the branch paid another branch over its cost. BranchId:
+    // where it was sold.
     private sealed record SoldLine(
         int MenuItemId, int? VariantId, string Name, string? NameAr, string Category, int Quantity, decimal NetSales,
-        decimal IngredientCost, bool HasRecipe, bool MissingPrice, bool CostedNow);
+        decimal IngredientCost, bool HasRecipe, bool MissingPrice, bool CostedNow, decimal Markup = 0, Guid BranchId = default);
 
     private async Task<IReadOnlyList<SoldLine>> SalesAsync(DateOnly first, DateOnly last, CancellationToken cancellationToken)
     {
@@ -4673,16 +4703,18 @@ public sealed partial class CostingService(CostingDbContext db, IBusinessCalenda
         // Paid at the till or online, billed and not refunded: a line voided before payment was
         // never charged, and a refunded one is not a sale. An order's own discount is not shared
         // out across its items.
-        var lines = (await ledger.GetAsync(from, to, cancellationToken)).SelectMany(o => o.Lines).Where(l => l.OnBill).ToList();
+        var orders = await ledger.GetAsync(from, to, cancellationToken);
+        var lines = orders.SelectMany(o => o.Lines).Where(l => l.OnBill).ToList();
         if (lines.Count == 0)
             return [];
+        var soldIn = orders.SelectMany(o => o.Lines.Select(l => (l.PublicId, o.BranchId))).ToDictionary(x => x.PublicId, x => x.BranchId);
 
         // A sale's movements are posted just after the order closes; a day either side catches
         // the ones at the month's edges, and the line's id picks out its own.
         var ids = lines.Select(l => l.PublicId).ToHashSet();
         var movements = (await db.StockMovements.AsNoTracking()
                 .Where(m => m.Reason == StockMovementReason.Sale && m.OccurredAtUtc >= from.AddDays(-1) && m.OccurredAtUtc < to.AddDays(1))
-                .Select(m => new { m.SourceId, m.RawMaterialId, m.Quantity, m.UnitCost })
+                .Select(m => new { m.SourceId, m.RawMaterialId, m.Quantity, m.UnitCost, m.CompanyUnitCost })
                 .ToListAsync(cancellationToken))
             .Where(m => ids.Contains(m.SourceId))
             .ToLookup(m => m.SourceId);
@@ -4717,13 +4749,17 @@ public sealed partial class CostingService(CostingDbContext db, IBusinessCalenda
                 return new SoldLine(l.MenuItemId, l.VariantId, name, nameAr, item?.Category ?? string.Empty, l.Quantity, l.LineTotal,
                     posted.Sum(m => -m.Quantity * (UnitCost(m.RawMaterialId, m.UnitCost) ?? 0)) * l.PostedShare, true,
                     posted.Any(m => UnitCost(m.RawMaterialId, m.UnitCost) is null || (m.UnitCost is null && costs.Of(m.RawMaterialId).Missing.Count > 0)),
-                    costedNow);
+                    costedNow,
+                    posted.Where(m => m is { UnitCost: not null, CompanyUnitCost: not null })
+                        .Sum(m => -m.Quantity * (m.UnitCost!.Value - m.CompanyUnitCost!.Value)) * l.PostedShare,
+                    soldIn.GetValueOrDefault(l.PublicId));
             }
 
+            // Costed now at the company's average: no branch's markup in it.
             var needs = StockRequirements.For(new SoldItem(l.MenuItemId, l.VariantId, l.AddOnIds, l.Quantity), recipes, combos);
             return new SoldLine(l.MenuItemId, l.VariantId, name, nameAr, item?.Category ?? string.Empty, l.Quantity, l.LineTotal,
                 needs.Sum(n => n.Value * (costs.Of(n.Key).PerUnit ?? 0)), needs.Count > 0,
-                needs.Keys.Any(id => costs.Of(id).Missing.Count > 0), needs.Count > 0);
+                needs.Keys.Any(id => costs.Of(id).Missing.Count > 0), needs.Count > 0, BranchId: soldIn.GetValueOrDefault(l.PublicId));
         }).ToList();
     }
 
@@ -4791,7 +4827,7 @@ public sealed partial class CostingService(CostingDbContext db, IBusinessCalenda
 
 `CostingController` (`api/costing`): التكاليف والتقارير الغذائية (المواد، البطاقات، النظري، الإعدادات، التكاليف المشتركة).
 
-> 📄 **`backend/src/Costing.Api/Controllers/CostingController.cs`** — 288 سطر
+> 📄 **`backend/src/Costing.Api/Controllers/CostingController.cs`** — 293 سطر
 
 ```csharp
 using Microsoft.AspNetCore.Authorization;
@@ -4988,26 +5024,31 @@ public sealed class CostingController(
     }
 
     // The template's financial KPIs for a business month, with the month as an income statement
-    // and what each dish earned.
+    // and what each dish earned. With several branches: branchId's, or none for the company's as a
+    // whole, consolidated (a user kept to a branch reads their own).
     [HttpGet("kpis")]
     [CostingTab(CostingTabs.Reports | CostingTabs.CostSettings)]
-    public Task<KpiReport> GetKpis([FromQuery] int year, [FromQuery] int month, CancellationToken cancellationToken) =>
-        kpis.GetAsync(year, month, cancellationToken);
+    public async Task<KpiReport> GetKpis([FromQuery] int year, [FromQuery] int month, [FromQuery] Guid? branchId, CancellationToken cancellationToken) =>
+        await kpis.GetAsync(year, month, cancellationToken, await kpis.BranchToReadAsync(branchId, cancellationToken));
 
     // The month's profit and loss (قائمة الدخل): gross profit, operating expenses, EBITDA, interest,
-    // the fixed assets' depreciation and disposals, net profit. Read from the KPIs' statement.
+    // the fixed assets' depreciation and disposals, net profit. Read from the KPIs' statement, for
+    // the branch or the company as the KPIs are.
     [HttpGet("reports/pnl")]
     [CostingTab(CostingTabs.Reports | CostingTabs.CostSettings)]
-    public async Task<ProfitAndLoss> GetProfitAndLoss([FromQuery] int year, [FromQuery] int month, CancellationToken cancellationToken) =>
-        ProfitAndLoss.Of(await kpis.GetAsync(year, month, cancellationToken));
+    public async Task<ProfitAndLoss> GetProfitAndLoss(
+        [FromQuery] int year, [FromQuery] int month, [FromQuery] Guid? branchId, CancellationToken cancellationToken) =>
+        ProfitAndLoss.Of(await kpis.GetAsync(year, month, cancellationToken, await kpis.BranchToReadAsync(branchId, cancellationToken)));
 
     // A month's wages, labour hours and overheads, as the manager enters them. The whole month
-    // each time: a figure left out is not known yet.
+    // each time: a figure left out is not known yet. With several branches, the branch's.
     [HttpPut("expenses/{year:int}/{month:int}")]
     [CostingTab(CostingTabs.Reports | CostingTabs.CostSettings)]
     [Authorize(Policy = Permissions.InventoryManage)]
-    public Task<MonthlyExpensesDto> SaveExpenses(int year, int month, MonthlyExpensesDto expenses, CancellationToken cancellationToken) =>
-        kpis.SaveExpensesAsync(year, month, expenses, User.FindFirst(UserClaims.Name)?.Value, cancellationToken);
+    public async Task<MonthlyExpensesDto> SaveExpenses(
+        int year, int month, MonthlyExpensesDto expenses, [FromQuery] Guid? branchId, CancellationToken cancellationToken) =>
+        await kpis.SaveExpensesAsync(year, month, expenses, User.FindFirst(UserClaims.Name)?.Value, cancellationToken,
+            await kpis.BranchToEnterAsync(branchId, cancellationToken));
 
     // Purchases by category between two days, both included: stock and expenses, from the posted invoices.
     [HttpGet("purchases/spending")]

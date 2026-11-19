@@ -1743,6 +1743,7 @@ Costing/
                         20261118131754_AddCompanyStructure.cs
                         20261118184431_AddStockLocations.cs
                         20261118193842_AddInterBranchHub.cs
+                        20261119091320_AddConsolidatedPnl.cs
                         CostingDbContextModelSnapshot.cs
                     PosIntegrationPersistence.cs
                     PurchaseOrderPersistence.cs
@@ -1780,6 +1781,7 @@ Costing/
                 BurdenedCostApiTests.cs
                 CombosAndDiscountsApiTests.cs
                 CompanyStructureApiTests.cs
+                ConsolidatedPnlApiTests.cs
                 ControllershipApiTests.cs
                 Costing.Api.Tests.csproj
                 CostingApiTests.cs
@@ -1851,6 +1853,7 @@ Costing/
                 BurdenedCostTests.cs
                 CombosAndDiscountsTests.cs
                 CompanyStructureTests.cs
+                ConsolidatedPnlTests.cs
                 Costing.Infrastructure.Tests.csproj
                 CostingTests.cs
                 DailyBreakEvenTests.cs

@@ -74,6 +74,45 @@ public class StockLocationTests
         Assert.Equal((decimal?)0.07m, fresh.AverageCost);
     }
 
+    // What a branch paid another branch over its cost is not the company's: alongside its average,
+    // the branch keeps one at what the company paid, and what it takes out at its average cost the
+    // company that share of it.
+    [Fact]
+    public void A_branch_keeps_beside_its_own_average_one_at_what_the_goods_cost_the_company()
+    {
+        var tanta = new MaterialBranchStock(Guid.NewGuid(), Guid.NewGuid(), null);
+        tanta.AverageWith(0, 5_000, 0.08m);
+        Assert.Equal(((decimal?)0.08m, (decimal?)null, (decimal?)0.08m), (tanta.AverageCost, tanta.CompanyAverageCost, tanta.CostToCompany));
+        Assert.Null(tanta.CompanyCostOf(0.08m));
+
+        // Five kilos from the central kitchen, billed at L.E 110 a kilo, which cost it L.E 100.
+        tanta.AverageWith(5_000, 5_000, 0.11m, 0.1m);
+        Assert.Equal(((decimal?)0.095m, (decimal?)0.09m), (tanta.AverageCost, tanta.CompanyAverageCost));
+        Assert.Equal((decimal?)0.09m, tanta.CompanyCostOf(0.095m));
+        Assert.Equal((decimal?)0.045m, tanta.CompanyCostOf(0.0475m));
+
+        // A delivery of its own moves both alike; the shipment voided takes its markup back out.
+        tanta.AverageWith(10_000, 10_000, 0.09m);
+        Assert.Equal(((decimal?)0.0925m, (decimal?)0.09m), (tanta.AverageCost, tanta.CompanyAverageCost));
+        tanta.UnaverageWith(20_000, 5_000, 0.11m, 0.1m);
+        Assert.Equal((decimal?)0.0866667m, Math.Round(tanta.AverageCost!.Value, 7));
+        Assert.Equal((decimal?)0.0866667m, Math.Round(tanta.CompanyAverageCost ?? tanta.AverageCost!.Value, 7));
+        Assert.Null(tanta.CompanyAverageCost);
+
+        // One branch: the company's average, and nothing between.
+        tanta.AverageWith(15_000, 5_000, 0.11m, 0.1m);
+        tanta.Mirror(0.07m);
+        Assert.Equal(((decimal?)0.07m, (decimal?)null), (tanta.AverageCost, tanta.CompanyAverageCost));
+
+        // A reversal is what the company paid as the original was.
+        var sauce = new RawMaterial("Tomato sauce", UnitOfMeasure.Gram);
+        var received = sauce.ReceiveFromBranch(5_000, Guid.NewGuid(), 0.11m, Guid.NewGuid(), "Mona");
+        received.CostToCompany(0.1m);
+        Assert.Equal((decimal?)0.1m, sauce.Reverse(received, "Wagdy").CompanyUnitCost);
+        received.CostToCompany(0.11m);
+        Assert.Null(received.CompanyUnitCost);
+    }
+
     [Fact]
     public void A_transfer_moves_only_what_the_location_has_inside_one_branch_numbered_by_its_year()
     {

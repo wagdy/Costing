@@ -11214,7 +11214,7 @@ export class InflationPage {
 - `TreasuryPage`: تحليل الخزنة والتدفقات لأي فترة.
 - `TheoreticalPage`: التكلفة النظرية للمبيعات وورقة المبيعات اليدوية.
 - `VariancePage`: الفروقات بين جردين (أحمر عجز، أزرق زيادة، ضمن السماحية).
-- `KpisPage`: المؤشرات بالمدى الصحي وسبب النقص، وقائمة الدخل، وإدخال المصروفات الشهرية.
+- `KpisPage`: المؤشرات بالمدى الصحي وسبب النقص، وقائمة الدخل، وإدخال المصروفات الشهرية. ومع عدة فروع: **قائمة الدخل لـ** (لمن يعمل على كل الفروع: الشركة ككل أو فرع)، وشارة باسم الفرع، وسطور المبيعات الداخلية وتكلفة البضاعة المحولة وعجز النقل، وفي الموحدة جدولا **الاستبعادات بين الفروع** و**حسب الفرع** (اسم الفرع يفتح قائمته)، والمصروفات الشهرية للقراءة فقط فيها لأنها مجموع الفروع.
 - `DailyBreakEvenPage`: نقطة التعادل اليومية: جملة حية بالعربية والإنجليزية (ما يجب بيعه، وما بِيع، والربح بالأخضر أو الخسارة بالأحمر)، ومقياس أفقي من الصفر بخط عند نقطة التعادل وتعبئة بالكهرماني حتى تجاوزه ثم بالأخضر (`role="meter"`)، وأربع بطاقات بشرح (ⓘ)، والرجوع ليوم سابق. `gaugeScale` دالة نقية لمدى المقياس.
 - `BreakEvenPage`: ورقة نقطة التعادل وسيناريوهاتها الأربعة.
 - `DailySummariesPage` (`/costing/reports/daily-summaries`): لوحة تصحيح المدير: كل تقفيل في فترة (حتى 92 يومًا)، وآخر مقفول والتالي وإقفال الدفاتر فوقها، وزر **Undo & Reopen Day** على صف آخر يوم مقفول فقط للمدير. التبويب يظهر فقط لمن يقرأ تقفيل اليوم (`EndOfDay` أو `Purchases` أو `Financials`)، والمسار محمي بـ `costingTabGuard` الذي صار يقبل أكثر من قسم.
@@ -14160,7 +14160,7 @@ export class VariancePage {
 ```
 
 
-> 📄 **`frontend/src/app/features/costing/kpis-page.ts`** — 792 سطر
+> 📄 **`frontend/src/app/features/costing/kpis-page.ts`** — 1053 سطر
 
 ```ts
 import { DecimalPipe } from '@angular/common';
@@ -14171,12 +14171,24 @@ import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatIconModule } from '@angular/material/icon';
 import { MatInputModule } from '@angular/material/input';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
+import { MatSelectModule } from '@angular/material/select';
 import { RouterLink } from '@angular/router';
 import { firstValueFrom } from 'rxjs';
 import { AuthService } from '../../core/auth/auth.service';
 import { Permissions } from '../../core/auth/permissions';
 import { CostingAccess } from '../../core/costing/costing-tabs';
-import { CostingApi, DiscountImpact, Kpi, KpiKey, KpiReport, MonthlyExpenses, expenseLineLabels, kpiLabels } from '../../core/costing/costing.api';
+import {
+  CostingApi,
+  DiscountImpact,
+  Kpi,
+  KpiKey,
+  KpiReport,
+  MonthlyExpenses,
+  PnlColumn,
+  PnlScope,
+  expenseLineLabels,
+  kpiLabels,
+} from '../../core/costing/costing.api';
 import { errorMessage } from '../../core/http/error-message';
 import { Company } from '../../core/settings/company';
 import { MoneyPipe } from '../../core/ui/money.pipe';
@@ -14197,6 +14209,16 @@ const kpiTips: Record<KpiKey, InfoTipKey> = {
 
 type Tone = 'ok' | 'bad' | 'check' | 'none';
 
+// The rows of the table by branch (consolidated): each column's figures down the P&L.
+const columnRows: { key: keyof Pick<PnlColumn, 'revenue' | 'costOfSales' | 'grossProfit' | 'operatingExpenses' | 'ebitda' | 'netProfit'>; en: string; ar: string; total?: boolean }[] = [
+  { key: 'revenue', en: 'Revenue', ar: 'الإيرادات', total: true },
+  { key: 'costOfSales', en: 'Cost of sales', ar: 'تكلفة المبيعات' },
+  { key: 'grossProfit', en: 'Gross profit', ar: 'مجمل الربح', total: true },
+  { key: 'operatingExpenses', en: 'Operating expenses', ar: 'المصروفات التشغيلية' },
+  { key: 'ebitda', en: 'EBITDA', ar: 'الربح التشغيلي', total: true },
+  { key: 'netProfit', en: 'Net profit', ar: 'صافي الربح', total: true },
+];
+
 const expenseFields: { key: keyof MonthlyExpenses; en: string; ar: string; hours?: boolean }[] = [
   { key: 'wagesAndBenefits', en: 'Wages and benefits', ar: 'الرواتب والمزايا' },
   { key: 'labourHours', en: 'Labour hours', ar: 'ساعات العمل', hours: true },
@@ -14209,16 +14231,42 @@ const expenseFields: { key: keyof MonthlyExpenses; en: string; ar: string; hours
 // Pillar 4: the template's financial KPIs for a business month, each against its healthy range.
 // Sales and recipe costs come from the till, losses from the stock ledger, expenses from the
 // month's posted purchase invoices; wages, hours and what is paid without an invoice are entered
-// here. A KPI missing what it needs says so, never 0.
+// here. A KPI missing what it needs says so, never 0. With several branches, one branch's P&L or
+// the company's as a whole (consolidated), chosen by one who works every branch, with what the
+// branches sold and bought each other taken out, and the table by branch.
 @Component({
   selector: 'app-kpis-page',
-  imports: [DecimalPipe, FormsModule, InfoTip, MatButtonModule, MatFormFieldModule, MatIconModule, MatInputModule, MatProgressBarModule, MoneyPipe, RouterLink],
+  imports: [
+    DecimalPipe,
+    FormsModule,
+    InfoTip,
+    MatButtonModule,
+    MatFormFieldModule,
+    MatIconModule,
+    MatInputModule,
+    MatProgressBarModule,
+    MatSelectModule,
+    MoneyPipe,
+    RouterLink,
+  ],
   template: `
     <div class="toolbar">
       <mat-form-field subscriptSizing="dynamic">
         <mat-label>Month · الشهر</mat-label>
         <input matInput type="month" [ngModel]="month()" (ngModelChange)="pick($event)" [max]="thisMonth" />
       </mat-form-field>
+      @if (scope()?.canChoose) {
+        <mat-form-field subscriptSizing="dynamic" class="scope-pick">
+          <mat-label>P&amp;L for · قائمة الدخل لـ</mat-label>
+          <mat-select [value]="branch() ?? ''" (selectionChange)="pickBranch($event.value || null)">
+            <mat-option value="">The company as a whole · الشركة ككل</mat-option>
+            @for (b of scope()!.branches; track b.id) {
+              <mat-option [value]="b.id">{{ b.name }}{{ b.nameAr ? ' · ' + b.nameAr : '' }}</mat-option>
+            }
+          </mat-select>
+        </mat-form-field>
+        <app-info-tip tip="pnlScope" />
+      }
       <span class="spacer"></span>
       <button mat-button (click)="print()" [disabled]="!report()"><mat-icon>print</mat-icon> Print</button>
     </div>
@@ -14229,7 +14277,17 @@ const expenseFields: { key: keyof MonthlyExpenses; en: string; ar: string; hours
       <p class="error">{{ error() }}</p>
     } @else if (report(); as r) {
       <header class="report-head">
-        <h2>Financial KPIs <span class="inline-ar">مؤشرات الأداء المالية</span></h2>
+        <h2>
+          Financial KPIs <span class="inline-ar">مؤشرات الأداء المالية</span>
+          @switch (r.scope?.view) {
+            @case ('Branch') {
+              <span class="scope-chip">{{ r.scope!.branch }}{{ r.scope!.branchAr ? ' · ' + r.scope!.branchAr : '' }}</span>
+            }
+            @case ('Consolidated') {
+              <span class="scope-chip">The company as a whole · الشركة ككل</span>
+            }
+          }
+        </h2>
         <div class="muted">
           From<span class="inline-ar">من</span>: <strong>{{ r.from }}</strong> &nbsp; To<span class="inline-ar">إلى</span>:
           <strong>{{ r.to }}</strong> &nbsp;·&nbsp; {{ r.statement.takingsDays ?? 0 }} {{ r.statement.takingsDays === 1 ? 'day' : 'days' }} of takings
@@ -14367,12 +14425,33 @@ const expenseFields: { key: keyof MonthlyExpenses; en: string; ar: string; hours
                 @if (r.statement.deliveryFees) {
                   <tr><td>Delivery fees · رسوم التوصيل</td><td class="num">{{ r.statement.deliveryFees | money }}</td><td></td></tr>
                 }
+                @if (r.statement.interBranchSales) {
+                  <tr class="inter-branch">
+                    <td>Inter-branch sales · مبيعات داخلية للفروع <app-info-tip tip="pnlInterBranchSales" /></td>
+                    <td class="num">{{ r.statement.interBranchSales | money }}</td>
+                    <td class="num muted">{{ pct(r.statement.interBranchSales, r) }}</td>
+                  </tr>
+                }
                 <tr class="total"><td>Revenue (net sales) · صافي المبيعات</td><td class="num">{{ r.statement.revenue | money }}</td><td class="num">100%</td></tr>
                 <tr><td>Food cost · تكلفة الطعام</td><td class="num">{{ r.statement.foodRecipeCost | money }}</td><td class="num muted">{{ pct(r.statement.foodRecipeCost, r) }}</td></tr>
                 <tr><td>Beverage cost · تكلفة المشروبات</td><td class="num">{{ r.statement.beverageRecipeCost | money }}</td><td class="num muted">{{ pct(r.statement.beverageRecipeCost, r) }}</td></tr>
                 <tr><td>Kitchen waste · هالك المطبخ</td><td class="num">{{ r.statement.kitchenWaste | money }}</td><td class="num muted">{{ pct(r.statement.kitchenWaste, r) }}</td></tr>
                 <tr><td>Spoilage · الهالك المسجل</td><td class="num">{{ r.statement.spoilage | money }}</td><td class="num muted">{{ pct(r.statement.spoilage, r) }}</td></tr>
                 <tr><td>Count differences · فروق الجرد</td><td class="num">{{ r.statement.countDifferences | money }}</td><td class="num muted">{{ pct(r.statement.countDifferences, r) }}</td></tr>
+                @if (r.statement.interBranchCostOfGoods) {
+                  <tr class="inter-branch">
+                    <td>Cost of goods sent to branches · تكلفة البضاعة المحولة للفروع <app-info-tip tip="pnlCostOfGoodsSent" /></td>
+                    <td class="num">{{ r.statement.interBranchCostOfGoods | money }}</td>
+                    <td class="num muted">{{ pct(r.statement.interBranchCostOfGoods, r) }}</td>
+                  </tr>
+                }
+                @if (r.statement.transitLosses) {
+                  <tr class="inter-branch">
+                    <td>Transit losses · عجز النقل بين الفروع <app-info-tip tip="pnlTransitLosses" /></td>
+                    <td class="num">{{ r.statement.transitLosses | money }}</td>
+                    <td class="num muted">{{ pct(r.statement.transitLosses, r) }}</td>
+                  </tr>
+                }
                 <tr class="total"><td>Cost of sales · تكلفة المبيعات</td><td class="num">{{ r.statement.costOfSales | money }}</td><td class="num">{{ pct(r.statement.costOfSales, r) }}</td></tr>
                 <tr class="total"><td>Gross profit · الربح الإجمالي</td><td class="num">{{ r.statement.grossProfit | money }}</td><td class="num">{{ pct(r.statement.grossProfit, r) }}</td></tr>
                 <tr>
@@ -14380,6 +14459,9 @@ const expenseFields: { key: keyof MonthlyExpenses; en: string; ar: string; hours
                     Wages and benefits · الرواتب
                     @if (r.statement.loggedWages) {
                       <small class="muted part">{{ parts(r.statement.wagesAndBenefits, r.statement.loggedWages) }}</small>
+                    }
+                    @if (r.scope?.view === 'Branch' && r.companyCosts?.payroll !== null && r.companyCosts?.payroll !== undefined) {
+                      <small class="muted part">The payroll from HR is the company's · ضمن مسير رواتب الشركة</small>
                     }
                   </td>
                   <td class="num">{{ combined(r.statement.wagesAndBenefits, r.statement.loggedWages) }}</td>
@@ -14477,6 +14559,26 @@ const expenseFields: { key: keyof MonthlyExpenses; en: string; ar: string; hours
           @if (r.statement.voids) {
             <p class="note small">Voids and refunds on the days: {{ r.statement.voids | money }}, already out of the takings.</p>
           }
+          @if (r.scope?.view === 'Branch' && r.interBranch?.purchases) {
+            <p class="note small bought">
+              Bought from other branches · مشتريات من الفروع: <strong>{{ r.interBranch!.purchases | money }}</strong> on
+              {{ r.interBranch!.receipts }} internal purchase {{ r.interBranch!.receipts === 1 ? 'invoice' : 'invoices' }}, into the stock: their cost comes into
+              the P&amp;L as the goods are used.
+              <a routerLink="/costing/inter-branch" [queryParams]="{ tab: 'receipts' }">Hub →</a>
+            </p>
+          }
+          @if (r.scope?.view === 'Branch' && companyCostsTotal(r); as total) {
+            <p class="note small company-costs">
+              Not in a branch's P&amp;L · خارج قائمة الفرع: the company's own costs,
+              @if (r.companyCosts!.payroll !== null) {
+                payroll from HR {{ r.companyCosts!.payroll! | money }},
+              }
+              @if (r.companyCosts!.assetDepreciation) {
+                the fixed assets' depreciation {{ r.companyCosts!.assetDepreciation | money }},
+              }
+              on the consolidated P&amp;L. <app-info-tip tip="pnlCompanyCosts" />
+            </p>
+          }
           @if (r.statement.loggedExpenses?.length) {
             <div class="logged">
               <strong>From purchase invoices · من فواتير المشتريات</strong>
@@ -14497,6 +14599,14 @@ const expenseFields: { key: keyof MonthlyExpenses; en: string; ar: string; hours
             What {{ monthName() }} cost beyond its ingredients and its purchase invoices. Leave a figure empty until it is known. Expenses
             posted on purchase invoices (bills, cleaning, repairs) are added on their own: do not type them here too.
           </p>
+          @switch (r.scope?.view) {
+            @case ('Branch') {
+              <p class="note small scope-note">{{ r.scope!.branch }}'s own · تكاليف الفرع</p>
+            }
+            @case ('Consolidated') {
+              <p class="note small scope-note">Every branch's added up · مجموع الفروع: each branch's are entered on its own P&amp;L.</p>
+            }
+          }
           <div class="expenses">
             @for (f of fields; track f.key) {
               <mat-form-field subscriptSizing="dynamic" floatLabel="always">
@@ -14524,6 +14634,79 @@ const expenseFields: { key: keyof MonthlyExpenses; en: string; ar: string; hours
           }
         </section>
       </div>
+
+      @if (r.eliminations; as e) {
+        <section class="eliminations" aria-label="Eliminations between branches">
+          <h3>Eliminations between branches <span class="inline-ar">الاستبعادات بين الفروع</span> <app-info-tip tip="pnlEliminations" /></h3>
+          <div class="table-wrap">
+            <table class="grid statement">
+              <tbody>
+                <tr>
+                  <td>Inter-branch sales, out of the revenue · استبعاد المبيعات بين الفروع</td>
+                  <td class="num">({{ e.interBranchSales | money }})</td>
+                </tr>
+                <tr class="total">
+                  <td>Inter-branch purchases, out of the costs · استبعاد المشتريات بين الفروع</td>
+                  <td class="num">({{ e.interBranchPurchases | money }})</td>
+                </tr>
+                <tr>
+                  <td class="sub">What the goods cost the sending branch · تكلفة البضاعة على الفرع المرسل</td>
+                  <td class="num">({{ e.costOfGoodsSent | money }})</td>
+                </tr>
+                <tr>
+                  <td class="sub">Markup in what the branches sold, lost or never received · الهامش الداخلي في تكلفة المبيعات</td>
+                  <td class="num">({{ e.markupInCostOfSales | money }})</td>
+                </tr>
+                @if (e.markupInExpenses) {
+                  <tr>
+                    <td class="sub">Markup in staff meals and hospitality · الهامش الداخلي في المصروفات</td>
+                    <td class="num">({{ e.markupInExpenses | money }})</td>
+                  </tr>
+                }
+                <tr class="total" [class.loss]="e.grossProfit < 0">
+                  <td>On the gross profit · الأثر على مجمل الربح</td>
+                  <td class="num">{{ e.grossProfit | money }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      }
+
+      @if (r.columns?.length) {
+        <section class="by-branch" aria-label="By branch">
+          <h3>By branch <span class="inline-ar">حسب الفرع</span> <app-info-tip tip="pnlByBranch" /></h3>
+          <div class="table-wrap">
+            <table class="grid">
+              <thead>
+                <tr>
+                  <th></th>
+                  @for (c of r.columns; track c.kind + (c.branchId ?? '')) {
+                    <th class="num" [class]="'col-' + c.kind">
+                      @if (c.kind === 'Branch' && r.scope?.canChoose) {
+                        <button mat-button class="open-branch" (click)="pickBranch(c.branchId)" [attr.aria-label]="openLabel(c)">{{ c.name }}</button>
+                      } @else {
+                        {{ c.name }}
+                      }
+                      <span class="ar">{{ c.nameAr }}</span>
+                    </th>
+                  }
+                </tr>
+              </thead>
+              <tbody>
+                @for (row of columnRows; track row.key) {
+                  <tr [class.total]="row.total">
+                    <td>{{ row.en }}<span class="ar">{{ row.ar }}</span></td>
+                    @for (c of r.columns; track c.kind + (c.branchId ?? '')) {
+                      <td class="num" [class]="'col-' + c.kind" [class.loss]="(c[row.key] ?? 0) < 0">{{ c[row.key] === null ? '—' : (c[row.key]! | money) }}</td>
+                    }
+                  </tr>
+                }
+              </tbody>
+            </table>
+          </div>
+        </section>
+      }
 
       <h3 class="items-head">
         Item profitability <span class="inline-ar">ربحية العنصر</span> <app-info-tip tip="dishProfit" />
@@ -14609,8 +14792,10 @@ const expenseFields: { key: keyof MonthlyExpenses; en: string; ar: string; hours
       .value {
         font: var(--mat-sys-headline-small);
       }
+      // A sentence of what is missing wraps in its card (the old status chip is one line).
       .status {
         font: var(--mat-sys-label-large);
+        white-space: normal;
       }
       .range {
         font: var(--mat-sys-body-small);
@@ -14759,6 +14944,8 @@ const expenseFields: { key: keyof MonthlyExpenses; en: string; ar: string; hours
       grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
       gap: 10px;
       margin-bottom: 8px;
+      // A long label, floated small, keeps its full width's box: not the page's to scroll.
+      overflow-x: clip;
     }
     tr.top td {
       background: color-mix(in srgb, var(--app-ok) 10%, var(--mat-sys-surface));
@@ -14771,6 +14958,53 @@ const expenseFields: { key: keyof MonthlyExpenses; en: string; ar: string; hours
     }
     .warn {
       color: var(--mat-sys-on-surface);
+    }
+    .scope-pick {
+      min-width: 220px;
+    }
+    .scope-chip {
+      display: inline-block;
+      margin-inline-start: 8px;
+      padding: 0 10px;
+      border-radius: 999px;
+      font: var(--mat-sys-label-large);
+      line-height: 28px;
+      vertical-align: middle;
+      background: var(--mat-sys-secondary-container);
+      color: var(--mat-sys-on-secondary-container);
+    }
+    .statement tr.inter-branch td:first-child {
+      color: var(--mat-sys-on-surface);
+    }
+    .statement td.sub {
+      padding-inline-start: 24px;
+      color: var(--mat-sys-on-surface-variant);
+    }
+    .eliminations,
+    .by-branch {
+      margin-top: 8px;
+    }
+    .by-branch th.col-Consolidated,
+    .by-branch td.col-Consolidated {
+      font-weight: 600;
+      background: var(--mat-sys-surface-container-low);
+    }
+    .by-branch th.col-Eliminations,
+    .by-branch td.col-Eliminations,
+    .by-branch th.col-CompanyCosts,
+    .by-branch td.col-CompanyCosts {
+      color: var(--mat-sys-on-surface-variant);
+    }
+    .by-branch td.loss {
+      color: var(--mat-sys-error);
+    }
+    .open-branch {
+      min-width: 0;
+      padding: 0 4px;
+      height: auto;
+      line-height: inherit;
+      font: inherit;
+      font-weight: 600;
     }
   `,
 })
@@ -14785,10 +15019,16 @@ export class KpisPage {
   protected readonly labels = kpiLabels;
   protected readonly kpiTips = kpiTips;
   protected readonly fields = expenseFields;
-  protected readonly canEdit = computed(() => this.auth.can(Permissions.InventoryManage));
+  protected readonly columnRows = columnRows;
+  // The company's as a whole adds up the branches' costs: they are entered on each branch's own.
+  protected readonly canEdit = computed(() => this.auth.can(Permissions.InventoryManage) && this.report()?.scope?.view !== 'Consolidated');
   protected readonly thisMonth = KpisPage.monthOf(new Date());
 
   protected readonly month = signal(this.thisMonth);
+  // The branch whose P&L is read; none: the company's (as a whole, with several).
+  protected readonly branch = signal<string | null>(null);
+  // Whose it is, kept while the next loads so the choice stays on screen.
+  protected readonly scope = signal<PnlScope | null>(null);
   protected readonly report = signal<KpiReport | null>(null);
   protected readonly loading = signal(false);
   protected readonly saving = signal(false);
@@ -14809,7 +15049,8 @@ export class KpisPage {
   constructor() {
     effect(() => {
       const month = this.month();
-      untracked(() => void this.load(month));
+      const branch = this.branch();
+      untracked(() => void this.load(month, branch));
     });
   }
 
@@ -14905,6 +15146,19 @@ export class KpisPage {
     }
   }
 
+  protected pickBranch(id: string | null): void {
+    this.branch.set(id);
+  }
+
+  protected openLabel(column: PnlColumn): string {
+    return `Open ${column.name}’s P&L`;
+  }
+
+  // What the company has that a branch's P&L leaves out: HR's payroll and the fixed assets'.
+  protected companyCostsTotal(r: KpiReport): number {
+    return (r.companyCosts?.payroll ?? 0) + (r.companyCosts?.assetDepreciation ?? 0);
+  }
+
   protected set(key: keyof MonthlyExpenses, value: number | string | null): void {
     const number = value === '' || value === null ? null : Number(value);
     this.draft.update((draft) => ({ ...draft, [key]: Number.isFinite(number) ? number : null }));
@@ -14915,11 +15169,17 @@ export class KpisPage {
     this.saving.set(true);
     try {
       const draft = this.draft();
+      const scope = this.report()?.scope;
       await firstValueFrom(
-        this.api.saveExpenses(year, month, Object.fromEntries(expenseFields.map((f) => [f.key, draft[f.key] ?? null])) as unknown as MonthlyExpenses),
+        this.api.saveExpenses(
+          year,
+          month,
+          Object.fromEntries(expenseFields.map((f) => [f.key, draft[f.key] ?? null])) as unknown as MonthlyExpenses,
+          scope?.view === 'Branch' ? scope.branchId : null,
+        ),
       );
       this.notify.info(`${this.monthName()}'s costs saved.`);
-      await this.load(this.month());
+      await this.load(this.month(), this.branch());
     } catch (error) {
       this.notify.error(error, "The month's costs could not be saved.");
     } finally {
@@ -14931,13 +15191,14 @@ export class KpisPage {
     window.print();
   }
 
-  private async load(month: string): Promise<void> {
+  private async load(month: string, branch: string | null): Promise<void> {
     const [year, m] = month.split('-').map(Number);
     this.loading.set(true);
     this.error.set(null);
     try {
-      const report = await firstValueFrom(this.api.kpis(year, m));
+      const report = await firstValueFrom(this.api.kpis(year, m, branch));
       this.report.set(report);
+      this.scope.set(report.scope ?? null);
       this.draft.set({ ...report.expenses });
     } catch (error) {
       this.report.set(null);

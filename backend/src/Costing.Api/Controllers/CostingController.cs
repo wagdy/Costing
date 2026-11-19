@@ -192,26 +192,31 @@ public sealed class CostingController(
     }
 
     // The template's financial KPIs for a business month, with the month as an income statement
-    // and what each dish earned.
+    // and what each dish earned. With several branches: branchId's, or none for the company's as a
+    // whole, consolidated (a user kept to a branch reads their own).
     [HttpGet("kpis")]
     [CostingTab(CostingTabs.Reports | CostingTabs.CostSettings)]
-    public Task<KpiReport> GetKpis([FromQuery] int year, [FromQuery] int month, CancellationToken cancellationToken) =>
-        kpis.GetAsync(year, month, cancellationToken);
+    public async Task<KpiReport> GetKpis([FromQuery] int year, [FromQuery] int month, [FromQuery] Guid? branchId, CancellationToken cancellationToken) =>
+        await kpis.GetAsync(year, month, cancellationToken, await kpis.BranchToReadAsync(branchId, cancellationToken));
 
     // The month's profit and loss (قائمة الدخل): gross profit, operating expenses, EBITDA, interest,
-    // the fixed assets' depreciation and disposals, net profit. Read from the KPIs' statement.
+    // the fixed assets' depreciation and disposals, net profit. Read from the KPIs' statement, for
+    // the branch or the company as the KPIs are.
     [HttpGet("reports/pnl")]
     [CostingTab(CostingTabs.Reports | CostingTabs.CostSettings)]
-    public async Task<ProfitAndLoss> GetProfitAndLoss([FromQuery] int year, [FromQuery] int month, CancellationToken cancellationToken) =>
-        ProfitAndLoss.Of(await kpis.GetAsync(year, month, cancellationToken));
+    public async Task<ProfitAndLoss> GetProfitAndLoss(
+        [FromQuery] int year, [FromQuery] int month, [FromQuery] Guid? branchId, CancellationToken cancellationToken) =>
+        ProfitAndLoss.Of(await kpis.GetAsync(year, month, cancellationToken, await kpis.BranchToReadAsync(branchId, cancellationToken)));
 
     // A month's wages, labour hours and overheads, as the manager enters them. The whole month
-    // each time: a figure left out is not known yet.
+    // each time: a figure left out is not known yet. With several branches, the branch's.
     [HttpPut("expenses/{year:int}/{month:int}")]
     [CostingTab(CostingTabs.Reports | CostingTabs.CostSettings)]
     [Authorize(Policy = Permissions.InventoryManage)]
-    public Task<MonthlyExpensesDto> SaveExpenses(int year, int month, MonthlyExpensesDto expenses, CancellationToken cancellationToken) =>
-        kpis.SaveExpensesAsync(year, month, expenses, User.FindFirst(UserClaims.Name)?.Value, cancellationToken);
+    public async Task<MonthlyExpensesDto> SaveExpenses(
+        int year, int month, MonthlyExpensesDto expenses, [FromQuery] Guid? branchId, CancellationToken cancellationToken) =>
+        await kpis.SaveExpensesAsync(year, month, expenses, User.FindFirst(UserClaims.Name)?.Value, cancellationToken,
+            await kpis.BranchToEnterAsync(branchId, cancellationToken));
 
     // Purchases by category between two days, both included: stock and expenses, from the posted invoices.
     [HttpGet("purchases/spending")]

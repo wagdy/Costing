@@ -41,7 +41,11 @@ public sealed record ProfitAndLoss(
     decimal? EbitdaMarginPercent,
     decimal? NetMarginPercent,
     IReadOnlyList<PnlLine> Lines,
-    string? Missing)
+    string? Missing,
+    // Whose: the company's, a branch's, or the company's as a whole (consolidated), and for that
+    // what it took out between branches.
+    PnlScope? Scope = null,
+    Eliminations? Eliminations = null)
 {
     public static ProfitAndLoss Of(KpiReport report)
     {
@@ -53,14 +57,27 @@ public sealed record ProfitAndLoss(
         var wages = s.WagesAndBenefits is null && s.LoggedWages == 0 ? (decimal?)null : (s.WagesAndBenefits ?? 0) + s.LoggedWages + s.StaffMeals;
         var interest = s.Interest ?? 0;
         var entered = s.Depreciation ?? 0;
+        // A branch's dealings with the others, where it has any.
         var lines = new List<PnlLine>
         {
             Line("revenue", "Revenue (net sales)", "الإيرادات (صافي المبيعات)", s.Revenue, total: true),
             Line("foodSales", "Food", "مأكولات", s.FoodSales, 1),
             Line("beverageSales", "Beverages", "مشروبات", s.BeverageSales, 1),
+        };
+        if (s.InterBranchSales != 0)
+            lines.Add(Line("interBranchSales", "Inter-branch sales", "مبيعات داخلية للفروع", s.InterBranchSales, 1));
+        lines.AddRange(
+        [
             Line("costOfSales", "Cost of sales", "تكلفة المبيعات", s.CostOfSales, total: true),
             Line("recipeCost", "Recipes' cost of what was sold", "تكلفة الوصفات المباعة", s.FoodRecipeCost + s.BeverageRecipeCost, 1),
             Line("losses", "Waste, spoilage and count differences", "الهالك والتالف وفروق الجرد", s.KitchenWaste + s.Spoilage + s.CountDifferences, 1),
+        ]);
+        if (s.InterBranchCostOfGoods != 0)
+            lines.Add(Line("interBranchCostOfGoods", "Cost of goods sent to branches", "تكلفة البضاعة المحولة للفروع", s.InterBranchCostOfGoods, 1));
+        if (s.TransitLosses != 0)
+            lines.Add(Line("transitLosses", "Transit losses", "عجز النقل بين الفروع", s.TransitLosses, 1));
+        lines.AddRange(
+        [
             Line("grossProfit", "Gross profit", "مجمل الربح", s.GrossProfit, total: true),
             Line("operatingExpenses", "Operating expenses", "المصروفات التشغيلية", s.OperatingExpenses, total: true),
             Line("wages", "Wages & benefits", "الأجور والمزايا", wages, 1),
@@ -75,12 +92,13 @@ public sealed record ProfitAndLoss(
             Line("enteredDepreciation", "Entered for the month", "مدخل للشهر", entered, 1),
             Line("disposals", "Gain / (loss) on asset disposals", "أرباح / (خسائر) استبعاد الأصول", s.DisposalGainOrLoss),
             Line("netProfit", "Net profit", "صافي الربح النهائي", s.NetProfit, total: true),
-        };
+        ]);
 
         return new ProfitAndLoss(
             report.Year, report.Month, report.From, report.To, s.Revenue, s.CostOfSales, s.GrossProfit, s.OperatingExpenses, s.Ebitda, Money(interest),
             s.AssetDepreciation, Money(entered), s.DepreciationExpense, s.DisposalGainOrLoss, s.NetProfit,
             Share(s.GrossProfit), Share(s.Ebitda), Share(s.NetProfit), lines,
-            s.Ebitda is null ? "Enter the month's wages and benefits: without them EBITDA and the net profit would flatter. · أدخل أجور الشهر." : null);
+            s.Ebitda is null ? "Enter the month's wages and benefits: without them EBITDA and the net profit would flatter. · أدخل أجور الشهر." : null,
+            report.Scope, report.Eliminations);
     }
 }

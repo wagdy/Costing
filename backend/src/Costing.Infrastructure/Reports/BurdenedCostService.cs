@@ -275,7 +275,8 @@ public sealed class BurdenedCostService(CostingDbContext db, Application.Common.
         var overheadStandInMonths = new List<string>();
         foreach (var (month, share) in months)
         {
-            var e = entered.SingleOrDefault(x => x.Year == month.Year && x.Month == month.Month);
+            // The company's: every branch's entered for the month.
+            var e = MonthlyExpenses.Combined(entered.Where(x => x.Year == month.Year && x.Month == month.Month).ToList());
             var logged = await spending.LoggedExpensesAsync(month, month.AddMonths(1).AddDays(-1), cancellationToken);
             decimal Logged(ExpenseLine line) => logged.Where(l => l.ExpenseLine == line).Sum(l => l.Amount);
 

@@ -121,6 +121,7 @@ internal sealed class StockMovementConfiguration : IEntityTypeConfiguration<Stoc
         builder.Property(m => m.Quantity).IsQuantity();
         builder.Property(m => m.Reason).IsEnumName();
         builder.Property(m => m.UnitCost).IsUnitCost();
+        builder.Property(m => m.CompanyUnitCost).IsUnitCost();
         builder.Property(m => m.Note).HasMaxLength(200);
         builder.Property(m => m.RecordedBy).HasMaxLength(200);
         builder.Ignore(m => m.IsReversal);

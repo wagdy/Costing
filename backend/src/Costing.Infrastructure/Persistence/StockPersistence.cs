@@ -5,6 +5,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Costing.Application.Common;
 using Costing.Application.Stock;
 using Costing.Domain.Company;
+using Costing.Domain.InterBranch;
 using Costing.Domain.Production;
 using Costing.Domain.Purchases;
 using Costing.Domain.RawMaterials;
@@ -58,6 +59,8 @@ internal sealed class MaterialBranchStockConfiguration : IEntityTypeConfiguratio
         builder.HasKey(s => s.Id);
         builder.Property(s => s.Id).ValueGeneratedNever();
         builder.Property(s => s.AverageCost).IsUnitCost();
+        builder.Property(s => s.CompanyAverageCost).IsUnitCost();
+        builder.Ignore(s => s.CostToCompany);
         builder.HasIndex(s => new { s.RawMaterialId, s.BranchId }).IsUnique();
         builder.HasOne<RawMaterial>().WithMany().HasForeignKey(s => s.RawMaterialId).OnDelete(DeleteBehavior.Cascade);
         builder.HasOne<Branch>().WithMany().HasForeignKey(s => s.BranchId).OnDelete(DeleteBehavior.Restrict);
@@ -264,7 +267,11 @@ internal sealed class StockLedgerInterceptor(IServiceProvider services) : SaveCh
         var rows = (await db.MaterialBranchStocks.Where(s => ids.Contains(s.RawMaterialId)).ToListAsync(cancellationToken))
             .ToDictionary(s => (s.RawMaterialId, s.BranchId));
 
-        foreach (var movement in added)
+        // A batch's output after the rest, so its inputs' cost to the company is known first.
+        var ordered = added.Where(m => m.Reason != StockMovementReason.ProductionOutput)
+            .Concat(added.Where(m => m.Reason == StockMovementReason.ProductionOutput))
+            .ToList();
+        foreach (var movement in ordered)
         {
             var key = (movement.RawMaterialId, movement.BranchId);
             if (!rows.TryGetValue(key, out var row))
@@ -277,25 +284,63 @@ internal sealed class StockLedgerInterceptor(IServiceProvider services) : SaveCh
             var before = onHand.GetValueOrDefault(key);
             // A delivery, a batch made, or a shipment received from the central kitchen at its price.
             var inbound = movement.Reason is StockMovementReason.Purchase or StockMovementReason.ProductionOutput or StockMovementReason.InterBranchReceiptIn;
+            // What it cost the company, where that is not its cost here; a reversal keeps its original's.
+            if (!movement.IsReversal)
+                movement.CostToCompany(movement.Reason switch
+                {
+                    StockMovementReason.Purchase or StockMovementReason.OpeningStock => null,
+                    StockMovementReason.InterBranchReceiptIn => await SentAtAsync(db, movement, cancellationToken),
+                    StockMovementReason.ProductionOutput => MadeAt(movement, added),
+                    _ => row.CompanyCostOf(movement.UnitCost),
+                });
             if (inbound && !movement.IsReversal && movement.Quantity > 0 && movement.UnitCost is { } cost)
-                row.AverageWith(before, movement.Quantity, cost);
+                row.AverageWith(before, movement.Quantity, cost, movement.CompanyUnitCost);
             else if (inbound && movement.IsReversal && movement.Quantity < 0)
-                row.UnaverageWith(before, -movement.Quantity, movement.UnitCost);
+                row.UnaverageWith(before, -movement.Quantity, movement.UnitCost, movement.CompanyUnitCost);
             else if (movement.Reason == StockMovementReason.OpeningStock)
                 row.Open(movement.UnitCost);
             onHand[key] = before + movement.Quantity;
         }
 
-        // The company's average: its branches' stock, each at its own branch's average.
+        // The company's average: its branches' stock, each at what it cost the company (its branch's
+        // own average, but for what a branch paid another branch over that branch's cost).
         foreach (var id in ids)
         {
-            var held = rows.Where(r => r.Key.RawMaterialId == id && r.Value.AverageCost is not null)
-                .Select(r => (Quantity: Math.Max(onHand.GetValueOrDefault(r.Key), 0), Cost: r.Value.AverageCost!.Value))
+            var held = rows.Where(r => r.Key.RawMaterialId == id && r.Value.CostToCompany is not null)
+                .Select(r => (Quantity: Math.Max(onHand.GetValueOrDefault(r.Key), 0), Cost: r.Value.CostToCompany!.Value))
                 .Where(h => h.Quantity > 0)
                 .ToList();
             var quantity = held.Sum(h => h.Quantity);
             if (quantity > 0 && materials.GetValueOrDefault(id) is { } material)
                 material.AdoptAverage(held.Sum(h => h.Quantity * h.Cost) / quantity);
         }
+    }
+
+    // A shipment received: at what the goods cost the company as they left the sending branch.
+    private static async Task<decimal?> SentAtAsync(CostingDbContext db, StockMovement receipt, CancellationToken cancellationToken)
+    {
+        var shipment = db.ChangeTracker.Entries<InternalPurchaseInvoice>().Select(e => e.Entity).FirstOrDefault(i => i.Id == receipt.SourceId)
+            ?.InternalSalesInvoiceId
+            ?? await db.InternalPurchaseInvoices.AsNoTracking().Where(i => i.Id == receipt.SourceId)
+                .Select(i => (Guid?)i.InternalSalesInvoiceId).SingleOrDefaultAsync(cancellationToken);
+        if (shipment is null)
+            return null;
+        var sent = await db.StockMovements.AsNoTracking()
+            .Where(m => m.SourceId == shipment && m.RawMaterialId == receipt.RawMaterialId && m.Reason == StockMovementReason.InterBranchDispatchOut
+                && m.ReversalOf == null)
+            .Select(m => new { m.UnitCost, m.CompanyUnitCost })
+            .FirstOrDefaultAsync(cancellationToken);
+        return sent?.CompanyUnitCost ?? sent?.UnitCost;
+    }
+
+    // A batch made: its cost here, in the same share as what went into it cost the company.
+    private static decimal? MadeAt(StockMovement output, IEnumerable<StockMovement> added)
+    {
+        if (output.UnitCost is not { } cost)
+            return null;
+        var inputs = added.Where(m => m.SourceId == output.SourceId && m.Reason == StockMovementReason.ProductionInput && m.UnitCost is not null).ToList();
+        var value = inputs.Sum(m => -m.Quantity * m.UnitCost!.Value);
+        var company = inputs.Sum(m => -m.Quantity * (m.CompanyUnitCost ?? m.UnitCost!.Value));
+        return value > 0 && company != value ? Math.Round(cost * company / value, 6, MidpointRounding.AwayFromZero) : null;
     }
 }

@@ -24,7 +24,7 @@ works it.
 | Stock counts (الجرد) | `/costing/counts` | Full and spot counts drafted, blind for who counts, reconciled, then posted |
 | Waste (الهالك) | `/costing/waste` | Spoilage and breakage; staff meals, hospitality and recipe tastings |
 | Financials (الماليات) | `/costing/financials` | The safe, funding, each day's takings (cash, card, tax, voids), vouchers, fixed assets (CAPEX and their depreciation, also at `/costing/fixed-assets`), suppliers owed and paid, the AP aging, advances, staff, tax and service |
-| Reports (التقارير) | `/costing/reports` | Spending, theoretical cost, variance, the daily break-even, KPIs (the month's P&L to EBITDA and net profit, with the discounts' margin erosion), break-even |
+| Reports (التقارير) | `/costing/reports` | Spending, theoretical cost, variance, the daily break-even, KPIs (the month's P&L to EBITDA and net profit, with the discounts' margin erosion; with several branches, a branch's or the company's as a whole, consolidated), break-even |
 | Cost settings (إعدادات التكاليف) | `/costing/settings` | Cost targets, plate cost (allocation method, target net margin, stand-in monthly labor and overheads), beverage categories, shared costs, monthly expenses, the daily staff meal budget |
 | Approvals (طلبات معلقة) | `/costing/approvals` | What waits for a manager |
 | Permissions (الصلاحيات) | `/costing/permissions` | Who works which section; a manager's |
@@ -1617,9 +1617,9 @@ structures as cards, each with its bilingual **(!)** tip; a card chosen is appli
 **Built so far:** the structures, branches and locations, the branch of each record (phase 1); stock
 kept by location and moving-average cost by branch, with internal transfers (phase 2); the central
 kitchen's hub, with branch requisitions, **Dispatch & Bill** on an internal sales invoice and the
-branch's **Receive** on an internal purchase invoice (phase 3, below). Still to come: the P&L by
-branch or for the company as a whole, inter-branch sales and purchases eliminated (phase 4). Until
-then the safe's balance and every report are the company's, whatever the structure.
+branch's **Receive** on an internal purchase invoice (phase 3, below); the P&L by branch or for the
+company as a whole, consolidated, inter-branch sales and purchases eliminated (phase 4, below). The
+safe's balance and the other reports are the company's, whatever the structure.
 
 ### Branches and locations (الفروع ومواقع المخزون)
 
@@ -1656,7 +1656,8 @@ kept to; or, for one who works every branch, the one they chose at the top of th
 of use is refused (403). The POS and HR, signed in by key, work in the first branch.
 
 With several branches, these lists show the branch's own records: purchase invoices, sales, stock
-counts, spoilage and breakage. Balances and reports stay the company's until the next phases.
+counts, spoilage and breakage. Balances and reports stay the company's; the KPIs and P&L are read
+for a branch or for the company as a whole (below).
 
 ### Users and the branch selector
 
@@ -1819,13 +1820,13 @@ receipt: both invoices are voided, the branch's goods taken back out (its averag
 the kitchen's put back, and the requisition restated. Both are held to the period lock, on the days
 they were made.
 
-**What the company's figures show until phase 4.** The material's own stock is the company's: it
-drops when the kitchen dispatches and rises when the branch receives, so a shipment in transit is in
-neither, and a transit loss leaves the company's stock. The company's average is its branches' stock
-at each branch's own average, which includes any markup a branch paid; the stock card lists both
-movements (*Between branches · بين الفروع*, with the invoice number, each opening the hub). The
-reports that judge usage and waste leave inter-branch movements out. Phase 4 takes inter-company
-revenue, cost of goods and the margin in stock out of the company's P&L.
+**What the company's figures show.** The material's own stock is the company's: it drops when the
+kitchen dispatches and rises when the branch receives, so a shipment in transit is in neither, and a
+transit loss leaves the company's stock. The company's average is its branches' stock at what it
+cost the company (each branch's average, but for the markup one branch paid another: below); the
+stock card lists both movements (*Between branches · بين الفروع*, with the invoice number, each
+opening the hub). The reports that judge usage and waste leave inter-branch movements out. The
+company's P&L takes inter-company revenue, the cost of goods and the markup out (below).
 
 **Kept** in `InterBranchRequisitions` (+ lines; the asking branch as `RequestingBranchId`),
 `InternalSalesInvoices` (+ lines; `SupplyingBranchId`, `ReceivingBranchId`, `FromLocationId`,
@@ -1844,6 +1845,97 @@ shipmentId, toLocationId, lines: [{ rawMaterialId, receivedQuantity }], notes }`
 (`inventory.manage`); `POST …/receipts/{id}/void` (`approval.decide`, a manager). Quantities in the
 material's own unit, prices per that unit; prices and totals are null for whoever does not see
 costs.
+
+### The P&L by branch and for the company as a whole (قائمة الدخل للفرع والشركة ككل)
+
+**Reports → KPIs** is the month's P&L (قائمة الدخل). While the company has one branch it is the
+company's, as it always was. With several, it is read for **one branch** or for **the company as a
+whole · الشركة ككل** (consolidated), chosen in **P&L for · قائمة الدخل لـ** at the top by whoever
+works every branch (the company's as a whole by default). A user kept to a branch reads their own
+branch's alone: asked for another, the API refuses (403); asked for the whole, it gives theirs.
+
+**A branch's P&L** is its own records at its own costs: its takings, its sales costed at its own
+moving average (a branch that bought from the central kitchen at a markup costs what it sells at the
+price it paid), its waste, spoilage and count differences, its staff meals and hospitality, its
+expense invoices and the vouchers and salaries paid from its safe, its breakage, and **its own
+monthly costs**: wages, labour hours, rent, running costs, interest and depreciation are entered on
+each branch's P&L (`MonthlyExpenses` by `BranchId`; the first branch's while there is one). With
+the other branches:
+
+| Line | Whose | What |
+| --- | --- | --- |
+| Inter-branch sales · مبيعات داخلية للفروع | The supplying branch | Its internal sales invoices dispatched in the month, at their transfer prices: in its revenue (and its food sales for the food cost %) |
+| Cost of goods sent to branches · تكلفة البضاعة المحولة للفروع | The supplying branch | What those goods cost it, at its average as they left: in its cost of sales |
+| Transit losses · عجز النقل بين الفروع | The receiving branch | What it was billed for that never arrived, received in the month: in its cost of sales |
+| Bought from other branches · مشتريات من الفروع | The receiving branch | Its internal purchase invoices received in the month: said under the statement, never a line of it; the goods went into its stock, and their cost comes in as they are used |
+
+Voided invoices are not counted. A central kitchen with no takings of its own has its internal sales
+as its revenue, and its food cost % is what its goods cost it against what it billed for them.
+
+**Company costs (مصروفات على مستوى الشركة)** are what no branch keeps: the month's payroll from HR
+and the fixed assets register's depreciation and disposals. They are on the company's P&L, never a
+branch's; a branch's says what they are (*Not in a branch's P&L: the company's own costs, payroll
+from HR L.E 5,000.00, …, on the consolidated P&L*). With the payroll from HR, a branch's wages are
+known (in the company's payroll, said under its wages) and its labour cost % says the payroll is
+the company's; the salaries paid from a branch's safe pay that payroll, and are not counted again.
+
+**The company as a whole (consolidated)** is its branches' P&Ls added up, its own costs added, and
+what the branches sold and bought each other taken out, so nothing is counted twice:
+
+```
+  Σ branches' P&Ls (each at its own costs)
++ Company costs (HR's payroll, the fixed assets register)
+− Inter-branch sales (استبعاد المبيعات بين الفروع), out of the revenue
+− Inter-branch purchases (استبعاد المشتريات بين الفروع), out of the costs:
+    what the goods cost the sending branch (its cost of goods sent)
+    the markup the receiving branches paid on what they sold, lost or never received this month
+    and on what their staff ate and their guests were given
+= Consolidated P&L (قائمة الدخل للشركة ككل)
+```
+
+Its EBITDA and net profit wait, as a branch's do, for the wages: for every branch that traded in the
+month to have its own in (or the month's payroll from HR), each named (*Enter the wages and benefits
+of Main branch and Tanta, each on its own P&L*); one branch without them would flatter the whole.
+
+So the consolidated revenue is the branches' takings alone, and every cost is at **what the goods
+cost the company**: a burger sold in Tanta from sauce the kitchen made at L.E 100 a kilo and billed at
+L.E 110 costs the company L.E 100 a kilo, whatever Tanta paid. A transit loss is the company's at the
+goods' cost. **Markup still on a branch's shelves, or on the road,** is in no P&L until the goods are
+used: the consolidated gross profit is lower than the branches' by the margin sent in the month, and
+higher by the markup used up in it.
+
+The page shows, for the company as a whole, **Eliminations between branches · الاستبعادات بين الفروع**
+(the sales out, the purchases out with their two parts, and what that did to the gross profit) and
+**By branch · حسب الفرع**: a column for each branch (its name opens its own P&L), the company's
+costs, the eliminations, and the consolidated, which the others add up to, down to revenue, cost of
+sales, gross profit, operating expenses, EBITDA and net profit (*—* for a branch whose wages are not
+in). Its monthly costs are each branch's added up, read only (*each branch's are entered on its own
+P&L*).
+
+**What the company paid (التكلفة على الشركة).** Each branch keeps, beside its moving average, the same
+average at what the goods cost the company (`MaterialBranchStocks.CompanyAverageCost`, null while the
+two are the same): a shipment received counts at the sending branch's cost as it left, not the
+transfer price, and a batch made at the cost of what went into it. Each stock movement where the two
+differ keeps what one unit cost the company (`StockMovements.CompanyUnitCost`, null otherwise; a
+reversal keeps its original's), which is what the consolidated P&L reads for the markup in what was
+sold, lost or used. The company's average of a material is its branches' stock at what it cost the
+company. With one branch, or several that never sell to each other, the two are always the same.
+Changing a material's unit restates these too, and the quantities and prices on requisitions and
+internal invoices.
+
+**The API.** `GET /api/costing/kpis?year=&month=&branchId=` (and `GET /api/costing/reports/pnl`, the
+same) gives a branch's with `branchId`, or without it the company's (consolidated with several
+branches), with its `scope` (`view`: `Company`, `Branch` or `Consolidated`; the branch; `canChoose`;
+the branches to choose from), and for a branch `interBranch` (`sales`, `costOfGoodsSent`, `margin`,
+`shipments`, `purchases`, `transitLosses`, `receipts`) and `companyCosts`; for the whole,
+`eliminations` (`interBranchSales`, `costOfGoodsSent`, `markupInCostOfSales`, `markupInExpenses`,
+`interBranchPurchases`, `grossProfit`), `columns` (`kind`: `Branch`, `CompanyCosts`, `Eliminations`
+or `Consolidated`) and `companyCosts`. The statement adds `interBranchSales`,
+`interBranchCostOfGoods` and `transitLosses`; the P&L's lines add *Inter-branch sales*, *Cost of goods
+sent to branches* and *Transit losses* where there are any. `PUT /api/costing/expenses/{year}/{month}
+?branchId=` saves a branch's monthly costs: with several branches a branch must be named (a user kept
+to one saves their own), never the company's as a whole (*Choose the branch these costs are for*).
+Migration `AddConsolidatedPnl`.
 
 ## Period lock and month-end close (إقفال الفترة المحاسبية وتجميد الدفاتر)
 

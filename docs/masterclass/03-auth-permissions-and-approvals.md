@@ -4148,7 +4148,7 @@ public sealed record LocationRequest(
 - `MovingAverage.With / Without`: نفس حساب المتوسط المتحرك، لكن على رصيد الفرع (والرصيد السالب يُعامل كصفر).
 - `InternalTransfer.Post`: يرفض الموقع نفسه، وموقعين من فرعين، وموقعًا موقوفًا، وبلا سطور، وخامة مرتين، وأكثر مما في موقع الصرف (`Main Store has 3000 Gram of Flour: not enough to move 3500`). الرقم `TR-2026-0001` بالسنة، والإلغاء مرة واحدة.
 
-> 📄 **`backend/src/Costing.Domain/Stock/MaterialBranchStock.cs`** — 71 سطر
+> 📄 **`backend/src/Costing.Domain/Stock/MaterialBranchStock.cs`** — 106 سطر
 
 ```csharp
 using Costing.Domain.Common;
@@ -4176,23 +4176,58 @@ public sealed class MaterialBranchStock
     public Guid BranchId { get; private set; }
     public decimal? AverageCost { get; private set; }
 
-    public void Mirror(decimal? companyAverage) => AverageCost = companyAverage;
+    // The same average at what the company paid (التكلفة على الشركة): what the branch received from
+    // another branch counted at the sender's cost, not the transfer price it was billed. Null while
+    // the two are the same, as they are for every branch that buys and makes its own.
+    public decimal? CompanyAverageCost { get; private set; }
+
+    public decimal? CostToCompany => CompanyAverageCost ?? AverageCost;
+
+    public void Mirror(decimal? companyAverage)
+    {
+        AverageCost = companyAverage;
+        CompanyAverageCost = null;
+    }
 
     // A delivery or a batch in: weighted by quantity against what the branch has on its shelves
-    // (stock below zero counts as none), as the company's average is.
-    public void AverageWith(decimal onHand, decimal quantity, decimal unitCost) =>
+    // (stock below zero counts as none), as the company's average is. CompanyUnitCost: what it cost
+    // the company, when that is not its price here (a shipment from the central kitchen).
+    public void AverageWith(decimal onHand, decimal quantity, decimal unitCost, decimal? companyUnitCost = null)
+    {
+        var company = MovingAverage.With(CostToCompany, onHand, quantity, companyUnitCost ?? unitCost);
         AverageCost = MovingAverage.With(AverageCost, onHand, quantity, unitCost);
+        KeepCompany(company);
+    }
 
     // One taken back out (a voided delivery or batch), as far as the stock left can carry it.
-    public void UnaverageWith(decimal onHand, decimal quantity, decimal? unitCost) =>
+    public void UnaverageWith(decimal onHand, decimal quantity, decimal? unitCost, decimal? companyUnitCost = null)
+    {
+        var company = MovingAverage.Without(CostToCompany, onHand, quantity, companyUnitCost ?? unitCost);
         AverageCost = MovingAverage.Without(AverageCost, onHand, quantity, unitCost);
+        KeepCompany(company);
+    }
 
     // Its first cost, from an opening count, when it has none.
     public void Open(decimal? unitCost)
     {
         if ((AverageCost ?? 0) == 0 && unitCost is { } cost and >= 0)
+        {
             AverageCost = cost;
+            CompanyAverageCost = null;
+        }
     }
+
+    // What one unit taken from here at `unitCost` (its price here) cost the company: the same share
+    // of it as the branch's average is of the company's. Null: the same.
+    public decimal? CompanyCostOf(decimal? unitCost)
+    {
+        if (CompanyAverageCost is not { } company || AverageCost is not { } average || average == 0 || unitCost is not { } cost)
+            return null;
+        return cost == average ? company : Math.Round(cost * company / average, 6, MidpointRounding.AwayFromZero);
+    }
+
+    private void KeepCompany(decimal? company) =>
+        CompanyAverageCost = company is { } c && AverageCost is { } a && Math.Abs(c - a) < 0.000001m ? null : company;
 }
 
 // The moving average's arithmetic: the company's (RawMaterial) and each branch's alike.
@@ -4697,7 +4732,7 @@ internal sealed class GetLocationStockHandler(
 
 ثم يحدّث `MaterialBranchStocks`: مرآة لمتوسط الشركة مع فرع واحد، أو متوسط الفرع بحركات الشراء والإنتاج مع عدة فروع (والإلغاء يُخرج سعره)، ومتوسط الشركة = قيمة الفروع ÷ رصيدها. والـ migration `AddStockLocations` تضيف الأعمدة بقيمة افتراضية (المخزن الرئيسي) وتملأ صف تكلفة لكل خامة في الفرع الأول بمتوسطها.
 
-> 📄 **`backend/src/Costing.Infrastructure/Persistence/StockPersistence.cs`** — 301 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Persistence/StockPersistence.cs`** — 346 سطر
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
@@ -4707,6 +4742,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Costing.Application.Common;
 using Costing.Application.Stock;
 using Costing.Domain.Company;
+using Costing.Domain.InterBranch;
 using Costing.Domain.Production;
 using Costing.Domain.Purchases;
 using Costing.Domain.RawMaterials;
@@ -4760,6 +4796,8 @@ internal sealed class MaterialBranchStockConfiguration : IEntityTypeConfiguratio
         builder.HasKey(s => s.Id);
         builder.Property(s => s.Id).ValueGeneratedNever();
         builder.Property(s => s.AverageCost).IsUnitCost();
+        builder.Property(s => s.CompanyAverageCost).IsUnitCost();
+        builder.Ignore(s => s.CostToCompany);
         builder.HasIndex(s => new { s.RawMaterialId, s.BranchId }).IsUnique();
         builder.HasOne<RawMaterial>().WithMany().HasForeignKey(s => s.RawMaterialId).OnDelete(DeleteBehavior.Cascade);
         builder.HasOne<Branch>().WithMany().HasForeignKey(s => s.BranchId).OnDelete(DeleteBehavior.Restrict);
@@ -4966,7 +5004,11 @@ internal sealed class StockLedgerInterceptor(IServiceProvider services) : SaveCh
         var rows = (await db.MaterialBranchStocks.Where(s => ids.Contains(s.RawMaterialId)).ToListAsync(cancellationToken))
             .ToDictionary(s => (s.RawMaterialId, s.BranchId));
 
-        foreach (var movement in added)
+        // A batch's output after the rest, so its inputs' cost to the company is known first.
+        var ordered = added.Where(m => m.Reason != StockMovementReason.ProductionOutput)
+            .Concat(added.Where(m => m.Reason == StockMovementReason.ProductionOutput))
+            .ToList();
+        foreach (var movement in ordered)
         {
             var key = (movement.RawMaterialId, movement.BranchId);
             if (!rows.TryGetValue(key, out var row))
@@ -4979,26 +5021,64 @@ internal sealed class StockLedgerInterceptor(IServiceProvider services) : SaveCh
             var before = onHand.GetValueOrDefault(key);
             // A delivery, a batch made, or a shipment received from the central kitchen at its price.
             var inbound = movement.Reason is StockMovementReason.Purchase or StockMovementReason.ProductionOutput or StockMovementReason.InterBranchReceiptIn;
+            // What it cost the company, where that is not its cost here; a reversal keeps its original's.
+            if (!movement.IsReversal)
+                movement.CostToCompany(movement.Reason switch
+                {
+                    StockMovementReason.Purchase or StockMovementReason.OpeningStock => null,
+                    StockMovementReason.InterBranchReceiptIn => await SentAtAsync(db, movement, cancellationToken),
+                    StockMovementReason.ProductionOutput => MadeAt(movement, added),
+                    _ => row.CompanyCostOf(movement.UnitCost),
+                });
             if (inbound && !movement.IsReversal && movement.Quantity > 0 && movement.UnitCost is { } cost)
-                row.AverageWith(before, movement.Quantity, cost);
+                row.AverageWith(before, movement.Quantity, cost, movement.CompanyUnitCost);
             else if (inbound && movement.IsReversal && movement.Quantity < 0)
-                row.UnaverageWith(before, -movement.Quantity, movement.UnitCost);
+                row.UnaverageWith(before, -movement.Quantity, movement.UnitCost, movement.CompanyUnitCost);
             else if (movement.Reason == StockMovementReason.OpeningStock)
                 row.Open(movement.UnitCost);
             onHand[key] = before + movement.Quantity;
         }
 
-        // The company's average: its branches' stock, each at its own branch's average.
+        // The company's average: its branches' stock, each at what it cost the company (its branch's
+        // own average, but for what a branch paid another branch over that branch's cost).
         foreach (var id in ids)
         {
-            var held = rows.Where(r => r.Key.RawMaterialId == id && r.Value.AverageCost is not null)
-                .Select(r => (Quantity: Math.Max(onHand.GetValueOrDefault(r.Key), 0), Cost: r.Value.AverageCost!.Value))
+            var held = rows.Where(r => r.Key.RawMaterialId == id && r.Value.CostToCompany is not null)
+                .Select(r => (Quantity: Math.Max(onHand.GetValueOrDefault(r.Key), 0), Cost: r.Value.CostToCompany!.Value))
                 .Where(h => h.Quantity > 0)
                 .ToList();
             var quantity = held.Sum(h => h.Quantity);
             if (quantity > 0 && materials.GetValueOrDefault(id) is { } material)
                 material.AdoptAverage(held.Sum(h => h.Quantity * h.Cost) / quantity);
         }
+    }
+
+    // A shipment received: at what the goods cost the company as they left the sending branch.
+    private static async Task<decimal?> SentAtAsync(CostingDbContext db, StockMovement receipt, CancellationToken cancellationToken)
+    {
+        var shipment = db.ChangeTracker.Entries<InternalPurchaseInvoice>().Select(e => e.Entity).FirstOrDefault(i => i.Id == receipt.SourceId)
+            ?.InternalSalesInvoiceId
+            ?? await db.InternalPurchaseInvoices.AsNoTracking().Where(i => i.Id == receipt.SourceId)
+                .Select(i => (Guid?)i.InternalSalesInvoiceId).SingleOrDefaultAsync(cancellationToken);
+        if (shipment is null)
+            return null;
+        var sent = await db.StockMovements.AsNoTracking()
+            .Where(m => m.SourceId == shipment && m.RawMaterialId == receipt.RawMaterialId && m.Reason == StockMovementReason.InterBranchDispatchOut
+                && m.ReversalOf == null)
+            .Select(m => new { m.UnitCost, m.CompanyUnitCost })
+            .FirstOrDefaultAsync(cancellationToken);
+        return sent?.CompanyUnitCost ?? sent?.UnitCost;
+    }
+
+    // A batch made: its cost here, in the same share as what went into it cost the company.
+    private static decimal? MadeAt(StockMovement output, IEnumerable<StockMovement> added)
+    {
+        if (output.UnitCost is not { } cost)
+            return null;
+        var inputs = added.Where(m => m.SourceId == output.SourceId && m.Reason == StockMovementReason.ProductionInput && m.UnitCost is not null).ToList();
+        var value = inputs.Sum(m => -m.Quantity * m.UnitCost!.Value);
+        var company = inputs.Sum(m => -m.Quantity * (m.CompanyUnitCost ?? m.UnitCost!.Value));
+        return value > 0 && company != value ? Math.Round(cost * company / value, 6, MidpointRounding.AwayFromZero) : null;
     }
 }
 ```
@@ -5094,7 +5174,7 @@ public sealed record PostTransferRequest(Guid Id, Guid FromLocationId, Guid ToLo
 3) الفرع يستلم       IPI-2026-0001   دخول موقع الفرع بسعر التحويل + فاتورة شراء داخلية بنفس قيمة الصرف
 ```
 
-بين الصرف والاستلام الشحنة "في الطريق": خرجت من المركزي ولم تدخل الفرع. الفرع يُفوتر بكل ما أُرسل حتى تتطابق الفاتورتان (لحذفهما في المرحلة الرابعة)، وما لم يصل لا يدخل مخزونه ويُسجل **عجز نقل** بسعر التحويل مع سببه (ملاحظة إلزامية). وكل خطوة تعمل في **الفرع المختار**: الطلب والاستلام في الفرع، والصرف في المطبخ المركزي (`InterBranchDesk.HereAsync`).
+بين الصرف والاستلام الشحنة "في الطريق": خرجت من المركزي ولم تدخل الفرع. الفرع يُفوتر بكل ما أُرسل حتى تتطابق الفاتورتان (فتُستبعدان في قائمة الشركة ككل، القسم 10)، وما لم يصل لا يدخل مخزونه ويُسجل **عجز نقل** بسعر التحويل مع سببه (ملاحظة إلزامية). وكل خطوة تعمل في **الفرع المختار**: الطلب والاستلام في الفرع، والصرف في المطبخ المركزي (`InterBranchDesk.HereAsync`).
 
 ### 9.2 الدومين
 
@@ -6576,5 +6656,24 @@ public sealed record DispatchRequest(
 public sealed record ReceiveRequest(Guid Id, Guid ShipmentId, Guid? ToLocationId, IReadOnlyList<ReceiptLineInput>? Lines, string? Notes);
 ```
 
+
+## 10. قائمة الدخل للفرع والشركة ككل (المرحلة الرابعة)
+
+مع عدة فروع تُقرأ قائمة الدخل لفرع واحد أو **للشركة ككل** (موحدة). قائمة الفرع سجلاته بتكلفته؛ والشركة ككل = مجموع الفروع + مصروفات الشركة (مسير الرواتب من الموارد البشرية وسجل الأصول) − ما باعته الفروع واشترته من بعضها:
+
+```text
+  مجموع قوائم الفروع (كل فرع بتكلفته)
++ مصروفات الشركة
+− المبيعات بين الفروع                      (من الإيرادات)
+− المشتريات بين الفروع                     (من التكاليف):
+    تكلفة البضاعة على الفرع المرسل
+    + الهامش الذي دفعه الفرع المستلم فيما باعه أو فقده أو لم يصله هذا الشهر
+    + وفيما أكله العاملون وقُدم ضيافة
+= قائمة الشركة ككل
+```
+
+**التكلفة على الشركة.** بجانب متوسط الفرع يحفظ `MaterialBranchStock.CompanyAverageCost` نفس المتوسط بما دفعته الشركة (الشحنة المستلمة بتكلفة الفرع المرسل لا بسعر التحويل، والتصنيع بتكلفة مدخلاته؛ `null` ما دام الاثنان متساويين). و `StockLedgerInterceptor` يعطي كل حركة يختلف فيها الاثنان `CompanyUnitCost` (الاستلام بحركة الصرف المقابلة، والتصنيع بنسبة مدخلاته، والباقي بنسبة متوسط الفرع إلى متوسطه على الشركة)، والعكس يأخذ ما للأصل. ومتوسط الشركة للخامة صار مخزون فروعها **بتكلفته على الشركة**. مثال: المركزي بـ 100 للكيلو يرسل لطنطا بـ 110، وعند طنطا 5 كجم بـ 80 ⇐ متوسط طنطا 95 وعلى الشركة 90؛ عشرة برجر بـ 200 جم تكلف طنطا 190 والشركة 180، والهامش 10 يُستبعد.
+
+`KpiService.FiguresAsync(branchId)` يجمع شهر فرع (أو الشركة كلها) مع الهامش في كل بند؛ و `Figures.AtCompanyCost()` يطرحه ويصفّر ما بين الفروع؛ و `Figures.Sum` يجمع الفروع؛ و `Eliminate` يحسب الاستبعادات؛ والأعمدة (`PnlColumn`) تتجمع إلى الموحدة. و `BranchToReadAsync`: مستخدم الفرع يقرأ فرعه فقط (فرع آخر ⇐ 403)، ومن يعمل على كل الفروع يختار. والمصروفات الشهرية صارت لكل فرع (`MonthlyExpenses.BranchId`، و `Combined` تجمعها للشركة) وتُدخل في قائمة الفرع فقط (`BranchToEnterAsync`).
 
 [الفصل التالي: الخامات والوصفات والمصنعات والمنيو →](04-catalog-materials-recipes-and-menu.md)

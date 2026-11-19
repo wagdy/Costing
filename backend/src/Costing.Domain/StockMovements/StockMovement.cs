@@ -67,6 +67,15 @@ public sealed class StockMovement : AggregateRoot, IBranchOwned
     // what the movement was worth, so a month's food cost is the sum of its sales' worth.
     public decimal? UnitCost { get; private set; }
 
+    // What one unit cost the company (التكلفة على الشركة), where its branch's cost says otherwise: a
+    // branch that bought from the central kitchen at a markup keeps the goods at the price it paid
+    // (UnitCost), the company at what the kitchen paid for them. Null: the same as UnitCost, as for
+    // every entry of a company with one branch, and most of several. Given as it is saved
+    // (StockLedgerInterceptor), the original's on a reversal; the consolidated P&L reads it.
+    public decimal? CompanyUnitCost { get; private set; }
+
+    public void CostToCompany(decimal? unitCost) => CompanyUnitCost = unitCost is { } cost && cost != UnitCost ? cost : null;
+
     // For an entry made by hand (spoilage): why, and who recorded it. Null for the rest, whose
     // SourceId already says.
     public string? Note { get; private set; }

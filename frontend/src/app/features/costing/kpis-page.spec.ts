@@ -2,7 +2,7 @@ import { TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
 import { of } from 'rxjs';
 import { AuthService } from '../../core/auth/auth.service';
-import { CostingApi, Kpi, KpiReport } from '../../core/costing/costing.api';
+import { CostingApi, Kpi, KpiReport, PnlColumn } from '../../core/costing/costing.api';
 import { NotifyService } from '../../core/ui/notify.service';
 import { KpisPage } from './kpis-page';
 
@@ -122,7 +122,7 @@ describe('the KPIs', () => {
       otherControllableCosts: null,
       interest: null,
       depreciation: null,
-    });
+    }, null);
   });
   it('takes the expenses on purchase invoices off on their lines, with what is entered', async () => {
     kpis.mockReturnValue(
@@ -249,5 +249,114 @@ describe('the KPIs', () => {
     // Five points or more: red.
     expect(fixture.componentInstance['erosionTone'](6.2)).toBe('red');
     expect(fixture.componentInstance['erosionTone'](0)).toBe('');
+  });
+
+  describe('with several branches', () => {
+    const branches = [
+      { id: 'first', name: 'Sidi Gaber', nameAr: 'سيدي جابر', type: 'Restaurant' as const, isActive: true },
+      { id: 'kitchen', name: 'Central Kitchen', nameAr: 'المطبخ المركزي', type: 'CentralKitchen' as const, isActive: true },
+      { id: 'tanta', name: 'Tanta', nameAr: 'طنطا', type: 'Restaurant' as const, isActive: true },
+    ];
+    const column = (kind: PnlColumn['kind'], name: string, revenue: number, costOfSales: number, ebitda: number | null, branchId: string | null = null): PnlColumn => ({
+      kind, branchId, name, nameAr: null, revenue, costOfSales, grossProfit: revenue - costOfSales, operatingExpenses: 0, ebitda, netProfit: ebitda,
+    });
+    const consolidated: KpiReport = {
+      ...report,
+      statement: { ...report.statement, revenue: 1_000, transitLosses: 50 },
+      expenses: { ...report.expenses, wagesAndBenefits: 400 },
+      scope: { view: 'Consolidated', branchId: null, branch: null, branchAr: null, branchType: null, canChoose: true, branches },
+      eliminations: { interBranchSales: 770, costOfGoodsSent: 700, markupInCostOfSales: 20, markupInExpenses: 0, interBranchPurchases: 720, grossProfit: -50 },
+      columns: [
+        column('Branch', 'Central Kitchen', 770, 700, -30, 'kitchen'),
+        column('Branch', 'Tanta', 1_000, 340, null, 'tanta'),
+        column('CompanyCosts', 'Company costs', 0, 0, 0),
+        column('Eliminations', 'Eliminations', -770, -720, -50),
+        column('Consolidated', 'Consolidated', 1_000, 320, 280),
+      ],
+      companyCosts: { payroll: null, assetDepreciation: 0, disposalGainOrLoss: 0 },
+    };
+    const kitchenReport: KpiReport = {
+      ...report,
+      statement: { ...report.statement, revenue: 770, foodSales: 0, beverageSales: 0, interBranchSales: 770, interBranchCostOfGoods: 700, costOfSales: 700 },
+      scope: { view: 'Branch', branchId: 'kitchen', branch: 'Central Kitchen', branchAr: 'المطبخ المركزي', branchType: 'CentralKitchen', canChoose: true, branches },
+      interBranch: { sales: 770, costOfGoodsSent: 700, margin: 70, shipments: 2, purchases: 0, transitLosses: 0, receipts: 0 },
+      companyCosts: { payroll: 5_000, assetDepreciation: 120, disposalGainOrLoss: 0 },
+    };
+    const tantaReport: KpiReport = {
+      ...report,
+      statement: { ...report.statement, revenue: 1_000, transitLosses: 55 },
+      scope: { view: 'Branch', branchId: 'tanta', branch: 'Tanta', branchAr: 'طنطا', branchType: 'Restaurant', canChoose: false, branches },
+      interBranch: { sales: 0, costOfGoodsSent: 0, margin: 0, shipments: 0, purchases: 770, transitLosses: 55, receipts: 2 },
+      companyCosts: { payroll: null, assetDepreciation: 0, disposalGainOrLoss: 0 },
+    };
+    const rows = (el: HTMLElement, selector: string) => [...el.querySelectorAll(`${selector} tr`)].map((r) => [...r.children].map((c) => text(c)));
+
+    it('reads the company as a whole: what it took out between branches, and the table by branch that adds up to it', async () => {
+      kpis.mockReturnValue(of(consolidated));
+      const { fixture, page } = await render();
+      const el = fixture.nativeElement as HTMLElement;
+
+      expect(text(el.querySelector('.scope-chip')!)).toBe('The company as a whole · الشركة ككل');
+      expect(el.querySelector(".scope-pick mat-select")).not.toBeNull();
+      const out = rows(el, '[aria-label="Eliminations between branches"]');
+      expect(out[0]).toEqual(['Inter-branch sales, out of the revenue · استبعاد المبيعات بين الفروع', '(L.E 770.00)']);
+      expect(out[1]).toEqual(['Inter-branch purchases, out of the costs · استبعاد المشتريات بين الفروع', '(L.E 720.00)']);
+      expect(out.at(-1)).toEqual(['On the gross profit · الأثر على مجمل الربح', 'L.E -50.00']);
+      expect(out).toHaveLength(5);
+
+      const table = rows(el, '[aria-label="By branch"]');
+      expect(table[0].slice(1)).toEqual(['Central Kitchen', 'Tanta', 'Company costs', 'Eliminations', 'Consolidated']);
+      expect(table.find((r) => r[0].startsWith('Gross profit'))!.slice(1)).toEqual(['L.E 70.00', 'L.E 660.00', 'L.E 0.00', 'L.E -50.00', 'L.E 680.00']);
+      // Tanta's wages are not in: no EBITDA for it.
+      expect(table.find((r) => r[0].startsWith('EBITDA'))![2]).toBe('—');
+      // What never arrived, at what it cost the company.
+      expect(text([...el.querySelectorAll('.statement tr')].find((r) => text(r).includes('Transit losses'))!)).toContain('L.E 50.00');
+
+      // Each branch's costs are its own: the whole only adds them up.
+      expect(page['canEdit']()).toBe(false);
+      expect(text(el.querySelector('.scope-note')!)).toContain('Every branch\'s added up');
+
+      // A branch named in the table opens its own P&L.
+      kpis.mockReturnValue(of(kitchenReport));
+      const open = [...el.querySelectorAll<HTMLButtonElement>('.open-branch')].find((b) => text(b) === 'Central Kitchen')!;
+      expect(open.getAttribute('aria-label')).toBe('Open Central Kitchen’s P&L');
+      open.click();
+      fixture.detectChanges();
+      await fixture.whenStable();
+      expect(kpis).toHaveBeenLastCalledWith(expect.any(Number), expect.any(Number), 'kitchen');
+    });
+
+    it('reads a supplying branch with what it sold the others, and enters its costs as its own', async () => {
+      kpis.mockReturnValue(of(kitchenReport));
+      const { fixture, page } = await render();
+      const el = fixture.nativeElement as HTMLElement;
+      const cells = (label: string) =>
+        [...[...el.querySelectorAll('.statement tr')].find((r) => r.querySelector('td')!.textContent!.includes(label))!.querySelectorAll('td')].map(text);
+
+      expect(text(el.querySelector('.scope-chip')!)).toBe('Central Kitchen · المطبخ المركزي');
+      expect(cells('Inter-branch sales').slice(1)).toEqual(['L.E 770.00', '100.0%']);
+      expect(cells('Cost of goods sent to branches').slice(1)).toEqual(['L.E 700.00', '90.9%']);
+      expect(el.querySelector('[aria-label="Eliminations between branches"]')).toBeNull();
+      expect(el.querySelector('[aria-label="By branch"]')).toBeNull();
+      // The company's own costs are said, never counted here.
+      expect(text(el.querySelector('.company-costs')!)).toContain('payroll from HR L.E 5,000.00, the fixed assets\' depreciation L.E 120.00, on the consolidated P&L');
+      expect(cells('Wages and benefits')[0]).toContain("The payroll from HR is the company's");
+
+      page['set']('wagesAndBenefits', 100);
+      await page['saveExpenses']();
+      expect(saveExpenses).toHaveBeenCalledWith(expect.any(Number), expect.any(Number), expect.objectContaining({ wagesAndBenefits: 100 }), 'kitchen');
+    });
+
+    it("shows a branch's user their own branch, with what it was billed and what never arrived, and nothing to choose", async () => {
+      kpis.mockReturnValue(of(tantaReport));
+      const { fixture } = await render();
+      const el = fixture.nativeElement as HTMLElement;
+
+      expect(el.querySelector(".scope-pick mat-select")).toBeNull();
+      expect(text(el.querySelector('.scope-chip')!)).toBe('Tanta · طنطا');
+      expect(text([...el.querySelectorAll('.statement tr')].find((r) => text(r).includes('Transit losses'))!)).toContain('L.E 55.00');
+      expect(text(el.querySelector('.bought')!)).toContain('Bought from other branches · مشتريات من الفروع: L.E 770.00 on 2 internal purchase invoices');
+      expect(el.querySelector('.company-costs')).toBeNull();
+    });
   });
 });

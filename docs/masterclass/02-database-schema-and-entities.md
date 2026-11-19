@@ -486,7 +486,7 @@ public enum UnitOfMeasure
 - **المخزون يُسمح أن يصبح سالبًا**: البيع حدث فعلًا؛ رفض الخصم لن "يلغي البيع" بل سيضيّع السجل. الرصيد السالب **إشارة**: فاتورة لم تُسجل أو وصفة خاطئة، والجرد يصححه.
 - **`Archive`**: لا حذف؛ أرشفة فقط ورصيده صفر، حتى لا تختفي قيمته من الدفاتر.
 
-> 📄 **`backend/src/Costing.Domain/RawMaterials/RawMaterial.cs`** — 412 سطر
+> 📄 **`backend/src/Costing.Domain/RawMaterials/RawMaterial.cs`** — 413 سطر
 
 ```csharp
 using Costing.Domain.Common;
@@ -853,6 +853,7 @@ public sealed class RawMaterial : AggregateRoot
         // Undone in the branch and the location it was entered in, whichever the reversal is made from.
         reversal.AssignBranch(original.BranchId);
         reversal.AssignLocation(original.LocationId);
+        reversal.CostToCompany(original.CompanyUnitCost);
         return reversal;
     }
 
@@ -1494,7 +1495,7 @@ public static class StaffConsumption
 ```
 
 
-> 📄 **`backend/src/Costing.Domain/StockMovements/StockMovement.cs`** — 79 سطر
+> 📄 **`backend/src/Costing.Domain/StockMovements/StockMovement.cs`** — 88 سطر
 
 ```csharp
 using Costing.Domain.Common;
@@ -1565,6 +1566,15 @@ public sealed class StockMovement : AggregateRoot, IBranchOwned
     // the average cost otherwise. Null while the material had no price. Quantity × UnitCost is
     // what the movement was worth, so a month's food cost is the sum of its sales' worth.
     public decimal? UnitCost { get; private set; }
+
+    // What one unit cost the company (التكلفة على الشركة), where its branch's cost says otherwise: a
+    // branch that bought from the central kitchen at a markup keeps the goods at the price it paid
+    // (UnitCost), the company at what the kitchen paid for them. Null: the same as UnitCost, as for
+    // every entry of a company with one branch, and most of several. Given as it is saved
+    // (StockLedgerInterceptor), the original's on a reversal; the consolidated P&L reads it.
+    public decimal? CompanyUnitCost { get; private set; }
+
+    public void CostToCompany(decimal? unitCost) => CompanyUnitCost = unitCost is { } cost && cost != UnitCost ? cost : null;
 
     // For an entry made by hand (spoilage): why, and who recorded it. Null for the rest, whose
     // SourceId already says.
@@ -6083,7 +6093,7 @@ internal static class PropertyBuilderExtensions
 
 `InventoryConfigurations.cs`: الخامات، الوصفات، المخزون، الجرد، المشتريات، الخزنة، الموردون، الموافقات. لاحظ: **وصفة فعّالة واحدة لكل هدف** (فهرس فريد مرشّح `NULLS NOT DISTINCT` على `(TargetKind, CatalogItemId, VariantId)`)، فهرس الحركات الفريد، خامة واحدة لكل بند جرد ولكل بند فاتورة، **طلب موافقة معلّق واحد لكل سجل** (فهرس فريد على `RecordId` بشرط `Status = 'Pending'`)، قيد عكسي واحد لكل قيد خزنة، `Cascade` على البنود و `Restrict` على المراجع، وفهرس `PayrollRunId` على قيود الخزنة.
 
-> 📄 **`backend/src/Costing.Infrastructure/Persistence/Configurations/InventoryConfigurations.cs`** — 470 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Persistence/Configurations/InventoryConfigurations.cs`** — 471 سطر
 
 ```csharp
 using System.Text.Json;
@@ -6209,6 +6219,7 @@ internal sealed class StockMovementConfiguration : IEntityTypeConfiguration<Stoc
         builder.Property(m => m.Quantity).IsQuantity();
         builder.Property(m => m.Reason).IsEnumName();
         builder.Property(m => m.UnitCost).IsUnitCost();
+        builder.Property(m => m.CompanyUnitCost).IsUnitCost();
         builder.Property(m => m.Note).HasMaxLength(200);
         builder.Property(m => m.RecordedBy).HasMaxLength(200);
         builder.Ignore(m => m.IsReversal);
@@ -6950,12 +6961,13 @@ internal sealed class SecurityAuditLogRepository(CostingDbContext db) : ISecurit
 
 جداول التقارير والإعدادات: نسبة تكلفة الطعام المستهدفة (30% افتراضيًا)، إعدادات الضريبة والخدمة، المصروفات الشهرية، التكاليف المشتركة، وورقة المبيعات اليدوية:
 
-> 📄 **`backend/src/Costing.Infrastructure/Reports/CostingTables.cs`** — 245 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Reports/CostingTables.cs`** — 273 سطر
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using Costing.Domain.Common;
+using Costing.Domain.Company;
 using Costing.Domain.RawMaterials;
 using Costing.Domain.Recipes;
 using Costing.Infrastructure.Persistence;
@@ -7024,11 +7036,14 @@ public sealed class FinancialSettings
 
 // What a month cost beyond its ingredients, as the manager enters it: what the KPIs need besides
 // sales, and the income statement's lines for the break-even worksheet. Every figure is optional
-// until known; a KPI that needs a missing one says so rather than showing 0.
+// until known; a KPI that needs a missing one says so rather than showing 0. Each branch's own
+// (the first branch's in a company with one): a branch's P&L reads its own, the company's adds
+// them up.
 public sealed class MonthlyExpenses
 {
     public int Year { get; init; }
     public int Month { get; init; }
+    public Guid BranchId { get; init; } = Branch.DefaultId;
 
     // Wages, salaries and staff benefits: the labour cost %.
     public decimal? WagesAndBenefits { get; set; }
@@ -7054,6 +7069,28 @@ public sealed class MonthlyExpenses
             throw new DomainException("Choose a month.");
         if (new[] { WagesAndBenefits, LabourHours, OtherControllableCosts, OccupationCost, Interest, Depreciation }.Any(v => v < 0))
             throw new DomainException("A month's costs and hours cannot be negative.");
+    }
+
+    // Several branches' months as one, the company's: each figure the sum of those entered, unknown
+    // while none has it; last saved as the latest was. Null when none was entered at all.
+    public static MonthlyExpenses? Combined(IReadOnlyCollection<MonthlyExpenses> months)
+    {
+        if (months.Count <= 1)
+            return months.SingleOrDefault();
+        static decimal? Sum(IEnumerable<decimal?> figures)
+        {
+            var known = figures.Where(f => f is not null).ToList();
+            return known.Count == 0 ? null : known.Sum();
+        }
+        var latest = months.MaxBy(m => m.UpdatedAtUtc)!;
+        return new MonthlyExpenses
+        {
+            Year = latest.Year, Month = latest.Month, BranchId = Guid.Empty,
+            WagesAndBenefits = Sum(months.Select(m => m.WagesAndBenefits)), LabourHours = Sum(months.Select(m => m.LabourHours)),
+            OtherControllableCosts = Sum(months.Select(m => m.OtherControllableCosts)), OccupationCost = Sum(months.Select(m => m.OccupationCost)),
+            Interest = Sum(months.Select(m => m.Interest)), Depreciation = Sum(months.Select(m => m.Depreciation)),
+            UpdatedAtUtc = latest.UpdatedAtUtc, UpdatedBy = latest.UpdatedBy,
+        };
     }
 }
 
@@ -7176,7 +7213,9 @@ internal sealed class MonthlyExpensesConfiguration : IEntityTypeConfiguration<Mo
     public void Configure(EntityTypeBuilder<MonthlyExpenses> builder)
     {
         builder.ToTable("MonthlyExpenses", CostingDbContext.CostingSchema);
-        builder.HasKey(e => new { e.Year, e.Month });
+        builder.HasKey(e => new { e.Year, e.Month, e.BranchId });
+        builder.Property(e => e.BranchId).HasDefaultValue(Branch.DefaultId).HasSentinel(Guid.Empty);
+        builder.HasOne<Branch>().WithMany().HasForeignKey(e => e.BranchId).OnDelete(DeleteBehavior.Restrict);
         builder.Property(e => e.WagesAndBenefits).HasPrecision(18, 2);
         builder.Property(e => e.LabourHours).HasPrecision(10, 2);
         builder.Property(e => e.OtherControllableCosts).HasPrecision(18, 2);
@@ -7988,6 +8027,7 @@ dotnet ef migrations add <Name> \
 | 20 | `20261118131754_AddCompanyStructure` | Add Company Structure |
 | 21 | `20261118184431_AddStockLocations` | Add Stock Locations |
 | 22 | `20261118193842_AddInterBranchHub` | Add Inter Branch Hub |
+| 23 | `20261119091320_AddConsolidatedPnl` | Add Consolidated Pnl |
 
 
 ### 14.1 `UnifySafeTakings`: migration تحوّل بيانات لا شكلًا فقط

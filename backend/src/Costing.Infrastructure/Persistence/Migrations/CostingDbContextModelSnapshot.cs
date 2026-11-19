@@ -3023,6 +3023,10 @@ namespace Costing.Infrastructure.Persistence.Migrations
                     b.Property<Guid>("BranchId")
                         .HasColumnType("uuid");
 
+                    b.Property<decimal?>("CompanyAverageCost")
+                        .HasPrecision(18, 6)
+                        .HasColumnType("numeric(18,6)");
+
                     b.Property<Guid>("RawMaterialId")
                         .HasColumnType("uuid");
 
@@ -3191,6 +3195,10 @@ namespace Costing.Infrastructure.Persistence.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid")
                         .HasDefaultValue(new Guid("b2a40000-0000-4000-8000-000000000001"));
+
+                    b.Property<decimal?>("CompanyUnitCost")
+                        .HasPrecision(18, 6)
+                        .HasColumnType("numeric(18,6)");
 
                     b.Property<Guid>("LocationId")
                         .ValueGeneratedOnAdd()
@@ -3833,6 +3841,11 @@ namespace Costing.Infrastructure.Persistence.Migrations
                     b.Property<int>("Month")
                         .HasColumnType("integer");
 
+                    b.Property<Guid>("BranchId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasDefaultValue(new Guid("b2a40000-0000-4000-8000-000000000001"));
+
                     b.Property<decimal?>("Depreciation")
                         .HasPrecision(18, 2)
                         .HasColumnType("numeric(18,2)");
@@ -3864,7 +3877,9 @@ namespace Costing.Infrastructure.Persistence.Migrations
                         .HasPrecision(18, 2)
                         .HasColumnType("numeric(18,2)");
 
-                    b.HasKey("Year", "Month");
+                    b.HasKey("Year", "Month", "BranchId");
+
+                    b.HasIndex("BranchId");
 
                     b.ToTable("MonthlyExpenses", "costing");
                 });
@@ -4594,6 +4609,15 @@ namespace Costing.Infrastructure.Persistence.Migrations
                         .WithMany("Lines")
                         .HasForeignKey("Year", "Month")
                         .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Costing.Infrastructure.Reports.MonthlyExpenses", b =>
+                {
+                    b.HasOne("Costing.Domain.Company.Branch", null)
+                        .WithMany()
+                        .HasForeignKey("BranchId")
+                        .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
                 });
 
