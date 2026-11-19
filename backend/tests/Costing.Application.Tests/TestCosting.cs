@@ -548,12 +548,22 @@ public sealed class EndOfDayStore : ListStore<EndOfDayReport>, IEndOfDayReposito
 {
     private readonly Dictionary<Guid, byte[]> _photos = new();
 
+    // Made in the one branch there is, as the branch stamp gives a day when it is saved.
+    void IRepository<EndOfDayReport>.Add(EndOfDayReport day)
+    {
+        if (day.BranchId == Guid.Empty)
+            day.AssignBranch(Costing.Domain.Company.Branch.DefaultId);
+        Add(day);
+    }
+
     public Task<EndOfDayReport?> GetByDateAsync(DateOnly date, CancellationToken cancellationToken = default) => Task.FromResult(All.SingleOrDefault(d => d.Date == date));
     public Task<IReadOnlyList<EndOfDayReport>> GetDraftsAfterAsync(DateOnly date, CancellationToken cancellationToken = default) =>
         Task.FromResult<IReadOnlyList<EndOfDayReport>>(All.Where(d => !d.IsSubmitted && d.Date > date).OrderBy(d => d.Date).ToList());
     public void Remove(EndOfDayReport report) => All.Remove(report);
     public Task<DateOnly?> LastSubmittedDateAsync(CancellationToken cancellationToken = default) =>
         Task.FromResult(All.Where(d => d.IsSubmitted).Select(d => (DateOnly?)d.Date).Max());
+    // One branch here: its last.
+    public Task<DateOnly?> LastClosedEverywhereAsync(CancellationToken cancellationToken = default) => LastSubmittedDateAsync(cancellationToken);
     public Task<IReadOnlyList<EndOfDayReport>> GetBetweenAsync(DateOnly from, DateOnly to, CancellationToken cancellationToken = default) =>
         Task.FromResult<IReadOnlyList<EndOfDayReport>>(All.Where(d => d.Date >= from && d.Date <= to).ToList());
     public Task<EndOfDayReport?> GetByInvoiceAsync(Guid invoiceId, CancellationToken cancellationToken = default) =>
@@ -574,6 +584,8 @@ public sealed class PosStore : IPosLinkStore
     public PosJournal Journal { get; } = new();
 
     public Task<PosLink> GetAsync(CancellationToken cancellationToken = default) => Task.FromResult(Link);
+
+    public Task<IReadOnlyList<PosLink>> GetAllAsync(CancellationToken cancellationToken = default) => Task.FromResult<IReadOnlyList<PosLink>>([Link]);
 }
 
 public sealed class PosReportStore : ListStore<PosZReport>, IPosZReportRepository

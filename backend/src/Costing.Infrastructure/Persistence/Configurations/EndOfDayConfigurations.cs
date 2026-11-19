@@ -43,8 +43,10 @@ internal sealed class EndOfDayReportConfiguration : IEntityTypeConfiguration<End
         builder.Navigation(d => d.Invoices).HasField("_invoices").UsePropertyAccessMode(PropertyAccessMode.Field);
         builder.HasMany(d => d.Payouts).WithOne().HasForeignKey(p => p.ReportId).OnDelete(DeleteBehavior.Cascade);
         builder.Navigation(d => d.Payouts).HasField("_payouts").UsePropertyAccessMode(PropertyAccessMode.Field);
-        // One a business day.
-        builder.HasIndex(d => d.Date).IsUnique();
+        // One a business day in each branch.
+        builder.Property(d => d.BranchId).HasDefaultValue(Domain.Company.Branch.DefaultId).HasSentinel(Guid.Empty);
+        builder.HasIndex(d => new { d.BranchId, d.Date }).IsUnique();
+        builder.HasOne<Domain.Company.Branch>().WithMany().HasForeignKey(d => d.BranchId).OnDelete(DeleteBehavior.Restrict);
     }
 }
 

@@ -95,6 +95,7 @@ internal sealed class PostPurchaseBatchHandler(
     IEndOfDayPhotoStore endOfDayPhotos,
     IPurchaseAttachmentStore attachments,
     PurchaseOrderReceiver receiver,
+    Costing.Application.Company.ICurrentBranch branch,
     IUnitOfWork unitOfWork) : IRequestHandler<PostPurchaseBatchCommand, PurchaseBatchResult>
 {
     public const int MaxInvoices = 50;
@@ -284,6 +285,9 @@ internal sealed class PostPurchaseBatchHandler(
             ?? throw new DomainException("The invoice handed in at the end of the day is not there any more: reload the batch. · فاتورة التقفيل لم تعد موجودة.");
         if (!day.IsSubmitted)
             throw new DomainException("Its end of day is not submitted yet: it is posted once it is handed in. · لم يتم إرسال تقفيل هذا اليوم بعد.");
+        // Posted in the branch whose day it was handed in on.
+        if (day.BranchId != await branch.BranchIdAsync(cancellationToken))
+            throw new DomainException("It was handed in at another branch's end of day: post it there. · فاتورة تقفيل فرع آخر.");
         if (day.Date != invoiceDate)
             throw new DomainException(
                 $"It was handed in at the end of {day.Date.ToString("d MMM yyyy", CultureInfo.InvariantCulture)}: post it with that date. · سجّلها بتاريخ يومها.");

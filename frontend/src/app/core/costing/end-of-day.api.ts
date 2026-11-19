@@ -142,6 +142,9 @@ export interface EndOfDaySequence {
   warnings: string[];
   lastClosed: EndOfDayUndoPreview | null;
   strandedDrafts?: EndOfDayStranded[];
+  // With several branches, whose days these are: each branch closes its own, in its own order.
+  branch?: string | null;
+  branchAr?: string | null;
 }
 
 export interface EndOfDayUndoPreview {

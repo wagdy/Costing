@@ -11260,7 +11260,7 @@ export class CostingReportsShell {
 ```
 
 
-> 📄 **`frontend/src/app/features/costing/daily-summaries-page.ts`** — 297 سطر
+> 📄 **`frontend/src/app/features/costing/daily-summaries-page.ts`** — 313 سطر
 
 ```ts
 import { DatePipe } from '@angular/common';
@@ -11292,7 +11292,12 @@ import { EndOfDayUndo } from './end-of-day-undo';
   imports: [DatePipe, FormsModule, MatButtonModule, MatFormFieldModule, MatIconModule, MatInputModule, MatProgressBarModule, MoneyPipe, RouterLink],
   template: `
     <header class="head">
-      <h2>Daily summaries <span class="inline-ar">ملخصات تقفيل الأيام</span></h2>
+      <h2>
+        Daily summaries <span class="inline-ar">ملخصات تقفيل الأيام</span>
+        @if (sequence()?.branch; as branch) {
+          <span class="branch-chip">{{ branch }}{{ sequence()?.branchAr ? ' · ' + sequence()?.branchAr : '' }}</span>
+        }
+      </h2>
       <p class="note">
         Each day's end of day as it was handed in. Days are closed in exact order, one after the last closed day; to correct one, a manager undoes the
         last closed day and it is handed in again.
@@ -11420,6 +11425,17 @@ import { EndOfDayUndo } from './end-of-day-undo';
     .head h2 {
       margin: 0 0 4px;
       font: var(--mat-sys-headline-small);
+    }
+    .branch-chip {
+      display: inline-block;
+      margin-inline-start: 8px;
+      padding: 0 10px;
+      border-radius: 999px;
+      font: var(--mat-sys-label-large);
+      line-height: 28px;
+      vertical-align: middle;
+      background: var(--mat-sys-secondary-container);
+      color: var(--mat-sys-on-secondary-container);
     }
     .sequence {
       display: grid;
@@ -19085,7 +19101,7 @@ export class SettingsPage {
 
 `PosIntegrationPage`: المفتاح (يُعرض مرة للنسخ، ثم آخر أربعة حروف فقط)، وما يستدعيه الـ POS، وسجل المزامنة بفلاتر (الكل، تقارير Z، المشاكل)، وتحديث كل 20 ثانية.
 
-> 📄 **`frontend/src/app/core/settings/pos-integration.ts`** — 48 سطر
+> 📄 **`frontend/src/app/core/settings/pos-integration.ts`** — 50 سطر
 
 ```ts
 import { HttpClient } from '@angular/common/http';
@@ -19114,6 +19130,8 @@ export interface PosIntegration {
   keyCreatedAtUtc: string | null;
   keyCreatedBy: string | null;
   logs: PosSyncLog[];
+  // With several branches, whose till the key is: each branch has its own.
+  branch?: string | null;
 }
 
 // The key in full, this once.
@@ -19139,7 +19157,7 @@ export class PosIntegrationApi {
 ```
 
 
-> 📄 **`frontend/src/app/features/settings/pos-integration-page.ts`** — 339 سطر
+> 📄 **`frontend/src/app/features/settings/pos-integration-page.ts`** — 346 سطر
 
 ```ts
 import { DatePipe } from '@angular/common';
@@ -19191,6 +19209,13 @@ const outcomeLabels: Record<PosSyncOutcome, { en: string; ar: string; tone: stri
     <section class="card" aria-labelledby="key-title">
       <h2 id="key-title"><mat-icon>key</mat-icon> Integration API key <span class="inline-ar">مفتاح الربط</span></h2>
       @if (state(); as s) {
+        @if (s.branch) {
+          <p class="note branch-key" role="note">
+            <strong>{{ s.branch }}'s till</strong>: each branch's POS has its own key, and what it sends is that branch's: its day's sales, its
+            takings, its end of day. Choose another branch at the top of the screen for its key.
+            <span class="inline-ar">لكل فرع مفتاح لنقطة البيع الخاصة به.</span>
+          </p>
+        }
         @if (made(); as key) {
           <div class="made" role="status">
             <p><strong>Copy this key now:</strong> it is shown this once. Paste it into the POS: Settings → Integrations → Costing → API key.

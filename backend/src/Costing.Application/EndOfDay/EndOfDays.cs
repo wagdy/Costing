@@ -144,7 +144,10 @@ public sealed record EndOfDaySequenceDto(
     DateOnly? BooksLockedUntil,
     IReadOnlyList<string> Warnings,
     EndOfDayUndoPreview? LastClosed,
-    IReadOnlyList<EndOfDayStranded>? StrandedDrafts = null);
+    IReadOnlyList<EndOfDayStranded>? StrandedDrafts = null,
+    // With several branches, whose days these are: each branch closes its own, in its own order.
+    string? Branch = null,
+    string? BranchAr = null);
 
 // A draft dated after the day to close next (مسودة عالقة): it cannot be handed in before that day
 // is, so a manager moves it there with why.
@@ -721,7 +724,8 @@ internal sealed class SubmitEndOfDayCommandHandler(EndOfDayDays shared, IUnitOfW
 
 internal sealed class GetEndOfDaySequenceHandler(
     EndOfDayDays shared, IEndOfDayRepository days, IBooksLock books, ISafeTransactionRepository safe, ISalesReceiptRepository sales,
-    Costing.Domain.Integrations.IPosZReportRepository zReports)
+    Costing.Domain.Integrations.IPosZReportRepository zReports, Costing.Application.Company.ICurrentBranch current,
+    Costing.Domain.Company.IBranchRepository branches)
     : IRequestHandler<GetEndOfDaySequenceQuery, EndOfDaySequenceDto>
 {
     public async Task<EndOfDaySequenceDto> Handle(GetEndOfDaySequenceQuery request, CancellationToken cancellationToken)
@@ -750,8 +754,10 @@ internal sealed class GetEndOfDaySequenceHandler(
                 .Select(d => new EndOfDayStranded(d.Id, d.Date, d.Invoices.Count, d.Payouts.Count, d.NetSales > 0))
                 .ToList()
             : [];
+        var branch = await current.ScopeAsync(cancellationToken) is { } scope ? await branches.GetByIdAsync(scope, cancellationToken) : null;
         return new EndOfDaySequenceDto(
-            last, next, today, next > today, locked, next > today ? [] : await shared.WarningsAsync(closing, cancellationToken), preview, stranded);
+            last, next, today, next > today, locked, next > today ? [] : await shared.WarningsAsync(closing, cancellationToken), preview, stranded,
+            branch?.Name, branch?.NameAr);
     }
 }
 

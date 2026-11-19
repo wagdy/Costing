@@ -5084,7 +5084,7 @@ export interface StaffMealReport {
 ```
 
 
-> 📄 **`frontend/src/app/core/costing/end-of-day.api.ts`** — 393 سطر
+> 📄 **`frontend/src/app/core/costing/end-of-day.api.ts`** — 396 سطر
 
 ```ts
 import { HttpClient } from '@angular/common/http';
@@ -5231,6 +5231,9 @@ export interface EndOfDaySequence {
   warnings: string[];
   lastClosed: EndOfDayUndoPreview | null;
   strandedDrafts?: EndOfDayStranded[];
+  // With several branches, whose days these are: each branch closes its own, in its own order.
+  branch?: string | null;
+  branchAr?: string | null;
 }
 
 export interface EndOfDayUndoPreview {
@@ -27930,7 +27933,7 @@ export class ExpenseItemDialog {
 - **المراجعة** (`EndOfDaySummaryDialog`): تقرير ملخص قبل التسليم؛ لا تسليم بفاتورة أو دفعة مكتوبة لم تُضف. بلا مبيعات ⇐ `EndOfDayZeroSalesDialog` يسأل "No POS sales found for this date…" ثم `submit(date, true)` (ولا ملخص لو لم يُسلّم شيء أصلًا).
 - **بعد التسليم:** القسم مقفول، وما تحوّل لفواتير وقيود يظهر بحالته، و **Undo & reopen day** للمدير على آخر يوم مقفول فقط وخارج الدفاتر المقفلة (`canUndo`).
 
-> 📄 **`frontend/src/app/features/costing/end-of-day-page.ts`** — 2041 سطر
+> 📄 **`frontend/src/app/features/costing/end-of-day-page.ts`** — 2057 سطر
 
 ```ts
 import { DatePipe } from '@angular/common';
@@ -28549,7 +28552,12 @@ export class EndOfDaySummaryDialog {
   template: `
     <header class="head">
       <div>
-        <h2>End of the day <span class="inline-ar">تقفيل اليوم</span></h2>
+        <h2>
+          End of the day <span class="inline-ar">تقفيل اليوم</span>
+          @if (sequence()?.branch; as branch) {
+            <span class="branch-chip" title="Each branch closes its own days · كل فرع يقفل أيامه">{{ branch }}{{ sequence()?.branchAr ? ' · ' + sequence()?.branchAr : '' }}</span>
+          }
+        </h2>
         <p class="note">
           Photograph each of the day's invoices with its supplier and total, cash and on credit, and each receipt for cash paid to a supplier or
           advanced to an employee; enter the day's sales report and the drawer's float, and check the cash left against the drawer. Reviewed and
@@ -29281,6 +29289,17 @@ export class EndOfDaySummaryDialog {
       .spacer {
         flex: 1;
       }
+    }
+    .branch-chip {
+      display: inline-block;
+      margin-inline-start: 8px;
+      padding: 0 10px;
+      border-radius: 999px;
+      font: var(--mat-sys-label-large);
+      line-height: 28px;
+      vertical-align: middle;
+      background: var(--mat-sys-secondary-container);
+      color: var(--mat-sys-on-secondary-container);
     }
     .sequence-banner {
       display: flex;

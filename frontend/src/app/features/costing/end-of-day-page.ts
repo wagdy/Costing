@@ -614,7 +614,12 @@ export class EndOfDaySummaryDialog {
   template: `
     <header class="head">
       <div>
-        <h2>End of the day <span class="inline-ar">تقفيل اليوم</span></h2>
+        <h2>
+          End of the day <span class="inline-ar">تقفيل اليوم</span>
+          @if (sequence()?.branch; as branch) {
+            <span class="branch-chip" title="Each branch closes its own days · كل فرع يقفل أيامه">{{ branch }}{{ sequence()?.branchAr ? ' · ' + sequence()?.branchAr : '' }}</span>
+          }
+        </h2>
         <p class="note">
           Photograph each of the day's invoices with its supplier and total, cash and on credit, and each receipt for cash paid to a supplier or
           advanced to an employee; enter the day's sales report and the drawer's float, and check the cash left against the drawer. Reviewed and
@@ -1346,6 +1351,17 @@ export class EndOfDaySummaryDialog {
       .spacer {
         flex: 1;
       }
+    }
+    .branch-chip {
+      display: inline-block;
+      margin-inline-start: 8px;
+      padding: 0 10px;
+      border-radius: 999px;
+      font: var(--mat-sys-label-large);
+      line-height: 28px;
+      vertical-align: middle;
+      background: var(--mat-sys-secondary-container);
+      color: var(--mat-sys-on-secondary-container);
     }
     .sequence-banner {
       display: flex;

@@ -249,7 +249,7 @@ internal sealed class ApprovalRequestRepository(CostingDbContext db) : IApproval
         db.ApprovalRequests.SingleOrDefaultAsync(r => r.RecordId == recordId && r.Status == ApprovalStatus.Pending, cancellationToken);
 }
 
-internal sealed class SafeTransactionRepository(CostingDbContext db) : ISafeTransactionRepository
+internal sealed class SafeTransactionRepository(CostingDbContext db, Costing.Application.Company.ICurrentBranch branch) : ISafeTransactionRepository
 {
     public Task<SafeTransaction?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default) =>
         db.SafeTransactions.SingleOrDefaultAsync(t => t.Id == id, cancellationToken);
@@ -261,17 +261,25 @@ internal sealed class SafeTransactionRepository(CostingDbContext db) : ISafeTran
             .Where(t => t.Fund == CashFund.Safe && (through == null || t.BusinessDate <= through))
             .SumAsync(t => t.Amount, cancellationToken);
 
-    // Tracked: voiding it marks it.
-    public Task<SafeTransaction?> GetTakingsAsync(DateOnly revenueDate, CancellationToken cancellationToken = default) =>
-        db.SafeTransactions.FirstOrDefaultAsync(
-            t => t.Kind == SafeTransactionKind.RevenueTransfer && t.RevenueDate == revenueDate && t.ReversalOf == null && t.VoidedAtUtc == null,
+    // Tracked: voiding it marks it. The branch worked in's: each branch's Z report is its own.
+    public async Task<SafeTransaction?> GetTakingsAsync(DateOnly revenueDate, CancellationToken cancellationToken = default)
+    {
+        var here = await branch.BranchIdAsync(cancellationToken);
+        return await db.SafeTransactions.FirstOrDefaultAsync(
+            t => t.Kind == SafeTransactionKind.RevenueTransfer && t.RevenueDate == revenueDate && t.ReversalOf == null && t.VoidedAtUtc == null
+                && t.BranchId == here,
             cancellationToken);
+    }
 
-    // The drawer's own: payments out of the day while it was not in the safe, less their voids.
-    public async Task<decimal> PaidOutOfTakingsAsync(DateOnly revenueDate, CancellationToken cancellationToken = default) =>
-        -await db.SafeTransactions
-            .Where(t => t.Fund == CashFund.DayRevenue && t.RevenueDate == revenueDate)
+    // The drawer's own: payments out of the day while it was not in the safe, less their voids; the
+    // branch worked in's drawer.
+    public async Task<decimal> PaidOutOfTakingsAsync(DateOnly revenueDate, CancellationToken cancellationToken = default)
+    {
+        var here = await branch.BranchIdAsync(cancellationToken);
+        return -await db.SafeTransactions
+            .Where(t => t.Fund == CashFund.DayRevenue && t.RevenueDate == revenueDate && t.BranchId == here)
             .SumAsync(t => t.Amount, cancellationToken);
+    }
 
     // Tracked: voiding it marks it.
     public Task<SafeTransaction?> GetPaymentOfInvoiceAsync(Guid invoiceId, CancellationToken cancellationToken = default) =>

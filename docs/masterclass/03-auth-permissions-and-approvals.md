@@ -1,6 +1,16 @@
 # الفصل 03: الهوية، الصلاحيات، والموافقات
 
-[← الفصل السابق](02-database-schema-and-entities.md) · [الفهرس](00-index-and-build-roadmap.md) · [الفصل التالي: الخامات والوصفات والمنيو →](04-catalog-materials-recipes-and-menu.md)
+[← الفصل السابق](02-database-schema-and-entities.md) · [الفهرس](00-index-and-build-roadmap.md) · ## 11. تقفيل اليوم لكل فرع
+
+مع عدة فروع يقفل كل فرع أيامه: تقفيل واحد في اليوم **لكل فرع** (`EndOfDayReport` صار `IBranchOwned`، والفهرس الفريد `(BranchId, Date)`)، بتسلسله الخاص من آخر يوم أقفله هو. وكذلك ملخص المبيعات اليومي، وإيراد اليوم في الخزنة، وما صُرف من درج اليوم، ويوم نقطة البيع وتقاريرها (`PosDay` فريد بـ `(BranchId, Date)`).
+
+الفكرة كلها في المستودعات: كل بحث عن يوم **بتاريخه** صار للفرع الحالي (`ICurrentBranch.BranchIdAsync`): `EndOfDayRepository.GetByDateAsync` و `GetDraftsAfterAsync` و `LastSubmittedDateAsync` و `GetBetweenAsync`، و `GetDailySummaryAsync`، و `GetTakingsAsync` و `PaidOutOfTakingsAsync`، و `PosZReportRepository.GetByDateAsync` و `PosDayRepository.GetByDateAsync`. فلم يتغير منطق التقفيل نفسه، وفي الفرع الواحد كل شيء للفرع الأول كما كان. والبحث **بالمعرّف** (فاتورة أو صرفية) لأي فرع، لكن الدفعة اليومية ترفض فاتورة تقفيل فرع آخر.
+
+**إقفال الفترة** لا يتجاوز `LastClosedEverywhereAsync`: أبكر آخر يوم مُقفل بين الفروع المفعّلة التي تقفل أيامها.
+
+**نقطة بيع لكل فرع:** `PosLink` صار لكل فرع (`BranchId` فريد؛ مفتاح الفرع الأول هو القديم). `VerifyPosKeyQuery` يعيد فرع المفتاح، و `PosKeyFilter` يضعه في `HttpContext.Items`، و `HttpBranchRequest.AssignedBranchId` يقرأه: فطلب نقطة بيع طنطا يعمل في طنطا كمستخدم مقيد بها. والسجل (`PosSyncLog.BranchId`) لكل فرع، والمرفوض لمفتاحه يراه الجميع. والخزنة ما زالت للشركة.
+
+[الفصل التالي: الخامات والوصفات والمنيو →](04-catalog-materials-recipes-and-menu.md)
 
 ## 1. ثلاث طبقات للأمان في هذا النظام
 
@@ -3315,7 +3325,7 @@ internal sealed class ApproveRequestDays(
 
 `LockBooksCommand` يتحقق من `LOCK` على الخادم أيضًا (لا يكفي زر في الواجهة)، و `UnlockBooksCommand` من السبب (5–500 حرف). `SuggestedClose`: آخر نهاية شهر يمكن إقفالها الآن بعد الإقفال الحالي.
 
-> 📄 **`backend/src/Costing.Application/Books/PeriodLock.cs`** — 103 سطر
+> 📄 **`backend/src/Costing.Application/Books/PeriodLock.cs`** — 104 سطر
 
 ```csharp
 using MediatR;
@@ -3361,7 +3371,8 @@ internal sealed class PeriodLockReader(ICompanySettingsStore settings, IEndOfDay
     {
         var locked = (await settings.GetAsync(cancellationToken))?.BooksLockedUntilDate;
         var today = guard.Today;
-        var lastClosed = await days.LastSubmittedDateAsync(cancellationToken);
+        // With several branches, the day every one of them has closed up to.
+        var lastClosed = await days.LastClosedEverywhereAsync(cancellationToken);
         return new PeriodLockDto(locked, today, lastClosed, BooksGuard.SuggestedClose(locked, today, lastClosed),
             (await audit.GetLatestAsync(Math.Clamp(history, 1, 200), cancellationToken)).Select(SecurityAuditEntryDto.From).ToList());
     }
@@ -3390,7 +3401,7 @@ internal sealed class LockBooksHandler(
         var company = await settings.GetAsync(cancellationToken)
             ?? throw new DomainException("Save the company's settings first.");
         var previous = company.BooksLockedUntilDate;
-        company.LockBooks(request.Until, guard.Today, await days.LastSubmittedDateAsync(cancellationToken));
+        company.LockBooks(request.Until, guard.Today, await days.LastClosedEverywhereAsync(cancellationToken));
         audit.Add(SecurityAuditLog.PeriodLocked(previous, request.Until, request.StaffName, request.StaffId));
         await unitOfWork.SaveChangesAsync(cancellationToken);
         return await reader.ReadAsync(20, cancellationToken);
@@ -4045,7 +4056,7 @@ internal sealed class BranchStampInterceptor(IServiceProvider services) : SaveCh
 
 claim `branch` في التوكن، ويُقارن مع قاعدة البيانات في كل طلب (`OnTokenValidated`): تغيير فرع المستخدم يخرجه من كل مكان، فلا يبقى claim قديم. `HttpBranchRequest` يقرأ الفرع من التوكن، أو `X-Branch-Id` لمن يعمل في كل الفروع فقط.
 
-> 📄 **`backend/src/Costing.Api/Auth/BranchRequest.cs`** — 19 سطر
+> 📄 **`backend/src/Costing.Api/Auth/BranchRequest.cs`** — 25 سطر
 
 ```csharp
 using Costing.Application.Company;
@@ -4053,13 +4064,19 @@ using Costing.Application.Company;
 namespace Costing.Api.Auth;
 
 // Who is asking, as far as branches go: the branch the signed-in user is kept to (their token's),
-// or, for one who works every branch, the one chosen at the top of the screen (X-Branch-Id). The
-// POS and HR, signed in by key, choose none: the first branch.
+// or, for one who works every branch, the one chosen at the top of the screen (X-Branch-Id). A
+// branch's till, signed in by its own key, is kept to that branch; HR, by key, chooses none: the
+// first branch.
 public sealed class HttpBranchRequest(IHttpContextAccessor http) : IBranchRequest
 {
     public const string Header = "X-Branch-Id";
 
-    public Guid? AssignedBranchId => http.HttpContext?.User is { } user && UserClaims.RoleOf(user) is not null ? UserClaims.BranchOf(user) : null;
+    // Set by the POS key's check: the branch whose till the key is.
+    public const string PosBranchItem = "costing.pos-branch";
+
+    public Guid? AssignedBranchId =>
+        http.HttpContext?.Items[PosBranchItem] is Guid till ? till
+        : http.HttpContext?.User is { } user && UserClaims.RoleOf(user) is not null ? UserClaims.BranchOf(user) : null;
 
     public Guid? ChosenBranchId =>
         http.HttpContext is { } context && UserClaims.RoleOf(context.User) is not null && UserClaims.BranchOf(context.User) is null

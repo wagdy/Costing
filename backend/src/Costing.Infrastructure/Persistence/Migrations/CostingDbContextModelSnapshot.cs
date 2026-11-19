@@ -476,6 +476,11 @@ namespace Costing.Infrastructure.Persistence.Migrations
                     b.Property<string>("AuditTrail")
                         .HasColumnType("text");
 
+                    b.Property<Guid>("BranchId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasDefaultValue(new Guid("b2a40000-0000-4000-8000-000000000001"));
+
                     b.Property<decimal?>("CardAmount")
                         .HasPrecision(18, 2)
                         .HasColumnType("numeric(18,2)");
@@ -579,7 +584,7 @@ namespace Costing.Infrastructure.Persistence.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("Date")
+                    b.HasIndex("BranchId", "Date")
                         .IsUnique();
 
                     b.ToTable("EndOfDayReports", "costing");
@@ -927,6 +932,11 @@ namespace Costing.Infrastructure.Persistence.Migrations
                     b.Property<Guid>("Id")
                         .HasColumnType("uuid");
 
+                    b.Property<Guid>("BranchId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasDefaultValue(new Guid("b2a40000-0000-4000-8000-000000000001"));
+
                     b.Property<DateOnly>("Date")
                         .HasColumnType("date");
 
@@ -958,7 +968,7 @@ namespace Costing.Infrastructure.Persistence.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("Date")
+                    b.HasIndex("BranchId", "Date")
                         .IsUnique();
 
                     b.ToTable("PosDays", "costing");
@@ -968,6 +978,11 @@ namespace Costing.Infrastructure.Persistence.Migrations
                 {
                     b.Property<Guid>("Id")
                         .HasColumnType("uuid");
+
+                    b.Property<Guid>("BranchId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasDefaultValue(new Guid("b2a40000-0000-4000-8000-000000000001"));
 
                     b.Property<DateTime?>("KeyCreatedAtUtc")
                         .HasColumnType("timestamp with time zone");
@@ -992,6 +1007,9 @@ namespace Costing.Infrastructure.Persistence.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("BranchId")
+                        .IsUnique();
+
                     b.ToTable("PosLinks", "costing");
                 });
 
@@ -1002,6 +1020,9 @@ namespace Costing.Infrastructure.Persistence.Migrations
 
                     b.Property<DateTime>("AtUtc")
                         .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("BranchId")
+                        .HasColumnType("uuid");
 
                     b.Property<DateOnly?>("BusinessDate")
                         .HasColumnType("date");
@@ -1031,6 +1052,8 @@ namespace Costing.Infrastructure.Persistence.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("AtUtc");
+
+                    b.HasIndex("BranchId");
 
                     b.ToTable("PosSyncLogs", "costing");
                 });
@@ -3965,6 +3988,15 @@ namespace Costing.Infrastructure.Persistence.Migrations
                         .OnDelete(DeleteBehavior.Restrict);
                 });
 
+            modelBuilder.Entity("Costing.Domain.EndOfDay.EndOfDayReport", b =>
+                {
+                    b.HasOne("Costing.Domain.Company.Branch", null)
+                        .WithMany()
+                        .HasForeignKey("BranchId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("Costing.Domain.Expenses.ExpenseItem", b =>
                 {
                     b.HasOne("Costing.Domain.Categories.PurchaseCategory", null)
@@ -3985,6 +4017,24 @@ namespace Costing.Infrastructure.Persistence.Migrations
                         .WithMany()
                         .HasForeignKey("SaleTransactionId")
                         .OnDelete(DeleteBehavior.Restrict);
+                });
+
+            modelBuilder.Entity("Costing.Domain.Integrations.PosDay", b =>
+                {
+                    b.HasOne("Costing.Domain.Company.Branch", null)
+                        .WithMany()
+                        .HasForeignKey("BranchId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Costing.Domain.Integrations.PosLink", b =>
+                {
+                    b.HasOne("Costing.Domain.Company.Branch", null)
+                        .WithMany()
+                        .HasForeignKey("BranchId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("Costing.Domain.Integrations.PosZReport", b =>

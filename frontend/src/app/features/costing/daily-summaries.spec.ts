@@ -84,6 +84,15 @@ describe('the daily summaries', () => {
     expect(rows[0].querySelector('a')!.getAttribute('href')).toBe('/costing/end-of-day?date=2026-11-04');
   });
 
+  it("names the branch whose days they are, with several, and nothing with one", async () => {
+    let { el } = await render();
+    expect(el.querySelector('.branch-chip')).toBeNull();
+    TestBed.resetTestingModule();
+    api.sequence.mockReturnValue(of(sequence({ branch: 'Tanta', branchAr: 'طنطا' })));
+    ({ el } = await render());
+    expect(text(el.querySelector('.branch-chip')!)).toBe('Tanta · طنطا');
+  });
+
   it('offers a manager the undo on the last closed day only, and reloads once it is done', async () => {
     const { fixture, el } = await render();
     const actions = [...el.querySelectorAll('tbody tr')].map((r) => text(r.querySelector('td.action')!));

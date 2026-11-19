@@ -4430,7 +4430,7 @@ export const recipeSheetRules: { en: string; ar: string }[] = [
 6. **يوم أُدخل يدويًا يُترك:** إن كان ملخص اليوم أو توريده مُدخلًا يدويًا (أو بالشيت)، يُرفض التقرير 422 مع تسمية ما يمنعه. ألغِ اليدوي لتسمح بالتقرير.
 7. تصادم مع تعديل آخر في نفس اللحظة ⇐ يُعاد تلقائيًا؛ إن استمر ⇐ 503 فيعيد الـ POS الإرسال لاحقًا.
 
-> 📄 **`backend/src/Costing.Domain/Integrations/PosIntegration.cs`** — 215 سطر
+> 📄 **`backend/src/Costing.Domain/Integrations/PosIntegration.cs`** — 233 سطر
 
 ```csharp
 using Costing.Domain.Common;
@@ -4442,7 +4442,8 @@ namespace Costing.Domain.Integrations;
 // The restaurant's point of sale, linked (ربط نقطة البيع): it reads the menu from here and sends
 // each shift's Z report, which becomes the day's sales summary (its stock taken by the recipes)
 // and the day's takings in the safe. It proves itself by a key a manager makes here and pastes
-// into the POS; only the key's hash is kept, never the key.
+// into the POS; only the key's hash is kept, never the key. One a branch: each branch's till has
+// its own key, and what it sends is that branch's (the first branch's link keeps the id it had).
 public sealed class PosLink : AggregateRoot
 {
     public static readonly Guid SingletonId = new("7d3c1b2a-5e4f-4a6b-9c8d-0f1e2d3c4b5a");
@@ -4451,7 +4452,10 @@ public sealed class PosLink : AggregateRoot
 
     private PosLink() { }
 
-    public static PosLink Create() => new() { Id = SingletonId };
+    public static PosLink Create(Guid? branchId = null) =>
+        branchId is { } branch && branch != Branch.DefaultId ? new() { Id = Guid.NewGuid(), BranchId = branch } : new() { Id = SingletonId, BranchId = Branch.DefaultId };
+
+    public Guid BranchId { get; private set; }
 
     // SHA-256 of the key, hex; and its last characters, to tell which key the POS has.
     public string? KeyHash { get; private set; }
@@ -4535,11 +4539,16 @@ public sealed class PosZReport : AggregateRoot, IBranchOwned
 // A business day as the POS made it: the sales summary and the takings recorded from that day's Z
 // reports (every shift's, together), so a report sent again or changed replaces exactly these and
 // nothing a person entered.
-public sealed class PosDay : AggregateRoot
+public sealed class PosDay : AggregateRoot, IBranchOwned
 {
     private readonly List<DiscountReason> _discountReasons = [];
 
     private PosDay() { }
+
+    // One a business day in each branch: the branch whose till sent its reports.
+    public Guid BranchId { get; private set; }
+
+    public void AssignBranch(Guid branchId) => BranchId = branchId;
 
     public PosDay(Guid id, DateOnly date)
     {
@@ -4624,11 +4633,20 @@ public sealed class PosSyncLog
     public Guid? ZReportId { get; private set; }
     public DateOnly? BusinessDate { get; private set; }
     public string? Detail { get; private set; }
+
+    // The branch whose till called: none for a call refused for its key.
+    public Guid? BranchId { get; private set; }
+
+    public void AtBranch(Guid? branchId) => BranchId ??= branchId;
 }
 
 public interface IPosLinkStore
 {
+    // The branch worked in's, made the first time it is asked for.
     Task<PosLink> GetAsync(CancellationToken cancellationToken = default);
+
+    // Every branch's, to know whose till a key is.
+    Task<IReadOnlyList<PosLink>> GetAllAsync(CancellationToken cancellationToken = default);
 }
 
 public interface IPosZReportRepository : IRepository<PosZReport>
@@ -4651,7 +4669,7 @@ public interface IPosSyncJournal
 ```
 
 
-> 📄 **`backend/src/Costing.Application/Integrations/PosIntegration.cs`** — 540 سطر
+> 📄 **`backend/src/Costing.Application/Integrations/PosIntegration.cs`** — 550 سطر
 
 ```csharp
 using System.Globalization;
@@ -4714,7 +4732,9 @@ public sealed record PosSyncLogDto(
     public static PosSyncLogDto From(PosSyncLog l) => new(l.Id, l.AtUtc, l.Endpoint, l.Outcome, l.Message, l.ZReportId, l.BusinessDate, l.Detail);
 }
 
-public sealed record PosIntegrationDto(bool HasKey, string? KeyHint, DateTime? KeyCreatedAtUtc, string? KeyCreatedBy, IReadOnlyList<PosSyncLogDto> Logs);
+// Branch: whose till the key is, with several branches (each has its own); none with one.
+public sealed record PosIntegrationDto(
+    bool HasKey, string? KeyHint, DateTime? KeyCreatedAtUtc, string? KeyCreatedBy, IReadOnlyList<PosSyncLogDto> Logs, string? Branch = null);
 
 // The key in full, this once: the page shows it to be copied into the POS.
 public sealed record PosKeyDto(string Key, string KeyHint, DateTime CreatedAtUtc, string CreatedBy);
@@ -4723,15 +4743,19 @@ public sealed record GetPosIntegrationQuery(int Logs = 200) : IRequest<PosIntegr
 
 public sealed record GeneratePosKeyCommand(string StaffName) : IRequest<PosKeyDto>, IRetryOnConflict;
 
-public sealed record VerifyPosKeyQuery(string? Key) : IRequest<bool>;
+// Whose till the key is: the branch of the link it matches, or none.
+public sealed record VerifyPosKeyQuery(string? Key) : IRequest<Guid?>;
 
-internal sealed class GetPosIntegrationHandler(IPosLinkStore links, IPosSyncJournal journal) : IRequestHandler<GetPosIntegrationQuery, PosIntegrationDto>
+internal sealed class GetPosIntegrationHandler(
+    IPosLinkStore links, IPosSyncJournal journal, Costing.Application.Company.ICurrentBranch current, Costing.Domain.Company.IBranchRepository branches)
+    : IRequestHandler<GetPosIntegrationQuery, PosIntegrationDto>
 {
     public async Task<PosIntegrationDto> Handle(GetPosIntegrationQuery request, CancellationToken cancellationToken)
     {
         var link = await links.GetAsync(cancellationToken);
         var logs = await journal.RecentAsync(Math.Clamp(request.Logs, 1, 1000), cancellationToken);
-        return new PosIntegrationDto(link.HasKey, link.KeyHint, link.KeyCreatedAtUtc, link.KeyCreatedBy, logs.Select(PosSyncLogDto.From).ToList());
+        var branch = await current.ScopeAsync(cancellationToken) is { } scope ? (await branches.GetByIdAsync(scope, cancellationToken))?.Name : null;
+        return new PosIntegrationDto(link.HasKey, link.KeyHint, link.KeyCreatedAtUtc, link.KeyCreatedBy, logs.Select(PosSyncLogDto.From).ToList(), branch);
     }
 }
 
@@ -4747,10 +4771,10 @@ internal sealed class GeneratePosKeyHandler(IPosLinkStore links, IUnitOfWork uni
     }
 }
 
-internal sealed class VerifyPosKeyHandler(IPosLinkStore links) : IRequestHandler<VerifyPosKeyQuery, bool>
+internal sealed class VerifyPosKeyHandler(IPosLinkStore links) : IRequestHandler<VerifyPosKeyQuery, Guid?>
 {
-    public async Task<bool> Handle(VerifyPosKeyQuery request, CancellationToken cancellationToken) =>
-        PosKeys.Matches(request.Key, (await links.GetAsync(cancellationToken)).KeyHash);
+    public async Task<Guid?> Handle(VerifyPosKeyQuery request, CancellationToken cancellationToken) =>
+        (await links.GetAllAsync(cancellationToken)).FirstOrDefault(l => PosKeys.Matches(request.Key, l.KeyHash))?.BranchId;
 }
 
 // ---- The menu, as the POS reads it ----
@@ -4837,6 +4861,7 @@ internal sealed class ReceiveZReportHandler(
     IBusinessCalendar calendar,
     IPosSyncJournal journal,
     BooksGuard guard,
+    Costing.Application.Company.ICurrentBranch branch,
     IUnitOfWork unitOfWork) : IRequestHandler<ReceiveZReportCommand, ZReportResultDto>
 {
     public const string By = "POS";
@@ -4887,6 +4912,9 @@ internal sealed class ReceiveZReportHandler(
         var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(payload))).ToLowerInvariant();
 
         var existing = await reports.GetByIdAsync(report.ZReportId, cancellationToken);
+        // Each branch's till sends its own: one sent by another's is not this one's to change.
+        if (existing is not null && existing.BranchId != await branch.BranchIdAsync(cancellationToken))
+            throw new DomainException("That Z report was sent by another branch's till: send it with that branch's key. · هذا التقرير من نقطة بيع فرع آخر.");
         if (existing is not null && existing.PayloadHash == hash)
         {
             // Sent again: what it made stands.
@@ -5197,7 +5225,7 @@ public static class PosEvents
 ```
 
 
-> 📄 **`backend/src/Costing.Infrastructure/Persistence/PosIntegrationPersistence.cs`** — 111 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Persistence/PosIntegrationPersistence.cs`** — 141 سطر
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
@@ -5213,6 +5241,10 @@ internal sealed class PosLinkConfiguration : IEntityTypeConfiguration<PosLink>
     public void Configure(EntityTypeBuilder<PosLink> builder)
     {
         builder.ToTable("PosLinks", CostingDbContext.CostingSchema);
+        // One a branch: the first branch's is the one there always was.
+        builder.Property(l => l.BranchId).HasDefaultValue(Domain.Company.Branch.DefaultId).HasSentinel(Guid.Empty);
+        builder.HasIndex(l => l.BranchId).IsUnique();
+        builder.HasOne<Domain.Company.Branch>().WithMany().HasForeignKey(l => l.BranchId).OnDelete(DeleteBehavior.Restrict);
         builder.Property(l => l.KeyHash).HasMaxLength(PosLink.HashLength);
         builder.Property(l => l.KeyHint).HasMaxLength(PosLink.HintLength + 4);
         builder.Property(l => l.KeyCreatedBy).HasMaxLength(200);
@@ -5237,8 +5269,10 @@ internal sealed class PosDayConfiguration : IEntityTypeConfiguration<PosDay>
     public void Configure(EntityTypeBuilder<PosDay> builder)
     {
         builder.ToTable("PosDays", CostingDbContext.CostingSchema);
-        // One a business day.
-        builder.HasIndex(d => d.Date).IsUnique();
+        // One a business day in each branch.
+        builder.Property(d => d.BranchId).HasDefaultValue(Domain.Company.Branch.DefaultId).HasSentinel(Guid.Empty);
+        builder.HasIndex(d => new { d.BranchId, d.Date }).IsUnique();
+        builder.HasOne<Domain.Company.Branch>().WithMany().HasForeignKey(d => d.BranchId).OnDelete(DeleteBehavior.Restrict);
         builder.Property(d => d.DiscountsAmount).HasPrecision(18, 2);
         Configurations.PropertyBuilderExtensions.HasDiscountReasons(builder);
     }
@@ -5256,67 +5290,91 @@ internal sealed class PosSyncLogConfiguration : IEntityTypeConfiguration<PosSync
         builder.Property(l => l.Message).HasMaxLength(PosSyncLog.MaxMessage);
         builder.Property(l => l.Detail).HasMaxLength(PosSyncLog.MaxDetail);
         builder.HasIndex(l => l.AtUtc);
+        builder.HasIndex(l => l.BranchId);
     }
 }
 
-internal sealed class PosLinkStore(CostingDbContext db) : IPosLinkStore
+internal sealed class PosLinkStore(CostingDbContext db, Costing.Application.Company.ICurrentBranch branch) : IPosLinkStore
 {
-    // Made the first time it is asked for, and kept by this unit of work.
+    // The branch worked in's, made the first time it is asked for, and kept by this unit of work.
     public async Task<PosLink> GetAsync(CancellationToken cancellationToken = default)
     {
-        if (db.PosLinks.Local.FirstOrDefault() is { } local)
+        var here = await branch.BranchIdAsync(cancellationToken);
+        if (db.PosLinks.Local.FirstOrDefault(l => l.BranchId == here) is { } local)
             return local;
-        if (await db.PosLinks.SingleOrDefaultAsync(l => l.Id == PosLink.SingletonId, cancellationToken) is { } kept)
+        if (await db.PosLinks.SingleOrDefaultAsync(l => l.BranchId == here, cancellationToken) is { } kept)
             return kept;
-        var made = PosLink.Create();
+        var made = PosLink.Create(here);
         db.PosLinks.Add(made);
         return made;
     }
+
+    public async Task<IReadOnlyList<PosLink>> GetAllAsync(CancellationToken cancellationToken = default) =>
+        await db.PosLinks.AsNoTracking().Where(l => l.KeyHash != null).ToListAsync(cancellationToken);
 }
 
-internal sealed class PosZReportRepository(CostingDbContext db) : IPosZReportRepository
+internal sealed class PosZReportRepository(CostingDbContext db, Costing.Application.Company.ICurrentBranch branch) : IPosZReportRepository
 {
     public Task<PosZReport?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default) =>
         db.PosZReports.SingleOrDefaultAsync(r => r.Id == id, cancellationToken);
 
     public void Add(PosZReport aggregate) => db.PosZReports.Add(aggregate);
 
-    public async Task<IReadOnlyList<PosZReport>> GetByDateAsync(DateOnly date, CancellationToken cancellationToken = default) =>
-        await db.PosZReports.Where(r => r.BusinessDate == date).OrderBy(r => r.ReceivedAtUtc).ToListAsync(cancellationToken);
+    // The branch worked in's: its own till's reports of the day.
+    public async Task<IReadOnlyList<PosZReport>> GetByDateAsync(DateOnly date, CancellationToken cancellationToken = default)
+    {
+        var here = await branch.BranchIdAsync(cancellationToken);
+        return await db.PosZReports.Where(r => r.BusinessDate == date && r.BranchId == here).OrderBy(r => r.ReceivedAtUtc).ToListAsync(cancellationToken);
+    }
 }
 
-internal sealed class PosDayRepository(CostingDbContext db) : IPosDayRepository
+internal sealed class PosDayRepository(CostingDbContext db, Costing.Application.Company.ICurrentBranch branch) : IPosDayRepository
 {
     public Task<PosDay?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default) =>
         db.PosDays.SingleOrDefaultAsync(d => d.Id == id, cancellationToken);
 
     public void Add(PosDay aggregate) => db.PosDays.Add(aggregate);
 
-    public async Task<PosDay?> GetByDateAsync(DateOnly date, CancellationToken cancellationToken = default) =>
-        db.PosDays.Local.FirstOrDefault(d => d.Date == date) ?? await db.PosDays.SingleOrDefaultAsync(d => d.Date == date, cancellationToken);
+    // The branch worked in's; one made in this unit of work is its branch's once saved.
+    public async Task<PosDay?> GetByDateAsync(DateOnly date, CancellationToken cancellationToken = default)
+    {
+        var here = await branch.BranchIdAsync(cancellationToken);
+        return db.PosDays.Local.FirstOrDefault(d => d.Date == date && (d.BranchId == here || d.BranchId == Guid.Empty))
+            ?? await db.PosDays.SingleOrDefaultAsync(d => d.Date == date && d.BranchId == here, cancellationToken);
+    }
 }
 
 // The log, saved in a context of its own: what the call itself did is saved or thrown away with
 // the call, and the log of it stays either way.
-internal sealed class PosSyncJournal(IServiceScopeFactory scopes, CostingDbContext db) : IPosSyncJournal
+// Each call kept with the branch whose till made it (none for one refused for its key); the log read
+// is the branch worked in's, with the calls refused, whoever made them.
+internal sealed class PosSyncJournal(
+    IServiceScopeFactory scopes, CostingDbContext db, Costing.Application.Company.IBranchRequest asking, Costing.Application.Company.ICurrentBranch branch)
+    : IPosSyncJournal
 {
     public async Task WriteAsync(PosSyncLog entry, CancellationToken cancellationToken = default)
     {
+        entry.AtBranch(asking.AssignedBranchId ?? (entry.Outcome == PosSyncOutcome.Unauthorized ? null : Domain.Company.Branch.DefaultId));
         await using var scope = scopes.CreateAsyncScope();
         var own = scope.ServiceProvider.GetRequiredService<CostingDbContext>();
         own.PosSyncLogs.Add(entry);
         await own.SaveChangesAsync(cancellationToken);
     }
 
-    public async Task<IReadOnlyList<PosSyncLog>> RecentAsync(int count, CancellationToken cancellationToken = default) =>
-        await db.PosSyncLogs.AsNoTracking().OrderByDescending(l => l.AtUtc).Take(count).ToListAsync(cancellationToken);
+    public async Task<IReadOnlyList<PosSyncLog>> RecentAsync(int count, CancellationToken cancellationToken = default)
+    {
+        var scope = await branch.ScopeAsync(cancellationToken);
+        return await db.PosSyncLogs.AsNoTracking()
+            .Where(l => scope == null || l.BranchId == scope || l.BranchId == null)
+            .OrderByDescending(l => l.AtUtc).Take(count).ToListAsync(cancellationToken);
+    }
 }
 ```
 
 
 `PosIntegrationController`: `PosKeyFilter` (Action Filter يتحقق من المفتاح ويسجل الرفض بلا المفتاح نفسه)، ونماذج الطلب، و `PosIntegrationSettingsController` لصفحة الإعدادات.
 
-> 📄 **`backend/src/Costing.Api/Controllers/PosIntegrationController.cs`** — 173 سطر
+> 📄 **`backend/src/Costing.Api/Controllers/PosIntegrationController.cs`** — 175 سطر
 
 ```csharp
 using System.Text.Json;
@@ -5408,8 +5466,8 @@ public sealed class PosIntegrationController(ISender sender, IPosSyncJournal jou
     }
 }
 
-// The key in X-API-Key, checked against the hash kept; a wrong one, or none, answered 401 and
-// logged. Never logs the key.
+// The key in X-API-Key, checked against the hashes kept; a wrong one, or none, answered 401 and
+// logged. Never logs the key. The key says whose till it is: the call works in that branch.
 public sealed class PosKeyFilter(ISender sender, IPosSyncJournal journal) : IAsyncActionFilter
 {
     public static readonly string[] Headers = ["X-API-Key", "X-Pos-Node-Key"];
@@ -5418,7 +5476,8 @@ public sealed class PosKeyFilter(ISender sender, IPosSyncJournal journal) : IAsy
     {
         var request = context.HttpContext.Request;
         var key = Headers.Select(h => request.Headers[h].ToString()).FirstOrDefault(v => !string.IsNullOrWhiteSpace(v));
-        if (!await sender.Send(new VerifyPosKeyQuery(key), context.HttpContext.RequestAborted))
+        var branch = await sender.Send(new VerifyPosKeyQuery(key), context.HttpContext.RequestAborted);
+        if (branch is null)
         {
             var endpoint = request.Path.Value?.Split('/').LastOrDefault() ?? "pos";
             await journal.WriteAsync(new PosSyncLog(endpoint, PosSyncOutcome.Unauthorized,
@@ -5427,6 +5486,7 @@ public sealed class PosKeyFilter(ISender sender, IPosSyncJournal journal) : IAsy
             context.Result = new UnauthorizedObjectResult(new { errors = new[] { "Send this system's POS key in X-API-Key." } });
             return;
         }
+        context.HttpContext.Items[HttpBranchRequest.PosBranchItem] = branch.Value;
         await next();
     }
 }

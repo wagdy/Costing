@@ -41,7 +41,8 @@ internal sealed class PeriodLockReader(ICompanySettingsStore settings, IEndOfDay
     {
         var locked = (await settings.GetAsync(cancellationToken))?.BooksLockedUntilDate;
         var today = guard.Today;
-        var lastClosed = await days.LastSubmittedDateAsync(cancellationToken);
+        // With several branches, the day every one of them has closed up to.
+        var lastClosed = await days.LastClosedEverywhereAsync(cancellationToken);
         return new PeriodLockDto(locked, today, lastClosed, BooksGuard.SuggestedClose(locked, today, lastClosed),
             (await audit.GetLatestAsync(Math.Clamp(history, 1, 200), cancellationToken)).Select(SecurityAuditEntryDto.From).ToList());
     }
@@ -70,7 +71,7 @@ internal sealed class LockBooksHandler(
         var company = await settings.GetAsync(cancellationToken)
             ?? throw new DomainException("Save the company's settings first.");
         var previous = company.BooksLockedUntilDate;
-        company.LockBooks(request.Until, guard.Today, await days.LastSubmittedDateAsync(cancellationToken));
+        company.LockBooks(request.Until, guard.Today, await days.LastClosedEverywhereAsync(cancellationToken));
         audit.Add(SecurityAuditLog.PeriodLocked(previous, request.Until, request.StaffName, request.StaffId));
         await unitOfWork.SaveChangesAsync(cancellationToken);
         return await reader.ReadAsync(20, cancellationToken);

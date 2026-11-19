@@ -812,7 +812,8 @@ clears the recount marks; the count keeps who handed it in.
 How a branch closes its day (`/costing/end-of-day`, the End of the day section): a user given that
 section alone (Permissions) sees only this page, on a phone as on a laptop. It is what the daily
 batch and the takings are made from; the cash it paid out to suppliers and as advances goes to the
-safe when it is submitted.
+safe when it is submitted. With several branches, each closes its own days (below, *Each branch's
+day*): the page is the branch worked in's, named at its top.
 
 1. **The date** (تاريخ اليوم), the business day unless another is chosen; never a day to come.
 2. **Cash purchase & expense invoices** (فواتير نقدية) and **credit / on-account invoices** (فواتير
@@ -1459,8 +1460,10 @@ A point of sale can send each shift's Z report here, and read the menu from here
 never touches this database. **Settings → POS Integration** (a manager's, `SettingsManage`) holds
 the link:
 
-- **The key.** *Generate key* makes one (`cpk_` and 32 random bytes) and shows it once, to be
-  pasted into the POS. Only its SHA-256 hash is kept, with its last four characters to tell it by
+- **The key.** One a branch: with several branches, each branch's till has its own, made and shown
+  for the branch chosen at the top of the screen (*Tanta's till: each branch's POS has its own
+  key*), and what a till sends is its own branch's day. *Generate key* makes one (`cpk_` and 32
+  random bytes) and shows it once, to be pasted into the POS. Only its SHA-256 hash is kept, with its last four characters to tell it by
   (`••••w9S8`) and who made it when; it is checked in constant time. *Regenerate key* makes a new
   one and the old one stops working at once. (`GET /api/settings/pos-integration`, `POST
   /api/settings/pos-integration/key`.)
@@ -1618,8 +1621,9 @@ structures as cards, each with its bilingual **(!)** tip; a card chosen is appli
 kept by location and moving-average cost by branch, with internal transfers (phase 2); the central
 kitchen's hub, with branch requisitions, **Dispatch & Bill** on an internal sales invoice and the
 branch's **Receive** on an internal purchase invoice (phase 3, below); the P&L by branch or for the
-company as a whole, consolidated, inter-branch sales and purchases eliminated (phase 4, below). The
-safe's balance and the other reports are the company's, whatever the structure.
+company as a whole, consolidated, inter-branch sales and purchases eliminated (phase 4, below); and
+each branch's own end of day, takings and till (below). The safe's balance and the other reports
+are the company's, whatever the structure.
 
 ### Branches and locations (الفروع ومواقع المخزون)
 
@@ -1653,7 +1657,8 @@ Tanta.
 branch, whatever is asked, and no list narrowed. With several branches: the branch the user is
 kept to; or, for one who works every branch, the one they chose at the top of the screen (sent as
 `X-Branch-Id`; one not in use, or none, is the first branch). A user kept to a branch that is out
-of use is refused (403). The POS and HR, signed in by key, work in the first branch.
+of use is refused (403). A branch's till, signed in by its own POS key, works in that branch; HR,
+signed in by key, in the first branch.
 
 With several branches, these lists show the branch's own records: purchase invoices, sales, stock
 counts, spoilage and breakage. Balances and reports stay the company's; the KPIs and P&L are read
@@ -1846,6 +1851,42 @@ shipmentId, toLocationId, lines: [{ rawMaterialId, receivedQuantity }], notes }`
 material's own unit, prices per that unit; prices and totals are null for whoever does not see
 costs.
 
+### Each branch's day (تقفيل اليوم لكل فرع)
+
+With several branches, **each closes its own days**, as one restaurant always did: one end of day a
+business day in each branch (`EndOfDayReports` unique by `BranchId` and `Date`), handed in in its
+own exact order from its own last closed day (Tanta's next is the day after Tanta's last, whatever
+the first branch has closed), its drafts, warnings and stranded drafts its own. So are what a day is
+made of:
+
+| What | One a day | In each branch |
+| --- | --- | --- |
+| The end of day (تقفيل اليوم) | was the company's | the branch worked in's, made in it, named at the top of the page (*Tanta · طنطا*) |
+| The day's sales summary | was the company's | the branch's: a second for the same day in the same branch is refused, another branch's is its own |
+| The day's takings (the Z report into the safe) | was the company's | the branch's: *The takings of 17 Nov are entered already* only for that branch's |
+| What was paid out of the day's takings before they went in | was the company's | the branch's drawer's |
+| The POS's day and its Z reports | was the company's | the branch whose till sent them (`PosDays` unique by `BranchId` and `Date`) |
+
+Every lookup of a day by its date is the branch worked in's (the branch chosen at the top of the
+screen, or the user's own); by an id (an invoice or a payment handed in) it is any branch's, and an
+invoice handed in at one branch's end of day is posted on that branch's daily batch alone (*It was
+handed in at another branch's end of day: post it there*). **A manager's undo** of the last closed day
+is the branch's: its takings, its sales summary, its till's Z reports and its invoices posted, nothing
+of another branch's. **Daily summaries** (Reports) lists the branch's days and its sequence.
+
+**The period lock** moves no further than every branch in use that closes its days has closed: the
+earliest of their last closed days (a branch that has never closed a day does not hold it).
+
+**Each branch's till.** A POS key is one branch's (`PosLinks.BranchId`, one a branch; the first
+branch's is the key there always was). The key in `X-API-Key` names the branch: its Z reports become
+that branch's sales summary and takings, its days that branch's, and its calls that branch's log
+(`PosSyncLogs.BranchId`; a call refused for its key is everyone's to see). A report one branch's till
+sent is refused from another's (*That Z report was sent by another branch's till*). The menu it reads
+is the company's.
+
+The safe is still the company's: each branch's takings go into it. Migration `AddBranchEndOfDay`
+(every day, POS day, key and call before is the first branch's).
+
 ### The P&L by branch and for the company as a whole (قائمة الدخل للفرع والشركة ككل)
 
 **Reports → KPIs** is the month's P&L (قائمة الدخل). While the company has one branch it is the
@@ -1949,7 +1990,8 @@ keeps how far the books are closed, in red:
   closed (*Month end: 31 Oct 2026*), and **Lock books · إقفال الدفاتر** once the word `LOCK` is
   typed in the box under it (checked by the API too). A lock moves forward only: to a day after
   the one closed, never past today, and never past the last end of day closed (the days after it
-  could not be closed any more). Earlier is an unlock.
+  could not be closed any more): with several branches, the day every branch in use that closes its
+  days has closed up to. Earlier is an unlock.
 - **Temporary unlock (فتح الفترة استثنائياً).** The owner's alone (`settings.unlock-periods`, the
   Manager role here; any other manager sees *Only the owner can open a closed period again*): the
   lock rolled back to an earlier day (*Keep the books closed until*), or lifted altogether, always

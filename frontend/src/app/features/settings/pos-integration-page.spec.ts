@@ -51,6 +51,11 @@ describe('the POS integration settings', () => {
     expect([...el.querySelectorAll('button')].map(text).some((t) => t.includes('Regenerate key'))).toBe(true);
   });
 
+  it("names the branch whose till the key is, with several branches", async () => {
+    const { el } = await render({ hasKey: true, keyHint: '••••1234', keyCreatedAtUtc: null, keyCreatedBy: 'Boss', logs: [], branch: 'Tanta' });
+    expect(text(el.querySelector('.branch-key')!)).toContain("Tanta's till: each branch's POS has its own key");
+  });
+
   it('lists every call the POS made, the problems apart', async () => {
     const { el, settle } = await render({
       hasKey: true, keyHint: '••••1234', keyCreatedAtUtc: '2026-11-10T09:00:00Z', keyCreatedBy: 'Boss',

@@ -7,7 +7,8 @@ namespace Costing.Domain.Integrations;
 // The restaurant's point of sale, linked (ربط نقطة البيع): it reads the menu from here and sends
 // each shift's Z report, which becomes the day's sales summary (its stock taken by the recipes)
 // and the day's takings in the safe. It proves itself by a key a manager makes here and pastes
-// into the POS; only the key's hash is kept, never the key.
+// into the POS; only the key's hash is kept, never the key. One a branch: each branch's till has
+// its own key, and what it sends is that branch's (the first branch's link keeps the id it had).
 public sealed class PosLink : AggregateRoot
 {
     public static readonly Guid SingletonId = new("7d3c1b2a-5e4f-4a6b-9c8d-0f1e2d3c4b5a");
@@ -16,7 +17,10 @@ public sealed class PosLink : AggregateRoot
 
     private PosLink() { }
 
-    public static PosLink Create() => new() { Id = SingletonId };
+    public static PosLink Create(Guid? branchId = null) =>
+        branchId is { } branch && branch != Branch.DefaultId ? new() { Id = Guid.NewGuid(), BranchId = branch } : new() { Id = SingletonId, BranchId = Branch.DefaultId };
+
+    public Guid BranchId { get; private set; }
 
     // SHA-256 of the key, hex; and its last characters, to tell which key the POS has.
     public string? KeyHash { get; private set; }
@@ -100,11 +104,16 @@ public sealed class PosZReport : AggregateRoot, IBranchOwned
 // A business day as the POS made it: the sales summary and the takings recorded from that day's Z
 // reports (every shift's, together), so a report sent again or changed replaces exactly these and
 // nothing a person entered.
-public sealed class PosDay : AggregateRoot
+public sealed class PosDay : AggregateRoot, IBranchOwned
 {
     private readonly List<DiscountReason> _discountReasons = [];
 
     private PosDay() { }
+
+    // One a business day in each branch: the branch whose till sent its reports.
+    public Guid BranchId { get; private set; }
+
+    public void AssignBranch(Guid branchId) => BranchId = branchId;
 
     public PosDay(Guid id, DateOnly date)
     {
@@ -189,11 +198,20 @@ public sealed class PosSyncLog
     public Guid? ZReportId { get; private set; }
     public DateOnly? BusinessDate { get; private set; }
     public string? Detail { get; private set; }
+
+    // The branch whose till called: none for a call refused for its key.
+    public Guid? BranchId { get; private set; }
+
+    public void AtBranch(Guid? branchId) => BranchId ??= branchId;
 }
 
 public interface IPosLinkStore
 {
+    // The branch worked in's, made the first time it is asked for.
     Task<PosLink> GetAsync(CancellationToken cancellationToken = default);
+
+    // Every branch's, to know whose till a key is.
+    Task<IReadOnlyList<PosLink>> GetAllAsync(CancellationToken cancellationToken = default);
 }
 
 public interface IPosZReportRepository : IRepository<PosZReport>

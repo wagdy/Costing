@@ -24,6 +24,8 @@ export interface PosIntegration {
   keyCreatedAtUtc: string | null;
   keyCreatedBy: string | null;
   logs: PosSyncLog[];
+  // With several branches, whose till the key is: each branch has its own.
+  branch?: string | null;
 }
 
 // The key in full, this once.

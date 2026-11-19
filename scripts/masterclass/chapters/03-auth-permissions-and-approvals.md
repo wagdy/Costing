@@ -1,6 +1,16 @@
 # الفصل 03: الهوية، الصلاحيات، والموافقات
 
-[← الفصل السابق](02-database-schema-and-entities.md) · [الفهرس](00-index-and-build-roadmap.md) · [الفصل التالي: الخامات والوصفات والمنيو →](04-catalog-materials-recipes-and-menu.md)
+[← الفصل السابق](02-database-schema-and-entities.md) · [الفهرس](00-index-and-build-roadmap.md) · ## 11. تقفيل اليوم لكل فرع
+
+مع عدة فروع يقفل كل فرع أيامه: تقفيل واحد في اليوم **لكل فرع** (`EndOfDayReport` صار `IBranchOwned`، والفهرس الفريد `(BranchId, Date)`)، بتسلسله الخاص من آخر يوم أقفله هو. وكذلك ملخص المبيعات اليومي، وإيراد اليوم في الخزنة، وما صُرف من درج اليوم، ويوم نقطة البيع وتقاريرها (`PosDay` فريد بـ `(BranchId, Date)`).
+
+الفكرة كلها في المستودعات: كل بحث عن يوم **بتاريخه** صار للفرع الحالي (`ICurrentBranch.BranchIdAsync`): `EndOfDayRepository.GetByDateAsync` و `GetDraftsAfterAsync` و `LastSubmittedDateAsync` و `GetBetweenAsync`، و `GetDailySummaryAsync`، و `GetTakingsAsync` و `PaidOutOfTakingsAsync`، و `PosZReportRepository.GetByDateAsync` و `PosDayRepository.GetByDateAsync`. فلم يتغير منطق التقفيل نفسه، وفي الفرع الواحد كل شيء للفرع الأول كما كان. والبحث **بالمعرّف** (فاتورة أو صرفية) لأي فرع، لكن الدفعة اليومية ترفض فاتورة تقفيل فرع آخر.
+
+**إقفال الفترة** لا يتجاوز `LastClosedEverywhereAsync`: أبكر آخر يوم مُقفل بين الفروع المفعّلة التي تقفل أيامها.
+
+**نقطة بيع لكل فرع:** `PosLink` صار لكل فرع (`BranchId` فريد؛ مفتاح الفرع الأول هو القديم). `VerifyPosKeyQuery` يعيد فرع المفتاح، و `PosKeyFilter` يضعه في `HttpContext.Items`، و `HttpBranchRequest.AssignedBranchId` يقرأه: فطلب نقطة بيع طنطا يعمل في طنطا كمستخدم مقيد بها. والسجل (`PosSyncLog.BranchId`) لكل فرع، والمرفوض لمفتاحه يراه الجميع. والخزنة ما زالت للشركة.
+
+[الفصل التالي: الخامات والوصفات والمنيو →](04-catalog-materials-recipes-and-menu.md)
 
 ## 1. ثلاث طبقات للأمان في هذا النظام
 

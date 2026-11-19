@@ -47,6 +47,13 @@ const outcomeLabels: Record<PosSyncOutcome, { en: string; ar: string; tone: stri
     <section class="card" aria-labelledby="key-title">
       <h2 id="key-title"><mat-icon>key</mat-icon> Integration API key <span class="inline-ar">مفتاح الربط</span></h2>
       @if (state(); as s) {
+        @if (s.branch) {
+          <p class="note branch-key" role="note">
+            <strong>{{ s.branch }}'s till</strong>: each branch's POS has its own key, and what it sends is that branch's: its day's sales, its
+            takings, its end of day. Choose another branch at the top of the screen for its key.
+            <span class="inline-ar">لكل فرع مفتاح لنقطة البيع الخاصة به.</span>
+          </p>
+        }
         @if (made(); as key) {
           <div class="made" role="status">
             <p><strong>Copy this key now:</strong> it is shown this once. Paste it into the POS: Settings → Integrations → Costing → API key.

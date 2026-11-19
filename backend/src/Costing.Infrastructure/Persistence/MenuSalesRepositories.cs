@@ -41,7 +41,7 @@ internal sealed class MenuRepository(CostingDbContext db) : IMenuRepository
     public void AddAddOn(AddOn addOn) => db.AddOns.Add(addOn);
 }
 
-internal sealed class SalesReceiptRepository(CostingDbContext db) : ISalesReceiptRepository
+internal sealed class SalesReceiptRepository(CostingDbContext db, Costing.Application.Company.ICurrentBranch branch) : ISalesReceiptRepository
 {
     public Task<SalesReceipt?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default) =>
         db.SalesReceipts.SingleOrDefaultAsync(r => r.Id == id, cancellationToken);
@@ -60,9 +60,13 @@ internal sealed class SalesReceiptRepository(CostingDbContext db) : ISalesReceip
             .OrderByDescending(r => r.SoldAtUtc).ThenByDescending(r => r.EnteredAtUtc)
             .ToListAsync(cancellationToken);
 
-    public Task<SalesReceipt?> GetDailySummaryAsync(DateOnly date, CancellationToken cancellationToken = default) =>
-        db.SalesReceipts.FirstOrDefaultAsync(
-            r => r.BusinessDate == date && r.Source == SalesSource.DailySummary && r.VoidedAtUtc == null, cancellationToken);
+    // The branch worked in's: each branch enters its own day's.
+    public async Task<SalesReceipt?> GetDailySummaryAsync(DateOnly date, CancellationToken cancellationToken = default)
+    {
+        var here = await branch.BranchIdAsync(cancellationToken);
+        return await db.SalesReceipts.FirstOrDefaultAsync(
+            r => r.BusinessDate == date && r.Source == SalesSource.DailySummary && r.VoidedAtUtc == null && r.BranchId == here, cancellationToken);
+    }
 
     public async Task<IReadOnlySet<string>> GetReferencesAsync(IReadOnlyCollection<string> references, CancellationToken cancellationToken = default)
     {

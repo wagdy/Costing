@@ -87,8 +87,8 @@ public sealed class PosIntegrationController(ISender sender, IPosSyncJournal jou
     }
 }
 
-// The key in X-API-Key, checked against the hash kept; a wrong one, or none, answered 401 and
-// logged. Never logs the key.
+// The key in X-API-Key, checked against the hashes kept; a wrong one, or none, answered 401 and
+// logged. Never logs the key. The key says whose till it is: the call works in that branch.
 public sealed class PosKeyFilter(ISender sender, IPosSyncJournal journal) : IAsyncActionFilter
 {
     public static readonly string[] Headers = ["X-API-Key", "X-Pos-Node-Key"];
@@ -97,7 +97,8 @@ public sealed class PosKeyFilter(ISender sender, IPosSyncJournal journal) : IAsy
     {
         var request = context.HttpContext.Request;
         var key = Headers.Select(h => request.Headers[h].ToString()).FirstOrDefault(v => !string.IsNullOrWhiteSpace(v));
-        if (!await sender.Send(new VerifyPosKeyQuery(key), context.HttpContext.RequestAborted))
+        var branch = await sender.Send(new VerifyPosKeyQuery(key), context.HttpContext.RequestAborted);
+        if (branch is null)
         {
             var endpoint = request.Path.Value?.Split('/').LastOrDefault() ?? "pos";
             await journal.WriteAsync(new PosSyncLog(endpoint, PosSyncOutcome.Unauthorized,
@@ -106,6 +107,7 @@ public sealed class PosKeyFilter(ISender sender, IPosSyncJournal journal) : IAsy
             context.Result = new UnauthorizedObjectResult(new { errors = new[] { "Send this system's POS key in X-API-Key." } });
             return;
         }
+        context.HttpContext.Items[HttpBranchRequest.PosBranchItem] = branch.Value;
         await next();
     }
 }

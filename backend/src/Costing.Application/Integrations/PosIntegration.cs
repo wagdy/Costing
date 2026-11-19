@@ -58,7 +58,9 @@ public sealed record PosSyncLogDto(
     public static PosSyncLogDto From(PosSyncLog l) => new(l.Id, l.AtUtc, l.Endpoint, l.Outcome, l.Message, l.ZReportId, l.BusinessDate, l.Detail);
 }
 
-public sealed record PosIntegrationDto(bool HasKey, string? KeyHint, DateTime? KeyCreatedAtUtc, string? KeyCreatedBy, IReadOnlyList<PosSyncLogDto> Logs);
+// Branch: whose till the key is, with several branches (each has its own); none with one.
+public sealed record PosIntegrationDto(
+    bool HasKey, string? KeyHint, DateTime? KeyCreatedAtUtc, string? KeyCreatedBy, IReadOnlyList<PosSyncLogDto> Logs, string? Branch = null);
 
 // The key in full, this once: the page shows it to be copied into the POS.
 public sealed record PosKeyDto(string Key, string KeyHint, DateTime CreatedAtUtc, string CreatedBy);
@@ -67,15 +69,19 @@ public sealed record GetPosIntegrationQuery(int Logs = 200) : IRequest<PosIntegr
 
 public sealed record GeneratePosKeyCommand(string StaffName) : IRequest<PosKeyDto>, IRetryOnConflict;
 
-public sealed record VerifyPosKeyQuery(string? Key) : IRequest<bool>;
+// Whose till the key is: the branch of the link it matches, or none.
+public sealed record VerifyPosKeyQuery(string? Key) : IRequest<Guid?>;
 
-internal sealed class GetPosIntegrationHandler(IPosLinkStore links, IPosSyncJournal journal) : IRequestHandler<GetPosIntegrationQuery, PosIntegrationDto>
+internal sealed class GetPosIntegrationHandler(
+    IPosLinkStore links, IPosSyncJournal journal, Costing.Application.Company.ICurrentBranch current, Costing.Domain.Company.IBranchRepository branches)
+    : IRequestHandler<GetPosIntegrationQuery, PosIntegrationDto>
 {
     public async Task<PosIntegrationDto> Handle(GetPosIntegrationQuery request, CancellationToken cancellationToken)
     {
         var link = await links.GetAsync(cancellationToken);
         var logs = await journal.RecentAsync(Math.Clamp(request.Logs, 1, 1000), cancellationToken);
-        return new PosIntegrationDto(link.HasKey, link.KeyHint, link.KeyCreatedAtUtc, link.KeyCreatedBy, logs.Select(PosSyncLogDto.From).ToList());
+        var branch = await current.ScopeAsync(cancellationToken) is { } scope ? (await branches.GetByIdAsync(scope, cancellationToken))?.Name : null;
+        return new PosIntegrationDto(link.HasKey, link.KeyHint, link.KeyCreatedAtUtc, link.KeyCreatedBy, logs.Select(PosSyncLogDto.From).ToList(), branch);
     }
 }
 
@@ -91,10 +97,10 @@ internal sealed class GeneratePosKeyHandler(IPosLinkStore links, IUnitOfWork uni
     }
 }
 
-internal sealed class VerifyPosKeyHandler(IPosLinkStore links) : IRequestHandler<VerifyPosKeyQuery, bool>
+internal sealed class VerifyPosKeyHandler(IPosLinkStore links) : IRequestHandler<VerifyPosKeyQuery, Guid?>
 {
-    public async Task<bool> Handle(VerifyPosKeyQuery request, CancellationToken cancellationToken) =>
-        PosKeys.Matches(request.Key, (await links.GetAsync(cancellationToken)).KeyHash);
+    public async Task<Guid?> Handle(VerifyPosKeyQuery request, CancellationToken cancellationToken) =>
+        (await links.GetAllAsync(cancellationToken)).FirstOrDefault(l => PosKeys.Matches(request.Key, l.KeyHash))?.BranchId;
 }
 
 // ---- The menu, as the POS reads it ----
@@ -181,6 +187,7 @@ internal sealed class ReceiveZReportHandler(
     IBusinessCalendar calendar,
     IPosSyncJournal journal,
     BooksGuard guard,
+    Costing.Application.Company.ICurrentBranch branch,
     IUnitOfWork unitOfWork) : IRequestHandler<ReceiveZReportCommand, ZReportResultDto>
 {
     public const string By = "POS";
@@ -231,6 +238,9 @@ internal sealed class ReceiveZReportHandler(
         var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(payload))).ToLowerInvariant();
 
         var existing = await reports.GetByIdAsync(report.ZReportId, cancellationToken);
+        // Each branch's till sends its own: one sent by another's is not this one's to change.
+        if (existing is not null && existing.BranchId != await branch.BranchIdAsync(cancellationToken))
+            throw new DomainException("That Z report was sent by another branch's till: send it with that branch's key. · هذا التقرير من نقطة بيع فرع آخر.");
         if (existing is not null && existing.PayloadHash == hash)
         {
             // Sent again: what it made stands.

@@ -1744,6 +1744,7 @@ Costing/
                         20261118184431_AddStockLocations.cs
                         20261118193842_AddInterBranchHub.cs
                         20261119091320_AddConsolidatedPnl.cs
+                        20261119094824_AddBranchEndOfDay.cs
                         CostingDbContextModelSnapshot.cs
                     PosIntegrationPersistence.cs
                     PurchaseOrderPersistence.cs
@@ -1777,6 +1778,7 @@ Costing/
                     VarianceService.cs
         tests/
             Costing.Api.Tests/
+                BranchEndOfDayApiTests.cs
                 BulkSwapApiTests.cs
                 BurdenedCostApiTests.cs
                 CombosAndDiscountsApiTests.cs

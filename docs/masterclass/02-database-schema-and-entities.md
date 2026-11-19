@@ -4733,11 +4733,12 @@ ExpectedIntoSafe   = إجمالي الإيراد − CashPaidOut                
 
 **التسلسل:** `EndOfDaySequence` دالة نقية تفحص ترتيب الأيام (الفصل 05)، و `Undo` يعيد اليوم مسودة بسببه (`ReopenReason`) ويفك ربط الفواتير (`Unposted`) والمدفوعات (`Unvouchered`، بـ `VoucherId` جديد عليه فهرس فريد). و `MarkClosed` يقفل يومًا بلا تجارة (`IsClosedDay`, `ClosedDayReason`)، و `MoveTo` ينقل مسودة لتاريخ آخر بسطر تدقيق في `Notes` وملاحظة كل فاتورة و `AuditTrail` (نص بلا حد، لا يُعدَّل).
 
-> 📄 **`backend/src/Costing.Domain/EndOfDay/EndOfDayReport.cs`** — 667 سطر
+> 📄 **`backend/src/Costing.Domain/EndOfDay/EndOfDayReport.cs`** — 680 سطر
 
 ```csharp
 using System.Globalization;
 using Costing.Domain.Common;
+using Costing.Domain.Company;
 using Costing.Domain.Purchases;
 using Costing.Domain.Sales;
 
@@ -4797,7 +4798,10 @@ public sealed record EndOfDayPhoto(string FileName, string ContentType, int Byte
 // The cash that should be in the drawer (NetCashInTill) is the float, and the cash sales with the
 // tax collected on them, less every payment out of it: the cash invoices, the suppliers paid and the
 // advances. The Visa and any other takings never reach the drawer.
-public sealed class EndOfDayReport : AggregateRoot
+//
+// One a business day in each branch (IBranchOwned): with several branches, each closes its own days,
+// in its own order, the branch worked in given when it is made.
+public sealed class EndOfDayReport : AggregateRoot, IBranchOwned
 {
     public const int MaxInvoices = 50;
     public const int MaxNotes = 500;
@@ -4828,6 +4832,10 @@ public sealed class EndOfDayReport : AggregateRoot
 
     public DateOnly Date { get; private set; }
     public EndOfDayStatus Status { get; private set; }
+
+    public Guid BranchId { get; private set; }
+
+    public void AssignBranch(Guid branchId) => BranchId = branchId;
 
     // The Z report: cash and Visa sales before tax, the tax collected on both, voids and refunds.
     public decimal? CashAmount { get; private set; }
@@ -5340,7 +5348,7 @@ public sealed class EndOfDayPayout : Entity
     }
 }
 
-// Returns each day with its Invoices and Payouts loaded.
+// Returns each day with its Invoices and Payouts loaded; a day by its date is the branch worked in's.
 public interface IEndOfDayRepository : IRepository<EndOfDayReport>
 {
     Task<EndOfDayReport?> GetByDateAsync(DateOnly date, CancellationToken cancellationToken = default);
@@ -5353,6 +5361,11 @@ public interface IEndOfDayRepository : IRepository<EndOfDayReport>
 
     // The last day handed in (آخر يوم تم تقفيله), if any: the sequence goes on from it.
     Task<DateOnly?> LastSubmittedDateAsync(CancellationToken cancellationToken = default);
+
+    // The day every branch in use that closes its days has closed up to: the earliest of their last
+    // days handed in (the one branch's last, while there is one). The books are locked up to it at
+    // the latest.
+    Task<DateOnly?> LastClosedEverywhereAsync(CancellationToken cancellationToken = default);
 
     Task<IReadOnlyList<EndOfDayReport>> GetBetweenAsync(DateOnly from, DateOnly to, CancellationToken cancellationToken = default);
 
@@ -6729,7 +6742,7 @@ internal sealed class UserTabAccessConfiguration : IEntityTypeConfiguration<User
 
 `EndOfDayConfigurations.cs`: تقرير واحد لكل يوم تجاري (فهرس فريد على التاريخ)، والصور في جدول منفصل.
 
-> 📄 **`backend/src/Costing.Infrastructure/Persistence/Configurations/EndOfDayConfigurations.cs`** — 98 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Persistence/Configurations/EndOfDayConfigurations.cs`** — 100 سطر
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
@@ -6777,8 +6790,10 @@ internal sealed class EndOfDayReportConfiguration : IEntityTypeConfiguration<End
         builder.Navigation(d => d.Invoices).HasField("_invoices").UsePropertyAccessMode(PropertyAccessMode.Field);
         builder.HasMany(d => d.Payouts).WithOne().HasForeignKey(p => p.ReportId).OnDelete(DeleteBehavior.Cascade);
         builder.Navigation(d => d.Payouts).HasField("_payouts").UsePropertyAccessMode(PropertyAccessMode.Field);
-        // One a business day.
-        builder.HasIndex(d => d.Date).IsUnique();
+        // One a business day in each branch.
+        builder.Property(d => d.BranchId).HasDefaultValue(Domain.Company.Branch.DefaultId).HasSentinel(Guid.Empty);
+        builder.HasIndex(d => new { d.BranchId, d.Date }).IsUnique();
+        builder.HasOne<Domain.Company.Branch>().WithMany().HasForeignKey(d => d.BranchId).OnDelete(DeleteBehavior.Restrict);
     }
 }
 
@@ -7244,7 +7259,7 @@ internal sealed class FinancialSettingsConfiguration : IEntityTypeConfiguration<
 
 قراءات العرض `AsNoTracking`، وقراءات التعديل متتبَّعة؛ ودوال بأسماء دقيقة بدل `IQueryable` يتسرب للأعلى.
 
-> 📄 **`backend/src/Costing.Infrastructure/Persistence/InventoryRepositories.cs`** — 493 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Persistence/InventoryRepositories.cs`** — 501 سطر
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
@@ -7498,7 +7513,7 @@ internal sealed class ApprovalRequestRepository(CostingDbContext db) : IApproval
         db.ApprovalRequests.SingleOrDefaultAsync(r => r.RecordId == recordId && r.Status == ApprovalStatus.Pending, cancellationToken);
 }
 
-internal sealed class SafeTransactionRepository(CostingDbContext db) : ISafeTransactionRepository
+internal sealed class SafeTransactionRepository(CostingDbContext db, Costing.Application.Company.ICurrentBranch branch) : ISafeTransactionRepository
 {
     public Task<SafeTransaction?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default) =>
         db.SafeTransactions.SingleOrDefaultAsync(t => t.Id == id, cancellationToken);
@@ -7510,17 +7525,25 @@ internal sealed class SafeTransactionRepository(CostingDbContext db) : ISafeTran
             .Where(t => t.Fund == CashFund.Safe && (through == null || t.BusinessDate <= through))
             .SumAsync(t => t.Amount, cancellationToken);
 
-    // Tracked: voiding it marks it.
-    public Task<SafeTransaction?> GetTakingsAsync(DateOnly revenueDate, CancellationToken cancellationToken = default) =>
-        db.SafeTransactions.FirstOrDefaultAsync(
-            t => t.Kind == SafeTransactionKind.RevenueTransfer && t.RevenueDate == revenueDate && t.ReversalOf == null && t.VoidedAtUtc == null,
+    // Tracked: voiding it marks it. The branch worked in's: each branch's Z report is its own.
+    public async Task<SafeTransaction?> GetTakingsAsync(DateOnly revenueDate, CancellationToken cancellationToken = default)
+    {
+        var here = await branch.BranchIdAsync(cancellationToken);
+        return await db.SafeTransactions.FirstOrDefaultAsync(
+            t => t.Kind == SafeTransactionKind.RevenueTransfer && t.RevenueDate == revenueDate && t.ReversalOf == null && t.VoidedAtUtc == null
+                && t.BranchId == here,
             cancellationToken);
+    }
 
-    // The drawer's own: payments out of the day while it was not in the safe, less their voids.
-    public async Task<decimal> PaidOutOfTakingsAsync(DateOnly revenueDate, CancellationToken cancellationToken = default) =>
-        -await db.SafeTransactions
-            .Where(t => t.Fund == CashFund.DayRevenue && t.RevenueDate == revenueDate)
+    // The drawer's own: payments out of the day while it was not in the safe, less their voids; the
+    // branch worked in's drawer.
+    public async Task<decimal> PaidOutOfTakingsAsync(DateOnly revenueDate, CancellationToken cancellationToken = default)
+    {
+        var here = await branch.BranchIdAsync(cancellationToken);
+        return -await db.SafeTransactions
+            .Where(t => t.Fund == CashFund.DayRevenue && t.RevenueDate == revenueDate && t.BranchId == here)
             .SumAsync(t => t.Amount, cancellationToken);
+    }
 
     // Tracked: voiding it marks it.
     public Task<SafeTransaction?> GetPaymentOfInvoiceAsync(Guid invoiceId, CancellationToken cancellationToken = default) =>
@@ -7743,7 +7766,7 @@ internal sealed class BreakageEntryRepository(CostingDbContext db) : IBreakageEn
 ```
 
 
-> 📄 **`backend/src/Costing.Infrastructure/Persistence/MenuSalesRepositories.cs`** — 133 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Persistence/MenuSalesRepositories.cs`** — 137 سطر
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
@@ -7789,7 +7812,7 @@ internal sealed class MenuRepository(CostingDbContext db) : IMenuRepository
     public void AddAddOn(AddOn addOn) => db.AddOns.Add(addOn);
 }
 
-internal sealed class SalesReceiptRepository(CostingDbContext db) : ISalesReceiptRepository
+internal sealed class SalesReceiptRepository(CostingDbContext db, Costing.Application.Company.ICurrentBranch branch) : ISalesReceiptRepository
 {
     public Task<SalesReceipt?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default) =>
         db.SalesReceipts.SingleOrDefaultAsync(r => r.Id == id, cancellationToken);
@@ -7808,9 +7831,13 @@ internal sealed class SalesReceiptRepository(CostingDbContext db) : ISalesReceip
             .OrderByDescending(r => r.SoldAtUtc).ThenByDescending(r => r.EnteredAtUtc)
             .ToListAsync(cancellationToken);
 
-    public Task<SalesReceipt?> GetDailySummaryAsync(DateOnly date, CancellationToken cancellationToken = default) =>
-        db.SalesReceipts.FirstOrDefaultAsync(
-            r => r.BusinessDate == date && r.Source == SalesSource.DailySummary && r.VoidedAtUtc == null, cancellationToken);
+    // The branch worked in's: each branch enters its own day's.
+    public async Task<SalesReceipt?> GetDailySummaryAsync(DateOnly date, CancellationToken cancellationToken = default)
+    {
+        var here = await branch.BranchIdAsync(cancellationToken);
+        return await db.SalesReceipts.FirstOrDefaultAsync(
+            r => r.BusinessDate == date && r.Source == SalesSource.DailySummary && r.VoidedAtUtc == null && r.BranchId == here, cancellationToken);
+    }
 
     public async Task<IReadOnlySet<string>> GetReferencesAsync(IReadOnlyCollection<string> references, CancellationToken cancellationToken = default)
     {
@@ -7882,7 +7909,7 @@ internal sealed class ComboOfferRepository(CostingDbContext db) : IComboOfferRep
 ```
 
 
-> 📄 **`backend/src/Costing.Infrastructure/Persistence/EndOfDayRepositories.cs`** — 63 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Persistence/EndOfDayRepositories.cs`** — 86 سطر
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
@@ -7890,28 +7917,51 @@ using Costing.Domain.EndOfDay;
 
 namespace Costing.Infrastructure.Persistence;
 
-internal sealed class EndOfDayRepository(CostingDbContext db) : IEndOfDayRepository
+// A day by its date, the days in order and the last closed are the branch worked in's: each branch
+// closes its own (one a business day in each). By id, an invoice's or a payment's, any branch's.
+internal sealed class EndOfDayRepository(CostingDbContext db, Costing.Application.Company.ICurrentBranch branch) : IEndOfDayRepository
 {
     private IQueryable<EndOfDayReport> WithInvoices => db.EndOfDayReports.Include(d => d.Invoices).Include(d => d.Payouts).AsSplitQuery();
+
+    private async Task<IQueryable<EndOfDayReport>> HereAsync(CancellationToken cancellationToken)
+    {
+        var here = await branch.BranchIdAsync(cancellationToken);
+        return WithInvoices.Where(d => d.BranchId == here);
+    }
 
     public Task<EndOfDayReport?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default) =>
         WithInvoices.SingleOrDefaultAsync(d => d.Id == id, cancellationToken);
 
     public void Add(EndOfDayReport aggregate) => db.EndOfDayReports.Add(aggregate);
 
-    public Task<EndOfDayReport?> GetByDateAsync(DateOnly date, CancellationToken cancellationToken = default) =>
-        WithInvoices.SingleOrDefaultAsync(d => d.Date == date, cancellationToken);
+    public async Task<EndOfDayReport?> GetByDateAsync(DateOnly date, CancellationToken cancellationToken = default) =>
+        await (await HereAsync(cancellationToken)).SingleOrDefaultAsync(d => d.Date == date, cancellationToken);
 
     public async Task<IReadOnlyList<EndOfDayReport>> GetDraftsAfterAsync(DateOnly date, CancellationToken cancellationToken = default) =>
-        await WithInvoices.Where(d => d.Status == EndOfDayStatus.Draft && d.Date > date).OrderBy(d => d.Date).ToListAsync(cancellationToken);
+        await (await HereAsync(cancellationToken)).Where(d => d.Status == EndOfDayStatus.Draft && d.Date > date).OrderBy(d => d.Date).ToListAsync(cancellationToken);
 
     public void Remove(EndOfDayReport report) => db.EndOfDayReports.Remove(report);
 
-    public Task<DateOnly?> LastSubmittedDateAsync(CancellationToken cancellationToken = default) =>
-        db.EndOfDayReports.Where(d => d.Status == EndOfDayStatus.Submitted).MaxAsync(d => (DateOnly?)d.Date, cancellationToken);
+    public async Task<DateOnly?> LastSubmittedDateAsync(CancellationToken cancellationToken = default)
+    {
+        var here = await branch.BranchIdAsync(cancellationToken);
+        return await db.EndOfDayReports.Where(d => d.Status == EndOfDayStatus.Submitted && d.BranchId == here).MaxAsync(d => (DateOnly?)d.Date, cancellationToken);
+    }
+
+    // Each branch in use that has closed a day: its last; the earliest of them.
+    public async Task<DateOnly?> LastClosedEverywhereAsync(CancellationToken cancellationToken = default)
+    {
+        var inUse = db.Branches.Where(b => b.IsActive).Select(b => b.Id);
+        var last = await db.EndOfDayReports
+            .Where(d => d.Status == EndOfDayStatus.Submitted && inUse.Contains(d.BranchId))
+            .GroupBy(d => d.BranchId)
+            .Select(g => g.Max(d => d.Date))
+            .ToListAsync(cancellationToken);
+        return last.Count == 0 ? null : last.Min();
+    }
 
     public async Task<IReadOnlyList<EndOfDayReport>> GetBetweenAsync(DateOnly from, DateOnly to, CancellationToken cancellationToken = default) =>
-        await WithInvoices.Where(d => d.Date >= from && d.Date <= to).ToListAsync(cancellationToken);
+        await (await HereAsync(cancellationToken)).Where(d => d.Date >= from && d.Date <= to).ToListAsync(cancellationToken);
 
     public Task<EndOfDayReport?> GetByInvoiceAsync(Guid invoiceId, CancellationToken cancellationToken = default) =>
         WithInvoices.SingleOrDefaultAsync(d => d.Invoices.Any(i => i.Id == invoiceId), cancellationToken);
@@ -8028,6 +8078,7 @@ dotnet ef migrations add <Name> \
 | 21 | `20261118184431_AddStockLocations` | Add Stock Locations |
 | 22 | `20261118193842_AddInterBranchHub` | Add Inter Branch Hub |
 | 23 | `20261119091320_AddConsolidatedPnl` | Add Consolidated Pnl |
+| 24 | `20261119094824_AddBranchEndOfDay` | Add Branch End Of Day |
 
 
 ### 14.1 `UnifySafeTakings`: migration تحوّل بيانات لا شكلًا فقط

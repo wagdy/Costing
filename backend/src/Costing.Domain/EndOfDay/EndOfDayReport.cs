@@ -1,5 +1,6 @@
 using System.Globalization;
 using Costing.Domain.Common;
+using Costing.Domain.Company;
 using Costing.Domain.Purchases;
 using Costing.Domain.Sales;
 
@@ -59,7 +60,10 @@ public sealed record EndOfDayPhoto(string FileName, string ContentType, int Byte
 // The cash that should be in the drawer (NetCashInTill) is the float, and the cash sales with the
 // tax collected on them, less every payment out of it: the cash invoices, the suppliers paid and the
 // advances. The Visa and any other takings never reach the drawer.
-public sealed class EndOfDayReport : AggregateRoot
+//
+// One a business day in each branch (IBranchOwned): with several branches, each closes its own days,
+// in its own order, the branch worked in given when it is made.
+public sealed class EndOfDayReport : AggregateRoot, IBranchOwned
 {
     public const int MaxInvoices = 50;
     public const int MaxNotes = 500;
@@ -90,6 +94,10 @@ public sealed class EndOfDayReport : AggregateRoot
 
     public DateOnly Date { get; private set; }
     public EndOfDayStatus Status { get; private set; }
+
+    public Guid BranchId { get; private set; }
+
+    public void AssignBranch(Guid branchId) => BranchId = branchId;
 
     // The Z report: cash and Visa sales before tax, the tax collected on both, voids and refunds.
     public decimal? CashAmount { get; private set; }
@@ -602,7 +610,7 @@ public sealed class EndOfDayPayout : Entity
     }
 }
 
-// Returns each day with its Invoices and Payouts loaded.
+// Returns each day with its Invoices and Payouts loaded; a day by its date is the branch worked in's.
 public interface IEndOfDayRepository : IRepository<EndOfDayReport>
 {
     Task<EndOfDayReport?> GetByDateAsync(DateOnly date, CancellationToken cancellationToken = default);
@@ -615,6 +623,11 @@ public interface IEndOfDayRepository : IRepository<EndOfDayReport>
 
     // The last day handed in (آخر يوم تم تقفيله), if any: the sequence goes on from it.
     Task<DateOnly?> LastSubmittedDateAsync(CancellationToken cancellationToken = default);
+
+    // The day every branch in use that closes its days has closed up to: the earliest of their last
+    // days handed in (the one branch's last, while there is one). The books are locked up to it at
+    // the latest.
+    Task<DateOnly?> LastClosedEverywhereAsync(CancellationToken cancellationToken = default);
 
     Task<IReadOnlyList<EndOfDayReport>> GetBetweenAsync(DateOnly from, DateOnly to, CancellationToken cancellationToken = default);
 

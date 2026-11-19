@@ -27,7 +27,12 @@ import { EndOfDayUndo } from './end-of-day-undo';
   imports: [DatePipe, FormsModule, MatButtonModule, MatFormFieldModule, MatIconModule, MatInputModule, MatProgressBarModule, MoneyPipe, RouterLink],
   template: `
     <header class="head">
-      <h2>Daily summaries <span class="inline-ar">ملخصات تقفيل الأيام</span></h2>
+      <h2>
+        Daily summaries <span class="inline-ar">ملخصات تقفيل الأيام</span>
+        @if (sequence()?.branch; as branch) {
+          <span class="branch-chip">{{ branch }}{{ sequence()?.branchAr ? ' · ' + sequence()?.branchAr : '' }}</span>
+        }
+      </h2>
       <p class="note">
         Each day's end of day as it was handed in. Days are closed in exact order, one after the last closed day; to correct one, a manager undoes the
         last closed day and it is handed in again.
@@ -155,6 +160,17 @@ import { EndOfDayUndo } from './end-of-day-undo';
     .head h2 {
       margin: 0 0 4px;
       font: var(--mat-sys-headline-small);
+    }
+    .branch-chip {
+      display: inline-block;
+      margin-inline-start: 8px;
+      padding: 0 10px;
+      border-radius: 999px;
+      font: var(--mat-sys-label-large);
+      line-height: 28px;
+      vertical-align: middle;
+      background: var(--mat-sys-secondary-container);
+      color: var(--mat-sys-on-secondary-container);
     }
     .sequence {
       display: grid;
