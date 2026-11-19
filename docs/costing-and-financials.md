@@ -1480,9 +1480,10 @@ the answer is 401 and the call is logged.
 | Call | What it does |
 | --- | --- |
 | `GET /api/integrations/pos/ping` | The link test: `{ ok, system, company, atUtc }` |
-| `GET /api/integrations/pos/menu` | The menu: categories, items by their number (6101) with price and availability, sizes by their code (6101-17), add-ons (A3) |
+| `GET /api/integrations/pos/menu` | The menu: categories, items by their number (6101) with price and availability, sizes by their code (6101-17), add-ons (A3), and whether each has a recipe (`hasRecipe`) |
+| `GET /api/integrations/pos/suppliers` | The suppliers not archived, for an expense paid from the drawer: `[{ id, name, nameAr }]` |
 | `POST /api/integrations/pos/z-report` | A shift's Z report (below) |
-| `POST /api/integrations/pos/events` | The POS's own event envelope (`{ id, kind, branchCode, occurredAtUtc, data }`): `day.closed` is read as a Z report; any other kind is answered 202 and left |
+| `POST /api/integrations/pos/events` | The POS's own event envelope (`{ id, kind, branchCode, occurredAtUtc, data }`): `day.closed` is read as a Z report, `paid-out` as a paid-out (below); any other kind is answered 202 and left |
 
 A Z report:
 
@@ -1496,6 +1497,11 @@ A Z report:
   "wastedItems": [{ "itemCode": "6101-18", "quantity": 1, "reason": "Item quality" }]
 }
 ```
+
+As a `day.closed` event the same report comes in the POS's own words: `soldItems` one line per
+item, size and channel (`{ itemCode, size, quantity, channel }`), which are added together here
+into one line an item; `waste`; and `takings` with `cash`, `card`, `tax`, `discountsAmount` and
+`discountReasons` (`[{ reason, count, amount }]`), and the voids before and after the kitchen.
 
 `zReportId` is the POS's id for the shift, the same each time it is sent. Cash and card are
 before tax, with the tax collected on them apart, as the day's takings are kept. An item is found
@@ -1535,6 +1541,37 @@ reason, amount, count }`. A combo is sold by its code, as any item.
 
 The answer says what was done: `{ zReportId, date, outcome, saleId, takingsId, items, quantity,
 wasted, salesValue, cash, card, tax, warnings }`.
+
+### A paid-out from the drawer (`paid-out`)
+
+The POS sends each expense and each staff advance its shift paid from the drawer, at the shift's
+close, ahead of its `day.closed`:
+
+```json
+{
+  "paidOutId": "…", "shiftId": "…", "shiftNumber": 3, "businessDate": "2026-11-10",
+  "kind": "Expense", "amount": 80.0, "note": "Ice", "givenBy": "Mona",
+  "employeeId": null, "employeeName": null, "supplierId": "…", "supplierName": "Nile Farms",
+  "receipt": { "contentType": "image/jpeg", "fileName": "r.jpg", "base64": "…" }
+}
+```
+
+- It goes on that business day's **end of day** (a draft is made for it if the day has none
+  yet, ahead of the closing sequence), on the till's branch, under the POS's own id
+  (`paidOutId`): sent again, it is answered `Unchanged`.
+- **A staff advance** (`StaffAdvance`) is a payout to the employee (`EmployeeAdvance`): the staff
+  member synced from HR's `employeeId`, else the one active staff member of `employeeName`;
+  anyone else is refused, 422. With the HR link on, it goes on to HR as any advance does.
+- **An expense** (`Expense`) is a cash invoice from its supplier: `supplierId`, else the supplier
+  of `supplierName`, else **POS petty cash · نثريات نقطة البيع** (made the first time it is
+  needed).
+- **The photo** an end of day needs is the receipt the POS took (an image or a PDF); with none, a
+  one-page PDF slip of what the POS recorded (the shift, who gave it, for what, how much).
+- A day already handed in (submitted), one at or before the last closed day, or one in a closed
+  period is refused, 422 (or 423), and the POS shows it failed until it is sent again.
+
+The answer: `{ paidOutId, date, outcome, entry, entryId }`, `entry` being `advance` or
+`invoice`.
 The tables are `PosLinks` (the key's hash), `PosZReports` (each report as last received, with
 its hash), `PosDays` (what the POS made of each day) and `PosSyncLogs`.
 

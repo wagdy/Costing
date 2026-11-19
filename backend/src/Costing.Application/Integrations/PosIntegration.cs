@@ -523,17 +523,30 @@ public static class PosEvents
         if (Number(Child(takings, "voidsBefore"), "count") is var count and > 0)
             reasons.Add(new ZReportVoidReason("Before kitchen", (int)count, before));
 
+        // The discounts and promos taken off the menu prices, and why (each reason, its amount and on
+        // how many checks).
+        var discountReasons = takings.TryGetProperty("discountReasons", out var given) && given.ValueKind == JsonValueKind.Array
+            ? given.EnumerateArray().Select(r => new DiscountReason(Text(r, "reason") ?? "No reason", Number(r, "amount"), (int)Number(r, "count")))
+                .Where(r => r.Amount != 0 || r.Count != 0).ToList()
+            : null;
+
         return new ZReportInput(
             shiftId, date, data.TryGetProperty("shiftNumber", out var n) && n.ValueKind == JsonValueKind.Number ? n.GetInt32() : null,
-            new ZReportTakings(Number(takings, "cash"), Number(takings, "card"), Number(takings, "tax"), before + Number(after, "amount"), reasons),
+            new ZReportTakings(Number(takings, "cash"), Number(takings, "card"), Number(takings, "tax"), before + Number(after, "amount"), reasons,
+                Number(takings, "discountsAmount"), discountReasons),
             Items(data, "soldItems"), Items(data, "waste"));
     }
 
+    // Lines of an item and size given once a channel (dine-in, takeaway, delivery, aggregators): one
+    // line for the day, their quantities together.
     private static IReadOnlyList<ZReportItem> Items(JsonElement data, string name) =>
         data.TryGetProperty(name, out var list) && list.ValueKind == JsonValueKind.Array
             ? list.EnumerateArray().Select(i => new ZReportItem(
-                Text(i, "itemCode") ?? (i.TryGetProperty("code", out var c) ? c.ToString() : string.Empty),
-                (int)Number(i, "quantity"), Text(i, "size"), Text(i, "name"), Text(i, "reason"))).ToList()
+                    Text(i, "itemCode") ?? (i.TryGetProperty("code", out var c) ? c.ToString() : string.Empty),
+                    (int)Number(i, "quantity"), Text(i, "size"), Text(i, "name"), Text(i, "reason")))
+                .GroupBy(i => (i.ItemCode, Size: i.Size?.Trim().ToUpperInvariant(), Reason: name == "waste" ? i.Reason : null))
+                .Select(g => g.First() with { Quantity = g.Sum(i => i.Quantity) })
+                .ToList()
             : [];
 
     private static JsonElement? Child(JsonElement element, string name) =>

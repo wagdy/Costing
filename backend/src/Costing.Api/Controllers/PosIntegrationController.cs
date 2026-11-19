@@ -42,6 +42,15 @@ public sealed class PosIntegrationController(ISender sender, IPosSyncJournal jou
         return menu;
     }
 
+    // The suppliers, for an expense the POS pays out of its drawer to one.
+    [HttpGet("suppliers")]
+    public async Task<IReadOnlyList<PosSupplierDto>> Suppliers(CancellationToken cancellationToken)
+    {
+        var list = await sender.Send(new GetPosSuppliersQuery(), cancellationToken);
+        await journal.WriteAsync(new PosSyncLog("suppliers", PosSyncOutcome.Served, $"Suppliers read by the POS ({list.Count})."), cancellationToken);
+        return list;
+    }
+
     [HttpPost("z-report")]
     public Task<IActionResult> ZReport(ZReportRequest request, CancellationToken cancellationToken) =>
         ReceiveAsync(request.ToInput(), "z-report", cancellationToken);
@@ -50,6 +59,28 @@ public sealed class PosIntegrationController(ISender sender, IPosSyncJournal jou
     public async Task<IActionResult> Event(JsonElement envelope, CancellationToken cancellationToken)
     {
         var kind = envelope.TryGetProperty("kind", out var k) && k.ValueKind == JsonValueKind.String ? k.GetString() : null;
+        // A paid-out from the drawer: into the end of day of its business day.
+        if (kind == PosPaidOutEvent.Kind && envelope.TryGetProperty("data", out var paidOut))
+        {
+            PosPaidOutInput input;
+            try
+            {
+                input = PosPaidOutEvent.Read(paidOut);
+            }
+            catch (Exception ex) when (ex is DomainException or FormatException or InvalidOperationException)
+            {
+                await journal.WriteAsync(new PosSyncLog("paid-out", PosSyncOutcome.Refused, "paid-out could not be read: " + ex.Message), cancellationToken);
+                return UnprocessableEntity(new { errors = new[] { "paid-out could not be read: " + ex.Message } });
+            }
+            try
+            {
+                return Ok(await sender.Send(new ReceivePosPaidOutCommand(input), cancellationToken));
+            }
+            catch (ConflictException)
+            {
+                return StatusCode(StatusCodes.Status503ServiceUnavailable, new { errors = new[] { "Busy: send it again in a moment." } });
+            }
+        }
         if (kind != PosEvents.DayClosed || !envelope.TryGetProperty("data", out var data))
         {
             await journal.WriteAsync(new PosSyncLog("events", PosSyncOutcome.Served, $"Event {kind ?? "(no kind)"} received: Costing does not use it."), cancellationToken);

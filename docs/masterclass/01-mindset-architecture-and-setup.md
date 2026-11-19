@@ -1545,6 +1545,7 @@ Costing/
                 Integrations/
                     HrIntegration.cs
                     PosIntegration.cs
+                    PosPaidOuts.cs
                 InterBranch/
                     InterBranch.cs
                 Menu/
@@ -1794,6 +1795,7 @@ Costing/
                 InternalTransfersApiTests.cs
                 PeriodLockApiTests.cs
                 PosIntegrationApiTests.cs
+                PosPaidOutsApiTests.cs
                 PurchaseOrdersApiTests.cs
                 SettingsApiTests.cs
                 StationsApiTests.cs
