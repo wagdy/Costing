@@ -56,8 +56,8 @@ const modes: readonly ModeCard[] = [
   },
   {
     mode: 'MultiBranch_CentralKitchen', icon: 'soup_kitchen', en: 'Branches with a central kitchen', ar: 'فروع متعددة يدعمها مطبخ مركزي',
-    tip: 'structureCentralKitchen', does: ['Everything several branches have', 'A central kitchen or warehouse branch'],
-    soon: 'Requisitions, Dispatch & Bill, Receive',
+    tip: 'structureCentralKitchen',
+    does: ['Everything several branches have', 'A central kitchen or warehouse branch', 'Requisitions, Dispatch & Bill, Receive'],
   },
 ];
 

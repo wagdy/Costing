@@ -75,6 +75,9 @@ public sealed class CostingDbContext(DbContextOptions<CostingDbContext> options)
     public DbSet<Domain.Company.InventoryLocation> InventoryLocations => Set<Domain.Company.InventoryLocation>();
     public DbSet<Domain.Stock.MaterialBranchStock> MaterialBranchStocks => Set<Domain.Stock.MaterialBranchStock>();
     public DbSet<Domain.Stock.InternalTransfer> InternalTransfers => Set<Domain.Stock.InternalTransfer>();
+    public DbSet<Domain.InterBranch.InterBranchRequisition> InterBranchRequisitions => Set<Domain.InterBranch.InterBranchRequisition>();
+    public DbSet<Domain.InterBranch.InternalSalesInvoice> InternalSalesInvoices => Set<Domain.InterBranch.InternalSalesInvoice>();
+    public DbSet<Domain.InterBranch.InternalPurchaseInvoice> InternalPurchaseInvoices => Set<Domain.InterBranch.InternalPurchaseInvoice>();
     public DbSet<FinancialSettings> FinancialSettings => Set<FinancialSettings>();
     public DbSet<SharedCost> SharedCosts => Set<SharedCost>();
     public DbSet<MonthlyExpenses> MonthlyExpenses => Set<MonthlyExpenses>();

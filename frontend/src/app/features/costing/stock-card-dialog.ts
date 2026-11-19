@@ -417,6 +417,7 @@ export class StockCardDialog {
     StockCount: this.access.has('Counts'),
     SalesReceipt: this.access.has('Sales'),
     Spoilage: this.access.has('Waste'),
+    InterBranchShipment: this.access.has('Counts') || this.access.has('Materials') || this.access.has('Purchases'),
   }));
 
   constructor() {
@@ -471,6 +472,8 @@ export class StockCardDialog {
         return 'Open the stock count · فتح الجرد';
       case 'SalesReceipt':
         return "Open the day's sales · فتح مبيعات اليوم";
+      case 'InterBranchShipment':
+        return 'Open it on the central kitchen hub · فتح في المطبخ المركزي';
       default:
         return 'Open the waste log of the day · فتح سجل الهالك';
     }
@@ -499,6 +502,12 @@ export class StockCardDialog {
         return;
       case 'SalesReceipt':
         this.leaveFor(['/costing/sales'], { day: line.sourceDate ?? line.date, receipt: line.sourceId });
+        return;
+      case 'InterBranchShipment':
+        // The kitchen's dispatch or the branch's receipt, on its tab of the hub, its day in the period.
+        this.leaveFor(['/costing/inter-branch'], {
+          tab: line.reason === 'InterBranchDispatchOut' ? 'dispatches' : 'receipts', focus: line.sourceId, day: line.sourceDate ?? line.date,
+        });
         return;
       default:
         // A staff meal, hospitality or a tasting is on its own tab; spoilage on Waste's first.

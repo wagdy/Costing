@@ -486,7 +486,7 @@ public enum UnitOfMeasure
 - **المخزون يُسمح أن يصبح سالبًا**: البيع حدث فعلًا؛ رفض الخصم لن "يلغي البيع" بل سيضيّع السجل. الرصيد السالب **إشارة**: فاتورة لم تُسجل أو وصفة خاطئة، والجرد يصححه.
 - **`Archive`**: لا حذف؛ أرشفة فقط ورصيده صفر، حتى لا تختفي قيمته من الدفاتر.
 
-> 📄 **`backend/src/Costing.Domain/RawMaterials/RawMaterial.cs`** — 388 سطر
+> 📄 **`backend/src/Costing.Domain/RawMaterials/RawMaterial.cs`** — 412 سطر
 
 ```csharp
 using Costing.Domain.Common;
@@ -804,6 +804,29 @@ public sealed class RawMaterial : AggregateRoot
         return (taken, put);
     }
 
+    // Sent to another branch (صرف لفرع): out of the central kitchen's location at its branch's
+    // average cost, what the internal sales invoice counts as its cost.
+    public StockMovement DispatchToBranch(decimal quantity, Guid salesInvoiceId, Guid fromLocationId, string recordedBy)
+    {
+        var taken = Move(-Positive(quantity), StockMovementReason.InterBranchDispatchOut, salesInvoiceId, UnitCostHere, recordedBy: recordedBy);
+        taken.AssignLocation(fromLocationId);
+        return taken;
+    }
+
+    // Received from another branch (استلام من المركزي): into the location at the price it was billed,
+    // which moves the receiving branch's average as a delivery's price does. A prep item too: the
+    // central kitchen's sauces and doughs come in this way, never on a supplier's invoice.
+    public StockMovement ReceiveFromBranch(decimal quantity, Guid purchaseInvoiceId, decimal unitPrice, Guid toLocationId, string recordedBy)
+    {
+        Positive(quantity);
+        if (unitPrice < 0)
+            throw new DomainException("A transfer price cannot be less than nothing.");
+        AverageWith(quantity, unitPrice);
+        var put = Move(quantity, StockMovementReason.InterBranchReceiptIn, purchaseInvoiceId, unitPrice, recordedBy: recordedBy);
+        put.AssignLocation(toLocationId);
+        return put;
+    }
+
     // Weighted by quantity against what is on the shelf; stock below zero counts as none, since
     // nothing is left to average with.
     private void AverageWith(decimal quantity, decimal unitCost) => AverageCost = Stock.MovingAverage.With(AverageCost, QuantityOnHand, quantity, unitCost);
@@ -823,7 +846,8 @@ public sealed class RawMaterial : AggregateRoot
         if (original.IsReversal)
             throw new DomainException("A reversal is not reversed again.");
 
-        if (original.Reason is StockMovementReason.Purchase or StockMovementReason.ProductionOutput && original.Quantity > 0)
+        if (original.Reason is StockMovementReason.Purchase or StockMovementReason.ProductionOutput or StockMovementReason.InterBranchReceiptIn
+            && original.Quantity > 0)
             UnaverageWith(original.Quantity, original.UnitCost);
         var reversal = Move(-original.Quantity, original.Reason, original.SourceId, original.UnitCost, "Voided", reversedBy, original.Id, original.ResponsibleStationId);
         // Undone in the branch and the location it was entered in, whichever the reversal is made from.
@@ -1402,7 +1426,7 @@ public interface ISupplierRepository : IRepository<Supplier>
 
 ## 5. دفتر المخزون
 
-> 📄 **`backend/src/Costing.Domain/StockMovements/StockMovementReason.cs`** — 56 سطر
+> 📄 **`backend/src/Costing.Domain/StockMovements/StockMovementReason.cs`** — 62 سطر
 
 ```csharp
 namespace Costing.Domain.StockMovements;
@@ -1450,6 +1474,12 @@ public enum StockMovementReason
     // nothing for the branch, at its average cost; no cost of the period.
     TransferOut = 13,
     TransferIn = 14,
+
+    // Sent by a central kitchen or warehouse to another branch (صرف لفرع), at its own average cost,
+    // on an internal sales invoice; and received there (استلام من المركزي), at the price it was
+    // billed, on an internal purchase invoice. Stock in transit between the two belongs to neither.
+    InterBranchDispatchOut = 15,
+    InterBranchReceiptIn = 16,
 }
 
 public static class StaffConsumption
@@ -5784,7 +5814,7 @@ public static class DatabaseConnection
 - `ConfigureConventions`: كل `decimal` بدقة (10,2) افتراضيًا (والكميات تتجاوزه صراحة بـ `IsQuantity()`).
 - `SaveChangesAsync`: `TouchRootsOfChangedChildren` (تعديل ابن يعلّم أباه معدّلًا ليُفحص `xmin` الخاص به)، وترجمة أخطاء EF/Npgsql (تزامن، تكرار فريد، مفتاح أجنبي) إلى `ConflictException`، فلا تعرف الطبقات العليا شيئًا عن EF.
 
-> 📄 **`backend/src/Costing.Infrastructure/Persistence/CostingDbContext.cs`** — 177 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Persistence/CostingDbContext.cs`** — 180 سطر
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
@@ -5864,6 +5894,9 @@ public sealed class CostingDbContext(DbContextOptions<CostingDbContext> options)
     public DbSet<Domain.Company.InventoryLocation> InventoryLocations => Set<Domain.Company.InventoryLocation>();
     public DbSet<Domain.Stock.MaterialBranchStock> MaterialBranchStocks => Set<Domain.Stock.MaterialBranchStock>();
     public DbSet<Domain.Stock.InternalTransfer> InternalTransfers => Set<Domain.Stock.InternalTransfer>();
+    public DbSet<Domain.InterBranch.InterBranchRequisition> InterBranchRequisitions => Set<Domain.InterBranch.InterBranchRequisition>();
+    public DbSet<Domain.InterBranch.InternalSalesInvoice> InternalSalesInvoices => Set<Domain.InterBranch.InternalSalesInvoice>();
+    public DbSet<Domain.InterBranch.InternalPurchaseInvoice> InternalPurchaseInvoices => Set<Domain.InterBranch.InternalPurchaseInvoice>();
     public DbSet<FinancialSettings> FinancialSettings => Set<FinancialSettings>();
     public DbSet<SharedCost> SharedCosts => Set<SharedCost>();
     public DbSet<MonthlyExpenses> MonthlyExpenses => Set<MonthlyExpenses>();
@@ -7954,6 +7987,7 @@ dotnet ef migrations add <Name> \
 | 19 | `20261118122831_AddPeriodLockAndSecurityAudit` | Add Period Lock And Security Audit |
 | 20 | `20261118131754_AddCompanyStructure` | Add Company Structure |
 | 21 | `20261118184431_AddStockLocations` | Add Stock Locations |
+| 22 | `20261118193842_AddInterBranchHub` | Add Inter Branch Hub |
 
 
 ### 14.1 `UnifySafeTakings`: migration تحوّل بيانات لا شكلًا فقط

@@ -43,6 +43,12 @@ public enum StockMovementReason
     // nothing for the branch, at its average cost; no cost of the period.
     TransferOut = 13,
     TransferIn = 14,
+
+    // Sent by a central kitchen or warehouse to another branch (صرف لفرع), at its own average cost,
+    // on an internal sales invoice; and received there (استلام من المركزي), at the price it was
+    // billed, on an internal purchase invoice. Stock in transit between the two belongs to neither.
+    InterBranchDispatchOut = 15,
+    InterBranchReceiptIn = 16,
 }
 
 public static class StaffConsumption

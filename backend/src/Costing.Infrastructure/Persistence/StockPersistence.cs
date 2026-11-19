@@ -275,7 +275,8 @@ internal sealed class StockLedgerInterceptor(IServiceProvider services) : SaveCh
                 rows[key] = row;
             }
             var before = onHand.GetValueOrDefault(key);
-            var inbound = movement.Reason is StockMovementReason.Purchase or StockMovementReason.ProductionOutput;
+            // A delivery, a batch made, or a shipment received from the central kitchen at its price.
+            var inbound = movement.Reason is StockMovementReason.Purchase or StockMovementReason.ProductionOutput or StockMovementReason.InterBranchReceiptIn;
             if (inbound && !movement.IsReversal && movement.Quantity > 0 && movement.UnitCost is { } cost)
                 row.AverageWith(before, movement.Quantity, cost);
             else if (inbound && movement.IsReversal && movement.Quantity < 0)

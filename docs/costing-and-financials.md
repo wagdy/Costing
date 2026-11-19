@@ -1612,15 +1612,14 @@ structures as cards, each with its bilingual **(!)** tip; a card chosen is appli
 | `SingleBranch_OpenSpace` · فرع واحد بمساحة مفتوحة (**the default**) | All physical goods are in one place. No internal transfers needed. · كل البضاعة في مكان واحد ولا حاجة لأذونات صرف داخلية. | One branch and one implicit Main Store. No location lists, transfer screens or branch selector: one stock figure and one moving-average cost per material, exactly as before. |
 | `SingleBranch_WithSubStores` · فرع واحد يحتوي على مخزن ومناطق تشغيل | A single branch containing a locked main warehouse and kitchen operating locations. · فرع واحد يحتوي على مخزن رئيسي مغلق وعُهد تشغيل لأقسام المطبخ. | One branch; inventory locations (Main Store, Kitchen, Bar…) are added on the page, each with its own stock, moved between them by **internal transfer**. |
 | `MultiBranch_Independent` · فروع متعددة تشتري وتعمل بشكل مستقل | Multiple branches, each managing its own purchases and stock independently. · فروع متعددة، كل فرع يشتري الخامات ويحسب تكلفته بشكل مستقل. | Branches are added on the page; a branch selector at the top of the screen; records kept and listed by branch; stock and moving-average cost kept per branch. |
-| `MultiBranch_CentralKitchen` · فروع متعددة يدعمها مطبخ مركزي | A Central Kitchen/Warehouse purchases and preps items, then supplies/sells them to the restaurant branches. · مطبخ مركزي يشتري ويُصنع الخامات ثم يوردها ويبيعها لباقي الفروع. | Everything several branches have, with a branch of type Central kitchen or Central warehouse. |
+| `MultiBranch_CentralKitchen` · فروع متعددة يدعمها مطبخ مركزي | A Central Kitchen/Warehouse purchases and preps items, then supplies/sells them to the restaurant branches. · مطبخ مركزي يشتري ويُصنع الخامات ثم يوردها ويبيعها لباقي الفروع. | Everything several branches have, with a branch of type Central kitchen or Central warehouse, and the **central kitchen hub**: requisitions, Dispatch & Bill, branch receipts. |
 
 **Built so far:** the structures, branches and locations, the branch of each record (phase 1); stock
-kept by location and moving-average cost by branch, with internal transfers (phase 2, below). Still
-to come, each in its own release: the central kitchen's hub (branch requisitions, **Dispatch &
-Bill** with an internal sales invoice and **Receive** with an internal purchase invoice); and the
-P&L by branch or for the company as a whole, inter-branch sales and purchases eliminated. Until
-then the safe's balance and every report are the company's, whatever the structure; the cards mark
-what is still to come (*Soon · قريباً*).
+kept by location and moving-average cost by branch, with internal transfers (phase 2); the central
+kitchen's hub, with branch requisitions, **Dispatch & Bill** on an internal sales invoice and the
+branch's **Receive** on an internal purchase invoice (phase 3, below). Still to come: the P&L by
+branch or for the company as a whole, inter-branch sales and purchases eliminated (phase 4). Until
+then the safe's balance and every report are the company's, whatever the structure.
 
 ### Branches and locations (الفروع ومواقع المخزون)
 
@@ -1755,6 +1754,97 @@ fromLocationId, toLocationId, lines: [{ rawMaterialId, quantity }], notes }` and
 staff meal and count requests take `locationId`; `PUT /api/settings/locations/{id}` takes
 `stationIds`.
 
+### The central kitchen hub (مركز عمليات المطبخ المركزي وتحويلات الفروع)
+
+Only in a company run as **Branches with a central kitchen** (`MultiBranch_CentralKitchen`):
+**Operations & inventory → Inter-branch hub · المطبخ المركزي وتحويلات الفروع**
+(`/costing/inter-branch`), listed after the internal transfers for whoever works **Stock counts**,
+**Raw materials** or **Purchases**. Opened in any other structure, it says so (*The company is not run
+with a central kitchen*) and holds nothing; every request is refused there too. Each branch is a
+**Restaurant**, a **Central kitchen** or a **Central warehouse** (Settings → Company structure); the
+last two supply the others.
+
+The hub works in the branch chosen at the top of the screen (or the user's own): a restaurant asks
+and receives, the kitchen dispatches. Its cards, each with its **(!)** tip, count for that branch:
+**Open requisitions** (asked by it or of it, submitted or partly dispatched), **Shipments in
+transit** (sent by it or to it, not yet received), **Receipts this month**, and **Inter-branch
+billing** this month (whoever sees costs). Three tabs: requisitions, the kitchen's dispatches, the
+branches' receipts; a period (the last 30 days, with whatever is still open or on its way whenever
+it was made), searched and filtered by status; **Excel** sends the period as a workbook
+(*Requisitions*, *Dispatches* and *Receipts*, each with its lines).
+
+**1. The requisition (أمر طلب بضاعة من الفرع), `REQ-2026-0001`.** The branch asks a central kitchen or
+warehouse (never a restaurant, never itself) for materials or prep items, in the unit they are
+counted in, with a date wanted and notes. Nothing moves, so no books. Printed as a slip and
+**copied for WhatsApp**: quantities and units only, never a price. **Cancelled** (by either branch)
+only while nothing of it has been dispatched. Its status follows its shipments: *Submitted ·
+مرسل للمركزي*, *Partly dispatched · صرف جزئي* (a line still short), *Dispatched · تم الصرف وفي
+الطريق*, *Received · تم الاستلام بالفرع*, *Cancelled · ملغي*; each line keeps what was asked,
+dispatched and received.
+
+**2. Dispatch & Bill (إذن صرف وفاتورة بيع داخلية), `ISI-2026-0001`.** The kitchen opens a requisition's
+**Dispatch & Bill** (the lines still asked, filled in) or a **Direct dispatch** to a branch, chooses
+the location it leaves (its main store by default), and how it is priced
+(**سياسة تسعير التحويل الداخلي**):
+
+- **At cost · بالتكلفة:** each line billed at the kitchen's own weighted average cost
+  (`MaterialBranchStocks`).
+- **Transfer price · سعر تحويل:** its cost plus a markup % (0–1000), or a price typed for the line
+  (whoever sees costs; a storekeeper's dispatch is priced by the markup alone).
+
+Only what the location holds is sent: more is shown in red and refused (*Central Store has 10000
+Gram of Tomato sauce: not enough to send 12000*); a material with no cost yet in the kitchen is
+refused. Posted at once: each line an **InterBranchDispatchOut** out of that location at the
+kitchen's average, and the internal sales invoice (`IsInterCompany`): **billed** (inter-company
+revenue, quantity × transfer price), **cost of goods** (inter-company COGS, quantity × the kitchen's
+average) and the **margin**. It is then *In transit* and on the receiving branch's **Incoming
+shipments**. Printed as the internal invoice with prices, or as a delivery note without them for
+whoever does not see costs.
+
+**3. The branch's receipt (استلام الفرع وفاتورة مشتريات داخلية), `IPI-2026-0001`.** The branch clicks
+**Receive shipment · تأكيد استلام الشحنة**, chooses the location it goes into (its main store by
+default), and counts each line (all of what was sent unless said; never more). Posted at once: each
+line an **InterBranchReceiptIn** into that location **at the transfer price**, which moves the
+branch's own average cost as a delivery's price does (5 kg at L.E 80 on the shelf, 5 kg received at
+L.E 110: L.E 95), so its recipes and food cost carry what it paid the kitchen; prep items are
+received this way too. The internal purchase invoice (`IsInterCompany`) is billed for everything
+sent, so it matches the kitchen's; **what did not arrive** never enters stock and is kept as the
+receipt's **transit loss** (short × transfer price), and the receipt needs a note saying what
+happened. The shipment and the requisition are marked received.
+
+**Voids (إلغاء الصرف أو الاستلام).** A dispatch still on its way is voided by the kitchen: its goods go
+back to the location they left, the internal sales invoice is voided, and the requisition returns
+to *Submitted* (or partly dispatched). A received shipment is voided by a **manager** only, from its
+receipt: both invoices are voided, the branch's goods taken back out (its average without them) and
+the kitchen's put back, and the requisition restated. Both are held to the period lock, on the days
+they were made.
+
+**What the company's figures show until phase 4.** The material's own stock is the company's: it
+drops when the kitchen dispatches and rises when the branch receives, so a shipment in transit is in
+neither, and a transit loss leaves the company's stock. The company's average is its branches' stock
+at each branch's own average, which includes any markup a branch paid; the stock card lists both
+movements (*Between branches · بين الفروع*, with the invoice number, each opening the hub). The
+reports that judge usage and waste leave inter-branch movements out. Phase 4 takes inter-company
+revenue, cost of goods and the margin in stock out of the company's P&L.
+
+**Kept** in `InterBranchRequisitions` (+ lines; the asking branch as `RequestingBranchId`),
+`InternalSalesInvoices` (+ lines; `SupplyingBranchId`, `ReceivingBranchId`, `FromLocationId`,
+`Pricing`, `MarkupPercent`, `Status`, `TotalTransferRevenue`, `TotalInternalCogs`,
+`InternalMargin`, `IsInterCompany`) and `InternalPurchaseInvoices` (+ lines; `ReceivingBranchId`,
+`InternalSalesInvoiceId`, one receipt a shipment, `TotalBilled`, `TotalReceivedValue`,
+`TotalTransitLoss`), migration `AddInterBranchHub`; movement reasons `InterBranchDispatchOut = 15`
+and `InterBranchReceiptIn = 16`. `GET /api/inter-branch?from=&to=` gives the hub (mode, branch,
+branches, cards, requisitions, shipments, receipts) and `GET /api/inter-branch/sheet` the workbook
+(`inventory.view`; Stock counts, Raw materials or Purchases); `POST /api/inter-branch/requisitions`
+takes `{ id, supplyingBranchId, requestedDeliveryDate, lines: [{ rawMaterialId, quantity, notes }],
+notes }`, `POST …/requisitions/{id}/cancel`; `POST …/shipments` takes `{ id, requisitionId |
+receivingBranchId, fromLocationId, pricing, markupPercent, lines: [{ rawMaterialId, quantity,
+transferUnitPrice }], notes }`, `POST …/shipments/{id}/void`; `POST …/receipts` takes `{ id,
+shipmentId, toLocationId, lines: [{ rawMaterialId, receivedQuantity }], notes }`
+(`inventory.manage`); `POST …/receipts/{id}/void` (`approval.decide`, a manager). Quantities in the
+material's own unit, prices per that unit; prices and totals are null for whoever does not see
+costs.
+
 ## Period lock and month-end close (إقفال الفترة المحاسبية وتجميد الدفاتر)
 
 Once a month is closed, its figures are the ones reported and audited: nothing dated in it may be
@@ -1811,6 +1901,7 @@ The ProblemDetails carries it as `detail` and `errors[0]` (what the screens show
 | Stock counts: posted, opening stock, voided | Today; a void, the day it was posted |
 | Production: a batch made, corrected, voided | Today; the batch replaced or voided, its own day |
 | Internal transfers: made, voided | Today; a void, the day it was made |
+| Inter-branch: a dispatch, a receipt; a dispatch voided; a receipt voided (with its dispatch) | Today; the dispatch's day; the receipt's and the dispatch's days |
 | Fixed assets: registered, restated, written off, removed, reinstated | The purchase day (restated: only when its day, cost, life or salvage change, which its depreciation follows), the write-off day |
 | A month's figures: its expenses (Reports → KPIs), its manual sales sheet, HR's payroll run | The month's last day: a month is closed once its last day is |
 | A manager approving a request | The days of what it does |

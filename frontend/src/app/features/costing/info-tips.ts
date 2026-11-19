@@ -1147,6 +1147,87 @@ export const infoTips = {
       ar: 'كل رقم هو مجموع حركات الموقع: الاستلام والتحويل والاستهلاك والهالك والجرد. القيمة: الإجمالي بمتوسط تكلفة الفرع.',
     },
   ),
+  interBranchHub: tip(
+    { en: 'Inter-branch hub', ar: 'المطبخ المركزي وتحويلات الفروع' },
+    {
+      en: 'A restaurant asks the central kitchen for goods (a requisition); the kitchen sends and bills them (Dispatch & Bill); the branch receives them. Each step in the branch chosen at the top of the screen.',
+      ar: 'يطلب الفرع البضاعة من المطبخ المركزي، فيصرفها المركزي بفاتورة بيع داخلية، ويستلمها الفرع بفاتورة مشتريات داخلية. كل خطوة في الفرع المختار أعلى الشاشة.',
+    },
+    {
+      en: 'The kitchen\u2019s stock leaves when it is dispatched; the branch\u2019s comes in when it is received. In between it is on its way, in neither.',
+      ar: 'يخرج المخزون من المركزي عند الصرف ويدخل الفرع عند الاستلام، وبينهما يكون في الطريق.',
+    },
+  ),
+  requisition: tip(
+    { en: 'Requisition', ar: 'أمر طلب بضاعة' },
+    {
+      en: 'What a branch asks its central kitchen or warehouse to send, and by when. Quantities only: the kitchen prices what it sends.',
+      ar: 'ما يطلبه الفرع من المطبخ أو المخزن المركزي وموعده. كميات فقط، والمركزي يسعّر ما يصرفه.',
+    },
+    {
+      en: 'Cancelled only before anything of it is dispatched. Printed as a slip, or copied for WhatsApp, never with a price.',
+      ar: 'يُلغى قبل أي صرف فقط. يُطبع أو يُنسخ لواتساب بدون أسعار.',
+    },
+  ),
+  internalSalesInvoice: tip(
+    { en: 'Dispatch & Bill', ar: 'إذن صرف وفاتورة بيع داخلية' },
+    {
+      en: 'The kitchen sends the goods out of one of its locations, at its average cost, and bills the branch on an internal sales invoice (ISI).',
+      ar: 'يصرف المركزي البضاعة من أحد مواقعه بمتوسط تكلفته، ويفوترها للفرع بفاتورة بيع داخلية.',
+    },
+    {
+      en: 'Only what the location holds is sent. The revenue and cost of goods are inter-company: the company\u2019s own P&L takes them out again.',
+      ar: 'لا يُصرف أكثر من رصيد الموقع. الإيراد والتكلفة بين فروع الشركة وتُستبعد من أرباح الشركة المجمعة.',
+    },
+  ),
+  internalPurchaseInvoice: tip(
+    { en: 'Branch receipt', ar: 'استلام الفرع وفاتورة مشتريات داخلية' },
+    {
+      en: 'The branch counts what came and takes it into one of its locations, at the price billed, on an internal purchase invoice (IPI). Its average cost moves by that price.',
+      ar: 'يعدّ الفرع ما وصل ويستلمه في أحد مواقعه بسعر الفاتورة، بفاتورة مشتريات داخلية، ويتحرك متوسط تكلفته بهذا السعر.',
+    },
+    {
+      en: 'Billed for everything sent; what did not arrive is kept as a transit loss, with what happened.',
+      ar: 'يُفوتر بكل المرسل، وما لم يصل يُسجل عجز نقل مع سببه.',
+    },
+  ),
+  transferPricing: tip(
+    { en: 'Transfer pricing', ar: 'سياسة تسعير التحويل الداخلي' },
+    {
+      en: 'At cost: the kitchen bills its own weighted average cost. Transfer price: its cost plus a markup, or a price typed for a line.',
+      ar: 'بالتكلفة: بمتوسط تكلفة المركزي. بسعر تحويل: التكلفة مضافاً إليها هامش، أو سعر يُكتب للبند.',
+    },
+    {
+      en: 'The branch receives at the price billed, so its recipes carry what it paid the kitchen. Prices are set by whoever sees costs.',
+      ar: 'يستلم الفرع بسعر الفاتورة فتعكس وصفاته ما دفعه للمركزي. الأسعار يحددها من يرى التكاليف.',
+    },
+  ),
+  openRequisitions: tip(
+    { en: 'Open requisitions', ar: 'طلبات فروع قيد الانتظار' },
+    { en: 'Requisitions asked by this branch or of it, with something still to send.', ar: 'طلبات هذا الفرع أو الموجهة إليه التي لم تُصرف بالكامل.' },
+    { en: 'Submitted or partly dispatched, whenever they were made.', ar: 'المرسلة أو المصروفة جزئياً أياً كان تاريخها.' },
+  ),
+  shipmentsInTransit: tip(
+    { en: 'Shipments in transit', ar: 'شحنات في الطريق' },
+    { en: 'Dispatched, by this branch or to it, and not received yet.', ar: 'شحنات مصروفة من هذا الفرع أو إليه ولم تُستلم بعد.' },
+    { en: 'Out of the kitchen\u2019s stock and not yet in the branch\u2019s: receive them on Branch receipts.', ar: 'خرجت من المركزي ولم تدخل الفرع بعد؛ تُستلم من تبويب الاستلامات.' },
+  ),
+  receiptsThisMonth: tip(
+    { en: 'Receipts this month', ar: 'شحنات مستلمة هذا الشهر' },
+    { en: 'Shipments received this month, by this branch or from it.', ar: 'الشحنات المستلمة هذا الشهر من هذا الفرع أو إليه.' },
+    { en: 'Voided receipts are not counted.', ar: 'لا تُحسب الاستلامات الملغاة.' },
+  ),
+  interBranchBilling: tip(
+    { en: 'Inter-branch billing', ar: 'إجمالي فوترة المطبخ المركزي' },
+    {
+      en: 'What the kitchen billed this month on its internal sales invoices, to this branch or by it.',
+      ar: 'إجمالي فواتير البيع الداخلية لهذا الشهر من هذا الفرع أو إليه.',
+    },
+    {
+      en: 'Inter-company: it moves money between branches, not in or out of the company. Voided invoices are not counted.',
+      ar: 'بين فروع الشركة: لا تدخل أو تخرج من الشركة. لا تُحسب الفواتير الملغاة.',
+    },
+  ),
   locationStations: tip(
     { en: 'Stations served', ar: 'الأقسام المخدومة' },
     {

@@ -444,7 +444,7 @@ export const appConfig: ApplicationConfig = {
 
 كل قسم بـ `canActivate: [costingTabGuard('Materials')]` و `loadComponent` كسول، والأقسام الفرعية (الوصفات، المشتريات، الماليات، التقارير، التحليلات) كأبناء لـ Shell خاص بها، والمسار الفارغ يفتح أول قسم يملكه المستخدم.
 
-> 📄 **`frontend/src/app/app.routes.ts`** — 342 سطر
+> 📄 **`frontend/src/app/app.routes.ts`** — 349 سطر
 
 ```ts
 import { Routes } from '@angular/router';
@@ -625,6 +625,13 @@ const costingChildren: Routes = [
     path: 'counts/:id',
     canActivate: [costingTabGuard('Counts')],
     loadComponent: () => import('./features/costing/count-sheet-page').then((m) => m.CountSheetPage),
+  },
+  {
+    // The central kitchen's hub: requisitions, dispatches and receipts between branches, for whoever
+    // counts, keeps or buys the stock.
+    path: 'inter-branch',
+    canActivate: [costingTabGuard('Counts', 'Materials', 'Purchases')],
+    loadComponent: () => import('./features/costing/inter-branch-page').then((m) => m.InterBranchPage),
   },
   {
     // Stock moved between a branch's locations, and what each holds: for whoever counts or keeps the stock.
@@ -1443,7 +1450,7 @@ function insert(field: HTMLInputElement, text: string): void {
 
 `costing.api.ts`: أكبر ملف: كل الأنواع والنداءات لـ `api/costing` و `api/inventory` و `api/financials` (الخامات، التكاليف، الوصفات، المصنعات، الإنتاج، المشتريات، الجرد، الهالك، الخزنة، التقارير، الموافقات…). الأنواع تطابق DTOs الـ API، والـ enums كـ union types، وقواميس التسميات ثنائية اللغة (`Record<Kind, { en; ar }>`) تجبر TypeScript على تسمية كل حالة.
 
-> 📄 **`frontend/src/app/core/costing/costing.api.ts`** — 3543 سطر
+> 📄 **`frontend/src/app/core/costing/costing.api.ts`** — 3546 سطر
 
 ```ts
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
@@ -1559,8 +1566,8 @@ export interface MaterialPurchaseHistory {
 
 // ---- The item's stock card (كارتة الصنف / حركة الصنف) ----
 
-export type StockCardMovementType = 'Opening' | 'Purchases' | 'Production' | 'Sales' | 'Waste' | 'CountAdjustment';
-export type StockCardSourceKind = 'PurchaseInvoice' | 'ProductionOrder' | 'StockCount' | 'SalesReceipt' | 'Spoilage';
+export type StockCardMovementType = 'Opening' | 'Purchases' | 'Production' | 'Sales' | 'Waste' | 'CountAdjustment' | 'InterBranch';
+export type StockCardSourceKind = 'PurchaseInvoice' | 'ProductionOrder' | 'StockCount' | 'SalesReceipt' | 'Spoilage' | 'InterBranchShipment';
 export type StockMovementReason =
   | 'Sale'
   | 'Waste'
@@ -1575,7 +1582,9 @@ export type StockMovementReason =
   | 'Hospitality'
   | 'RecipeTasting'
   | 'TransferOut'
-  | 'TransferIn';
+  | 'TransferIn'
+  | 'InterBranchDispatchOut'
+  | 'InterBranchReceiptIn';
 
 export const stockCardTypes: { type: StockCardMovementType; en: string; ar: string }[] = [
   { type: 'Opening', en: 'Opening', ar: 'افتتاحي' },
@@ -1584,6 +1593,7 @@ export const stockCardTypes: { type: StockCardMovementType; en: string; ar: stri
   { type: 'Sales', en: 'Sales', ar: 'مبيعات' },
   { type: 'Waste', en: 'Waste', ar: 'هالك' },
   { type: 'CountAdjustment', en: 'Count adjustment', ar: 'تسوية جرد' },
+  { type: 'InterBranch', en: 'Between branches', ar: 'بين الفروع' },
 ];
 
 // One movement, oldest first: in or out in the purchase unit, the balance after it, its price and the
@@ -8919,7 +8929,7 @@ export class InfoTip implements OnDestroy {
 ```
 
 
-> 📄 **`frontend/src/app/features/costing/info-tips.ts`** — 1285 سطر
+> 📄 **`frontend/src/app/features/costing/info-tips.ts`** — 1366 سطر
 
 ```ts
 // What each figure on the costing screens is, and how it is worked out, in Arabic and English: the
@@ -10071,6 +10081,87 @@ export const infoTips = {
       ar: 'كل رقم هو مجموع حركات الموقع: الاستلام والتحويل والاستهلاك والهالك والجرد. القيمة: الإجمالي بمتوسط تكلفة الفرع.',
     },
   ),
+  interBranchHub: tip(
+    { en: 'Inter-branch hub', ar: 'المطبخ المركزي وتحويلات الفروع' },
+    {
+      en: 'A restaurant asks the central kitchen for goods (a requisition); the kitchen sends and bills them (Dispatch & Bill); the branch receives them. Each step in the branch chosen at the top of the screen.',
+      ar: 'يطلب الفرع البضاعة من المطبخ المركزي، فيصرفها المركزي بفاتورة بيع داخلية، ويستلمها الفرع بفاتورة مشتريات داخلية. كل خطوة في الفرع المختار أعلى الشاشة.',
+    },
+    {
+      en: 'The kitchen\u2019s stock leaves when it is dispatched; the branch\u2019s comes in when it is received. In between it is on its way, in neither.',
+      ar: 'يخرج المخزون من المركزي عند الصرف ويدخل الفرع عند الاستلام، وبينهما يكون في الطريق.',
+    },
+  ),
+  requisition: tip(
+    { en: 'Requisition', ar: 'أمر طلب بضاعة' },
+    {
+      en: 'What a branch asks its central kitchen or warehouse to send, and by when. Quantities only: the kitchen prices what it sends.',
+      ar: 'ما يطلبه الفرع من المطبخ أو المخزن المركزي وموعده. كميات فقط، والمركزي يسعّر ما يصرفه.',
+    },
+    {
+      en: 'Cancelled only before anything of it is dispatched. Printed as a slip, or copied for WhatsApp, never with a price.',
+      ar: 'يُلغى قبل أي صرف فقط. يُطبع أو يُنسخ لواتساب بدون أسعار.',
+    },
+  ),
+  internalSalesInvoice: tip(
+    { en: 'Dispatch & Bill', ar: 'إذن صرف وفاتورة بيع داخلية' },
+    {
+      en: 'The kitchen sends the goods out of one of its locations, at its average cost, and bills the branch on an internal sales invoice (ISI).',
+      ar: 'يصرف المركزي البضاعة من أحد مواقعه بمتوسط تكلفته، ويفوترها للفرع بفاتورة بيع داخلية.',
+    },
+    {
+      en: 'Only what the location holds is sent. The revenue and cost of goods are inter-company: the company\u2019s own P&L takes them out again.',
+      ar: 'لا يُصرف أكثر من رصيد الموقع. الإيراد والتكلفة بين فروع الشركة وتُستبعد من أرباح الشركة المجمعة.',
+    },
+  ),
+  internalPurchaseInvoice: tip(
+    { en: 'Branch receipt', ar: 'استلام الفرع وفاتورة مشتريات داخلية' },
+    {
+      en: 'The branch counts what came and takes it into one of its locations, at the price billed, on an internal purchase invoice (IPI). Its average cost moves by that price.',
+      ar: 'يعدّ الفرع ما وصل ويستلمه في أحد مواقعه بسعر الفاتورة، بفاتورة مشتريات داخلية، ويتحرك متوسط تكلفته بهذا السعر.',
+    },
+    {
+      en: 'Billed for everything sent; what did not arrive is kept as a transit loss, with what happened.',
+      ar: 'يُفوتر بكل المرسل، وما لم يصل يُسجل عجز نقل مع سببه.',
+    },
+  ),
+  transferPricing: tip(
+    { en: 'Transfer pricing', ar: 'سياسة تسعير التحويل الداخلي' },
+    {
+      en: 'At cost: the kitchen bills its own weighted average cost. Transfer price: its cost plus a markup, or a price typed for a line.',
+      ar: 'بالتكلفة: بمتوسط تكلفة المركزي. بسعر تحويل: التكلفة مضافاً إليها هامش، أو سعر يُكتب للبند.',
+    },
+    {
+      en: 'The branch receives at the price billed, so its recipes carry what it paid the kitchen. Prices are set by whoever sees costs.',
+      ar: 'يستلم الفرع بسعر الفاتورة فتعكس وصفاته ما دفعه للمركزي. الأسعار يحددها من يرى التكاليف.',
+    },
+  ),
+  openRequisitions: tip(
+    { en: 'Open requisitions', ar: 'طلبات فروع قيد الانتظار' },
+    { en: 'Requisitions asked by this branch or of it, with something still to send.', ar: 'طلبات هذا الفرع أو الموجهة إليه التي لم تُصرف بالكامل.' },
+    { en: 'Submitted or partly dispatched, whenever they were made.', ar: 'المرسلة أو المصروفة جزئياً أياً كان تاريخها.' },
+  ),
+  shipmentsInTransit: tip(
+    { en: 'Shipments in transit', ar: 'شحنات في الطريق' },
+    { en: 'Dispatched, by this branch or to it, and not received yet.', ar: 'شحنات مصروفة من هذا الفرع أو إليه ولم تُستلم بعد.' },
+    { en: 'Out of the kitchen\u2019s stock and not yet in the branch\u2019s: receive them on Branch receipts.', ar: 'خرجت من المركزي ولم تدخل الفرع بعد؛ تُستلم من تبويب الاستلامات.' },
+  ),
+  receiptsThisMonth: tip(
+    { en: 'Receipts this month', ar: 'شحنات مستلمة هذا الشهر' },
+    { en: 'Shipments received this month, by this branch or from it.', ar: 'الشحنات المستلمة هذا الشهر من هذا الفرع أو إليه.' },
+    { en: 'Voided receipts are not counted.', ar: 'لا تُحسب الاستلامات الملغاة.' },
+  ),
+  interBranchBilling: tip(
+    { en: 'Inter-branch billing', ar: 'إجمالي فوترة المطبخ المركزي' },
+    {
+      en: 'What the kitchen billed this month on its internal sales invoices, to this branch or by it.',
+      ar: 'إجمالي فواتير البيع الداخلية لهذا الشهر من هذا الفرع أو إليه.',
+    },
+    {
+      en: 'Inter-company: it moves money between branches, not in or out of the company. Voided invoices are not counted.',
+      ar: 'بين فروع الشركة: لا تدخل أو تخرج من الشركة. لا تُحسب الفواتير الملغاة.',
+    },
+  ),
   locationStations: tip(
     { en: 'Stations served', ar: 'الأقسام المخدومة' },
     {
@@ -10210,7 +10301,7 @@ export type InfoTipKey = keyof typeof infoTips;
 ```
 
 
-> 📄 **`frontend/src/app/features/costing/costing-shell.ts`** — 62 سطر
+> 📄 **`frontend/src/app/features/costing/costing-shell.ts`** — 70 سطر
 
 ```ts
 import { Component, computed, inject } from '@angular/core';
@@ -10255,6 +10346,14 @@ export class CostingShell {
       const after = tabs.findIndex((t) => t.path === (this.access.has('Counts') ? 'counts' : 'waste'));
       tabs.splice(after < 0 ? tabs.length : after + 1, 0, {
         path: 'internal-transfers', en: 'Internal transfers', ar: 'التحويلات الداخلية', icon: 'move_down', group: costingGroups.operations,
+      });
+    }
+    // The central kitchen's hub, once the company runs one: after the transfers, for whoever counts,
+    // keeps or buys the stock.
+    if (this.company.mode() === 'MultiBranch_CentralKitchen' && (this.access.has('Counts') || this.access.has('Materials') || this.access.has('Purchases'))) {
+      const after = Math.max(tabs.findIndex((t) => t.path === 'internal-transfers'), tabs.findIndex((t) => t.path === 'counts'), tabs.findIndex((t) => t.path === 'purchases'));
+      tabs.splice(after < 0 ? tabs.length : after + 1, 0, {
+        path: 'inter-branch', en: 'Inter-branch hub', ar: 'المطبخ المركزي وتحويلات الفروع', icon: 'soup_kitchen', group: costingGroups.operations,
       });
     }
     return [
@@ -12070,7 +12169,7 @@ export class MaterialHistoryDialog {
 ```
 
 
-> 📄 **`frontend/src/app/features/costing/stock-card-dialog.ts`** — 609 سطر
+> 📄 **`frontend/src/app/features/costing/stock-card-dialog.ts`** — 618 سطر
 
 ```ts
 import { DatePipe, DecimalPipe } from '@angular/common';
@@ -12492,6 +12591,7 @@ export class StockCardDialog {
     StockCount: this.access.has('Counts'),
     SalesReceipt: this.access.has('Sales'),
     Spoilage: this.access.has('Waste'),
+    InterBranchShipment: this.access.has('Counts') || this.access.has('Materials') || this.access.has('Purchases'),
   }));
 
   constructor() {
@@ -12546,6 +12646,8 @@ export class StockCardDialog {
         return 'Open the stock count · فتح الجرد';
       case 'SalesReceipt':
         return "Open the day's sales · فتح مبيعات اليوم";
+      case 'InterBranchShipment':
+        return 'Open it on the central kitchen hub · فتح في المطبخ المركزي';
       default:
         return 'Open the waste log of the day · فتح سجل الهالك';
     }
@@ -12574,6 +12676,12 @@ export class StockCardDialog {
         return;
       case 'SalesReceipt':
         this.leaveFor(['/costing/sales'], { day: line.sourceDate ?? line.date, receipt: line.sourceId });
+        return;
+      case 'InterBranchShipment':
+        // The kitchen's dispatch or the branch's receipt, on its tab of the hub, its day in the period.
+        this.leaveFor(['/costing/inter-branch'], {
+          tab: line.reason === 'InterBranchDispatchOut' ? 'dispatches' : 'receipts', focus: line.sourceId, day: line.sourceDate ?? line.date,
+        });
         return;
       default:
         // A staff meal, hospitality or a tasting is on its own tab; spoilage on Waste's first.
@@ -34445,6 +34553,1791 @@ function blank(): Line {
 
 function escape(value: string): string {
   return value.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
+}
+```
+
+
+### 13.2 المطبخ المركزي وتحويلات الفروع
+
+`InterBranchPage` (`/costing/inter-branch`، في القائمة فقط مع نمط المطبخ المركزي): أربع بطاقات بعلامة (!) لكل منها (الرابعة، الفوترة، لمن يرى التكاليف)، وثلاثة تبويبات: الطلبات (طباعة، نسخ لواتساب بالكميات فقط، إلغاء، "صرف وإصدار فاتورة" للمركزي)، وصرف المركزي (طباعة الفاتورة أو إذن التسليم، إلغاء ما في الطريق)، والاستلامات (الشحنات الواردة بزر الاستلام، والفواتير، وإلغاء المدير). وفي غير نمط المطبخ المركزي رسالة واضحة فقط.
+
+> 📄 **`frontend/src/app/core/costing/inter-branch.api.ts`** — 242 سطر
+
+```ts
+import { HttpClient } from '@angular/common/http';
+import { Injectable, inject } from '@angular/core';
+import { Observable } from 'rxjs';
+import { BranchType, OperatingMode } from '../settings/company-structure';
+import { UnitOfMeasure } from './costing.api';
+
+// The central kitchen's hub (مركز عمليات المطبخ المركزي وتحويلات الفروع), as the API keeps it: a
+// branch's requisitions (REQ), the kitchen's dispatches and their internal sales invoices (ISI), and
+// the branches' receipts and their internal purchase invoices (IPI). Quantities in the material's
+// own unit (grams, millilitres, pieces); prices per that unit. Prices and totals are null for
+// whoever does not see costs.
+
+export type RequisitionStatus = 'Submitted' | 'PartiallyDispatched' | 'Dispatched' | 'Received' | 'Cancelled';
+export type TransferPricing = 'AtCost' | 'WithMarkupOrCustomPrice';
+export type ShipmentStatus = 'InTransit' | 'Received' | 'Voided';
+export type ReceiptStatus = 'Posted' | 'Voided';
+
+export const requisitionStatusLabels: Record<RequisitionStatus, { en: string; ar: string }> = {
+  Submitted: { en: 'Submitted', ar: 'مرسل للمركزي' },
+  PartiallyDispatched: { en: 'Partly dispatched', ar: 'صرف جزئي' },
+  Dispatched: { en: 'Dispatched', ar: 'تم الصرف وفي الطريق' },
+  Received: { en: 'Received', ar: 'تم الاستلام بالفرع' },
+  Cancelled: { en: 'Cancelled', ar: 'ملغي' },
+};
+
+export const shipmentStatusLabels: Record<ShipmentStatus, { en: string; ar: string }> = {
+  InTransit: { en: 'In transit', ar: 'في الطريق' },
+  Received: { en: 'Received', ar: 'تم الاستلام' },
+  Voided: { en: 'Voided', ar: 'ملغي' },
+};
+
+export interface InterBranchBranch {
+  id: string;
+  name: string;
+  nameAr: string | null;
+  type: BranchType;
+  isActive: boolean;
+}
+
+export interface RequisitionLine {
+  rawMaterialId: string;
+  material: string;
+  code: string | null;
+  unit: UnitOfMeasure;
+  purchaseUnitSize: number;
+  requestedQuantity: number;
+  dispatchedQuantity: number;
+  receivedQuantity: number;
+  notes: string | null;
+}
+
+export interface Requisition {
+  id: string;
+  number: string;
+  requestingBranchId: string;
+  requestingBranch: string;
+  supplyingBranchId: string;
+  supplyingBranch: string;
+  requestDate: string;
+  requestedDeliveryDate: string | null;
+  status: RequisitionStatus;
+  notes: string | null;
+  createdBy: string;
+  createdAtUtc: string;
+  cancelledAtUtc: string | null;
+  cancelledBy: string | null;
+  lines: RequisitionLine[];
+}
+
+export interface ShipmentLine {
+  rawMaterialId: string;
+  material: string;
+  code: string | null;
+  unit: UnitOfMeasure;
+  purchaseUnitSize: number;
+  quantity: number;
+  receivedQuantity: number | null;
+  unitCost: number | null;
+  transferUnitPrice: number | null;
+  lineRevenue: number | null;
+  lineCogs: number | null;
+}
+
+export interface Shipment {
+  id: string;
+  number: string;
+  requisitionId: string | null;
+  requisitionNumber: string | null;
+  supplyingBranchId: string;
+  supplyingBranch: string;
+  receivingBranchId: string;
+  receivingBranch: string;
+  fromLocationId: string;
+  fromLocation: string;
+  dispatchDate: string;
+  pricing: TransferPricing;
+  markupPercent: number | null;
+  status: ShipmentStatus;
+  notes: string | null;
+  createdBy: string;
+  createdAtUtc: string;
+  receivedAtUtc: string | null;
+  receiptId: string | null;
+  receiptNumber: string | null;
+  voidedAtUtc: string | null;
+  voidedBy: string | null;
+  isInterCompany: boolean;
+  totalTransferRevenue: number | null;
+  totalInternalCogs: number | null;
+  internalMargin: number | null;
+  lines: ShipmentLine[];
+}
+
+export interface ReceiptLine {
+  rawMaterialId: string;
+  material: string;
+  code: string | null;
+  unit: UnitOfMeasure;
+  purchaseUnitSize: number;
+  dispatchedQuantity: number;
+  receivedQuantity: number;
+  shortQuantity: number;
+  transferUnitPrice: number | null;
+  lineTotal: number | null;
+  transitLoss: number | null;
+}
+
+export interface Receipt {
+  id: string;
+  number: string;
+  shipmentId: string;
+  shipmentNumber: string;
+  requisitionId: string | null;
+  requisitionNumber: string | null;
+  supplyingBranchId: string;
+  supplyingBranch: string;
+  receivingBranchId: string;
+  receivingBranch: string;
+  toLocationId: string;
+  toLocation: string;
+  receiptDate: string;
+  status: ReceiptStatus;
+  notes: string | null;
+  createdBy: string;
+  createdAtUtc: string;
+  voidedAtUtc: string | null;
+  voidedBy: string | null;
+  isInterCompany: boolean;
+  totalBilled: number | null;
+  totalReceivedValue: number | null;
+  totalTransitLoss: number | null;
+  lines: ReceiptLine[];
+}
+
+export interface InterBranchSummary {
+  openRequisitions: number;
+  shipmentsInTransit: number;
+  receiptsThisMonth: number;
+  billingThisMonth: number | null;
+}
+
+export interface InterBranchHub {
+  mode: OperatingMode;
+  branchId: string;
+  branch: string;
+  branchType: BranchType;
+  branches: InterBranchBranch[];
+  summary: InterBranchSummary;
+  requisitions: Requisition[];
+  shipments: Shipment[];
+  receipts: Receipt[];
+}
+
+export interface NewRequisition {
+  id: string;
+  supplyingBranchId: string;
+  requestedDeliveryDate: string | null;
+  lines: { rawMaterialId: string; quantity: number; notes: string | null }[];
+  notes: string | null;
+}
+
+export interface NewShipment {
+  id: string;
+  requisitionId: string | null;
+  receivingBranchId: string | null;
+  fromLocationId: string | null;
+  pricing: TransferPricing;
+  markupPercent: number | null;
+  lines: { rawMaterialId: string; quantity: number; transferUnitPrice: number | null }[];
+  notes: string | null;
+}
+
+export interface NewReceipt {
+  id: string;
+  shipmentId: string;
+  toLocationId: string | null;
+  lines: { rawMaterialId: string; receivedQuantity: number }[];
+  notes: string | null;
+}
+
+@Injectable({ providedIn: 'root' })
+export class InterBranchApi {
+  private readonly http = inject(HttpClient);
+
+  hub(from: string, to: string): Observable<InterBranchHub> {
+    return this.http.get<InterBranchHub>('/api/inter-branch', { params: { from, to } });
+  }
+
+  sheet(from: string, to: string): Observable<Blob> {
+    return this.http.get('/api/inter-branch/sheet', { params: { from, to }, responseType: 'blob' });
+  }
+
+  // Each made with its id here: sent again after a lost answer, it is made once.
+  submit(requisition: NewRequisition): Observable<Requisition> {
+    return this.http.post<Requisition>('/api/inter-branch/requisitions', requisition);
+  }
+
+  cancel(id: string): Observable<Requisition> {
+    return this.http.post<Requisition>(`/api/inter-branch/requisitions/${id}/cancel`, {});
+  }
+
+  dispatch(shipment: NewShipment): Observable<Shipment> {
+    return this.http.post<Shipment>('/api/inter-branch/shipments', shipment);
+  }
+
+  voidShipment(id: string): Observable<Shipment> {
+    return this.http.post<Shipment>(`/api/inter-branch/shipments/${id}/void`, {});
+  }
+
+  receive(receipt: NewReceipt): Observable<Receipt> {
+    return this.http.post<Receipt>('/api/inter-branch/receipts', receipt);
+  }
+
+  voidReceipt(id: string): Observable<Receipt> {
+    return this.http.post<Receipt>(`/api/inter-branch/receipts/${id}/void`, {});
+  }
+}
+
+// A branch that supplies the others: a central kitchen or warehouse.
+export function supplies(type: BranchType | undefined): boolean {
+  return type === 'CentralKitchen' || type === 'CentralWarehouse';
+}
+```
+
+
+> 📄 **`frontend/src/app/features/costing/inter-branch-page.ts`** — 642 سطر
+
+```ts
+import { DatePipe } from '@angular/common';
+import { Component, computed, effect, inject, input, signal, untracked } from '@angular/core';
+import { FormsModule } from '@angular/forms';
+import { MatButtonModule } from '@angular/material/button';
+import { MatDialog } from '@angular/material/dialog';
+import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatIconModule } from '@angular/material/icon';
+import { MatInputModule } from '@angular/material/input';
+import { MatProgressBarModule } from '@angular/material/progress-bar';
+import { MatTabsModule } from '@angular/material/tabs';
+import { MatTooltipModule } from '@angular/material/tooltip';
+import { Observable, firstValueFrom } from 'rxjs';
+import { AuthService } from '../../core/auth/auth.service';
+import { Permissions } from '../../core/auth/permissions';
+import { CostingApi, MaterialCost } from '../../core/costing/costing.api';
+import {
+  InterBranchApi,
+  InterBranchHub,
+  Receipt,
+  Requisition,
+  Shipment,
+  requisitionStatusLabels,
+  shipmentStatusLabels,
+  supplies,
+} from '../../core/costing/inter-branch.api';
+import { errorMessage } from '../../core/http/error-message';
+import { Company } from '../../core/settings/company';
+import { branchTypeLabels } from '../../core/settings/company-structure';
+import { MoneyPipe } from '../../core/ui/money.pipe';
+import { NotifyService } from '../../core/ui/notify.service';
+import { saveBlob } from '../../core/ui/save-blob';
+import { FilterOption, FilterSelect } from '../shared/filter-select';
+import { SearchField } from '../shared/search-field';
+import { smartMatch } from '../shared/smart-search';
+import { isoDay } from './financials';
+import { InfoTip } from './info-tip';
+import { openDispatchDialog, openReceiveDialog, openRequisitionDialog } from './inter-branch-dialogs';
+import { printReceipt, printRequisition, printShipment, requisitionWhatsApp, shownQuantity } from './inter-branch-paper';
+
+export type HubTab = 'requisitions' | 'dispatches' | 'receipts';
+const hubTabs: HubTab[] = ['requisitions', 'dispatches', 'receipts'];
+
+// The central kitchen's hub (المطبخ المركزي وتحويلات الفروع), for the branch chosen at the top of
+// the screen: a restaurant asks the kitchen for goods and receives what it sends; the kitchen sends
+// and bills them. Its cards count what is open, on its way and received this month, and what was
+// billed (for whoever sees costs); its three tabs hold the requisitions, the kitchen's dispatches
+// and the branches' receipts, each printed, the requisitions copied for WhatsApp, all of a period
+// as a workbook. Only in a company run with a central kitchen.
+@Component({
+  selector: 'app-inter-branch-page',
+  imports: [
+    DatePipe, FilterSelect, FormsModule, InfoTip, MatButtonModule, MatFormFieldModule, MatIconModule, MatInputModule, MatProgressBarModule, MatTabsModule,
+    MatTooltipModule, MoneyPipe, SearchField,
+  ],
+  template: `
+    @if (loading() && !hub()) {
+      <mat-progress-bar mode="indeterminate" />
+    } @else if (error()) {
+      <p class="error">{{ error() }}</p>
+    } @else if (hub(); as h) {
+      @if (h.mode !== 'MultiBranch_CentralKitchen') {
+        <div class="empty" role="status">
+          <mat-icon>soup_kitchen</mat-icon>
+          <p><strong>The company is not run with a central kitchen.</strong></p>
+          <p class="muted">
+            Requisitions, dispatches and receipts between branches need the structure Branches with a central kitchen, on Settings, Company structure.
+            <span class="inline-ar">الشركة ليست بنظام المطبخ المركزي؛ اختر "فروع متعددة يدعمها مطبخ مركزي" من إعدادات هيكل الشركة.</span>
+          </p>
+        </div>
+      } @else {
+        <p class="note">
+          <app-info-tip tip="interBranchHub" />
+          Working in <strong>{{ h.branch }}</strong> ({{ typeLabel() }}).
+          @if (isSupplier()) {
+            Fill the branches' requisitions and send them their goods, billed on an internal sales invoice.
+          } @else {
+            Ask the central kitchen for goods and receive what it sends, on an internal purchase invoice.
+          }
+          <span class="inline-ar">اختر الفرع من أعلى الشاشة.</span>
+        </p>
+
+        <div class="cards">
+          <div class="card">
+            <span class="label">Open requisitions <app-info-tip tip="openRequisitions" /><span class="ar">طلبات فروع قيد الانتظار</span></span>
+            <span class="value">{{ h.summary.openRequisitions }}</span>
+          </div>
+          <div class="card">
+            <span class="label">Shipments in transit <app-info-tip tip="shipmentsInTransit" /><span class="ar">شحنات في الطريق للفروع</span></span>
+            <span class="value">{{ h.summary.shipmentsInTransit }}</span>
+          </div>
+          <div class="card">
+            <span class="label">Receipts this month <app-info-tip tip="receiptsThisMonth" /><span class="ar">شحنات مستلمة هذا الشهر</span></span>
+            <span class="value">{{ h.summary.receiptsThisMonth }}</span>
+          </div>
+          @if (seesCosts() && h.summary.billingThisMonth !== null) {
+            <div class="card">
+              <span class="label">Inter-branch billing <app-info-tip tip="interBranchBilling" /><span class="ar">إجمالي فوترة المطبخ المركزي</span></span>
+              <span class="value">{{ h.summary.billingThisMonth | money }}</span>
+            </div>
+          }
+        </div>
+
+        <div class="toolbar">
+          <mat-form-field subscriptSizing="dynamic" class="day">
+            <mat-label>From day · من يوم</mat-label>
+            <input matInput type="date" [ngModel]="fromDay()" (ngModelChange)="setDays($event, toDay())" [max]="toDay()" aria-label="From day" />
+          </mat-form-field>
+          <mat-form-field subscriptSizing="dynamic" class="day">
+            <mat-label>To day · إلى يوم</mat-label>
+            <input matInput type="date" [ngModel]="toDay()" (ngModelChange)="setDays(fromDay(), $event)" [min]="fromDay()" aria-label="To day" />
+          </mat-form-field>
+          <span class="spacer"></span>
+          <button mat-stroked-button (click)="downloadSheet()" [disabled]="downloading()"><mat-icon>download</mat-icon> Excel <span class="inline-ar">إكسل</span></button>
+          @if (canAsk()) {
+            <button mat-flat-button (click)="newRequisition()"><mat-icon>add_shopping_cart</mat-icon> New requisition <span class="inline-ar">طلب بضاعة</span></button>
+          }
+          @if (canDispatch()) {
+            <button mat-flat-button (click)="dispatch(null)"><mat-icon>local_shipping</mat-icon> Direct dispatch <span class="inline-ar">صرف مباشر لفرع</span></button>
+          }
+        </div>
+
+        <mat-tab-group [selectedIndex]="tabIndex()" (selectedIndexChange)="tabIndex.set($event)" animationDuration="0ms" mat-stretch-tabs="false">
+          <mat-tab label="Requisitions · طلبات الفروع">
+            <div class="toolbar smart">
+              <app-search-field [(value)]="search" placeholder="Number, branch or material · الرقم أو الفرع أو الخامة" />
+              <div class="pills">
+                <app-filter-select label="Status · الحالة" icon="flag" [options]="requisitionFilters()" [(value)]="requisitionStatus" />
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table class="grid" aria-label="Requisitions">
+                <thead>
+                  <tr>
+                    <th>Number<span class="ar">الرقم</span></th>
+                    <th>Day<span class="ar">اليوم</span></th>
+                    <th>Branch → Kitchen<span class="ar">الفرع ← المركزي</span></th>
+                    <th>Asked for<span class="ar">المطلوب</span></th>
+                    <th>Status<span class="ar">الحالة</span></th>
+                    <th class="num"><span class="visually-hidden">Actions</span></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  @for (r of shownRequisitions(); track r.id) {
+                    <tr [class.focused]="r.id === focus()" [class.voided]="r.status === 'Cancelled'">
+                      <td class="nowrap"><strong>{{ r.number }}</strong></td>
+                      <td class="nowrap">
+                        {{ r.requestDate | date: 'd MMM' }}
+                        @if (r.requestedDeliveryDate) {
+                          <div class="muted tiny">Wanted {{ r.requestedDeliveryDate | date: 'd MMM' }}</div>
+                        }
+                      </td>
+                      <td class="route">{{ r.requestingBranch }} → {{ r.supplyingBranch }}</td>
+                      <td>
+                        @for (l of r.lines; track l.rawMaterialId; let last = $last) {
+                          <span class="nowrap">{{ l.material }} {{ qty(l.requestedQuantity, l.unit, l.purchaseUnitSize) }}</span>@if (!last) {, }
+                        }
+                        @if (r.notes) {
+                          <div class="muted tiny">{{ r.notes }}</div>
+                        }
+                      </td>
+                      <td><span class="status" [attr.data-status]="r.status">{{ requisitionLabel(r) }}</span></td>
+                      <td class="num nowrap">
+                        <button mat-icon-button (click)="printRequisition(r)" matTooltip="Print slip · طباعة" [attr.aria-label]="'Print ' + r.number"><mat-icon>print</mat-icon></button>
+                        <button mat-icon-button (click)="copyWhatsApp(r)" matTooltip="Copy for WhatsApp · نسخ لواتساب" [attr.aria-label]="'Copy ' + r.number + ' for WhatsApp'"><mat-icon>content_copy</mat-icon></button>
+                        @if (canFill(r)) {
+                          <button mat-flat-button (click)="dispatch(r)" [attr.aria-label]="'Dispatch and bill ' + r.number"><mat-icon>local_shipping</mat-icon> Dispatch & Bill</button>
+                        }
+                        @if (canManage() && r.status === 'Submitted') {
+                          <button mat-icon-button class="danger" (click)="cancel(r)" matTooltip="Cancel · إلغاء" [attr.aria-label]="'Cancel ' + r.number"><mat-icon>block</mat-icon></button>
+                        }
+                      </td>
+                    </tr>
+                  } @empty {
+                    <tr><td colspan="6" class="muted">No requisitions. · لا توجد طلبات.</td></tr>
+                  }
+                </tbody>
+              </table>
+            </div>
+          </mat-tab>
+
+          <mat-tab label="Central kitchen dispatches (ISI) · صرف وفواتير بيع المركزي">
+            <div class="toolbar smart">
+              <app-search-field [(value)]="search" placeholder="Number, branch or material · الرقم أو الفرع أو الخامة" />
+              <div class="pills">
+                <app-filter-select label="Status · الحالة" icon="flag" [options]="shipmentFilters()" [(value)]="shipmentStatus" />
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table class="grid" aria-label="Dispatches">
+                <thead>
+                  <tr>
+                    <th>Number<span class="ar">الرقم</span></th>
+                    <th>Day<span class="ar">اليوم</span></th>
+                    <th>Kitchen → Branch<span class="ar">المركزي ← الفرع</span></th>
+                    <th>Sent<span class="ar">المرسل</span></th>
+                    <th>Status<span class="ar">الحالة</span></th>
+                    @if (seesCosts()) {
+                      <th class="num">Billed<span class="ar">الإيراد الداخلي</span></th>
+                      <th class="num">Margin<span class="ar">الهامش</span></th>
+                    }
+                    <th class="num"><span class="visually-hidden">Actions</span></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  @for (s of shownShipments(); track s.id) {
+                    <tr [class.focused]="s.id === focus()" [class.voided]="s.status === 'Voided'">
+                      <td class="nowrap">
+                        <strong>{{ s.number }}</strong>
+                        <div class="muted tiny">{{ s.requisitionNumber ?? 'Direct · مباشر' }}</div>
+                      </td>
+                      <td class="nowrap">{{ s.dispatchDate | date: 'd MMM' }}</td>
+                      <td class="route">{{ s.supplyingBranch }} → {{ s.receivingBranch }}<div class="muted tiny">from {{ s.fromLocation }}</div></td>
+                      <td>
+                        @for (l of s.lines; track l.rawMaterialId; let last = $last) {
+                          <span class="nowrap">{{ l.material }} {{ qty(l.quantity, l.unit, l.purchaseUnitSize) }}</span>@if (!last) {, }
+                        }
+                      </td>
+                      <td>
+                        <span class="status" [attr.data-status]="s.status">{{ shipmentLabel(s) }}</span>
+                        @if (s.receiptNumber) {
+                          <div class="muted tiny">{{ s.receiptNumber }}</div>
+                        }
+                      </td>
+                      @if (seesCosts()) {
+                        <td class="num">{{ s.totalTransferRevenue === null ? '' : (s.totalTransferRevenue | money) }}</td>
+                        <td class="num muted">{{ s.internalMargin === null ? '' : (s.internalMargin | money) }}</td>
+                      }
+                      <td class="num nowrap">
+                        <button mat-icon-button (click)="printShipment(s)" [matTooltip]="seesCosts() ? 'Print the internal invoice · طباعة الفاتورة' : 'Print the delivery note · طباعة إذن التسليم'"
+                          [attr.aria-label]="'Print ' + s.number"><mat-icon>print</mat-icon></button>
+                        @if (canReceive(s)) {
+                          <button mat-flat-button (click)="receive(s)" [attr.aria-label]="'Receive ' + s.number"><mat-icon>inventory</mat-icon> Receive</button>
+                        }
+                        @if (canVoidShipment(s)) {
+                          <button mat-icon-button class="danger" (click)="voidShipment(s)" matTooltip="Void · إلغاء" [attr.aria-label]="'Void ' + s.number"><mat-icon>undo</mat-icon></button>
+                        }
+                      </td>
+                    </tr>
+                  } @empty {
+                    <tr><td [attr.colspan]="seesCosts() ? 8 : 6" class="muted">No dispatches. · لا يوجد صرف.</td></tr>
+                  }
+                </tbody>
+              </table>
+            </div>
+          </mat-tab>
+
+          <mat-tab label="Branch receipts (IPI) · استلامات وفواتير شراء الفروع">
+            <h2 class="section-title">Incoming shipments <span class="inline-ar">شحنات واردة من المركزي</span></h2>
+            <div class="table-wrap">
+              <table class="grid" aria-label="Incoming shipments">
+                <thead>
+                  <tr>
+                    <th>Shipment<span class="ar">الشحنة</span></th>
+                    <th>Day<span class="ar">اليوم</span></th>
+                    <th>From<span class="ar">من</span></th>
+                    <th>Sent<span class="ar">المرسل</span></th>
+                    <th class="num"><span class="visually-hidden">Actions</span></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  @for (s of incoming(); track s.id) {
+                    <tr>
+                      <td class="nowrap"><strong>{{ s.number }}</strong><div class="muted tiny">{{ s.requisitionNumber ?? 'Direct · مباشر' }}</div></td>
+                      <td class="nowrap">{{ s.dispatchDate | date: 'd MMM' }}</td>
+                      <td>{{ s.supplyingBranch }}</td>
+                      <td>
+                        @for (l of s.lines; track l.rawMaterialId; let last = $last) {
+                          <span class="nowrap">{{ l.material }} {{ qty(l.quantity, l.unit, l.purchaseUnitSize) }}</span>@if (!last) {, }
+                        }
+                      </td>
+                      <td class="num">
+                        @if (canManage()) {
+                          <button mat-flat-button (click)="receive(s)" [attr.aria-label]="'Receive ' + s.number"><mat-icon>inventory</mat-icon> Receive shipment · تأكيد الاستلام</button>
+                        }
+                      </td>
+                    </tr>
+                  } @empty {
+                    <tr><td colspan="5" class="muted">Nothing on its way here. · لا توجد شحنات واردة.</td></tr>
+                  }
+                </tbody>
+              </table>
+            </div>
+
+            <h2 class="section-title">Receipts <span class="inline-ar">الاستلامات</span></h2>
+            <div class="table-wrap">
+              <table class="grid" aria-label="Receipts">
+                <thead>
+                  <tr>
+                    <th>Number<span class="ar">الرقم</span></th>
+                    <th>Day<span class="ar">اليوم</span></th>
+                    <th>Kitchen → Branch<span class="ar">المركزي ← الفرع</span></th>
+                    <th>Received<span class="ar">المستلم</span></th>
+                    @if (seesCosts()) {
+                      <th class="num">Billed<span class="ar">المفوتر</span></th>
+                      <th class="num">Transit loss<span class="ar">عجز النقل</span></th>
+                    }
+                    <th class="num"><span class="visually-hidden">Actions</span></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  @for (p of shownReceipts(); track p.id) {
+                    <tr [class.focused]="p.id === focus()" [class.voided]="p.status === 'Voided'">
+                      <td class="nowrap">
+                        <strong>{{ p.number }}</strong>
+                        <div class="muted tiny">{{ p.shipmentNumber }}</div>
+                        @if (p.status === 'Voided') {
+                          <div><span class="void-badge">Voided · ملغي</span></div>
+                        }
+                      </td>
+                      <td class="nowrap">{{ p.receiptDate | date: 'd MMM' }}</td>
+                      <td class="route">{{ p.supplyingBranch }} → {{ p.receivingBranch }}<div class="muted tiny">into {{ p.toLocation }}</div></td>
+                      <td>
+                        @for (l of p.lines; track l.rawMaterialId; let last = $last) {
+                          <span class="nowrap">{{ l.material }} {{ qty(l.receivedQuantity, l.unit, l.purchaseUnitSize) }}</span>
+                          @if (l.shortQuantity > 0) {
+                            <span class="short"> ({{ qty(l.shortQuantity, l.unit, l.purchaseUnitSize) }} short)</span>
+                          }
+                          @if (!last) {, }
+                        }
+                        @if (p.notes) {
+                          <div class="muted tiny">{{ p.notes }}</div>
+                        }
+                      </td>
+                      @if (seesCosts()) {
+                        <td class="num">{{ p.totalBilled === null ? '' : (p.totalBilled | money) }}</td>
+                        <td class="num" [class.short]="(p.totalTransitLoss ?? 0) > 0">{{ p.totalTransitLoss ? (p.totalTransitLoss | money) : '—' }}</td>
+                      }
+                      <td class="num nowrap">
+                        <button mat-icon-button (click)="printReceipt(p)" matTooltip="View the internal purchase invoice · عرض الفاتورة" [attr.aria-label]="'Print ' + p.number">
+                          <mat-icon>receipt_long</mat-icon>
+                        </button>
+                        @if (isManager() && p.status === 'Posted') {
+                          <button mat-icon-button class="danger" (click)="voidReceipt(p)" matTooltip="Void both invoices · إلغاء الاستلام والفاتورة" [attr.aria-label]="'Void ' + p.number">
+                            <mat-icon>undo</mat-icon>
+                          </button>
+                        }
+                      </td>
+                    </tr>
+                  } @empty {
+                    <tr><td [attr.colspan]="seesCosts() ? 7 : 5" class="muted">No receipts. · لا توجد استلامات.</td></tr>
+                  }
+                </tbody>
+              </table>
+            </div>
+          </mat-tab>
+        </mat-tab-group>
+      }
+    }
+  `,
+  styleUrl: './costing.scss',
+  styles: `
+    .empty { display: grid; justify-items: center; gap: 4px; padding: 32px 16px; text-align: center; }
+    .empty mat-icon { font-size: 40px; width: 40px; height: 40px; color: var(--mat-sys-on-surface-variant); }
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin: 12px 0; }
+    .card {
+      display: grid; gap: 6px; padding: 14px 16px; border-radius: 12px; border: 1px solid var(--app-line-strong, var(--mat-sys-outline-variant));
+      background: var(--mat-sys-surface-container-lowest);
+    }
+    .card .label { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; font: var(--mat-sys-label-large); color: var(--mat-sys-on-surface-variant); }
+    .card .label .ar { flex-basis: 100%; font-size: 0.85em; }
+    .card .value { font: var(--mat-sys-headline-small); }
+    .day { width: 170px; }
+    .section-title { margin: 16px 0 8px; font: var(--mat-sys-title-medium); }
+    .tiny { font-size: 0.85em; }
+    .nowrap { white-space: nowrap; }
+    .route { min-width: 170px; }
+    .short { color: var(--mat-sys-error); font-weight: 600; }
+    .danger { color: var(--mat-sys-error); }
+    tr.focused td { background: color-mix(in srgb, var(--mat-sys-primary) 10%, transparent); }
+    tr.voided td { color: var(--mat-sys-on-surface-variant); }
+    .status { display: inline-block; padding: 0 8px; border-radius: 999px; font-size: 0.85em; white-space: nowrap;
+      background: color-mix(in srgb, var(--mat-sys-primary) 10%, transparent); }
+    .status[data-status='Cancelled'], .status[data-status='Voided'] { color: var(--mat-sys-error); background: color-mix(in srgb, var(--mat-sys-error) 10%, transparent); }
+    .status[data-status='Received'] { color: var(--mat-sys-tertiary); }
+    .void-badge { display: inline-block; padding: 0 6px; border-radius: 999px; font-size: 0.8em; color: var(--mat-sys-error);
+      background: color-mix(in srgb, var(--mat-sys-error) 10%, transparent); }
+    .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  `,
+})
+export class InterBranchPage {
+  private readonly api = inject(InterBranchApi);
+  private readonly costing = inject(CostingApi);
+  private readonly auth = inject(AuthService);
+  private readonly notify = inject(NotifyService);
+  private readonly dialog = inject(MatDialog);
+  private readonly company = inject(Company);
+
+  // Opened from a stock card: its tab, the record marked, its day in the period.
+  readonly tab = input<string | undefined>(undefined);
+  readonly focus = input<string | undefined>(undefined);
+  readonly day = input<string | undefined>(undefined);
+
+  protected readonly canManage = computed(() => this.auth.can(Permissions.InventoryManage));
+  // Costs, prices and totals for whoever sees costs: a storekeeper moves the goods without them.
+  protected readonly seesCosts = computed(() => this.auth.can(Permissions.CostingView));
+  protected readonly isManager = computed(() => this.auth.can(Permissions.ApprovalDecide));
+
+  protected readonly hub = signal<InterBranchHub | null>(null);
+  protected readonly loading = signal(true);
+  protected readonly error = signal<string | null>(null);
+  protected readonly downloading = signal(false);
+  protected readonly tabIndex = signal(0);
+  protected readonly toDay = signal(isoDay(new Date()));
+  protected readonly fromDay = signal(isoDay(new Date(Date.now() - 29 * 86_400_000)));
+  protected readonly search = signal('');
+  protected readonly requisitionStatus = signal('');
+  protected readonly shipmentStatus = signal('');
+  private materials: MaterialCost[] | null = null;
+
+  protected readonly isSupplier = computed(() => supplies(this.hub()?.branchType));
+  protected readonly typeLabel = computed(() => {
+    const type = this.hub()?.branchType;
+    return type ? `${branchTypeLabels[type].en} · ${branchTypeLabels[type].ar}` : '';
+  });
+  // The central kitchens and warehouses this branch may ask.
+  protected readonly suppliers = computed(() => (this.hub()?.branches ?? []).filter((b) => b.isActive && supplies(b.type) && b.id !== this.hub()?.branchId));
+  protected readonly canAsk = computed(() => this.canManage() && this.suppliers().length > 0);
+  protected readonly canDispatch = computed(() => this.canManage() && this.isSupplier());
+  protected readonly incoming = computed(() =>
+    (this.hub()?.shipments ?? []).filter((s) => s.status === 'InTransit' && s.receivingBranchId === this.hub()?.branchId),
+  );
+
+  protected readonly requisitionFilters = computed<FilterOption[]>(() => {
+    const all = this.hub()?.requisitions ?? [];
+    return [
+      { value: '', label: 'All · الكل', count: all.length },
+      ...(Object.keys(requisitionStatusLabels) as (keyof typeof requisitionStatusLabels)[]).map((s) => ({
+        value: s, label: `${requisitionStatusLabels[s].en} · ${requisitionStatusLabels[s].ar}`, count: all.filter((r) => r.status === s).length,
+      })),
+    ];
+  });
+  protected readonly shipmentFilters = computed<FilterOption[]>(() => {
+    const all = this.hub()?.shipments ?? [];
+    return [
+      { value: '', label: 'All · الكل', count: all.length },
+      ...(Object.keys(shipmentStatusLabels) as (keyof typeof shipmentStatusLabels)[]).map((s) => ({
+        value: s, label: `${shipmentStatusLabels[s].en} · ${shipmentStatusLabels[s].ar}`, count: all.filter((x) => x.status === s).length,
+      })),
+    ];
+  });
+
+  protected readonly shownRequisitions = computed(() =>
+    (this.hub()?.requisitions ?? []).filter(
+      (r) => (!this.requisitionStatus() || r.status === this.requisitionStatus())
+        && smartMatch(this.search(), r.number, r.requestingBranch, r.supplyingBranch, r.notes ?? '', ...r.lines.map((l) => l.material)),
+    ),
+  );
+  protected readonly shownShipments = computed(() =>
+    (this.hub()?.shipments ?? []).filter(
+      (s) => (!this.shipmentStatus() || s.status === this.shipmentStatus())
+        && smartMatch(this.search(), s.number, s.requisitionNumber ?? '', s.supplyingBranch, s.receivingBranch, ...s.lines.map((l) => l.material)),
+    ),
+  );
+  protected readonly shownReceipts = computed(() =>
+    (this.hub()?.receipts ?? []).filter((p) =>
+      smartMatch(this.search(), p.number, p.shipmentNumber, p.requisitionNumber ?? '', p.supplyingBranch, p.notes ?? '', ...p.lines.map((l) => l.material)),
+    ),
+  );
+
+  constructor() {
+    // Opened on a tab, a day brought into the period: once, as the page opens.
+    effect(() => {
+      const [tab, day] = [this.tab(), this.day()];
+      untracked(() => {
+        const index = hubTabs.indexOf(tab as HubTab);
+        if (index >= 0) {
+          this.tabIndex.set(index);
+        }
+        if (day && day < this.fromDay()) {
+          this.fromDay.set(day);
+        }
+        void this.load();
+      });
+    });
+  }
+
+  protected qty(quantity: number, unit: string, purchaseUnitSize: number): string {
+    return shownQuantity(quantity, unit, purchaseUnitSize);
+  }
+
+  protected requisitionLabel(r: Requisition): string {
+    const l = requisitionStatusLabels[r.status];
+    return `${l.en} · ${l.ar}`;
+  }
+
+  protected shipmentLabel(s: Shipment): string {
+    const l = shipmentStatusLabels[s.status];
+    return `${l.en} · ${l.ar}`;
+  }
+
+  // The kitchen asked fills it: while nothing, or part of it, is sent.
+  protected canFill(r: Requisition): boolean {
+    return this.canDispatch() && r.supplyingBranchId === this.hub()?.branchId && (r.status === 'Submitted' || r.status === 'PartiallyDispatched');
+  }
+
+  protected canReceive(s: Shipment): boolean {
+    return this.canManage() && s.status === 'InTransit' && s.receivingBranchId === this.hub()?.branchId;
+  }
+
+  protected canVoidShipment(s: Shipment): boolean {
+    return this.canManage() && s.status === 'InTransit' && s.supplyingBranchId === this.hub()?.branchId;
+  }
+
+  protected setDays(from: string, to: string): void {
+    if (!from || !to || from > to) {
+      return;
+    }
+    this.fromDay.set(from);
+    this.toDay.set(to);
+    void this.load();
+  }
+
+  protected async newRequisition(): Promise<void> {
+    const made = await openRequisitionDialog(this.dialog, { suppliers: this.suppliers(), materials: await this.materialList() });
+    if (made) {
+      this.notify.info(`${made.number} sent to ${made.supplyingBranch}.`);
+      this.tabIndex.set(0);
+      await this.load();
+    }
+  }
+
+  protected async dispatch(requisition: Requisition | null): Promise<void> {
+    const h = this.hub();
+    if (!h) {
+      return;
+    }
+    const receivers = h.branches.filter((b) => b.isActive && b.id !== h.branchId);
+    const sent = await openDispatchDialog(this.dialog, { requisition, receivers, materials: await this.materialList(), seesCosts: this.seesCosts() });
+    if (sent) {
+      this.notify.info(`${sent.number} dispatched to ${sent.receivingBranch}.`);
+      this.tabIndex.set(1);
+      await this.load();
+    }
+  }
+
+  protected async receive(shipment: Shipment): Promise<void> {
+    const made = await openReceiveDialog(this.dialog, { shipment, seesCosts: this.seesCosts() });
+    if (made) {
+      this.notify.info(`${made.number} received into ${made.toLocation}.`);
+      this.tabIndex.set(2);
+      await this.load();
+    }
+  }
+
+  protected async cancel(r: Requisition): Promise<void> {
+    if (!confirm(`Cancel ${r.number}? Nothing has been sent for it. · إلغاء الطلب؟`)) {
+      return;
+    }
+    await this.act(() => this.api.cancel(r.id), `${r.number} cancelled.`, 'The requisition could not be cancelled.');
+  }
+
+  protected async voidShipment(s: Shipment): Promise<void> {
+    if (!confirm(`Void ${s.number}? Its goods go back to ${s.fromLocation} and its internal invoice is voided. · إلغاء الصرف؟`)) {
+      return;
+    }
+    await this.act(() => this.api.voidShipment(s.id), `${s.number} voided.`, 'The dispatch could not be voided.');
+  }
+
+  protected async voidReceipt(p: Receipt): Promise<void> {
+    if (!confirm(`Void ${p.number} and ${p.shipmentNumber}? Both invoices are voided: the goods leave ${p.receivingBranch} and go back to ${p.supplyingBranch}. · إلغاء الاستلام والفاتورتين؟`)) {
+      return;
+    }
+    await this.act(() => this.api.voidReceipt(p.id), `${p.number} and ${p.shipmentNumber} voided.`, 'The receipt could not be voided.');
+  }
+
+  protected printRequisition(r: Requisition): void {
+    const target = this.paper();
+    if (target) {
+      printRequisition(target, r, this.company.name());
+    }
+  }
+
+  protected printShipment(s: Shipment): void {
+    const target = this.paper();
+    if (target) {
+      printShipment(target, s, this.company.name(), (n) => this.company.money(n));
+    }
+  }
+
+  protected printReceipt(p: Receipt): void {
+    const target = this.paper();
+    if (target) {
+      printReceipt(target, p, this.company.name(), (n) => this.company.money(n));
+    }
+  }
+
+  // Quantities and units only: never a price.
+  protected async copyWhatsApp(r: Requisition): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(requisitionWhatsApp(r, this.company.name()));
+      this.notify.info(`${r.number} copied: paste it in WhatsApp.`);
+    } catch (error) {
+      this.notify.error(error, 'It could not be copied.');
+    }
+  }
+
+  protected async downloadSheet(): Promise<void> {
+    this.downloading.set(true);
+    try {
+      saveBlob(await firstValueFrom(this.api.sheet(this.fromDay(), this.toDay())), `inter-branch-${this.fromDay()}-to-${this.toDay()}.xlsx`);
+    } catch (error) {
+      this.notify.error(error, 'The workbook could not be made.');
+    } finally {
+      this.downloading.set(false);
+    }
+  }
+
+  private paper(): Window | null {
+    const target = window.open('', '_blank');
+    if (!target) {
+      this.notify.error(null, 'The browser stopped the paper opening: allow pop-ups for this site, then print again.');
+    }
+    return target;
+  }
+
+  private async act(run: () => Observable<unknown>, done: string, failed: string): Promise<void> {
+    try {
+      await firstValueFrom(run());
+      this.notify.info(done);
+      await this.load();
+    } catch (error) {
+      this.notify.error(error, failed);
+    }
+  }
+
+  private async materialList(): Promise<MaterialCost[]> {
+    this.materials ??= (await firstValueFrom(this.costing.materials())).filter((m) => !m.misplaced);
+    return this.materials;
+  }
+
+  private async load(): Promise<void> {
+    this.loading.set(true);
+    this.error.set(null);
+    try {
+      this.hub.set(await firstValueFrom(this.api.hub(this.fromDay(), this.toDay())));
+    } catch (error) {
+      this.error.set(errorMessage(error, 'The central kitchen hub could not be loaded.'));
+    } finally {
+      this.loading.set(false);
+    }
+  }
+}
+```
+
+
+النماذج الثلاثة: طلب جديد (بوحدة العد، يُرسل بالجرام)، و"صرف وإصدار فاتورة" (يملأ المتبقي من الطلب، رصيد موقع الصرف بجانب كل سطر وبالأحمر إن زاد، التسعير بالتكلفة أو بهامش أو سعر للسطر لمن يرى التكاليف، والإيراد والتكلفة والهامش)، والاستلام (المستلم = المرسل حتى يُغير، والعجز يطلب السبب، وعجز النقل بسعر التحويل).
+
+> 📄 **`frontend/src/app/features/costing/inter-branch-dialogs.ts`** — 691 سطر
+
+```ts
+import { DecimalPipe } from '@angular/common';
+import { Component, computed, inject, signal } from '@angular/core';
+import { FormsModule } from '@angular/forms';
+import { MatButtonModule } from '@angular/material/button';
+import { MatButtonToggleModule } from '@angular/material/button-toggle';
+import { MAT_DIALOG_DATA, MatDialog, MatDialogModule, MatDialogRef } from '@angular/material/dialog';
+import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatIconModule } from '@angular/material/icon';
+import { MatInputModule } from '@angular/material/input';
+import { MatSelectModule } from '@angular/material/select';
+import { firstValueFrom } from 'rxjs';
+import { MaterialCost, UnitOfMeasure, countUnit } from '../../core/costing/costing.api';
+import { InterBranchApi, InterBranchBranch, Receipt, Requisition, Shipment, TransferPricing } from '../../core/costing/inter-branch.api';
+import { LocationStock, StockApi, StockPlaces } from '../../core/costing/stock.api';
+import { errorMessage } from '../../core/http/error-message';
+import { MoneyPipe } from '../../core/ui/money.pipe';
+import { InfoTip } from './info-tip';
+import { MaterialPicker } from './material-picker';
+
+// The central kitchen hub's three forms: a branch's requisition, the kitchen's Dispatch & Bill, and
+// the branch's receipt of a shipment. Each posts itself, under an id made when it opens, and closes
+// with what it made. Quantities are entered as they are counted (kg, L, pieces); prices per that unit.
+
+function unitOf(unit: UnitOfMeasure | string, purchaseUnitSize: number): { label: string; size: number } {
+  return countUnit(unit as UnitOfMeasure, purchaseUnitSize);
+}
+
+// ---- A branch's requisition (أمر طلب بضاعة من الفرع) ----
+
+export interface RequisitionDialogData {
+  // The central kitchens and warehouses it may ask.
+  suppliers: InterBranchBranch[];
+  materials: MaterialCost[];
+}
+
+interface AskedLine {
+  rawMaterialId: string | null;
+  quantity: number | null;
+  notes: string;
+}
+
+@Component({
+  selector: 'app-requisition-dialog',
+  imports: [FormsModule, InfoTip, MatButtonModule, MatDialogModule, MatFormFieldModule, MatIconModule, MatInputModule, MatSelectModule, MaterialPicker],
+  template: `
+    <h2 mat-dialog-title>New requisition <span class="inline-ar">أمر طلب بضاعة</span> <app-info-tip tip="requisition" /></h2>
+    <mat-dialog-content>
+      <div class="toolbar">
+        <mat-form-field subscriptSizing="dynamic" class="wide">
+          <mat-label>Ask of · المورد الداخلي</mat-label>
+          <mat-select [ngModel]="supplying()" (ngModelChange)="supplying.set($event)" aria-label="Ask of">
+            @for (b of data.suppliers; track b.id) {
+              <mat-option [value]="b.id">{{ b.name }}@if (b.nameAr) { · {{ b.nameAr }}}</mat-option>
+            }
+          </mat-select>
+        </mat-form-field>
+        <mat-form-field subscriptSizing="dynamic" class="day">
+          <mat-label>Wanted by · مطلوب يوم</mat-label>
+          <input matInput type="date" [ngModel]="deliveryBy()" (ngModelChange)="deliveryBy.set($event)" aria-label="Wanted by" />
+        </mat-form-field>
+      </div>
+      <div class="table-wrap">
+        <table class="grid" aria-label="Requisition lines">
+          <thead>
+            <tr>
+              <th>Material<span class="ar">الخامة</span></th>
+              <th class="num">Quantity<span class="ar">الكمية</span></th>
+              <th>Note<span class="ar">ملاحظة</span></th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            @for (line of lines(); track $index; let i = $index) {
+              <tr>
+                <td>
+                  <app-material-picker class="material" [materials]="data.materials" [value]="line.rawMaterialId"
+                    (valueChange)="change(i, { rawMaterialId: $event })" [label]="'Material, line ' + (i + 1)" />
+                </td>
+                <td class="num">
+                  <mat-form-field subscriptSizing="dynamic" class="small">
+                    <input matInput type="number" min="0" step="any" [ngModel]="line.quantity" (ngModelChange)="change(i, { quantity: $event })"
+                      [attr.aria-label]="'Quantity, line ' + (i + 1)" />
+                    <span matTextSuffix>&nbsp;{{ unitLabel(line.rawMaterialId) }}</span>
+                  </mat-form-field>
+                </td>
+                <td>
+                  <mat-form-field subscriptSizing="dynamic" class="note">
+                    <input matInput maxlength="200" [ngModel]="line.notes" (ngModelChange)="change(i, { notes: $event })" [attr.aria-label]="'Note, line ' + (i + 1)" />
+                  </mat-form-field>
+                </td>
+                <td><button mat-icon-button (click)="remove(i)" [disabled]="lines().length === 1" aria-label="Remove line"><mat-icon>delete</mat-icon></button></td>
+              </tr>
+            }
+          </tbody>
+        </table>
+      </div>
+      <button mat-button (click)="add()"><mat-icon>add</mat-icon> Add line</button>
+      <mat-form-field subscriptSizing="dynamic" class="full">
+        <mat-label>Notes · ملاحظات</mat-label>
+        <input matInput maxlength="500" [ngModel]="notes()" (ngModelChange)="notes.set($event)" aria-label="Notes" />
+      </mat-form-field>
+      @if (error()) {
+        <p class="error" role="alert">{{ error() }}</p>
+      }
+    </mat-dialog-content>
+    <mat-dialog-actions align="end">
+      <button mat-button mat-dialog-close>Cancel</button>
+      <button mat-flat-button (click)="submit()" [disabled]="!ready() || saving()"><mat-icon>send</mat-icon> Send to the kitchen · إرسال</button>
+    </mat-dialog-actions>
+  `,
+  styleUrl: './costing.scss',
+  styles: `
+    .wide { min-width: 240px; }
+    .day { width: 170px; }
+    .material { min-width: 220px; width: 100%; }
+    .small { width: 140px; }
+    .note { min-width: 160px; }
+    .full { width: 100%; margin-top: 8px; }
+  `,
+})
+export class RequisitionDialog {
+  protected readonly data = inject<RequisitionDialogData>(MAT_DIALOG_DATA);
+  private readonly ref = inject(MatDialogRef<RequisitionDialog, Requisition>);
+  private readonly api = inject(InterBranchApi);
+  private readonly id = crypto.randomUUID();
+
+  protected readonly supplying = signal<string | null>(this.data.suppliers[0]?.id ?? null);
+  protected readonly deliveryBy = signal('');
+  protected readonly notes = signal('');
+  protected readonly lines = signal<AskedLine[]>([{ rawMaterialId: null, quantity: null, notes: '' }]);
+  protected readonly saving = signal(false);
+  protected readonly error = signal<string | null>(null);
+
+  protected readonly ready = computed(() => {
+    const lines = this.lines();
+    const ids = lines.map((l) => l.rawMaterialId);
+    return !!this.supplying() && lines.every((l) => l.rawMaterialId && (l.quantity ?? 0) > 0) && new Set(ids).size === ids.length;
+  });
+
+  protected unitLabel(id: string | null): string {
+    const m = this.data.materials.find((x) => x.id === id);
+    return m ? unitOf(m.unit, m.purchaseUnitSize).label : '';
+  }
+
+  protected change(index: number, patch: Partial<AskedLine>): void {
+    this.lines.update((lines) => lines.map((l, i) => (i === index ? { ...l, ...patch } : l)));
+  }
+
+  protected add(): void {
+    this.lines.update((lines) => [...lines, { rawMaterialId: null, quantity: null, notes: '' }]);
+  }
+
+  protected remove(index: number): void {
+    this.lines.update((lines) => lines.filter((_, i) => i !== index));
+  }
+
+  protected async submit(): Promise<void> {
+    if (!this.ready()) {
+      return;
+    }
+    this.saving.set(true);
+    this.error.set(null);
+    try {
+      const made = await firstValueFrom(
+        this.api.submit({
+          id: this.id,
+          supplyingBranchId: this.supplying()!,
+          requestedDeliveryDate: this.deliveryBy() || null,
+          lines: this.lines().map((l) => {
+            const m = this.data.materials.find((x) => x.id === l.rawMaterialId)!;
+            return { rawMaterialId: m.id, quantity: l.quantity! * unitOf(m.unit, m.purchaseUnitSize).size, notes: l.notes.trim() || null };
+          }),
+          notes: this.notes().trim() || null,
+        }),
+      );
+      this.ref.close(made);
+    } catch (error) {
+      this.error.set(errorMessage(error, 'The requisition could not be sent.'));
+    } finally {
+      this.saving.set(false);
+    }
+  }
+}
+
+// ---- The kitchen's Dispatch & Bill (صرف وإصدار فاتورة داخلية) ----
+
+export interface DispatchDialogData {
+  // The requisition it fills; none: a direct dispatch to a branch chosen here.
+  requisition: Requisition | null;
+  // The branches it may go to (a direct dispatch).
+  receivers: InterBranchBranch[];
+  materials: MaterialCost[];
+  seesCosts: boolean;
+}
+
+interface SentLine {
+  rawMaterialId: string | null;
+  // Fixed: a requisition's line.
+  fixed: boolean;
+  material: string;
+  unit: UnitOfMeasure | string;
+  purchaseUnitSize: number;
+  quantity: number | null;
+  asked: number | null;
+  // A price per counted unit typed for the line (a transfer price); none: cost plus the markup.
+  price: number | null;
+}
+
+@Component({
+  selector: 'app-dispatch-dialog',
+  imports: [
+    DecimalPipe, FormsModule, InfoTip, MatButtonModule, MatButtonToggleModule, MatDialogModule, MatFormFieldModule, MatIconModule, MatInputModule,
+    MatSelectModule, MaterialPicker, MoneyPipe,
+  ],
+  template: `
+    <h2 mat-dialog-title>
+      Dispatch & Bill <span class="inline-ar">صرف وإصدار فاتورة داخلية</span> <app-info-tip tip="internalSalesInvoice" />
+    </h2>
+    <mat-dialog-content>
+      <p class="muted">
+        @if (data.requisition; as r) {
+          {{ r.number }}: {{ r.requestingBranch }} asked for {{ r.lines.length }} material{{ r.lines.length === 1 ? '' : 's' }}.
+        } @else {
+          A direct dispatch to a branch, with no requisition. · صرف مباشر لفرع.
+        }
+      </p>
+      <div class="toolbar">
+        @if (!data.requisition) {
+          <mat-form-field subscriptSizing="dynamic" class="wide">
+            <mat-label>To · إلى فرع</mat-label>
+            <mat-select [ngModel]="to()" (ngModelChange)="to.set($event)" aria-label="To branch">
+              @for (b of data.receivers; track b.id) {
+                <mat-option [value]="b.id">{{ b.name }}@if (b.nameAr) { · {{ b.nameAr }}}</mat-option>
+              }
+            </mat-select>
+          </mat-form-field>
+        }
+        <mat-form-field subscriptSizing="dynamic" class="wide">
+          <mat-label>From · من موقع</mat-label>
+          <mat-select [ngModel]="from()" (ngModelChange)="from.set($event)" aria-label="From location">
+            @for (l of places.locations(); track l.id) {
+              <mat-option [value]="l.id">{{ l.name }}@if (l.nameAr) { · {{ l.nameAr }}}</mat-option>
+            }
+          </mat-select>
+        </mat-form-field>
+      </div>
+      <div class="toolbar pricing">
+        <mat-button-toggle-group [value]="pricing()" (change)="pricing.set($event.value)" aria-label="Transfer pricing">
+          <mat-button-toggle value="AtCost">At cost <span class="ar">بالتكلفة</span></mat-button-toggle>
+          <mat-button-toggle value="WithMarkupOrCustomPrice">Transfer price <span class="ar">سعر تحويل</span></mat-button-toggle>
+        </mat-button-toggle-group>
+        <app-info-tip tip="transferPricing" />
+        @if (pricing() === 'WithMarkupOrCustomPrice') {
+          <mat-form-field subscriptSizing="dynamic" class="small">
+            <mat-label>Markup · الهامش</mat-label>
+            <input matInput type="number" min="0" max="1000" step="any" [ngModel]="markup()" (ngModelChange)="markup.set($event)" aria-label="Markup percent" />
+            <span matTextSuffix>%</span>
+          </mat-form-field>
+        }
+      </div>
+      <div class="table-wrap">
+        <table class="grid" aria-label="Dispatch lines">
+          <thead>
+            <tr>
+              <th>Material<span class="ar">الخامة</span></th>
+              @if (data.requisition) {
+                <th class="num">Still asked<span class="ar">المتبقي</span></th>
+              }
+              <th class="num">Send<span class="ar">المرسل</span></th>
+              <th class="num">At {{ places.name(from()) || 'the store' }}<span class="ar">الرصيد</span></th>
+              @if (data.seesCosts) {
+                <th class="num">Cost<span class="ar">التكلفة</span></th>
+                <th class="num">Price<span class="ar">سعر التحويل</span></th>
+                <th class="num">Billed<span class="ar">الإجمالي</span></th>
+              }
+              @if (!data.requisition) {
+                <th></th>
+              }
+            </tr>
+          </thead>
+          <tbody>
+            @for (line of lines(); track $index; let i = $index) {
+              <tr>
+                <td>
+                  @if (line.fixed) {
+                    {{ line.material }}
+                  } @else {
+                    <app-material-picker class="material" [materials]="data.materials" [value]="line.rawMaterialId"
+                      (valueChange)="pick(i, $event)" [label]="'Material, line ' + (i + 1)" />
+                  }
+                </td>
+                @if (data.requisition) {
+                  <td class="num muted">{{ line.asked | number: '1.0-3' }} {{ label(line) }}</td>
+                }
+                <td class="num">
+                  <mat-form-field subscriptSizing="dynamic" class="small">
+                    <input matInput type="number" min="0" step="any" [ngModel]="line.quantity" (ngModelChange)="change(i, { quantity: $event })"
+                      [attr.aria-label]="'Send, line ' + (i + 1)" />
+                    <span matTextSuffix>&nbsp;{{ label(line) }}</span>
+                  </mat-form-field>
+                </td>
+                <td class="num" [class.short]="isShort(line)">
+                  @if (line.rawMaterialId) {
+                    {{ available(line) | number: '1.0-3' }} {{ label(line) }}
+                  }
+                </td>
+                @if (data.seesCosts) {
+                  <td class="num muted">{{ cost(line) === null ? '—' : (cost(line)! | money) }}</td>
+                  <td class="num">
+                    @if (pricing() === 'WithMarkupOrCustomPrice') {
+                      <mat-form-field subscriptSizing="dynamic" class="small">
+                        <input matInput type="number" min="0" step="any" [placeholder]="(priceOf(line) ?? 0).toFixed(2)" [ngModel]="line.price"
+                          (ngModelChange)="change(i, { price: $event === '' ? null : $event })" [attr.aria-label]="'Price, line ' + (i + 1)" />
+                      </mat-form-field>
+                    } @else {
+                      {{ priceOf(line) === null ? '—' : (priceOf(line)! | money) }}
+                    }
+                  </td>
+                  <td class="num">{{ billed(line) === null ? '' : (billed(line)! | money) }}</td>
+                }
+                @if (!data.requisition) {
+                  <td><button mat-icon-button (click)="remove(i)" [disabled]="lines().length === 1" aria-label="Remove line"><mat-icon>delete</mat-icon></button></td>
+                }
+              </tr>
+            }
+          </tbody>
+          @if (data.seesCosts) {
+            <tfoot>
+              <tr>
+                <td [attr.colspan]="data.requisition ? 6 : 5">
+                  Billed · الإيراد الداخلي {{ revenue() | money }} · Cost · التكلفة {{ cogs() | money }} · Margin · الهامش {{ revenue() - cogs() | money }}
+                </td>
+                <td class="num"><strong>{{ revenue() | money }}</strong></td>
+                @if (!data.requisition) {
+                  <td></td>
+                }
+              </tr>
+            </tfoot>
+          }
+        </table>
+      </div>
+      @if (!data.requisition) {
+        <button mat-button (click)="add()"><mat-icon>add</mat-icon> Add line</button>
+      }
+      <mat-form-field subscriptSizing="dynamic" class="full">
+        <mat-label>Notes · ملاحظات</mat-label>
+        <input matInput maxlength="500" [ngModel]="notes()" (ngModelChange)="notes.set($event)" aria-label="Notes" />
+      </mat-form-field>
+      @if (anyShort()) {
+        <p class="error" role="alert">More than {{ places.name(from()) || 'the location' }} holds: send less, or from another location. · الرصيد لا يكفي.</p>
+      }
+      @if (error()) {
+        <p class="error" role="alert">{{ error() }}</p>
+      }
+    </mat-dialog-content>
+    <mat-dialog-actions align="end">
+      <button mat-button mat-dialog-close>Cancel</button>
+      <button mat-flat-button (click)="submit()" [disabled]="!ready() || saving()"><mat-icon>local_shipping</mat-icon> Dispatch & Bill · صرف</button>
+    </mat-dialog-actions>
+  `,
+  styleUrl: './costing.scss',
+  styles: `
+    .wide { min-width: 220px; }
+    .material { min-width: 220px; width: 100%; }
+    .small { width: 130px; }
+    .full { width: 100%; margin-top: 8px; }
+    .pricing { align-items: center; }
+    .short { color: var(--mat-sys-error); font-weight: 600; }
+  `,
+})
+export class DispatchDialog {
+  protected readonly data = inject<DispatchDialogData>(MAT_DIALOG_DATA);
+  private readonly ref = inject(MatDialogRef<DispatchDialog, Shipment>);
+  private readonly api = inject(InterBranchApi);
+  private readonly stockApi = inject(StockApi);
+  protected readonly places = inject(StockPlaces);
+  private readonly id = crypto.randomUUID();
+
+  protected readonly to = signal<string | null>(this.data.requisition?.requestingBranchId ?? this.data.receivers[0]?.id ?? null);
+  protected readonly from = signal<string | null>(null);
+  protected readonly pricing = signal<TransferPricing>('AtCost');
+  protected readonly markup = signal<number | null>(10);
+  protected readonly notes = signal('');
+  protected readonly stock = signal<LocationStock | null>(null);
+  protected readonly saving = signal(false);
+  protected readonly error = signal<string | null>(null);
+  protected readonly lines = signal<SentLine[]>(
+    this.data.requisition
+      ? this.data.requisition.lines.map((l) => {
+          const size = unitOf(l.unit, l.purchaseUnitSize).size;
+          const left = Math.max(l.requestedQuantity - l.dispatchedQuantity, 0) / size;
+          return {
+            rawMaterialId: l.rawMaterialId, fixed: true, material: l.material, unit: l.unit, purchaseUnitSize: l.purchaseUnitSize,
+            quantity: left, asked: left, price: null,
+          };
+        })
+      : [this.blank()],
+  );
+
+  protected readonly anyShort = computed(() => this.lines().some((l) => this.isShort(l)));
+  protected readonly revenue = computed(() => this.lines().reduce((sum, l) => sum + (this.billed(l) ?? 0), 0));
+  protected readonly cogs = computed(() =>
+    this.lines().reduce((sum, l) => sum + (this.cost(l) !== null && l.quantity ? this.cost(l)! * l.quantity : 0), 0),
+  );
+  protected readonly ready = computed(() => {
+    const sending = this.lines().filter((l) => l.rawMaterialId && (l.quantity ?? 0) > 0);
+    const ids = this.lines().map((l) => l.rawMaterialId).filter(Boolean);
+    return !!this.to() && !!this.from() && sending.length > 0 && !this.anyShort() && new Set(ids).size === ids.length
+      && this.lines().every((l) => (l.quantity ?? 0) >= 0) && (this.pricing() === 'AtCost' || ((this.markup() ?? 0) >= 0 && (this.markup() ?? 0) <= 1000));
+  });
+
+  constructor() {
+    void this.load();
+  }
+
+  protected label(line: SentLine): string {
+    return line.rawMaterialId ? unitOf(line.unit, line.purchaseUnitSize).label : '';
+  }
+
+  // What the location it leaves has, in the unit it is entered in.
+  protected available(line: SentLine): number {
+    const row = this.stock()?.rows.find((r) => r.rawMaterialId === line.rawMaterialId);
+    return (row?.byLocation[this.from() ?? ''] ?? 0) / unitOf(line.unit, line.purchaseUnitSize).size;
+  }
+
+  protected isShort(line: SentLine): boolean {
+    return !!line.rawMaterialId && (line.quantity ?? 0) > 0 && (line.quantity ?? 0) > this.available(line) + 1e-9;
+  }
+
+  // The kitchen's average cost a counted unit; none for whoever does not see costs.
+  protected cost(line: SentLine): number | null {
+    const row = this.stock()?.rows.find((r) => r.rawMaterialId === line.rawMaterialId);
+    return row?.averageCost == null ? null : row.averageCost * unitOf(line.unit, line.purchaseUnitSize).size;
+  }
+
+  // The price billed a counted unit: the cost; or the price typed, or the cost plus the markup.
+  protected priceOf(line: SentLine): number | null {
+    const cost = this.cost(line);
+    if (this.pricing() === 'AtCost') {
+      return cost;
+    }
+    if (line.price !== null && `${line.price}` !== '') {
+      return Number(line.price);
+    }
+    return cost === null ? null : cost * (1 + (Number(this.markup()) || 0) / 100);
+  }
+
+  protected billed(line: SentLine): number | null {
+    const price = this.priceOf(line);
+    return price === null || !line.quantity ? null : price * line.quantity;
+  }
+
+  protected pick(index: number, id: string | null): void {
+    const m = this.data.materials.find((x) => x.id === id);
+    this.change(index, { rawMaterialId: id, material: m?.name ?? '', unit: m?.unit ?? 'Gram', purchaseUnitSize: m?.purchaseUnitSize ?? 1 });
+  }
+
+  protected change(index: number, patch: Partial<SentLine>): void {
+    this.lines.update((lines) => lines.map((l, i) => (i === index ? { ...l, ...patch } : l)));
+  }
+
+  protected add(): void {
+    this.lines.update((lines) => [...lines, this.blank()]);
+  }
+
+  protected remove(index: number): void {
+    this.lines.update((lines) => lines.filter((_, i) => i !== index));
+  }
+
+  protected async submit(): Promise<void> {
+    if (!this.ready()) {
+      return;
+    }
+    this.saving.set(true);
+    this.error.set(null);
+    const custom = this.pricing() === 'WithMarkupOrCustomPrice' && this.data.seesCosts;
+    try {
+      const sent = await firstValueFrom(
+        this.api.dispatch({
+          id: this.id,
+          requisitionId: this.data.requisition?.id ?? null,
+          receivingBranchId: this.data.requisition ? null : this.to(),
+          fromLocationId: this.from(),
+          pricing: this.pricing(),
+          markupPercent: this.pricing() === 'WithMarkupOrCustomPrice' ? Number(this.markup()) || 0 : null,
+          lines: this.lines()
+            .filter((l) => l.rawMaterialId && (l.quantity ?? 0) > 0)
+            .map((l) => {
+              const size = unitOf(l.unit, l.purchaseUnitSize).size;
+              const typed = custom && l.price !== null && `${l.price}` !== '' ? Number(l.price) / size : null;
+              return { rawMaterialId: l.rawMaterialId!, quantity: l.quantity! * size, transferUnitPrice: typed };
+            }),
+          notes: this.notes().trim() || null,
+        }),
+      );
+      this.ref.close(sent);
+    } catch (error) {
+      this.error.set(errorMessage(error, 'The shipment could not be dispatched.'));
+    } finally {
+      this.saving.set(false);
+    }
+  }
+
+  private blank(): SentLine {
+    return { rawMaterialId: null, fixed: false, material: '', unit: 'Gram', purchaseUnitSize: 1, quantity: null, asked: null, price: null };
+  }
+
+  private async load(): Promise<void> {
+    await this.places.load(true);
+    this.from.set(this.places.mainStore()?.id ?? null);
+    try {
+      this.stock.set(await firstValueFrom(this.stockApi.locationStock()));
+    } catch (error) {
+      this.error.set(errorMessage(error, 'What the kitchen holds could not be read.'));
+    }
+  }
+}
+
+// ---- The branch's receipt (استلام الفرع وفاتورة مشتريات داخلية) ----
+
+export interface ReceiveDialogData {
+  shipment: Shipment;
+  seesCosts: boolean;
+}
+
+@Component({
+  selector: 'app-receive-dialog',
+  imports: [DecimalPipe, FormsModule, InfoTip, MatButtonModule, MatDialogModule, MatFormFieldModule, MatIconModule, MatInputModule, MatSelectModule, MoneyPipe],
+  template: `
+    @let s = data.shipment;
+    <h2 mat-dialog-title>Receive shipment <span class="inline-ar">تأكيد استلام الشحنة</span> <app-info-tip tip="internalPurchaseInvoice" /></h2>
+    <mat-dialog-content>
+      <p class="muted">{{ s.number }} from {{ s.supplyingBranch }}{{ s.requisitionNumber ? ', for ' + s.requisitionNumber : '' }}. Count what came, as it came.</p>
+      <mat-form-field subscriptSizing="dynamic" class="wide">
+        <mat-label>Into · موقع الاستلام</mat-label>
+        <mat-select [ngModel]="to()" (ngModelChange)="to.set($event)" aria-label="Into location">
+          @for (l of places.locations(); track l.id) {
+            <mat-option [value]="l.id">{{ l.name }}@if (l.nameAr) { · {{ l.nameAr }}}</mat-option>
+          }
+        </mat-select>
+      </mat-form-field>
+      <div class="table-wrap">
+        <table class="grid" aria-label="Receipt lines">
+          <thead>
+            <tr>
+              <th>Material<span class="ar">الخامة</span></th>
+              <th class="num">Sent<span class="ar">المرسل</span></th>
+              <th class="num">Received<span class="ar">المستلم</span></th>
+              <th class="num">Short<span class="ar">العجز</span></th>
+              @if (data.seesCosts) {
+                <th class="num">Transit loss<span class="ar">عجز النقل</span></th>
+              }
+            </tr>
+          </thead>
+          <tbody>
+            @for (l of s.lines; track l.rawMaterialId; let i = $index) {
+              <tr>
+                <td>{{ l.material }}</td>
+                <td class="num">{{ sent(i) | number: '1.0-3' }} {{ label(i) }}</td>
+                <td class="num">
+                  <mat-form-field subscriptSizing="dynamic" class="small">
+                    <input matInput type="number" min="0" step="any" [ngModel]="received()[i]" (ngModelChange)="set(i, $event)"
+                      [attr.aria-label]="'Received, line ' + (i + 1)" />
+                    <span matTextSuffix>&nbsp;{{ label(i) }}</span>
+                  </mat-form-field>
+                </td>
+                <td class="num" [class.short]="short(i) > 0">{{ short(i) > 0 ? (short(i) | number: '1.0-3') + ' ' + label(i) : '—' }}</td>
+                @if (data.seesCosts) {
+                  <td class="num">{{ loss(i) > 0 ? (loss(i) | money) : '' }}</td>
+                }
+              </tr>
+            }
+          </tbody>
+        </table>
+      </div>
+      <mat-form-field subscriptSizing="dynamic" class="full">
+        <mat-label>{{ anyShort() ? 'What happened (required) · سبب العجز' : 'Notes · ملاحظات' }}</mat-label>
+        <input matInput maxlength="500" [ngModel]="notes()" (ngModelChange)="notes.set($event)" aria-label="Receipt notes" [required]="anyShort()" />
+      </mat-form-field>
+      @if (anyShort() && !notes().trim()) {
+        <p class="error" role="alert">Some of it did not arrive: say what happened, short or damaged on the way. · اذكر سبب العجز.</p>
+      }
+      @if (tooMuch()) {
+        <p class="error" role="alert">More received than was sent: count again. · المستلم أكثر من المرسل.</p>
+      }
+      @if (error()) {
+        <p class="error" role="alert">{{ error() }}</p>
+      }
+    </mat-dialog-content>
+    <mat-dialog-actions align="end">
+      <button mat-button mat-dialog-close>Cancel</button>
+      <button mat-flat-button (click)="submit()" [disabled]="!ready() || saving()"><mat-icon>inventory</mat-icon> Receive · تأكيد الاستلام</button>
+    </mat-dialog-actions>
+  `,
+  styleUrl: './costing.scss',
+  styles: `
+    .wide { min-width: 220px; }
+    .small { width: 130px; }
+    .full { width: 100%; margin-top: 8px; }
+    .short { color: var(--mat-sys-error); font-weight: 600; }
+  `,
+})
+export class ReceiveDialog {
+  protected readonly data = inject<ReceiveDialogData>(MAT_DIALOG_DATA);
+  private readonly ref = inject(MatDialogRef<ReceiveDialog, Receipt>);
+  private readonly api = inject(InterBranchApi);
+  protected readonly places = inject(StockPlaces);
+  private readonly id = crypto.randomUUID();
+  private readonly sizes = this.data.shipment.lines.map((l) => unitOf(l.unit, l.purchaseUnitSize));
+
+  protected readonly to = signal<string | null>(null);
+  protected readonly notes = signal('');
+  protected readonly received = signal<(number | null)[]>(this.data.shipment.lines.map((l, i) => l.quantity / this.sizes[i].size));
+  protected readonly saving = signal(false);
+  protected readonly error = signal<string | null>(null);
+
+  protected readonly anyShort = computed(() => this.data.shipment.lines.some((_, i) => this.short(i) > 1e-9));
+  protected readonly tooMuch = computed(() => this.received().some((r, i) => (Number(r) || 0) > this.sent(i) + 1e-9));
+  protected readonly ready = computed(
+    () => !!this.to() && !this.tooMuch() && this.received().every((r) => r !== null && `${r}` !== '' && Number(r) >= 0)
+      && (!this.anyShort() || !!this.notes().trim()),
+  );
+
+  constructor() {
+    void this.places.load(true).then(() => this.to.set(this.places.mainStore()?.id ?? null));
+  }
+
+  protected label(i: number): string {
+    return this.sizes[i].label;
+  }
+
+  protected sent(i: number): number {
+    return this.data.shipment.lines[i].quantity / this.sizes[i].size;
+  }
+
+  protected short(i: number): number {
+    return Math.max(this.sent(i) - (Number(this.received()[i]) || 0), 0);
+  }
+
+  // At the price billed for it, as the branch's invoice keeps it.
+  protected loss(i: number): number {
+    const price = this.data.shipment.lines[i].transferUnitPrice;
+    return price === null ? 0 : this.short(i) * this.sizes[i].size * price;
+  }
+
+  protected set(i: number, value: number | null): void {
+    this.received.update((all) => all.map((r, j) => (j === i ? value : r)));
+  }
+
+  protected async submit(): Promise<void> {
+    if (!this.ready()) {
+      return;
+    }
+    this.saving.set(true);
+    this.error.set(null);
+    try {
+      const made = await firstValueFrom(
+        this.api.receive({
+          id: this.id,
+          shipmentId: this.data.shipment.id,
+          toLocationId: this.to(),
+          lines: this.data.shipment.lines.map((l, i) => ({ rawMaterialId: l.rawMaterialId, receivedQuantity: Number(this.received()[i]) * this.sizes[i].size })),
+          notes: this.notes().trim() || null,
+        }),
+      );
+      this.ref.close(made);
+    } catch (error) {
+      this.error.set(errorMessage(error, 'The shipment could not be received.'));
+    } finally {
+      this.saving.set(false);
+    }
+  }
+}
+
+export function openRequisitionDialog(dialog: MatDialog, data: RequisitionDialogData): Promise<Requisition | undefined> {
+  return firstValueFrom(
+    dialog.open<RequisitionDialog, RequisitionDialogData, Requisition>(RequisitionDialog, { data, width: '820px', maxWidth: '95vw', autoFocus: 'dialog' }).afterClosed(),
+  );
+}
+
+export function openDispatchDialog(dialog: MatDialog, data: DispatchDialogData): Promise<Shipment | undefined> {
+  return firstValueFrom(
+    dialog.open<DispatchDialog, DispatchDialogData, Shipment>(DispatchDialog, { data, width: '960px', maxWidth: '95vw', autoFocus: 'dialog' }).afterClosed(),
+  );
+}
+
+export function openReceiveDialog(dialog: MatDialog, data: ReceiveDialogData): Promise<Receipt | undefined> {
+  return firstValueFrom(
+    dialog.open<ReceiveDialog, ReceiveDialogData, Receipt>(ReceiveDialog, { data, width: '760px', maxWidth: '95vw', autoFocus: 'dialog' }).afterClosed(),
+  );
+}
+```
+
+
+> 📄 **`frontend/src/app/features/costing/inter-branch-paper.ts`** — 180 سطر
+
+```ts
+import { UnitOfMeasure, countUnit } from '../../core/costing/costing.api';
+import { Receipt, Requisition, Shipment, requisitionStatusLabels } from '../../core/costing/inter-branch.api';
+
+// The central kitchen hub's papers: a requisition's slip and its WhatsApp message (quantities and
+// units only, never a price), and a dispatch's internal sales invoice (with prices, for whoever sees
+// them) or its delivery note (without). Each in a window of its own, so it prints as a paper.
+
+// A quantity kept in grams, millilitres or pieces, as the material is counted: "4 kg", "250 ml".
+export function shownQuantity(quantity: number, unit: UnitOfMeasure | string, purchaseUnitSize: number): string {
+  const counted = countUnit(unit as UnitOfMeasure, purchaseUnitSize);
+  return `${(quantity / counted.size).toLocaleString('en-US', { maximumFractionDigits: 3 })} ${counted.label}`;
+}
+
+function day(iso: string | null): string {
+  return iso ? new Date(`${iso}T00:00:00`).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : '';
+}
+
+export function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
+}
+
+// The requisition as a WhatsApp message to the kitchen: what is asked, how much, by when.
+export function requisitionWhatsApp(requisition: Requisition, company: string): string {
+  const due = day(requisition.requestedDeliveryDate);
+  return [
+    `*${company}* · طلب بضاعة *${requisition.number}*`,
+    `Requisition *${requisition.number}*: ${requisition.requestingBranch} → ${requisition.supplyingBranch}`,
+    '',
+    ...requisition.lines.map(
+      (l, i) => `${i + 1}. ${l.material} — ${shownQuantity(l.requestedQuantity, l.unit, l.purchaseUnitSize)}${l.notes ? ` (${l.notes})` : ''}`,
+    ),
+    '',
+    due ? `Wanted by · مطلوب يوم: ${due}` : null,
+    requisition.notes ? `Notes · ملاحظات: ${requisition.notes}` : null,
+    '',
+    'Please confirm · برجاء التأكيد 🙏',
+  ]
+    .filter((l) => l !== null)
+    .join('\n')
+    // No date and no notes: one blank line, not two.
+    .replace(/\n{3,}/g, '\n\n');
+}
+
+const paperStyle = `
+  body { font: 12px/1.4 system-ui, sans-serif; margin: 24px; color: #111; }
+  h1 { font-size: 18px; margin: 0 0 4px; } p { margin: 0 0 8px; color: #333; }
+  .void { color: #b00020; font-weight: 700; }
+  .head { display: grid; grid-template-columns: repeat(2, 1fr); gap: 4px 24px; margin: 12px 0 16px; }
+  table { width: 100%; border-collapse: collapse; } th, td { border: 1px solid #999; padding: 6px 8px; text-align: start; }
+  th { background: #eee; } td.num, th.num { text-align: end; }
+  tfoot td { font-weight: 600; }
+  .signatures { display: grid; grid-template-columns: repeat(2, 1fr); gap: 48px; margin-top: 48px; }
+  .signatures div { border-top: 1px solid #111; padding-top: 4px; }
+  @page { margin: 14mm; }`;
+
+function write(target: Window, title: string, body: string): void {
+  target.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>${paperStyle}</style></head><body>${body}</body></html>`);
+  target.document.close();
+  target.focus();
+  target.print();
+}
+
+// The requisition slip (إذن طلب بضاعة): what the branch asks of the kitchen, for the kitchen to fill.
+export function printRequisition(target: Window, requisition: Requisition, company: string): void {
+  const status = requisitionStatusLabels[requisition.status];
+  const rows = requisition.lines
+    .map(
+      (l) =>
+        `<tr><td>${escapeHtml(l.code ?? '')}</td><td>${escapeHtml(l.material)}</td>` +
+        `<td class="num">${escapeHtml(shownQuantity(l.requestedQuantity, l.unit, l.purchaseUnitSize))}</td>` +
+        `<td class="num">${escapeHtml(shownQuantity(l.dispatchedQuantity, l.unit, l.purchaseUnitSize))}</td><td>${escapeHtml(l.notes ?? '')}</td></tr>`,
+    )
+    .join('');
+  write(
+    target,
+    `${requisition.number} · طلب بضاعة`,
+    `<h1>${escapeHtml(company)} — Requisition · أمر طلب بضاعة من الفرع</h1>
+    ${requisition.status === 'Cancelled' ? '<p class="void">CANCELLED · ملغي</p>' : ''}
+    <div class="head">
+      <div><strong>Number · الرقم:</strong> ${escapeHtml(requisition.number)}</div>
+      <div><strong>Day · التاريخ:</strong> ${escapeHtml(day(requisition.requestDate))}</div>
+      <div><strong>From · الفرع الطالب:</strong> ${escapeHtml(requisition.requestingBranch)}</div>
+      <div><strong>To · المورد الداخلي:</strong> ${escapeHtml(requisition.supplyingBranch)}</div>
+      <div><strong>Wanted by · مطلوب يوم:</strong> ${escapeHtml(day(requisition.requestedDeliveryDate) || '—')}</div>
+      <div><strong>Status · الحالة:</strong> ${escapeHtml(`${status.en} · ${status.ar}`)}</div>
+      <div><strong>Asked by · بواسطة:</strong> ${escapeHtml(requisition.createdBy)}</div>
+      ${requisition.notes ? `<div><strong>Notes · ملاحظات:</strong> ${escapeHtml(requisition.notes)}</div>` : ''}
+    </div>
+    <table><thead><tr><th>Code · الكود</th><th>Material · الخامة</th><th class="num">Asked · المطلوب</th><th class="num">Sent · المصروف</th>
+      <th>Note · ملاحظة</th></tr></thead><tbody>${rows}</tbody></table>
+    <div class="signatures"><div>Asked by · الطالب</div><div>Approved by the kitchen · اعتماد المطبخ المركزي</div></div>`,
+  );
+}
+
+// The dispatch's paper: its internal sales invoice (إذن صرف وفاتورة بيع داخلية) with what each line
+// costs and is billed at, or, for whoever does not see prices, its delivery note (إذن تسليم).
+export function printShipment(target: Window, shipment: Shipment, company: string, money: (n: number) => string): void {
+  const priced = shipment.totalTransferRevenue !== null;
+  const rows = shipment.lines
+    .map((l) => {
+      const size = countUnit(l.unit, l.purchaseUnitSize).size;
+      return (
+        `<tr><td>${escapeHtml(l.code ?? '')}</td><td>${escapeHtml(l.material)}</td>` +
+        `<td class="num">${escapeHtml(shownQuantity(l.quantity, l.unit, l.purchaseUnitSize))}</td>` +
+        (priced
+          ? `<td class="num">${escapeHtml(l.transferUnitPrice === null ? '' : money(l.transferUnitPrice * size))}</td>` +
+            `<td class="num">${escapeHtml(l.lineRevenue === null ? '' : money(l.lineRevenue))}</td>`
+          : '') +
+        `<td class="num">${l.receivedQuantity === null ? '' : escapeHtml(shownQuantity(l.receivedQuantity, l.unit, l.purchaseUnitSize))}</td></tr>`
+      );
+    })
+    .join('');
+  const title = priced ? 'Internal sales invoice · فاتورة بيع داخلية' : 'Delivery note · إذن تسليم';
+  write(
+    target,
+    `${shipment.number} · ${priced ? 'فاتورة بيع داخلية' : 'إذن تسليم'}`,
+    `<h1>${escapeHtml(company)} — ${title}</h1>
+    ${shipment.status === 'Voided' ? `<p class="void">VOIDED · ملغي${shipment.voidedBy ? ' — ' + escapeHtml(shipment.voidedBy) : ''}</p>` : ''}
+    <div class="head">
+      <div><strong>Number · الرقم:</strong> ${escapeHtml(shipment.number)}</div>
+      <div><strong>Day · التاريخ:</strong> ${escapeHtml(day(shipment.dispatchDate))}</div>
+      <div><strong>From · من:</strong> ${escapeHtml(`${shipment.supplyingBranch} — ${shipment.fromLocation}`)}</div>
+      <div><strong>To · إلى:</strong> ${escapeHtml(shipment.receivingBranch)}</div>
+      <div><strong>Requisition · الطلب:</strong> ${escapeHtml(shipment.requisitionNumber ?? 'Direct dispatch · صرف مباشر')}</div>
+      <div><strong>Sent by · بواسطة:</strong> ${escapeHtml(shipment.createdBy)}</div>
+      ${shipment.notes ? `<div><strong>Notes · ملاحظات:</strong> ${escapeHtml(shipment.notes)}</div>` : ''}
+      ${priced ? '<div><strong>Inter-company · بين فروع الشركة</strong></div>' : ''}
+    </div>
+    <table><thead><tr><th>Code · الكود</th><th>Material · الخامة</th><th class="num">Sent · المرسل</th>
+      ${priced ? '<th class="num">Price · سعر التحويل</th><th class="num">Total · الإجمالي</th>' : ''}
+      <th class="num">Received · المستلم</th></tr></thead>
+      <tbody>${rows}</tbody>
+      ${priced ? `<tfoot><tr><td colspan="4">Total · الإجمالي</td><td class="num">${escapeHtml(money(shipment.totalTransferRevenue!))}</td><td></td></tr></tfoot>` : ''}
+    </table>
+    <div class="signatures"><div>Sent by the kitchen · المسلِّم</div><div>Received by the branch · المستلِم</div></div>`,
+  );
+}
+
+// The branch's receipt and its internal purchase invoice (فاتورة مشتريات داخلية): what was sent,
+// what came in and what was short, with the price billed for whoever sees prices.
+export function printReceipt(target: Window, receipt: Receipt, company: string, money: (n: number) => string): void {
+  const priced = receipt.totalBilled !== null;
+  const rows = receipt.lines
+    .map(
+      (l) =>
+        `<tr><td>${escapeHtml(l.code ?? '')}</td><td>${escapeHtml(l.material)}</td>` +
+        `<td class="num">${escapeHtml(shownQuantity(l.dispatchedQuantity, l.unit, l.purchaseUnitSize))}</td>` +
+        `<td class="num">${escapeHtml(shownQuantity(l.receivedQuantity, l.unit, l.purchaseUnitSize))}</td>` +
+        `<td class="num">${l.shortQuantity > 0 ? escapeHtml(shownQuantity(l.shortQuantity, l.unit, l.purchaseUnitSize)) : ''}</td>` +
+        (priced
+          ? `<td class="num">${escapeHtml(l.lineTotal === null ? '' : money(l.lineTotal))}</td>` +
+            `<td class="num">${escapeHtml(l.transitLoss ? money(l.transitLoss) : '')}</td>`
+          : '') +
+        '</tr>',
+    )
+    .join('');
+  write(
+    target,
+    `${receipt.number} · فاتورة مشتريات داخلية`,
+    `<h1>${escapeHtml(company)} — ${priced ? 'Internal purchase invoice · فاتورة مشتريات داخلية' : 'Goods received note · إذن استلام'}</h1>
+    ${receipt.status === 'Voided' ? `<p class="void">VOIDED · ملغي${receipt.voidedBy ? ' — ' + escapeHtml(receipt.voidedBy) : ''}</p>` : ''}
+    <div class="head">
+      <div><strong>Number · الرقم:</strong> ${escapeHtml(receipt.number)}</div>
+      <div><strong>Day · التاريخ:</strong> ${escapeHtml(day(receipt.receiptDate))}</div>
+      <div><strong>From · من:</strong> ${escapeHtml(receipt.supplyingBranch)}</div>
+      <div><strong>Into · إلى:</strong> ${escapeHtml(`${receipt.receivingBranch} — ${receipt.toLocation}`)}</div>
+      <div><strong>Shipment · الشحنة:</strong> ${escapeHtml(receipt.shipmentNumber)}</div>
+      <div><strong>Requisition · الطلب:</strong> ${escapeHtml(receipt.requisitionNumber ?? 'Direct dispatch · صرف مباشر')}</div>
+      <div><strong>Received by · بواسطة:</strong> ${escapeHtml(receipt.createdBy)}</div>
+      ${receipt.notes ? `<div><strong>Notes · ملاحظات:</strong> ${escapeHtml(receipt.notes)}</div>` : ''}
+    </div>
+    <table><thead><tr><th>Code · الكود</th><th>Material · الخامة</th><th class="num">Sent · المرسل</th><th class="num">Received · المستلم</th>
+      <th class="num">Short · العجز</th>${priced ? '<th class="num">Billed · المفوتر</th><th class="num">Transit loss · عجز النقل</th>' : ''}</tr></thead>
+      <tbody>${rows}</tbody>
+      ${priced ? `<tfoot><tr><td colspan="5">Total · الإجمالي</td><td class="num">${escapeHtml(money(receipt.totalBilled!))}</td>`
+        + `<td class="num">${escapeHtml(receipt.totalTransitLoss ? money(receipt.totalTransitLoss) : '')}</td></tr></tfoot>` : ''}
+    </table>
+    <div class="signatures"><div>Delivered by · المسلِّم</div><div>Received by · المستلِم</div></div>`,
+  );
 }
 ```
 

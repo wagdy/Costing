@@ -73,6 +73,8 @@ public class PeriodLockTests
         ["EnsureCompanySettingsCommand"] = "settings",
         // The company's structure: its mode, branches and locations.
         ["ChangeOperatingModeCommand"] = "structure", ["SaveBranchCommand"] = "structure", ["SaveInventoryLocationCommand"] = "structure",
+        // A branch's requisition: asked, nothing moves until it is dispatched (held to the lock then).
+        ["SubmitRequisitionCommand"] = "asked", ["CancelRequisitionCommand"] = "asked",
     };
 
     [Fact]

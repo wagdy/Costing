@@ -111,8 +111,8 @@ export interface MaterialPurchaseHistory {
 
 // ---- The item's stock card (كارتة الصنف / حركة الصنف) ----
 
-export type StockCardMovementType = 'Opening' | 'Purchases' | 'Production' | 'Sales' | 'Waste' | 'CountAdjustment';
-export type StockCardSourceKind = 'PurchaseInvoice' | 'ProductionOrder' | 'StockCount' | 'SalesReceipt' | 'Spoilage';
+export type StockCardMovementType = 'Opening' | 'Purchases' | 'Production' | 'Sales' | 'Waste' | 'CountAdjustment' | 'InterBranch';
+export type StockCardSourceKind = 'PurchaseInvoice' | 'ProductionOrder' | 'StockCount' | 'SalesReceipt' | 'Spoilage' | 'InterBranchShipment';
 export type StockMovementReason =
   | 'Sale'
   | 'Waste'
@@ -127,7 +127,9 @@ export type StockMovementReason =
   | 'Hospitality'
   | 'RecipeTasting'
   | 'TransferOut'
-  | 'TransferIn';
+  | 'TransferIn'
+  | 'InterBranchDispatchOut'
+  | 'InterBranchReceiptIn';
 
 export const stockCardTypes: { type: StockCardMovementType; en: string; ar: string }[] = [
   { type: 'Opening', en: 'Opening', ar: 'افتتاحي' },
@@ -136,6 +138,7 @@ export const stockCardTypes: { type: StockCardMovementType; en: string; ar: stri
   { type: 'Sales', en: 'Sales', ar: 'مبيعات' },
   { type: 'Waste', en: 'Waste', ar: 'هالك' },
   { type: 'CountAdjustment', en: 'Count adjustment', ar: 'تسوية جرد' },
+  { type: 'InterBranch', en: 'Between branches', ar: 'بين الفروع' },
 ];
 
 // One movement, oldest first: in or out in the purchase unit, the balance after it, its price and the

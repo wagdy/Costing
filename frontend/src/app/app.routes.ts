@@ -178,6 +178,13 @@ const costingChildren: Routes = [
     loadComponent: () => import('./features/costing/count-sheet-page').then((m) => m.CountSheetPage),
   },
   {
+    // The central kitchen's hub: requisitions, dispatches and receipts between branches, for whoever
+    // counts, keeps or buys the stock.
+    path: 'inter-branch',
+    canActivate: [costingTabGuard('Counts', 'Materials', 'Purchases')],
+    loadComponent: () => import('./features/costing/inter-branch-page').then((m) => m.InterBranchPage),
+  },
+  {
     // Stock moved between a branch's locations, and what each holds: for whoever counts or keeps the stock.
     path: 'internal-transfers',
     canActivate: [costingTabGuard('Counts', 'Materials')],

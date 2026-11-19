@@ -45,6 +45,9 @@ public sealed class TestCosting
     public LocationStore Locations { get; } = new();
     public BranchStub CurrentBranch { get; } = new();
     public TransferStore Transfers { get; } = new();
+    public RequisitionStore Requisitions { get; } = new();
+    public ShipmentStore Shipments { get; } = new();
+    public ReceiptStore Receipts { get; } = new();
     public BalanceStore Balances { get; }
     public StationStore Stations { get; } = new();
     public PurchaseOrderStore PurchaseOrders { get; } = new();
@@ -78,6 +81,9 @@ public sealed class TestCosting
         services.AddSingleton<Costing.Domain.Company.IInventoryLocationRepository>(Locations);
         services.AddSingleton<Costing.Application.Company.ICurrentBranch>(CurrentBranch);
         services.AddSingleton<Costing.Domain.Stock.IInternalTransferRepository>(Transfers);
+        services.AddSingleton<Costing.Domain.InterBranch.IInterBranchRequisitionRepository>(Requisitions);
+        services.AddSingleton<Costing.Domain.InterBranch.IInternalSalesInvoiceRepository>(Shipments);
+        services.AddSingleton<Costing.Domain.InterBranch.IInternalPurchaseInvoiceRepository>(Receipts);
         services.AddSingleton<Costing.Application.Stock.IStockBalances>(Balances);
         services.AddSingleton<Costing.Domain.Stations.IKitchenStationRepository>(Stations);
         services.AddSingleton<IRawMaterialRepository>(Inventory);
@@ -187,6 +193,54 @@ public sealed class TransferStore : ListStore<Costing.Domain.Stock.InternalTrans
 
     public Task<int> CountInYearAsync(int year, CancellationToken cancellationToken = default) =>
         Task.FromResult(All.Count(t => t.Number.StartsWith($"TR-{year}-", StringComparison.Ordinal)));
+}
+
+// The central kitchen's hub: requisitions, shipments (internal sales invoices) and receipts
+// (internal purchase invoices), each listed for a branch as the database's are.
+public sealed class RequisitionStore : ListStore<Costing.Domain.InterBranch.InterBranchRequisition>, Costing.Domain.InterBranch.IInterBranchRequisitionRepository
+{
+    public Task<IReadOnlyList<Costing.Domain.InterBranch.InterBranchRequisition>> GetForBranchAsync(
+        Guid branchId, DateOnly from, DateOnly to, CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyList<Costing.Domain.InterBranch.InterBranchRequisition>>(All
+            .Where(r => (r.BranchId == branchId || r.SupplyingBranchId == branchId) && ((r.RequestDate >= from && r.RequestDate <= to) || r.IsOpen)).ToList());
+
+    public Task<IReadOnlyList<Costing.Domain.InterBranch.InterBranchRequisition>> GetByIdsAsync(IReadOnlyCollection<Guid> ids, CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyList<Costing.Domain.InterBranch.InterBranchRequisition>>(All.Where(r => ids.Contains(r.Id)).ToList());
+
+    public Task<int> CountInYearAsync(int year, CancellationToken cancellationToken = default) =>
+        Task.FromResult(All.Count(r => r.Number.StartsWith($"REQ-{year}-", StringComparison.Ordinal)));
+}
+
+public sealed class ShipmentStore : ListStore<Costing.Domain.InterBranch.InternalSalesInvoice>, Costing.Domain.InterBranch.IInternalSalesInvoiceRepository
+{
+    public Task<IReadOnlyList<Costing.Domain.InterBranch.InternalSalesInvoice>> GetForBranchAsync(
+        Guid branchId, DateOnly from, DateOnly to, CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyList<Costing.Domain.InterBranch.InternalSalesInvoice>>(All
+            .Where(s => (s.BranchId == branchId || s.ReceivingBranchId == branchId)
+                && ((s.DispatchDate >= from && s.DispatchDate <= to) || s.Status == Costing.Domain.InterBranch.ShipmentStatus.InTransit)).ToList());
+
+    public Task<IReadOnlyList<Costing.Domain.InterBranch.InternalSalesInvoice>> GetByRequisitionAsync(Guid requisitionId, CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyList<Costing.Domain.InterBranch.InternalSalesInvoice>>(All.Where(s => s.RequisitionId == requisitionId).ToList());
+
+    public Task<IReadOnlyList<Costing.Domain.InterBranch.InternalSalesInvoice>> GetByIdsAsync(IReadOnlyCollection<Guid> ids, CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyList<Costing.Domain.InterBranch.InternalSalesInvoice>>(All.Where(s => ids.Contains(s.Id)).ToList());
+
+    public Task<int> CountInYearAsync(int year, CancellationToken cancellationToken = default) =>
+        Task.FromResult(All.Count(s => s.Number.StartsWith($"ISI-{year}-", StringComparison.Ordinal)));
+}
+
+public sealed class ReceiptStore : ListStore<Costing.Domain.InterBranch.InternalPurchaseInvoice>, Costing.Domain.InterBranch.IInternalPurchaseInvoiceRepository
+{
+    public Task<IReadOnlyList<Costing.Domain.InterBranch.InternalPurchaseInvoice>> GetForBranchAsync(
+        Guid branchId, DateOnly from, DateOnly to, CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyList<Costing.Domain.InterBranch.InternalPurchaseInvoice>>(All
+            .Where(p => (p.BranchId == branchId || p.SupplyingBranchId == branchId) && p.ReceiptDate >= from && p.ReceiptDate <= to).ToList());
+
+    public Task<IReadOnlyList<Costing.Domain.InterBranch.InternalPurchaseInvoice>> GetByIdsAsync(IReadOnlyCollection<Guid> ids, CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyList<Costing.Domain.InterBranch.InternalPurchaseInvoice>>(All.Where(p => ids.Contains(p.Id)).ToList());
+
+    public Task<int> CountInYearAsync(int year, CancellationToken cancellationToken = default) =>
+        Task.FromResult(All.Count(p => p.Number.StartsWith($"IPI-{year}-", StringComparison.Ordinal)));
 }
 
 // What each location has: the sum of its entries, as the database's; an entry without a branch or

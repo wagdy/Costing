@@ -3180,7 +3180,7 @@ public static class DailySalesWorkbook
 ```
 
 
-> 📄 **`backend/src/Costing.Infrastructure/Excel/ReportWorkbook.cs`** — 531 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Excel/ReportWorkbook.cs`** — 624 سطر
 
 ```csharp
 using ClosedXML.Excel;
@@ -3711,6 +3711,99 @@ public static class InternalTransferWorkbook
                 ],
                 [.. transfers.SelectMany(t => t.Lines.Select(l => new ReportRow(
                     [t.Number, t.TransferDate, t.FromLocation, t.ToLocation, l.Code ?? "", l.Material, l.Quantity, l.Unit, l.UnitCost, l.LineTotal, Status(t.Status)])))]),
+        ]);
+    }
+}
+
+// The central kitchen's hub as a workbook: the requisitions, the dispatches (internal sales
+// invoices) and the receipts (internal purchase invoices) of the period, each with its lines.
+// Prices and totals are blank for whoever does not see costs, as the hub's are.
+public static class InterBranchWorkbook
+{
+    public static Stream Build(Costing.Application.InterBranch.InterBranchHubDto hub, DateOnly from, DateOnly to)
+    {
+        var period = $"{hub.Branch} · {from:d MMM yyyy} – {to:d MMM yyyy}";
+        static string Requisition(Costing.Domain.InterBranch.RequisitionStatus s) => s switch
+        {
+            Costing.Domain.InterBranch.RequisitionStatus.Submitted => "Submitted · مرسل للمركزي",
+            Costing.Domain.InterBranch.RequisitionStatus.PartiallyDispatched => "Partly dispatched · صرف جزئي",
+            Costing.Domain.InterBranch.RequisitionStatus.Dispatched => "Dispatched · في الطريق",
+            Costing.Domain.InterBranch.RequisitionStatus.Received => "Received · تم الاستلام",
+            _ => "Cancelled · ملغي",
+        };
+        static string Shipment(Costing.Domain.InterBranch.ShipmentStatus s) => s switch
+        {
+            Costing.Domain.InterBranch.ShipmentStatus.InTransit => "In transit · في الطريق",
+            Costing.Domain.InterBranch.ShipmentStatus.Received => "Received · تم الاستلام",
+            _ => "Voided · ملغى",
+        };
+        static string Receipt(Costing.Domain.InterBranch.InternalPurchaseInvoiceStatus s) =>
+            s == Costing.Domain.InterBranch.InternalPurchaseInvoiceStatus.Voided ? "Voided · ملغى" : "Posted · مُرحّل";
+        static string Pricing(Costing.Domain.InterBranch.TransferPricing p) =>
+            p == Costing.Domain.InterBranch.TransferPricing.AtCost ? "At cost · بالتكلفة" : "Transfer price · سعر تحويل";
+        return ReportWorkbook.Build([
+            new ReportSheet(
+                "Requisitions", "Branch requisitions · طلبات الفروع", period,
+                [
+                    new("Number · الرقم"), new("Date · التاريخ", ReportWorkbook.Date), new("Asked by · الفرع الطالب"), new("Asked of · المورد الداخلي"),
+                    new("Wanted by · موعد التوريد"), new("Status · الحالة"), new("Lines · البنود", ReportWorkbook.Quantity), new("By · بواسطة"),
+                    new("Notes · ملاحظات"),
+                ],
+                [.. hub.Requisitions.Select(r => new ReportRow(
+                    [r.Number, r.RequestDate, r.RequestingBranch, r.SupplyingBranch, r.RequestedDeliveryDate is { } d ? d.ToString("d MMM yyyy") : "",
+                     Requisition(r.Status), r.Lines.Count, r.CreatedBy, r.Notes ?? ""]))]),
+            new ReportSheet(
+                "Requisition lines", "What was asked for · البنود المطلوبة", period,
+                [
+                    new("Number · الرقم"), new("Code · الكود"), new("Material · الخامة"), new("Asked · المطلوب", ReportWorkbook.Quantity),
+                    new("Dispatched · المصروف", ReportWorkbook.Quantity), new("Received · المستلم", ReportWorkbook.Quantity), new("Unit · الوحدة"),
+                    new("Note · ملاحظة"),
+                ],
+                [.. hub.Requisitions.SelectMany(r => r.Lines.Select(l => new ReportRow(
+                    [r.Number, l.Code ?? "", l.Material, l.RequestedQuantity, l.DispatchedQuantity, l.ReceivedQuantity, l.Unit, l.Notes ?? ""])))]),
+            new ReportSheet(
+                "Dispatches", "Central kitchen dispatches (ISI) · صرف وفواتير بيع المركزي", period,
+                [
+                    new("Number · الرقم"), new("Date · التاريخ", ReportWorkbook.Date), new("From · من"), new("To · إلى"), new("Requisition · الطلب"),
+                    new("Status · الحالة"), new("Pricing · التسعير"), new("Markup % · الهامش"), new("Billed · الإيراد الداخلي", ReportWorkbook.Money),
+                    new("Cost of goods · التكلفة", ReportWorkbook.Money), new("Margin · الهامش", ReportWorkbook.Money), new("Receipt · الاستلام"),
+                    new("By · بواسطة"),
+                ],
+                [.. hub.Shipments.Select(s => new ReportRow(
+                    [s.Number, s.DispatchDate, s.SupplyingBranch, s.ReceivingBranch, s.RequisitionNumber ?? "Direct · مباشر", Shipment(s.Status),
+                     Pricing(s.Pricing), s.MarkupPercent, s.TotalTransferRevenue, s.TotalInternalCogs, s.InternalMargin, s.ReceiptNumber ?? "", s.CreatedBy]))]),
+            new ReportSheet(
+                "Dispatch lines", "What was sent · البنود المصروفة", period,
+                [
+                    new("Number · الرقم"), new("Code · الكود"), new("Material · الخامة"), new("Sent · المرسل", ReportWorkbook.Quantity),
+                    new("Received · المستلم", ReportWorkbook.Quantity), new("Unit · الوحدة"), new("Unit cost · تكلفة الوحدة", ReportWorkbook.Money),
+                    new("Transfer price · سعر التحويل", ReportWorkbook.Money), new("Billed · الإيراد", ReportWorkbook.Money),
+                    new("Cost of goods · التكلفة", ReportWorkbook.Money),
+                ],
+                [.. hub.Shipments.SelectMany(s => s.Lines.Select(l => new ReportRow(
+                    [s.Number, l.Code ?? "", l.Material, l.Quantity, l.ReceivedQuantity, l.Unit, l.UnitCost, l.TransferUnitPrice, l.LineRevenue, l.LineCogs])))]),
+            new ReportSheet(
+                "Receipts", "Branch receipts (IPI) · استلامات وفواتير شراء الفروع", period,
+                [
+                    new("Number · الرقم"), new("Date · التاريخ", ReportWorkbook.Date), new("From · من"), new("To · إلى"), new("Into · موقع الاستلام"),
+                    new("Shipment · الشحنة"), new("Status · الحالة"), new("Billed · المفوتر", ReportWorkbook.Money),
+                    new("Received · المستلم", ReportWorkbook.Money), new("Transit loss · عجز النقل", ReportWorkbook.Money), new("By · بواسطة"),
+                    new("Notes · ملاحظات"),
+                ],
+                [.. hub.Receipts.Select(r => new ReportRow(
+                    [r.Number, r.ReceiptDate, r.SupplyingBranch, r.ReceivingBranch, r.ToLocation, r.ShipmentNumber, Receipt(r.Status), r.TotalBilled,
+                     r.TotalReceivedValue, r.TotalTransitLoss, r.CreatedBy, r.Notes ?? ""]))]),
+            new ReportSheet(
+                "Receipt lines", "What came in · البنود المستلمة", period,
+                [
+                    new("Number · الرقم"), new("Code · الكود"), new("Material · الخامة"), new("Sent · المرسل", ReportWorkbook.Quantity),
+                    new("Received · المستلم", ReportWorkbook.Quantity), new("Short · العجز", ReportWorkbook.Quantity), new("Unit · الوحدة"),
+                    new("Transfer price · سعر التحويل", ReportWorkbook.Money), new("Billed · المفوتر", ReportWorkbook.Money),
+                    new("Transit loss · عجز النقل", ReportWorkbook.Money),
+                ],
+                [.. hub.Receipts.SelectMany(r => r.Lines.Select(l => new ReportRow(
+                    [r.Number, l.Code ?? "", l.Material, l.DispatchedQuantity, l.ReceivedQuantity, l.ShortQuantity, l.Unit, l.TransferUnitPrice, l.LineTotal,
+                     l.TransitLoss])))]),
         ]);
     }
 }

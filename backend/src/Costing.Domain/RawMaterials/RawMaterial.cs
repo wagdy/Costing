@@ -313,6 +313,29 @@ public sealed class RawMaterial : AggregateRoot
         return (taken, put);
     }
 
+    // Sent to another branch (صرف لفرع): out of the central kitchen's location at its branch's
+    // average cost, what the internal sales invoice counts as its cost.
+    public StockMovement DispatchToBranch(decimal quantity, Guid salesInvoiceId, Guid fromLocationId, string recordedBy)
+    {
+        var taken = Move(-Positive(quantity), StockMovementReason.InterBranchDispatchOut, salesInvoiceId, UnitCostHere, recordedBy: recordedBy);
+        taken.AssignLocation(fromLocationId);
+        return taken;
+    }
+
+    // Received from another branch (استلام من المركزي): into the location at the price it was billed,
+    // which moves the receiving branch's average as a delivery's price does. A prep item too: the
+    // central kitchen's sauces and doughs come in this way, never on a supplier's invoice.
+    public StockMovement ReceiveFromBranch(decimal quantity, Guid purchaseInvoiceId, decimal unitPrice, Guid toLocationId, string recordedBy)
+    {
+        Positive(quantity);
+        if (unitPrice < 0)
+            throw new DomainException("A transfer price cannot be less than nothing.");
+        AverageWith(quantity, unitPrice);
+        var put = Move(quantity, StockMovementReason.InterBranchReceiptIn, purchaseInvoiceId, unitPrice, recordedBy: recordedBy);
+        put.AssignLocation(toLocationId);
+        return put;
+    }
+
     // Weighted by quantity against what is on the shelf; stock below zero counts as none, since
     // nothing is left to average with.
     private void AverageWith(decimal quantity, decimal unitCost) => AverageCost = Stock.MovingAverage.With(AverageCost, QuantityOnHand, quantity, unitCost);
@@ -332,7 +355,8 @@ public sealed class RawMaterial : AggregateRoot
         if (original.IsReversal)
             throw new DomainException("A reversal is not reversed again.");
 
-        if (original.Reason is StockMovementReason.Purchase or StockMovementReason.ProductionOutput && original.Quantity > 0)
+        if (original.Reason is StockMovementReason.Purchase or StockMovementReason.ProductionOutput or StockMovementReason.InterBranchReceiptIn
+            && original.Quantity > 0)
             UnaverageWith(original.Quantity, original.UnitCost);
         var reversal = Move(-original.Quantity, original.Reason, original.SourceId, original.UnitCost, "Voided", reversedBy, original.Id, original.ResponsibleStationId);
         // Undone in the branch and the location it was entered in, whichever the reversal is made from.

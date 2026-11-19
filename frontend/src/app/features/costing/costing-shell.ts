@@ -42,6 +42,14 @@ export class CostingShell {
         path: 'internal-transfers', en: 'Internal transfers', ar: 'التحويلات الداخلية', icon: 'move_down', group: costingGroups.operations,
       });
     }
+    // The central kitchen's hub, once the company runs one: after the transfers, for whoever counts,
+    // keeps or buys the stock.
+    if (this.company.mode() === 'MultiBranch_CentralKitchen' && (this.access.has('Counts') || this.access.has('Materials') || this.access.has('Purchases'))) {
+      const after = Math.max(tabs.findIndex((t) => t.path === 'internal-transfers'), tabs.findIndex((t) => t.path === 'counts'), tabs.findIndex((t) => t.path === 'purchases'));
+      tabs.splice(after < 0 ? tabs.length : after + 1, 0, {
+        path: 'inter-branch', en: 'Inter-branch hub', ar: 'المطبخ المركزي وتحويلات الفروع', icon: 'soup_kitchen', group: costingGroups.operations,
+      });
+    }
     return [
       ...tabs,
       ...(this.auth.can(Permissions.InventoryManage)

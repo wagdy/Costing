@@ -3117,7 +3117,7 @@ internal sealed class BooksLockBehavior<TRequest, TResponse>(BooksGuard guard, I
 ```
 
 
-> 📄 **`backend/src/Costing.Application/Books/BooksDays.cs`** — 166 سطر
+> 📄 **`backend/src/Costing.Application/Books/BooksDays.cs`** — 188 سطر
 
 ```csharp
 using Costing.Application.Approvals;
@@ -3232,6 +3232,28 @@ internal sealed class VoidInternalTransferDays(Costing.Domain.Stock.IInternalTra
 {
     public async Task<IEnumerable<DateOnly?>> DaysAsync(Stock.VoidInternalTransferCommand request, CancellationToken cancellationToken) =>
         await transfers.GetByIdAsync(request.Id, cancellationToken) is { } transfer ? [transfer.TransferDate] : [];
+}
+
+// A shipment voided while on its way: the day it was dispatched.
+internal sealed class VoidShipmentDays(Costing.Domain.InterBranch.IInternalSalesInvoiceRepository shipments)
+    : IBooksDays<InterBranch.VoidShipmentCommand>
+{
+    public async Task<IEnumerable<DateOnly?>> DaysAsync(InterBranch.VoidShipmentCommand request, CancellationToken cancellationToken) =>
+        await shipments.GetByIdAsync(request.Id, cancellationToken) is { } shipment ? [shipment.DispatchDate] : [];
+}
+
+// A receipt voided with its shipment: the day it was received and the day it was dispatched.
+internal sealed class VoidReceiptDays(
+    Costing.Domain.InterBranch.IInternalPurchaseInvoiceRepository receipts, Costing.Domain.InterBranch.IInternalSalesInvoiceRepository shipments)
+    : IBooksDays<InterBranch.VoidReceiptCommand>
+{
+    public async Task<IEnumerable<DateOnly?>> DaysAsync(InterBranch.VoidReceiptCommand request, CancellationToken cancellationToken)
+    {
+        if (await receipts.GetByIdAsync(request.Id, cancellationToken) is not { } receipt)
+            return [];
+        var shipment = await shipments.GetByIdAsync(receipt.InternalSalesInvoiceId, cancellationToken);
+        return [receipt.ReceiptDate, shipment?.DispatchDate];
+    }
 }
 
 // A deletion, asked for or done at once: the record's own day.
@@ -3449,7 +3471,7 @@ public sealed record UnlockBooksRequest(DateOnly? Until, string? Reason);
 
 ### 7.1 الفكرة
 
-النظام يتكيف مع حجم المكان الفعلي: محل بمساحة مفتوحة لا يرى شيئًا من الفروع أو المواقع، وسلسلة فروع بمطبخ مركزي ترى اختيار الفرع وتسجيل كل حركة باسم فرعها. أربعة أنماط (`SystemOperatingMode`) على إعدادات الشركة، والافتراضي `SingleBranch_OpenSpace`: النظام كما كان تمامًا (رصيد واحد ومتوسط تكلفة واحد لكل خامة). المرحلة الأولى هنا (7.1–7.5)، والثانية (الأرصدة حسب الموقع والتكلفة حسب الفرع والتحويلات الداخلية) في القسم 8؛ ثم المطبخ المركزي، ثم الأرباح والخسائر لكل فرع مع الحذف، في إصدارات تالية.
+النظام يتكيف مع حجم المكان الفعلي: محل بمساحة مفتوحة لا يرى شيئًا من الفروع أو المواقع، وسلسلة فروع بمطبخ مركزي ترى اختيار الفرع وتسجيل كل حركة باسم فرعها. أربعة أنماط (`SystemOperatingMode`) على إعدادات الشركة، والافتراضي `SingleBranch_OpenSpace`: النظام كما كان تمامًا (رصيد واحد ومتوسط تكلفة واحد لكل خامة). المرحلة الأولى هنا (7.1–7.5)، والثانية (الأرصدة حسب الموقع والتكلفة حسب الفرع والتحويلات الداخلية) في القسم 8، والثالثة (المطبخ المركزي وتحويلات الفروع) في القسم 9؛ ثم الأرباح والخسائر لكل فرع مع الحذف في إصدار تالٍ.
 
 ### 7.2 الدومين: الأنماط والفروع والمواقع
 
@@ -4675,7 +4697,7 @@ internal sealed class GetLocationStockHandler(
 
 ثم يحدّث `MaterialBranchStocks`: مرآة لمتوسط الشركة مع فرع واحد، أو متوسط الفرع بحركات الشراء والإنتاج مع عدة فروع (والإلغاء يُخرج سعره)، ومتوسط الشركة = قيمة الفروع ÷ رصيدها. والـ migration `AddStockLocations` تضيف الأعمدة بقيمة افتراضية (المخزن الرئيسي) وتملأ صف تكلفة لكل خامة في الفرع الأول بمتوسطها.
 
-> 📄 **`backend/src/Costing.Infrastructure/Persistence/StockPersistence.cs`** — 300 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Persistence/StockPersistence.cs`** — 301 سطر
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
@@ -4955,7 +4977,8 @@ internal sealed class StockLedgerInterceptor(IServiceProvider services) : SaveCh
                 rows[key] = row;
             }
             var before = onHand.GetValueOrDefault(key);
-            var inbound = movement.Reason is StockMovementReason.Purchase or StockMovementReason.ProductionOutput;
+            // A delivery, a batch made, or a shipment received from the central kitchen at its price.
+            var inbound = movement.Reason is StockMovementReason.Purchase or StockMovementReason.ProductionOutput or StockMovementReason.InterBranchReceiptIn;
             if (inbound && !movement.IsReversal && movement.Quantity > 0 && movement.UnitCost is { } cost)
                 row.AverageWith(before, movement.Quantity, cost);
             else if (inbound && movement.IsReversal && movement.Quantity < 0)
@@ -5058,6 +5081,1499 @@ public sealed class InternalTransfersController(ISender sender, Costing.Applicat
 }
 
 public sealed record PostTransferRequest(Guid Id, Guid FromLocationId, Guid ToLocationId, IReadOnlyList<TransferLineInput>? Lines, string? Notes);
+```
+
+
+## 9. المطبخ المركزي وتحويلات الفروع (المرحلة الثالثة)
+
+### 9.1 الفكرة: ثلاث خطوات وفاتورتان متطابقتان
+
+```text
+1) الفرع يطلب        REQ-2026-0001   كميات فقط، لا قيود ولا مخزون (يُلغى قبل أي صرف)
+2) المركزي يصرف      ISI-2026-0001   خروج من موقع المركزي بمتوسطه + فاتورة بيع داخلية (إيراد/تكلفة/هامش)
+3) الفرع يستلم       IPI-2026-0001   دخول موقع الفرع بسعر التحويل + فاتورة شراء داخلية بنفس قيمة الصرف
+```
+
+بين الصرف والاستلام الشحنة "في الطريق": خرجت من المركزي ولم تدخل الفرع. الفرع يُفوتر بكل ما أُرسل حتى تتطابق الفاتورتان (لحذفهما في المرحلة الرابعة)، وما لم يصل لا يدخل مخزونه ويُسجل **عجز نقل** بسعر التحويل مع سببه (ملاحظة إلزامية). وكل خطوة تعمل في **الفرع المختار**: الطلب والاستلام في الفرع، والصرف في المطبخ المركزي (`InterBranchDesk.HereAsync`).
+
+### 9.2 الدومين
+
+- `InterBranchRequisition.Submit`: المورد مطبخ أو مخزن مركزي (`Supplies()`)، لا يطلب الفرع من نفسه، وتاريخ التوريد ليس قبل اليوم. و `Restate(shipments)` تحسب المصروف والمستلم لكل سطر والحالة من الشحنات غير الملغاة: لا شيء ⇐ مرسل؛ شحنة في الطريق ⇐ تم الصرف (أو صرف جزئي)؛ كلها مستلمة ⇐ تم الاستلام (أو صرف جزئي إن بقي سطر ناقص).
+- `InternalSalesInvoice.Dispatch`: يتحقق من **كل** السطور أولاً (الرصيد في الموقع، تكلفة موجودة) ثم يصرف؛ السعر = التكلفة (`AtCost`) أو سعر السطر أو التكلفة × (1 + الهامش٪). `RawMaterial.DispatchToBranch` حركة `InterBranchDispatchOut` بمتوسط الفرع (`UnitCostHere`).
+- `InternalPurchaseInvoice.Receive`: لا يزيد المستلم عن المرسل، والعجز يحتاج ملاحظة؛ `RawMaterial.ReceiveFromBranch` حركة `InterBranchReceiptIn` بسعر التحويل (والمصنّعات أيضاً). الإلغاء (`Void`) يلغي فاتورة المركزي معه.
+
+> 📄 **`backend/src/Costing.Domain/InterBranch/InterBranchRequisition.cs`** — 200 سطر
+
+```csharp
+using System.Globalization;
+using Costing.Domain.Common;
+using Costing.Domain.Company;
+using Costing.Domain.RawMaterials;
+
+namespace Costing.Domain.InterBranch;
+
+public enum RequisitionStatus
+{
+    // Sent to the central kitchen (مرسل للمركزي): nothing dispatched yet.
+    Submitted = 1,
+
+    // Part of it dispatched (صرف جزئي): the rest still to come.
+    PartiallyDispatched = 2,
+
+    // All of it dispatched and on its way (تم الصرف وفي الطريق).
+    Dispatched = 3,
+
+    // All of it dispatched and received by the branch (تم الاستلام بالفرع).
+    Received = 4,
+
+    // Called off before anything was dispatched (ملغي).
+    Cancelled = 5,
+}
+
+// A branch's requisition (أمر طلب بضاعة من الفرع): what a restaurant asks its central kitchen or
+// warehouse to send, by when. Quantities only, never prices: the kitchen prices what it sends.
+// Numbered REQ-2026-0001 by the year it is made in. What has been dispatched and received of each
+// line, and its status, follow its shipments (Restate); called off only while nothing is dispatched.
+public sealed class InterBranchRequisition : AggregateRoot, IBranchOwned
+{
+    public const int MaxNotes = 500;
+    public const int MaxLineNotes = 200;
+    public const int MaxLines = 200;
+
+    private readonly List<InterBranchRequisitionLine> _lines = [];
+
+    private InterBranchRequisition() { }
+
+    // The branch asking: the requisition is its record.
+    public Guid BranchId { get; private set; }
+
+    public void AssignBranch(Guid branchId) => BranchId = branchId;
+
+    public Guid RequestingBranchId => BranchId;
+    public string Number { get; private set; } = string.Empty;
+    public Guid SupplyingBranchId { get; private set; }
+    public DateOnly RequestDate { get; private set; }
+    public DateOnly? RequestedDeliveryDate { get; private set; }
+    public RequisitionStatus Status { get; private set; } = RequisitionStatus.Submitted;
+    public string? Notes { get; private set; }
+    public string CreatedBy { get; private set; } = string.Empty;
+    public string? CreatedByUserId { get; private set; }
+    public DateTime CreatedAtUtc { get; private set; }
+    public DateTime? CancelledAtUtc { get; private set; }
+    public string? CancelledBy { get; private set; }
+    public IReadOnlyList<InterBranchRequisitionLine> Lines => _lines;
+
+    // Still to be dispatched, or on its way: what the hub counts as open.
+    public bool IsOpen => Status is RequisitionStatus.Submitted or RequisitionStatus.PartiallyDispatched or RequisitionStatus.Dispatched;
+
+    public static string NumberFor(int year, int sequence) => string.Create(CultureInfo.InvariantCulture, $"REQ-{year}-{sequence:0000}");
+
+    // Asked of a central kitchen or warehouse, another branch in use, for one or more materials.
+    public static InterBranchRequisition Submit(
+        Guid id, string number, Branch requesting, Branch supplying, DateOnly date, DateOnly? deliveryBy,
+        IReadOnlyList<(RawMaterial Material, decimal Quantity, string? Notes)> lines, string? notes, string by, string? byUserId)
+    {
+        if (requesting.Id == supplying.Id)
+            throw new DomainException($"{requesting.Name} cannot ask itself: choose the central kitchen or warehouse that supplies it. · اختر المطبخ المركزي.");
+        if (!supplying.Supplies())
+            throw new DomainException(
+                $"{supplying.Name} is a restaurant: a requisition goes to a central kitchen or warehouse. · الطلب يُرسل لمطبخ أو مخزن مركزي.");
+        if (!requesting.IsActive || !supplying.IsActive)
+            throw new DomainException($"{(!requesting.IsActive ? requesting.Name : supplying.Name)} is not in use. · الفرع غير مفعّل.");
+        if (deliveryBy is { } wanted && wanted < date)
+            throw new DomainException("Ask for it on a day still to come: the delivery date is before today. · تاريخ التوريد قبل اليوم.");
+        if (lines.Count == 0)
+            throw new DomainException("Ask for at least one material. · أضف خامة واحدة على الأقل.");
+        if (lines.Count > MaxLines)
+            throw new DomainException($"A requisition asks for {MaxLines} materials at most.");
+        if (lines.GroupBy(l => l.Material.Id).FirstOrDefault(g => g.Count() > 1) is { } twice)
+            throw new DomainException($"{twice.First().Material.Name} is on the requisition twice: put it on one line.");
+        var said = Said(notes, MaxNotes, "the notes");
+        var requisition = new InterBranchRequisition
+        {
+            Id = id, Number = number, BranchId = requesting.Id, SupplyingBranchId = supplying.Id, RequestDate = date, RequestedDeliveryDate = deliveryBy,
+            Notes = said, CreatedBy = by, CreatedByUserId = byUserId, CreatedAtUtc = DateTime.UtcNow,
+        };
+        foreach (var (material, quantity, lineNotes) in lines)
+        {
+            if (quantity <= 0)
+                throw new DomainException($"{material.Name}: ask for more than nothing. · الكمية أكبر من صفر.");
+            requisition._lines.Add(new InterBranchRequisitionLine(id, material.Id, quantity, material.Unit.ToString(),
+                Said(lineNotes, MaxLineNotes, $"the note on {material.Name}")));
+        }
+        return requisition;
+    }
+
+    // Called off: only before anything of it has been dispatched.
+    public void Cancel(string by)
+    {
+        if (Status == RequisitionStatus.Cancelled)
+            throw new DomainException("This requisition has already been cancelled. · تم إلغاء هذا الطلب بالفعل.");
+        if (Status != RequisitionStatus.Submitted || _lines.Any(l => l.DispatchedQuantity > 0))
+            throw new DomainException(
+                $"{Number} has been dispatched already: it can no longer be cancelled. Void its dispatch first. · تم الصرف بالفعل؛ ألغِ الصرف أولاً.");
+        Status = RequisitionStatus.Cancelled;
+        CancelledAtUtc = DateTime.UtcNow;
+        CancelledBy = by;
+    }
+
+    // What is still to send of a material: what was asked less what has been dispatched.
+    public decimal Outstanding(Guid rawMaterialId) =>
+        _lines.Where(l => l.RawMaterialId == rawMaterialId).Sum(l => Math.Max(l.RequestedQuantity - l.DispatchedQuantity, 0));
+
+    // Its lines and status as its shipments now stand (voided ones left out): what each sent and
+    // what each brought in. None: submitted again. Some on their way: dispatched, or partly if a
+    // line is still short. All received: received, or partly dispatched if a line is still short.
+    public void Restate(IEnumerable<InternalSalesInvoice> shipments)
+    {
+        if (Status == RequisitionStatus.Cancelled)
+            return;
+        var live = shipments.Where(s => s.RequisitionId == Id && s.Status != ShipmentStatus.Voided).ToList();
+        foreach (var line in _lines)
+        {
+            var sent = live.SelectMany(s => s.Lines).Where(l => l.RawMaterialId == line.RawMaterialId).ToList();
+            line.Track(sent.Sum(l => l.Quantity), sent.Sum(l => l.ReceivedQuantity ?? 0));
+        }
+        if (live.Count == 0)
+        {
+            Status = RequisitionStatus.Submitted;
+            return;
+        }
+        var all = _lines.All(l => l.DispatchedQuantity >= l.RequestedQuantity);
+        var moving = live.Any(s => s.Status == ShipmentStatus.InTransit);
+        Status = (moving, all) switch
+        {
+            (true, true) => RequisitionStatus.Dispatched,
+            (false, true) => RequisitionStatus.Received,
+            _ => RequisitionStatus.PartiallyDispatched,
+        };
+    }
+
+    internal static string? Said(string? text, int max, string what)
+    {
+        var said = string.IsNullOrWhiteSpace(text) ? null : text.Trim();
+        if (said?.Length > max)
+            throw new DomainException($"Keep {what} to {max} characters.");
+        return said;
+    }
+}
+
+// A material asked for, in its own unit (grams, millilitres, pieces): what was asked, and what of
+// it has been dispatched and received so far.
+public sealed class InterBranchRequisitionLine
+{
+    private InterBranchRequisitionLine() { }
+
+    internal InterBranchRequisitionLine(Guid requisitionId, Guid rawMaterialId, decimal requestedQuantity, string unit, string? notes)
+    {
+        Id = Guid.NewGuid();
+        InterBranchRequisitionId = requisitionId;
+        RawMaterialId = rawMaterialId;
+        RequestedQuantity = requestedQuantity;
+        Unit = unit;
+        Notes = notes;
+    }
+
+    public Guid Id { get; private set; }
+    public Guid InterBranchRequisitionId { get; private set; }
+    public Guid RawMaterialId { get; private set; }
+    public decimal RequestedQuantity { get; private set; }
+    public decimal DispatchedQuantity { get; private set; }
+    public decimal ReceivedQuantity { get; private set; }
+    public string Unit { get; private set; } = string.Empty;
+    public string? Notes { get; private set; }
+
+    internal void Track(decimal dispatched, decimal received)
+    {
+        DispatchedQuantity = dispatched;
+        ReceivedQuantity = received;
+    }
+}
+
+public static class SupplyingBranches
+{
+    // A central kitchen or warehouse: a branch that supplies the others.
+    public static bool Supplies(this Branch branch) => branch.Type is BranchType.CentralKitchen or BranchType.CentralWarehouse;
+}
+
+public interface IInterBranchRequisitionRepository : IRepository<InterBranchRequisition>
+{
+    // The branch's, asked by it or of it: made in the period, or still open whenever made.
+    Task<IReadOnlyList<InterBranchRequisition>> GetForBranchAsync(Guid branchId, DateOnly from, DateOnly to, CancellationToken cancellationToken = default);
+
+    Task<IReadOnlyList<InterBranchRequisition>> GetByIdsAsync(IReadOnlyCollection<Guid> ids, CancellationToken cancellationToken = default);
+
+    Task<int> CountInYearAsync(int year, CancellationToken cancellationToken = default);
+}
+```
+
+
+> 📄 **`backend/src/Costing.Domain/InterBranch/InternalSalesInvoice.cs`** — 258 سطر
+
+```csharp
+using System.Globalization;
+using Costing.Domain.Common;
+using Costing.Domain.Company;
+using Costing.Domain.RawMaterials;
+using Costing.Domain.StockMovements;
+
+namespace Costing.Domain.InterBranch;
+
+// How a central kitchen prices what it sends (سياسة تسعير التحويل الداخلي).
+public enum TransferPricing
+{
+    // At its own weighted average cost (بتكلفة المتوسط المرجح للمركزي): no margin.
+    AtCost = 1,
+
+    // At a transfer price (بسعر تحويل داخلي / هامش تشغيلي): its cost plus a markup, or a price per line.
+    WithMarkupOrCustomPrice = 2,
+}
+
+public enum ShipmentStatus
+{
+    // Dispatched and on its way (في الطريق): out of the kitchen, not yet in the branch.
+    InTransit = 1,
+
+    // Received by the branch, on its internal purchase invoice.
+    Received = 2,
+
+    // Voided: its stock back in the kitchen.
+    Voided = 3,
+}
+
+// A central kitchen's dispatch and its internal sales invoice (إذن صرف وفاتورة بيع داخلية),
+// ISI-2026-0001: what it sent a branch, out of one of its locations at its own average cost, and
+// what it billed for it at the transfer price. Revenue and cost of goods are inter-company: the
+// company's P&L takes them out again. On its way until the branch receives it; voided while on its
+// way, its stock goes back. A received one is voided only with its receipt.
+public sealed class InternalSalesInvoice : AggregateRoot, IBranchOwned
+{
+    public const int MaxNotes = 500;
+    public const int MaxLines = 200;
+    public const decimal MaxMarkupPercent = 1000;
+
+    private readonly List<InternalSalesInvoiceLine> _lines = [];
+
+    private InternalSalesInvoice() { }
+
+    // The branch that sent it and billed it.
+    public Guid BranchId { get; private set; }
+
+    public void AssignBranch(Guid branchId) => BranchId = branchId;
+
+    public Guid SupplyingBranchId => BranchId;
+    public string Number { get; private set; } = string.Empty;
+    public Guid? RequisitionId { get; private set; }
+    public Guid ReceivingBranchId { get; private set; }
+    public Guid FromLocationId { get; private set; }
+    public DateOnly DispatchDate { get; private set; }
+    public TransferPricing Pricing { get; private set; } = TransferPricing.AtCost;
+    public decimal? MarkupPercent { get; private set; }
+    public ShipmentStatus Status { get; private set; } = ShipmentStatus.InTransit;
+    public string? Notes { get; private set; }
+    public string CreatedBy { get; private set; } = string.Empty;
+    public string? CreatedByUserId { get; private set; }
+    public DateTime CreatedAtUtc { get; private set; }
+    public DateTime? ReceivedAtUtc { get; private set; }
+    public Guid? InternalPurchaseInvoiceId { get; private set; }
+    public DateTime? VoidedAtUtc { get; private set; }
+    public string? VoidedBy { get; private set; }
+
+    // Between two of the company's branches: taken out of the company's P&L as a whole.
+    public bool IsInterCompany { get; private set; } = true;
+
+    // What it billed (inter-company revenue), what the goods cost the kitchen (inter-company cost of
+    // goods) and the difference, its margin.
+    public decimal TotalTransferRevenue { get; private set; }
+    public decimal TotalInternalCogs { get; private set; }
+    public decimal InternalMargin { get; private set; }
+    public IReadOnlyList<InternalSalesInvoiceLine> Lines => _lines;
+
+    public static string NumberFor(int year, int sequence) => string.Create(CultureInfo.InvariantCulture, $"ISI-{year}-{sequence:0000}");
+
+    public sealed record DispatchLine(RawMaterial Material, decimal Quantity, decimal? TransferUnitPrice = null);
+
+    // Dispatched and billed at once: each line out of `from` (one of the kitchen's own locations,
+    // holding enough of it: onHand), at the kitchen's average cost, billed at that (at cost) or at
+    // the cost plus the markup, or the price given for the line. For a requisition, only what it
+    // asked for, to the branch that asked. Returns the stock entries to add.
+    public static (InternalSalesInvoice Invoice, IReadOnlyList<StockMovement> Movements) Dispatch(
+        Guid id, string number, Branch supplying, Branch receiving, InterBranchRequisition? requisition, DateOnly date, InventoryLocation from,
+        IReadOnlyList<DispatchLine> lines, TransferPricing pricing, decimal? markupPercent, IReadOnlyDictionary<Guid, decimal> onHand,
+        string? notes, string by, string? byUserId)
+    {
+        if (!supplying.Supplies())
+            throw new DomainException(
+                $"{supplying.Name} is a restaurant: shipments go out from a central kitchen or warehouse. Choose it at the top of the screen. · الصرف من المطبخ المركزي.");
+        if (receiving.Id == supplying.Id)
+            throw new DomainException("Send it to another branch: the kitchen cannot bill itself. · اختر فرعاً آخر.");
+        if (!supplying.IsActive || !receiving.IsActive)
+            throw new DomainException($"{(!supplying.IsActive ? supplying.Name : receiving.Name)} is not in use. · الفرع غير مفعّل.");
+        if (from.BranchId != supplying.Id)
+            throw new DomainException($"{from.Name} is another branch's: send it from one of {supplying.Name}'s locations. · الموقع تابع لفرع آخر.");
+        if (!from.IsActive)
+            throw new DomainException($"{from.Name} is not in use: choose a location in use. · الموقع غير مفعّل.");
+        if (requisition is not null)
+        {
+            if (requisition.SupplyingBranchId != supplying.Id)
+                throw new DomainException($"{requisition.Number} is asked of another branch: dispatch it from there. · الطلب موجه لفرع آخر.");
+            if (requisition.RequestingBranchId != receiving.Id)
+                throw new DomainException($"{requisition.Number} goes to the branch that asked for it.");
+            if (requisition.Status is RequisitionStatus.Cancelled)
+                throw new DomainException($"{requisition.Number} has been cancelled: nothing more is sent for it. · الطلب ملغي.");
+            if (lines.FirstOrDefault(l => requisition.Lines.All(r => r.RawMaterialId != l.Material.Id)) is { } extra)
+                throw new DomainException($"{extra.Material.Name} is not on {requisition.Number}: send it as a direct dispatch. · الصنف غير مطلوب.");
+        }
+        if (lines.Count == 0)
+            throw new DomainException("Send at least one material. · أضف خامة واحدة على الأقل.");
+        if (lines.Count > MaxLines)
+            throw new DomainException($"A dispatch sends {MaxLines} materials at most.");
+        if (lines.GroupBy(l => l.Material.Id).FirstOrDefault(g => g.Count() > 1) is { } twice)
+            throw new DomainException($"{twice.First().Material.Name} is on the dispatch twice: put it on one line.");
+        if (!Enum.IsDefined(pricing))
+            throw new DomainException("Choose how it is priced: at cost, or at a transfer price. · اختر سياسة التسعير.");
+        var markup = pricing == TransferPricing.WithMarkupOrCustomPrice ? markupPercent ?? 0 : (decimal?)null;
+        if (markup is < 0 or > MaxMarkupPercent)
+            throw new DomainException($"A markup is between 0% and {MaxMarkupPercent:0}%. · الهامش بين ٠ و ١٠٠٠٪.");
+        var said = InterBranchRequisition.Said(notes, MaxNotes, "the notes");
+
+        var invoice = new InternalSalesInvoice
+        {
+            Id = id, Number = number, BranchId = supplying.Id, RequisitionId = requisition?.Id, ReceivingBranchId = receiving.Id, FromLocationId = from.Id,
+            DispatchDate = date, Pricing = pricing, MarkupPercent = markup, Notes = said, CreatedBy = by, CreatedByUserId = byUserId,
+            CreatedAtUtc = DateTime.UtcNow,
+        };
+        var priced = new List<(RawMaterial Material, decimal Quantity, decimal Cost, decimal Price)>();
+        foreach (var line in lines)
+        {
+            var material = line.Material;
+            if (line.Quantity <= 0)
+                throw new DomainException($"{material.Name}: send more than nothing. · الكمية أكبر من صفر.");
+            var there = onHand.GetValueOrDefault(material.Id);
+            if (line.Quantity > there)
+                throw new DomainException(
+                    $"{from.Name} has {there.ToString("0.###", CultureInfo.InvariantCulture)} {material.Unit} of {material.Name}: not enough to send "
+                    + $"{line.Quantity.ToString("0.###", CultureInfo.InvariantCulture)}. · الرصيد في الموقع لا يكفي.");
+            var cost = material.UnitCostHere
+                ?? throw new DomainException($"{material.Name} has no cost yet at {supplying.Name}: buy or make it first, so it can be billed. · لا توجد تكلفة للصنف.");
+            if (line.TransferUnitPrice is < 0)
+                throw new DomainException($"{material.Name}: a transfer price cannot be less than nothing.");
+            var price = pricing == TransferPricing.AtCost
+                ? cost
+                : line.TransferUnitPrice ?? Math.Round(cost * (1 + markup!.Value / 100m), 6, MidpointRounding.AwayFromZero);
+            priced.Add((material, line.Quantity, cost, price));
+        }
+
+        // Every line checked: now each goes out.
+        var movements = new List<StockMovement>();
+        foreach (var (material, quantity, cost, price) in priced)
+        {
+            var taken = material.DispatchToBranch(quantity, id, from.Id, by);
+            taken.AssignBranch(supplying.Id);
+            movements.Add(taken);
+            invoice._lines.Add(new InternalSalesInvoiceLine(id, material.Id, quantity, material.Unit.ToString(), cost, price));
+        }
+        invoice.TotalTransferRevenue = invoice._lines.Sum(l => l.LineRevenue);
+        invoice.TotalInternalCogs = invoice._lines.Sum(l => l.LineCogs);
+        invoice.InternalMargin = invoice.TotalTransferRevenue - invoice.TotalInternalCogs;
+        return (invoice, movements);
+    }
+
+    // Received by the branch: what of each line came in, on its internal purchase invoice.
+    internal void MarkReceived(Guid purchaseInvoiceId, IReadOnlyDictionary<Guid, decimal> received)
+    {
+        EnsureInTransit();
+        foreach (var line in _lines)
+            line.Receive(received.GetValueOrDefault(line.RawMaterialId));
+        Status = ShipmentStatus.Received;
+        ReceivedAtUtc = DateTime.UtcNow;
+        InternalPurchaseInvoiceId = purchaseInvoiceId;
+    }
+
+    // Voided while on its way: its stock goes back to the kitchen (the caller reverses its entries).
+    public void Void(string by)
+    {
+        if (Status == ShipmentStatus.Received)
+            throw new DomainException(
+                $"{Number} has been received: a manager voids its receipt, which voids both invoices. · تم الاستلام؛ يُلغى من الاستلام.");
+        EnsureInTransit();
+        Voided(by);
+    }
+
+    // Voided with its receipt, by a manager: both invoices, and both sides' stock.
+    internal void VoidWithReceipt(string by)
+    {
+        if (Status != ShipmentStatus.Received)
+            throw new DomainException($"{Number} has not been received.");
+        Voided(by);
+    }
+
+    private void Voided(string by)
+    {
+        Status = ShipmentStatus.Voided;
+        VoidedAtUtc = DateTime.UtcNow;
+        VoidedBy = by;
+    }
+
+    private void EnsureInTransit()
+    {
+        if (Status == ShipmentStatus.Voided)
+            throw new DomainException($"{Number} has already been voided. · تم إلغاء الشحنة بالفعل.");
+        if (Status == ShipmentStatus.Received)
+            throw new DomainException($"{Number} has already been received. · تم استلام الشحنة بالفعل.");
+    }
+}
+
+// A material sent, in its own unit: its cost to the kitchen then (its branch's average) and the
+// price billed for it, each per unit; the line's revenue and cost of goods; and what of it the
+// branch received, once it has.
+public sealed class InternalSalesInvoiceLine
+{
+    private InternalSalesInvoiceLine() { }
+
+    internal InternalSalesInvoiceLine(Guid invoiceId, Guid rawMaterialId, decimal quantity, string unit, decimal unitCost, decimal transferUnitPrice)
+    {
+        Id = Guid.NewGuid();
+        InternalSalesInvoiceId = invoiceId;
+        RawMaterialId = rawMaterialId;
+        Quantity = quantity;
+        Unit = unit;
+        UnitCost = unitCost;
+        TransferUnitPrice = transferUnitPrice;
+        LineRevenue = Math.Round(quantity * transferUnitPrice, 2, MidpointRounding.AwayFromZero);
+        LineCogs = Math.Round(quantity * unitCost, 2, MidpointRounding.AwayFromZero);
+    }
+
+    public Guid Id { get; private set; }
+    public Guid InternalSalesInvoiceId { get; private set; }
+    public Guid RawMaterialId { get; private set; }
+    public decimal Quantity { get; private set; }
+    public string Unit { get; private set; } = string.Empty;
+    public decimal UnitCost { get; private set; }
+    public decimal TransferUnitPrice { get; private set; }
+    public decimal LineRevenue { get; private set; }
+    public decimal LineCogs { get; private set; }
+    public decimal? ReceivedQuantity { get; private set; }
+
+    internal void Receive(decimal quantity) => ReceivedQuantity = quantity;
+}
+
+public interface IInternalSalesInvoiceRepository : IRepository<InternalSalesInvoice>
+{
+    // The branch's, sent by it or to it: dispatched in the period, or still on the way whenever sent.
+    Task<IReadOnlyList<InternalSalesInvoice>> GetForBranchAsync(Guid branchId, DateOnly from, DateOnly to, CancellationToken cancellationToken = default);
+
+    Task<IReadOnlyList<InternalSalesInvoice>> GetByRequisitionAsync(Guid requisitionId, CancellationToken cancellationToken = default);
+
+    Task<IReadOnlyList<InternalSalesInvoice>> GetByIdsAsync(IReadOnlyCollection<Guid> ids, CancellationToken cancellationToken = default);
+
+    Task<int> CountInYearAsync(int year, CancellationToken cancellationToken = default);
+}
+```
+
+
+> 📄 **`backend/src/Costing.Domain/InterBranch/InternalPurchaseInvoice.cs`** — 179 سطر
+
+```csharp
+using System.Globalization;
+using Costing.Domain.Common;
+using Costing.Domain.Company;
+using Costing.Domain.RawMaterials;
+using Costing.Domain.StockMovements;
+
+namespace Costing.Domain.InterBranch;
+
+public enum InternalPurchaseInvoiceStatus
+{
+    Posted = 1,
+    Voided = 2,
+}
+
+// A branch's receipt of a shipment and its internal purchase invoice (استلام الفرع وفاتورة مشتريات
+// داخلية), IPI-2026-0001: what came in from the central kitchen, into one of its locations at the
+// price it was billed, which moves the branch's own average cost, so its recipes and food cost
+// carry what it paid the kitchen. It is billed for everything sent, as the kitchen's invoice says,
+// so the two invoices match; what did not arrive (short, or damaged on the way) never enters its
+// stock and is kept as the receipt's transit loss, with what happened. Voided by a manager, with
+// the kitchen's invoice: both sides' stock goes back.
+public sealed class InternalPurchaseInvoice : AggregateRoot, IBranchOwned
+{
+    public const int MaxNotes = 500;
+
+    private readonly List<InternalPurchaseInvoiceLine> _lines = [];
+
+    private InternalPurchaseInvoice() { }
+
+    // The branch that received it and is billed for it.
+    public Guid BranchId { get; private set; }
+
+    public void AssignBranch(Guid branchId) => BranchId = branchId;
+
+    public Guid ReceivingBranchId => BranchId;
+    public string Number { get; private set; } = string.Empty;
+    public Guid InternalSalesInvoiceId { get; private set; }
+    public Guid? RequisitionId { get; private set; }
+    public Guid SupplyingBranchId { get; private set; }
+    public Guid ToLocationId { get; private set; }
+    public DateOnly ReceiptDate { get; private set; }
+    public InternalPurchaseInvoiceStatus Status { get; private set; } = InternalPurchaseInvoiceStatus.Posted;
+    public string? Notes { get; private set; }
+    public string CreatedBy { get; private set; } = string.Empty;
+    public string? CreatedByUserId { get; private set; }
+    public DateTime CreatedAtUtc { get; private set; }
+    public DateTime? VoidedAtUtc { get; private set; }
+    public string? VoidedBy { get; private set; }
+    public bool IsInterCompany { get; private set; } = true;
+
+    // Billed (the kitchen's invoice), brought into stock, and lost on the way.
+    public decimal TotalBilled { get; private set; }
+    public decimal TotalReceivedValue { get; private set; }
+    public decimal TotalTransitLoss { get; private set; }
+    public IReadOnlyList<InternalPurchaseInvoiceLine> Lines => _lines;
+
+    public static string NumberFor(int year, int sequence) => string.Create(CultureInfo.InvariantCulture, $"IPI-{year}-{sequence:0000}");
+
+    // Received into `to`, one of the receiving branch's own locations: each line as received
+    // (none said: all of what was sent), never more than was sent; anything short is explained in
+    // the notes. Returns the stock entries to add; the shipment is marked received.
+    public static (InternalPurchaseInvoice Invoice, IReadOnlyList<StockMovement> Movements) Receive(
+        Guid id, string number, InternalSalesInvoice shipment, Branch receiving, InventoryLocation to, IReadOnlyDictionary<Guid, RawMaterial> materials,
+        IReadOnlyDictionary<Guid, decimal> received, DateOnly date, string? notes, string by, string? byUserId)
+    {
+        if (shipment.Status == ShipmentStatus.Voided)
+            throw new DomainException($"{shipment.Number} has been voided: there is nothing to receive. · الشحنة ملغاة.");
+        if (shipment.Status == ShipmentStatus.Received)
+            throw new DomainException($"{shipment.Number} has already been received. · تم استلام الشحنة بالفعل.");
+        if (shipment.ReceivingBranchId != receiving.Id)
+            throw new DomainException(
+                $"{shipment.Number} goes to another branch: it is received there. Choose that branch at the top of the screen. · الشحنة لفرع آخر.");
+        if (to.BranchId != receiving.Id)
+            throw new DomainException($"{to.Name} is another branch's: receive it into one of {receiving.Name}'s locations. · الموقع تابع لفرع آخر.");
+        if (!to.IsActive)
+            throw new DomainException($"{to.Name} is not in use: choose a location in use. · الموقع غير مفعّل.");
+        if (received.Keys.Where(k => shipment.Lines.All(l => l.RawMaterialId != k)).Select(k => (Guid?)k).FirstOrDefault() is { } stranger)
+            throw new DomainException(
+                $"{materials.GetValueOrDefault(stranger)?.Name ?? "That material"} was not sent on {shipment.Number}. · الصنف غير موجود بالشحنة.");
+
+        var counted = shipment.Lines.Select(l =>
+        {
+            var name = materials.GetValueOrDefault(l.RawMaterialId)?.Name ?? "A material";
+            var came = received.TryGetValue(l.RawMaterialId, out var said) ? said : l.Quantity;
+            if (came < 0)
+                throw new DomainException($"{name}: a quantity received cannot be negative.");
+            if (came > l.Quantity)
+                throw new DomainException(
+                    $"{name}: {came.ToString("0.###", CultureInfo.InvariantCulture)} received is more than the "
+                    + $"{l.Quantity.ToString("0.###", CultureInfo.InvariantCulture)} sent. · المستلم أكثر من المرسل.");
+            return (Line: l, Received: came);
+        }).ToList();
+        var said = InterBranchRequisition.Said(notes, MaxNotes, "the notes");
+        if (counted.Any(c => c.Received < c.Line.Quantity) && said is null)
+            throw new DomainException(
+                "Some of it did not arrive: say what happened (short, or damaged on the way) in the notes. · اذكر سبب العجز أو التلف.");
+
+        var invoice = new InternalPurchaseInvoice
+        {
+            Id = id, Number = number, BranchId = receiving.Id, InternalSalesInvoiceId = shipment.Id, RequisitionId = shipment.RequisitionId,
+            SupplyingBranchId = shipment.SupplyingBranchId, ToLocationId = to.Id, ReceiptDate = date, Notes = said, CreatedBy = by, CreatedByUserId = byUserId,
+            CreatedAtUtc = DateTime.UtcNow,
+        };
+        var movements = new List<StockMovement>();
+        foreach (var (line, came) in counted)
+        {
+            if (came > 0)
+            {
+                var material = materials.GetValueOrDefault(line.RawMaterialId) ?? throw new NotFoundException(nameof(RawMaterial), line.RawMaterialId);
+                var put = material.ReceiveFromBranch(came, id, line.TransferUnitPrice, to.Id, by);
+                put.AssignBranch(receiving.Id);
+                movements.Add(put);
+            }
+            invoice._lines.Add(new InternalPurchaseInvoiceLine(id, line.RawMaterialId, line.Quantity, came, line.Unit, line.TransferUnitPrice));
+        }
+        invoice.TotalBilled = shipment.TotalTransferRevenue;
+        invoice.TotalReceivedValue = invoice._lines.Sum(l => l.ReceivedValue);
+        invoice.TotalTransitLoss = invoice._lines.Sum(l => l.TransitLoss);
+        shipment.MarkReceived(id, counted.ToDictionary(c => c.Line.RawMaterialId, c => c.Received));
+        return (invoice, movements);
+    }
+
+    // Voided by a manager, with the kitchen's invoice: the caller reverses both sides' entries.
+    public void Void(InternalSalesInvoice shipment, string by)
+    {
+        if (Status == InternalPurchaseInvoiceStatus.Voided)
+            throw new DomainException($"{Number} has already been voided. · تم إلغاء الاستلام بالفعل.");
+        if (shipment.Id != InternalSalesInvoiceId)
+            throw new DomainException("That is another shipment's invoice.");
+        shipment.VoidWithReceipt(by);
+        Status = InternalPurchaseInvoiceStatus.Voided;
+        VoidedAtUtc = DateTime.UtcNow;
+        VoidedBy = by;
+    }
+}
+
+// A material received, in its own unit: what was sent and billed, what came in, what was short,
+// at the price billed per unit; billed in all, brought into stock, and lost on the way.
+public sealed class InternalPurchaseInvoiceLine
+{
+    private InternalPurchaseInvoiceLine() { }
+
+    internal InternalPurchaseInvoiceLine(Guid invoiceId, Guid rawMaterialId, decimal dispatched, decimal received, string unit, decimal transferUnitPrice)
+    {
+        Id = Guid.NewGuid();
+        InternalPurchaseInvoiceId = invoiceId;
+        RawMaterialId = rawMaterialId;
+        DispatchedQuantity = dispatched;
+        ReceivedQuantity = received;
+        ShortQuantity = dispatched - received;
+        Unit = unit;
+        TransferUnitPrice = transferUnitPrice;
+        LineTotal = Math.Round(dispatched * transferUnitPrice, 2, MidpointRounding.AwayFromZero);
+        ReceivedValue = Math.Round(received * transferUnitPrice, 2, MidpointRounding.AwayFromZero);
+        TransitLoss = LineTotal - ReceivedValue;
+    }
+
+    public Guid Id { get; private set; }
+    public Guid InternalPurchaseInvoiceId { get; private set; }
+    public Guid RawMaterialId { get; private set; }
+    public decimal DispatchedQuantity { get; private set; }
+    public decimal ReceivedQuantity { get; private set; }
+    public decimal ShortQuantity { get; private set; }
+    public string Unit { get; private set; } = string.Empty;
+    public decimal TransferUnitPrice { get; private set; }
+    public decimal LineTotal { get; private set; }
+    public decimal ReceivedValue { get; private set; }
+    public decimal TransitLoss { get; private set; }
+}
+
+public interface IInternalPurchaseInvoiceRepository : IRepository<InternalPurchaseInvoice>
+{
+    // The branch's, received by it or sent by it: received in the period.
+    Task<IReadOnlyList<InternalPurchaseInvoice>> GetForBranchAsync(Guid branchId, DateOnly from, DateOnly to, CancellationToken cancellationToken = default);
+
+    Task<IReadOnlyList<InternalPurchaseInvoice>> GetByIdsAsync(IReadOnlyCollection<Guid> ids, CancellationToken cancellationToken = default);
+
+    Task<int> CountInYearAsync(int year, CancellationToken cancellationToken = default);
+}
+```
+
+
+### 9.3 التطبيق والحفظ
+
+المعالجات تتبع نمط التحويلات: المعرّف من الواجهة (إعادة الإرسال لا تكرر)، `IRetryOnConflict` للترقيم، والصرف والاستلام `IBooksEntry` (اليوم)، وإلغاء الصرف بيومه وإلغاء الاستلام بيومَي الاستلام والصرف (`VoidShipmentDays`, `VoidReceiptDays`). و `InterBranchLedger.ReverseAsync` يعكس حركات المستند في فرعها وموقعها. وفي `StockLedgerInterceptor` صار `InterBranchReceiptIn` حركة واردة: **يحرك متوسط الفرع المستلم** كالشراء (5 كجم بـ 80 + 5 كجم بـ 110 ⇐ 95)، وعكسه يخرجه. وكل جدول يحفظ فرعه باسمه: `RequestingBranchId` و `SupplyingBranchId` و `ReceivingBranchId` (`HasColumnName` على `BranchId`).
+
+> 📄 **`backend/src/Costing.Application/InterBranch/InterBranch.cs`** — 483 سطر
+
+```csharp
+using MediatR;
+using Costing.Application.Books;
+using Costing.Application.Common;
+using Costing.Application.Company;
+using Costing.Application.Stock;
+using Costing.Domain.Common;
+using Costing.Domain.Company;
+using Costing.Domain.InterBranch;
+using Costing.Domain.RawMaterials;
+using Costing.Domain.StockMovements;
+
+namespace Costing.Application.InterBranch;
+
+// The central kitchen's hub (مركز عمليات المطبخ المركزي وتحويلات الفروع), once the company runs
+// several branches with a central kitchen: a branch asks for goods (a requisition), the kitchen
+// sends and bills them (a dispatch and its internal sales invoice), and the branch receives them
+// (its receipt and internal purchase invoice), its average cost moved by the price it paid. Each
+// request works in the branch chosen: the kitchen dispatches, the branch asks and receives. Costs,
+// prices and totals only for whoever sees costs.
+
+public sealed record InterBranchBranchDto(Guid Id, string Name, string? NameAr, BranchType Type, bool IsActive);
+
+public sealed record RequisitionLineDto(
+    Guid RawMaterialId, string Material, string? Code, string Unit, decimal PurchaseUnitSize, decimal RequestedQuantity, decimal DispatchedQuantity,
+    decimal ReceivedQuantity, string? Notes);
+
+public sealed record RequisitionDto(
+    Guid Id, string Number, Guid RequestingBranchId, string RequestingBranch, Guid SupplyingBranchId, string SupplyingBranch, DateOnly RequestDate,
+    DateOnly? RequestedDeliveryDate, RequisitionStatus Status, string? Notes, string CreatedBy, DateTime CreatedAtUtc, DateTime? CancelledAtUtc,
+    string? CancelledBy, IReadOnlyList<RequisitionLineDto> Lines);
+
+public sealed record ShipmentLineDto(
+    Guid RawMaterialId, string Material, string? Code, string Unit, decimal PurchaseUnitSize, decimal Quantity, decimal? ReceivedQuantity,
+    decimal? UnitCost, decimal? TransferUnitPrice, decimal? LineRevenue, decimal? LineCogs);
+
+public sealed record ShipmentDto(
+    Guid Id, string Number, Guid? RequisitionId, string? RequisitionNumber, Guid SupplyingBranchId, string SupplyingBranch, Guid ReceivingBranchId,
+    string ReceivingBranch, Guid FromLocationId, string FromLocation, DateOnly DispatchDate, TransferPricing Pricing, decimal? MarkupPercent,
+    ShipmentStatus Status, string? Notes, string CreatedBy, DateTime CreatedAtUtc, DateTime? ReceivedAtUtc, Guid? ReceiptId, string? ReceiptNumber,
+    DateTime? VoidedAtUtc, string? VoidedBy, bool IsInterCompany, decimal? TotalTransferRevenue, decimal? TotalInternalCogs, decimal? InternalMargin,
+    IReadOnlyList<ShipmentLineDto> Lines);
+
+public sealed record ReceiptLineDto(
+    Guid RawMaterialId, string Material, string? Code, string Unit, decimal PurchaseUnitSize, decimal DispatchedQuantity, decimal ReceivedQuantity,
+    decimal ShortQuantity, decimal? TransferUnitPrice, decimal? LineTotal, decimal? TransitLoss);
+
+public sealed record ReceiptDto(
+    Guid Id, string Number, Guid ShipmentId, string ShipmentNumber, Guid? RequisitionId, string? RequisitionNumber, Guid SupplyingBranchId,
+    string SupplyingBranch, Guid ReceivingBranchId, string ReceivingBranch, Guid ToLocationId, string ToLocation, DateOnly ReceiptDate,
+    InternalPurchaseInvoiceStatus Status, string? Notes, string CreatedBy, DateTime CreatedAtUtc, DateTime? VoidedAtUtc, string? VoidedBy,
+    bool IsInterCompany, decimal? TotalBilled, decimal? TotalReceivedValue, decimal? TotalTransitLoss, IReadOnlyList<ReceiptLineDto> Lines);
+
+// The hub's cards, for the branch worked in: requisitions still open (asked by it or of it),
+// shipments on their way (sent by it or to it), receipts this month, and what was billed this month
+// between it and the others (whoever sees costs).
+public sealed record InterBranchSummaryDto(int OpenRequisitions, int ShipmentsInTransit, int ReceiptsThisMonth, decimal? BillingThisMonth);
+
+public sealed record InterBranchHubDto(
+    SystemOperatingMode Mode, Guid BranchId, string Branch, BranchType BranchType, IReadOnlyList<InterBranchBranchDto> Branches,
+    InterBranchSummaryDto Summary, IReadOnlyList<RequisitionDto> Requisitions, IReadOnlyList<ShipmentDto> Shipments, IReadOnlyList<ReceiptDto> Receipts);
+
+// The hub for the branch worked in: its requisitions, shipments and receipts of the period, with
+// whatever is still open or on its way whenever it was made. Outside a central kitchen's company:
+// the mode, and nothing else.
+public sealed record GetInterBranchHubQuery(DateOnly From, DateOnly To, bool SeeCosts = true) : IRequest<InterBranchHubDto>;
+
+public sealed record RequisitionLineInput(Guid RawMaterialId, decimal Quantity, string? Notes = null);
+
+// Asked by the branch worked in of a central kitchen or warehouse. Nothing moves: no books.
+public sealed record SubmitRequisitionCommand(
+    Guid Id, Guid SupplyingBranchId, DateOnly? RequestedDeliveryDate, IReadOnlyList<RequisitionLineInput> Lines, string? Notes, string StaffId,
+    string StaffName) : IRequest<RequisitionDto>, IRetryOnConflict;
+
+// Called off, by either branch, before anything of it is dispatched.
+public sealed record CancelRequisitionCommand(Guid Id, string StaffName) : IRequest<RequisitionDto>;
+
+public sealed record DispatchLineInput(Guid RawMaterialId, decimal Quantity, decimal? TransferUnitPrice = null);
+
+// Sent and billed by the central kitchen worked in, today: for a requisition, or straight to a
+// branch (ReceivingBranchId). From one of its locations (its main store unless another is chosen).
+// Prices per line only from whoever sees costs.
+public sealed record DispatchShipmentCommand(
+    Guid Id, Guid? RequisitionId, Guid? ReceivingBranchId, Guid? FromLocationId, TransferPricing Pricing, decimal? MarkupPercent,
+    IReadOnlyList<DispatchLineInput> Lines, string? Notes, string StaffId, string StaffName, bool SeeCosts = true)
+    : IRequest<ShipmentDto>, IRetryOnConflict, IBooksEntry
+{
+    bool IBooksEntry.WritesToday => true;
+}
+
+// Voided by the kitchen while it is on its way: its stock back where it left, on its own day's books.
+public sealed record VoidShipmentCommand(Guid Id, string StaffName, bool SeeCosts = true) : IRequest<ShipmentDto>, IBooksEntry;
+
+public sealed record ReceiptLineInput(Guid RawMaterialId, decimal ReceivedQuantity);
+
+// Received by the branch worked in, today, into one of its locations (its main store unless
+// another is chosen): each line as said, or all of it.
+public sealed record ReceiveShipmentCommand(
+    Guid Id, Guid ShipmentId, Guid? ToLocationId, IReadOnlyList<ReceiptLineInput>? Lines, string? Notes, string StaffId, string StaffName,
+    bool SeeCosts = true) : IRequest<ReceiptDto>, IRetryOnConflict, IBooksEntry
+{
+    bool IBooksEntry.WritesToday => true;
+}
+
+// Voided by a manager: the receipt and the kitchen's invoice, both sides' stock, on both days' books.
+public sealed record VoidReceiptCommand(Guid Id, string StaffName, bool SeeCosts = true) : IRequest<ReceiptDto>, IBooksEntry;
+
+// What the hub's names and numbers come from, read once for a set of records.
+internal sealed class InterBranchReading(
+    IBranchRepository branches,
+    IInventoryLocationRepository locations,
+    IRawMaterialRepository materials,
+    IInterBranchRequisitionRepository requisitions,
+    IInternalSalesInvoiceRepository shipments,
+    IInternalPurchaseInvoiceRepository receipts)
+{
+    public async Task<(IReadOnlyList<RequisitionDto>, IReadOnlyList<ShipmentDto>, IReadOnlyList<ReceiptDto>)> DtosAsync(
+        IReadOnlyList<InterBranchRequisition> asked, IReadOnlyList<InternalSalesInvoice> sent, IReadOnlyList<InternalPurchaseInvoice> received, bool seeCosts,
+        CancellationToken cancellationToken)
+    {
+        var branchNames = (await branches.GetAllAsync(cancellationToken)).ToDictionary(b => b.Id, b => b.Name);
+        var places = (await locations.GetAllAsync(cancellationToken)).ToDictionary(l => l.Id, l => l.Name);
+        var ids = asked.SelectMany(r => r.Lines.Select(l => l.RawMaterialId))
+            .Concat(sent.SelectMany(s => s.Lines.Select(l => l.RawMaterialId)))
+            .Concat(received.SelectMany(r => r.Lines.Select(l => l.RawMaterialId)))
+            .Distinct().ToList();
+        var named = ids.Count == 0 ? new Dictionary<Guid, RawMaterial>() : (await materials.GetByIdsAsync(ids, cancellationToken)).ToDictionary(m => m.Id);
+
+        // The numbers each names: its requisition, its receipt, its shipment.
+        var requisitionIds = sent.Select(s => s.RequisitionId).Concat(received.Select(r => r.RequisitionId)).OfType<Guid>()
+            .Where(id => asked.All(r => r.Id != id)).Distinct().ToList();
+        var requisitionNumbers = asked.ToDictionary(r => r.Id, r => r.Number);
+        foreach (var r in requisitionIds.Count == 0 ? [] : await requisitions.GetByIdsAsync(requisitionIds, cancellationToken))
+            requisitionNumbers[r.Id] = r.Number;
+        var receiptIds = sent.Select(s => s.InternalPurchaseInvoiceId).OfType<Guid>().Where(id => received.All(r => r.Id != id)).Distinct().ToList();
+        var receiptNumbers = received.ToDictionary(r => r.Id, r => r.Number);
+        foreach (var r in receiptIds.Count == 0 ? [] : await receipts.GetByIdsAsync(receiptIds, cancellationToken))
+            receiptNumbers[r.Id] = r.Number;
+        var shipmentIds = received.Select(r => r.InternalSalesInvoiceId).Where(id => sent.All(s => s.Id != id)).Distinct().ToList();
+        var shipmentNumbers = sent.ToDictionary(s => s.Id, s => s.Number);
+        foreach (var s in shipmentIds.Count == 0 ? [] : await shipments.GetByIdsAsync(shipmentIds, cancellationToken))
+            shipmentNumbers[s.Id] = s.Number;
+
+        string Branch(Guid id) => branchNames.GetValueOrDefault(id) ?? "—";
+        string Place(Guid id) => places.GetValueOrDefault(id) ?? "—";
+        (string Name, string? Code, decimal Size) Material(Guid id) =>
+            named.GetValueOrDefault(id) is { } m ? (m.Name, m.Code, m.PurchaseUnitSize) : ("—", null, 1);
+        decimal? Seen(decimal value) => seeCosts ? value : null;
+
+        var requisitionDtos = asked.Select(r => new RequisitionDto(
+            r.Id, r.Number, r.RequestingBranchId, Branch(r.RequestingBranchId), r.SupplyingBranchId, Branch(r.SupplyingBranchId), r.RequestDate,
+            r.RequestedDeliveryDate, r.Status, r.Notes, r.CreatedBy, r.CreatedAtUtc, r.CancelledAtUtc, r.CancelledBy,
+            r.Lines.Select(l =>
+            {
+                var m = Material(l.RawMaterialId);
+                return new RequisitionLineDto(l.RawMaterialId, m.Name, m.Code, l.Unit, m.Size, l.RequestedQuantity, l.DispatchedQuantity, l.ReceivedQuantity, l.Notes);
+            }).ToList())).ToList();
+        var shipmentDtos = sent.Select(s => new ShipmentDto(
+            s.Id, s.Number, s.RequisitionId, s.RequisitionId is { } rq ? requisitionNumbers.GetValueOrDefault(rq) : null, s.SupplyingBranchId,
+            Branch(s.SupplyingBranchId), s.ReceivingBranchId, Branch(s.ReceivingBranchId), s.FromLocationId, Place(s.FromLocationId), s.DispatchDate,
+            s.Pricing, seeCosts ? s.MarkupPercent : null, s.Status, s.Notes, s.CreatedBy, s.CreatedAtUtc, s.ReceivedAtUtc, s.InternalPurchaseInvoiceId,
+            s.InternalPurchaseInvoiceId is { } rc ? receiptNumbers.GetValueOrDefault(rc) : null, s.VoidedAtUtc, s.VoidedBy, s.IsInterCompany,
+            Seen(s.TotalTransferRevenue), Seen(s.TotalInternalCogs), Seen(s.InternalMargin),
+            s.Lines.Select(l =>
+            {
+                var m = Material(l.RawMaterialId);
+                return new ShipmentLineDto(l.RawMaterialId, m.Name, m.Code, l.Unit, m.Size, l.Quantity, l.ReceivedQuantity, Seen(l.UnitCost),
+                    Seen(l.TransferUnitPrice), Seen(l.LineRevenue), Seen(l.LineCogs));
+            }).ToList())).ToList();
+        var receiptDtos = received.Select(r => new ReceiptDto(
+            r.Id, r.Number, r.InternalSalesInvoiceId, shipmentNumbers.GetValueOrDefault(r.InternalSalesInvoiceId) ?? "—", r.RequisitionId,
+            r.RequisitionId is { } rq ? requisitionNumbers.GetValueOrDefault(rq) : null, r.SupplyingBranchId, Branch(r.SupplyingBranchId),
+            r.ReceivingBranchId, Branch(r.ReceivingBranchId), r.ToLocationId, Place(r.ToLocationId), r.ReceiptDate, r.Status, r.Notes, r.CreatedBy,
+            r.CreatedAtUtc, r.VoidedAtUtc, r.VoidedBy, r.IsInterCompany, Seen(r.TotalBilled), Seen(r.TotalReceivedValue), Seen(r.TotalTransitLoss),
+            r.Lines.Select(l =>
+            {
+                var m = Material(l.RawMaterialId);
+                return new ReceiptLineDto(l.RawMaterialId, m.Name, m.Code, l.Unit, m.Size, l.DispatchedQuantity, l.ReceivedQuantity, l.ShortQuantity,
+                    Seen(l.TransferUnitPrice), Seen(l.LineTotal), Seen(l.TransitLoss));
+            }).ToList())).ToList();
+        return (requisitionDtos, shipmentDtos, receiptDtos);
+    }
+
+    public async Task<RequisitionDto> DtoAsync(InterBranchRequisition requisition, CancellationToken cancellationToken) =>
+        (await DtosAsync([requisition], [], [], false, cancellationToken)).Item1[0];
+
+    public async Task<ShipmentDto> DtoAsync(InternalSalesInvoice shipment, bool seeCosts, CancellationToken cancellationToken) =>
+        (await DtosAsync([], [shipment], [], seeCosts, cancellationToken)).Item2[0];
+
+    public async Task<ReceiptDto> DtoAsync(InternalPurchaseInvoice receipt, bool seeCosts, CancellationToken cancellationToken) =>
+        (await DtosAsync([], [], [receipt], seeCosts, cancellationToken)).Item3[0];
+}
+
+// The rules every request of the hub shares: the company runs a central kitchen; the branch worked in.
+internal sealed class InterBranchDesk(ICompanyProfile profile, ICurrentBranch current, IBranchRepository branches, IInventoryLocationRepository locations)
+{
+    public void EnsureCentralKitchen()
+    {
+        if (profile.Current.OperatingMode != SystemOperatingMode.MultiBranch_CentralKitchen)
+            throw new DomainException(
+                "The company is not run with a central kitchen: choose Branches with a central kitchen on Company structure first. · الشركة ليست بنظام المطبخ المركزي.");
+    }
+
+    public async Task<Branch> HereAsync(CancellationToken cancellationToken) =>
+        await BranchAsync(await current.BranchIdAsync(cancellationToken), cancellationToken);
+
+    public async Task<Branch> BranchAsync(Guid id, CancellationToken cancellationToken) =>
+        await branches.GetByIdAsync(id, cancellationToken) ?? throw new DomainException("That branch is no longer there: choose one from the list. · الفرع غير موجود.");
+
+    // A location of the branch: the one chosen, or its main store.
+    public async Task<InventoryLocation> PlaceAsync(Branch branch, Guid? chosen, CancellationToken cancellationToken)
+    {
+        var all = (await locations.GetAllAsync(cancellationToken)).Where(l => l.BranchId == branch.Id).ToList();
+        if (chosen is { } id)
+            return all.FirstOrDefault(l => l.Id == id)
+                ?? throw new DomainException("That location is not one of this branch's: choose one from the list. · الموقع تابع لفرع آخر.");
+        return all.Where(l => l.IsActive).OrderBy(l => l.Kind == LocationKind.MainStore ? 0 : 1).ThenByDescending(l => l.IsDefault).FirstOrDefault()
+            ?? throw new DomainException($"{branch.Name} has no location in use: add one on Company structure. · لا يوجد موقع للفرع.");
+    }
+}
+
+internal sealed class GetInterBranchHubHandler(
+    ICompanyProfile profile,
+    IBranchRepository branches,
+    InterBranchDesk desk,
+    IInterBranchRequisitionRepository requisitions,
+    IInternalSalesInvoiceRepository shipments,
+    IInternalPurchaseInvoiceRepository receipts,
+    IBusinessCalendar calendar,
+    InterBranchReading reading) : IRequestHandler<GetInterBranchHubQuery, InterBranchHubDto>
+{
+    public async Task<InterBranchHubDto> Handle(GetInterBranchHubQuery request, CancellationToken cancellationToken)
+    {
+        if (request.To < request.From)
+            throw new DomainException("The period ends before it starts.");
+        if (request.To.DayNumber - request.From.DayNumber > 366)
+            throw new DomainException("Show a year at most.");
+        var mode = profile.Current.OperatingMode;
+        var here = await desk.HereAsync(cancellationToken);
+        var all = (await branches.GetAllAsync(cancellationToken))
+            .Select(b => new InterBranchBranchDto(b.Id, b.Name, b.NameAr, b.Type, b.IsActive)).ToList();
+        if (mode != SystemOperatingMode.MultiBranch_CentralKitchen)
+            return new InterBranchHubDto(mode, here.Id, here.Name, here.Type, all, new InterBranchSummaryDto(0, 0, 0, request.SeeCosts ? 0 : null), [], [], []);
+
+        var asked = (await requisitions.GetForBranchAsync(here.Id, request.From, request.To, cancellationToken))
+            .OrderByDescending(r => r.RequestDate).ThenByDescending(r => r.Number, StringComparer.Ordinal).ToList();
+        var sent = (await shipments.GetForBranchAsync(here.Id, request.From, request.To, cancellationToken))
+            .OrderByDescending(s => s.DispatchDate).ThenByDescending(s => s.Number, StringComparer.Ordinal).ToList();
+        var received = (await receipts.GetForBranchAsync(here.Id, request.From, request.To, cancellationToken))
+            .OrderByDescending(r => r.ReceiptDate).ThenByDescending(r => r.Number, StringComparer.Ordinal).ToList();
+
+        var today = calendar.BusinessDateOf(DateTime.UtcNow);
+        var monthStart = new DateOnly(today.Year, today.Month, 1);
+        var receivedThisMonth = (await receipts.GetForBranchAsync(here.Id, monthStart, today, cancellationToken))
+            .Count(r => r.Status == InternalPurchaseInvoiceStatus.Posted);
+        decimal? billed = request.SeeCosts
+            ? (await shipments.GetForBranchAsync(here.Id, monthStart, today, cancellationToken))
+                .Where(s => s.Status != ShipmentStatus.Voided && s.DispatchDate >= monthStart).Sum(s => s.TotalTransferRevenue)
+            : null;
+        var summary = new InterBranchSummaryDto(
+            asked.Count(r => r.Status is RequisitionStatus.Submitted or RequisitionStatus.PartiallyDispatched),
+            sent.Count(s => s.Status == ShipmentStatus.InTransit), receivedThisMonth, billed);
+        var (r1, s1, p1) = await reading.DtosAsync(asked, sent, received, request.SeeCosts, cancellationToken);
+        return new InterBranchHubDto(mode, here.Id, here.Name, here.Type, all, summary, r1, s1, p1);
+    }
+}
+
+internal sealed class SubmitRequisitionHandler(
+    InterBranchDesk desk,
+    IInterBranchRequisitionRepository requisitions,
+    IRawMaterialRepository materials,
+    IBusinessCalendar calendar,
+    InterBranchReading reading,
+    IUnitOfWork unitOfWork) : IRequestHandler<SubmitRequisitionCommand, RequisitionDto>
+{
+    public async Task<RequisitionDto> Handle(SubmitRequisitionCommand request, CancellationToken cancellationToken)
+    {
+        if (await requisitions.GetByIdAsync(request.Id, cancellationToken) is { } already)
+            return await reading.DtoAsync(already, cancellationToken);
+        desk.EnsureCentralKitchen();
+        var requesting = await desk.HereAsync(cancellationToken);
+        var supplying = await desk.BranchAsync(request.SupplyingBranchId, cancellationToken);
+        var lines = request.Lines ?? [];
+        var byId = lines.Count == 0
+            ? new Dictionary<Guid, RawMaterial>()
+            : (await materials.GetByIdsAsync(lines.Select(l => l.RawMaterialId).Distinct().ToList(), cancellationToken)).ToDictionary(m => m.Id);
+        var asked = lines.Select(l =>
+        {
+            var material = byId.GetValueOrDefault(l.RawMaterialId) ?? throw new NotFoundException(nameof(RawMaterial), l.RawMaterialId);
+            if (material.IsArchived)
+                throw new DomainException($"{material.Name} has been archived: it is not asked for any more.");
+            return (material, l.Quantity, l.Notes);
+        }).ToList();
+        var today = calendar.BusinessDateOf(DateTime.UtcNow);
+        var number = InterBranchRequisition.NumberFor(today.Year, await requisitions.CountInYearAsync(today.Year, cancellationToken) + 1);
+        var requisition = InterBranchRequisition.Submit(
+            request.Id, number, requesting, supplying, today, request.RequestedDeliveryDate, asked, request.Notes, request.StaffName, request.StaffId);
+        requisitions.Add(requisition);
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+        return await reading.DtoAsync(requisition, cancellationToken);
+    }
+}
+
+internal sealed class CancelRequisitionHandler(
+    ICurrentBranch current, IInterBranchRequisitionRepository requisitions, InterBranchReading reading, IUnitOfWork unitOfWork)
+    : IRequestHandler<CancelRequisitionCommand, RequisitionDto>
+{
+    public async Task<RequisitionDto> Handle(CancelRequisitionCommand request, CancellationToken cancellationToken)
+    {
+        var requisition = await requisitions.GetByIdAsync(request.Id, cancellationToken)
+            ?? throw new NotFoundException(nameof(InterBranchRequisition), request.Id);
+        var here = await current.BranchIdAsync(cancellationToken);
+        if (here != requisition.RequestingBranchId && here != requisition.SupplyingBranchId)
+            throw new DomainException($"{requisition.Number} is between two other branches: cancel it from one of them. · الطلب بين فرعين آخرين.");
+        requisition.Cancel(request.StaffName);
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+        return await reading.DtoAsync(requisition, cancellationToken);
+    }
+}
+
+internal sealed class DispatchShipmentHandler(
+    InterBranchDesk desk,
+    IInterBranchRequisitionRepository requisitions,
+    IInternalSalesInvoiceRepository shipments,
+    IRawMaterialRepository materials,
+    IStockMovementRepository movements,
+    IStockBalances balances,
+    StockPlaces places,
+    BooksGuard books,
+    InterBranchReading reading,
+    IUnitOfWork unitOfWork) : IRequestHandler<DispatchShipmentCommand, ShipmentDto>
+{
+    public async Task<ShipmentDto> Handle(DispatchShipmentCommand request, CancellationToken cancellationToken)
+    {
+        if (await shipments.GetByIdAsync(request.Id, cancellationToken) is { } already)
+            return await reading.DtoAsync(already, request.SeeCosts, cancellationToken);
+        desk.EnsureCentralKitchen();
+        var supplying = await desk.HereAsync(cancellationToken);
+        var requisition = request.RequisitionId is { } asked
+            ? await requisitions.GetByIdAsync(asked, cancellationToken) ?? throw new NotFoundException(nameof(InterBranchRequisition), asked)
+            : null;
+        var receivingId = requisition?.RequestingBranchId ?? request.ReceivingBranchId
+            ?? throw new DomainException("Choose the branch it goes to. · اختر الفرع المستلم.");
+        var receiving = await desk.BranchAsync(receivingId, cancellationToken);
+        var from = await desk.PlaceAsync(supplying, request.FromLocationId, cancellationToken);
+
+        // Lines with nothing to send are left off: a requisition's lines the kitchen has none of today.
+        var lines = (request.Lines ?? []).Where(l => l.Quantity != 0).ToList();
+        var byId = lines.Count == 0
+            ? new Dictionary<Guid, RawMaterial>()
+            : (await materials.GetByIdsAsync(lines.Select(l => l.RawMaterialId).Distinct().ToList(), cancellationToken)).ToDictionary(m => m.Id);
+        var chosen = lines.Select(l =>
+        {
+            var material = byId.GetValueOrDefault(l.RawMaterialId) ?? throw new NotFoundException(nameof(RawMaterial), l.RawMaterialId);
+            if (material.IsArchived)
+                throw new DomainException($"{material.Name} has been archived: it is not sent any more.");
+            // Prices are set by whoever sees what the goods cost.
+            return new InternalSalesInvoice.DispatchLine(material, l.Quantity, request.SeeCosts ? l.TransferUnitPrice : null);
+        }).ToList();
+
+        // At the kitchen's average cost; checked against what the location it leaves has.
+        await places.ViewAsync(byId.Values, from.Id, cancellationToken);
+        var onHand = await balances.OnHandAsync(supplying.Id, from.Id, cancellationToken);
+        var today = books.Today;
+        var number = InternalSalesInvoice.NumberFor(today.Year, await shipments.CountInYearAsync(today.Year, cancellationToken) + 1);
+        var (shipment, ledger) = InternalSalesInvoice.Dispatch(
+            request.Id, number, supplying, receiving, requisition, today, from, chosen, request.Pricing, request.MarkupPercent, onHand, request.Notes,
+            request.StaffName, request.StaffId);
+        shipments.Add(shipment);
+        foreach (var movement in ledger)
+            movements.Add(movement);
+        await InterBranchLedger.RestateAsync(requisitions, shipments, shipment, cancellationToken);
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+        return await reading.DtoAsync(shipment, request.SeeCosts, cancellationToken);
+    }
+}
+
+internal sealed class VoidShipmentHandler(
+    ICurrentBranch current,
+    IInterBranchRequisitionRepository requisitions,
+    IInternalSalesInvoiceRepository shipments,
+    IRawMaterialRepository materials,
+    IStockMovementRepository movements,
+    InterBranchReading reading,
+    IUnitOfWork unitOfWork) : IRequestHandler<VoidShipmentCommand, ShipmentDto>
+{
+    public async Task<ShipmentDto> Handle(VoidShipmentCommand request, CancellationToken cancellationToken)
+    {
+        var shipment = await shipments.GetByIdAsync(request.Id, cancellationToken) ?? throw new NotFoundException(nameof(InternalSalesInvoice), request.Id);
+        if (await current.BranchIdAsync(cancellationToken) != shipment.SupplyingBranchId)
+            throw new DomainException($"{shipment.Number} was sent by another branch: it is voided there. · يُلغى من المطبخ المرسل.");
+        shipment.Void(request.StaffName);
+        await InterBranchLedger.ReverseAsync(materials, movements, shipment.Id, StockMovementReason.InterBranchDispatchOut, request.StaffName, cancellationToken);
+        await InterBranchLedger.RestateAsync(requisitions, shipments, shipment, cancellationToken);
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+        return await reading.DtoAsync(shipment, request.SeeCosts, cancellationToken);
+    }
+}
+
+internal sealed class ReceiveShipmentHandler(
+    InterBranchDesk desk,
+    IInterBranchRequisitionRepository requisitions,
+    IInternalSalesInvoiceRepository shipments,
+    IInternalPurchaseInvoiceRepository receipts,
+    IRawMaterialRepository materials,
+    IStockMovementRepository movements,
+    BooksGuard books,
+    InterBranchReading reading,
+    IUnitOfWork unitOfWork) : IRequestHandler<ReceiveShipmentCommand, ReceiptDto>
+{
+    public async Task<ReceiptDto> Handle(ReceiveShipmentCommand request, CancellationToken cancellationToken)
+    {
+        if (await receipts.GetByIdAsync(request.Id, cancellationToken) is { } already)
+            return await reading.DtoAsync(already, request.SeeCosts, cancellationToken);
+        desk.EnsureCentralKitchen();
+        var shipment = await shipments.GetByIdAsync(request.ShipmentId, cancellationToken)
+            ?? throw new NotFoundException(nameof(InternalSalesInvoice), request.ShipmentId);
+        var receiving = await desk.HereAsync(cancellationToken);
+        var to = await desk.PlaceAsync(receiving, request.ToLocationId, cancellationToken);
+        var byId = (await materials.GetByIdsAsync(shipment.Lines.Select(l => l.RawMaterialId).Distinct().ToList(), cancellationToken)).ToDictionary(m => m.Id);
+        var said = (request.Lines ?? []).GroupBy(l => l.RawMaterialId).ToDictionary(g => g.Key, g => g.Sum(l => l.ReceivedQuantity));
+        var today = books.Today;
+        var number = InternalPurchaseInvoice.NumberFor(today.Year, await receipts.CountInYearAsync(today.Year, cancellationToken) + 1);
+        var (receipt, ledger) = InternalPurchaseInvoice.Receive(
+            request.Id, number, shipment, receiving, to, byId, said, today, request.Notes, request.StaffName, request.StaffId);
+        receipts.Add(receipt);
+        foreach (var movement in ledger)
+            movements.Add(movement);
+        await InterBranchLedger.RestateAsync(requisitions, shipments, shipment, cancellationToken);
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+        return await reading.DtoAsync(receipt, request.SeeCosts, cancellationToken);
+    }
+}
+
+internal sealed class VoidReceiptHandler(
+    IInterBranchRequisitionRepository requisitions,
+    IInternalSalesInvoiceRepository shipments,
+    IInternalPurchaseInvoiceRepository receipts,
+    IRawMaterialRepository materials,
+    IStockMovementRepository movements,
+    InterBranchReading reading,
+    IUnitOfWork unitOfWork) : IRequestHandler<VoidReceiptCommand, ReceiptDto>
+{
+    public async Task<ReceiptDto> Handle(VoidReceiptCommand request, CancellationToken cancellationToken)
+    {
+        var receipt = await receipts.GetByIdAsync(request.Id, cancellationToken) ?? throw new NotFoundException(nameof(InternalPurchaseInvoice), request.Id);
+        var shipment = await shipments.GetByIdAsync(receipt.InternalSalesInvoiceId, cancellationToken)
+            ?? throw new NotFoundException(nameof(InternalSalesInvoice), receipt.InternalSalesInvoiceId);
+        receipt.Void(shipment, request.StaffName);
+        // The branch's side out (its price taken back out of its average), then the kitchen's back in.
+        await InterBranchLedger.ReverseAsync(materials, movements, receipt.Id, StockMovementReason.InterBranchReceiptIn, request.StaffName, cancellationToken);
+        await InterBranchLedger.ReverseAsync(materials, movements, shipment.Id, StockMovementReason.InterBranchDispatchOut, request.StaffName, cancellationToken);
+        await InterBranchLedger.RestateAsync(requisitions, shipments, shipment, cancellationToken);
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+        return await reading.DtoAsync(receipt, request.SeeCosts, cancellationToken);
+    }
+}
+
+internal static class InterBranchLedger
+{
+    // Each of a record's entries undone where it was made: its branch and its location.
+    public static async Task ReverseAsync(
+        IRawMaterialRepository materials, IStockMovementRepository movements, Guid sourceId, StockMovementReason reason, string by,
+        CancellationToken cancellationToken)
+    {
+        var originals = (await movements.GetBySourceAsync(sourceId, reason, cancellationToken)).Where(m => !m.IsReversal).ToList();
+        if (originals.Count == 0)
+            return;
+        var byId = (await materials.GetByIdsAsync(originals.Select(m => m.RawMaterialId).Distinct().ToList(), cancellationToken)).ToDictionary(m => m.Id);
+        foreach (var original in originals)
+            movements.Add(byId[original.RawMaterialId].Reverse(original, by));
+    }
+
+    // The shipment's requisition, as its shipments now stand.
+    public static async Task RestateAsync(
+        IInterBranchRequisitionRepository requisitions, IInternalSalesInvoiceRepository shipments, InternalSalesInvoice shipment,
+        CancellationToken cancellationToken)
+    {
+        if (shipment.RequisitionId is not { } id || await requisitions.GetByIdAsync(id, cancellationToken) is not { } requisition)
+            return;
+        var all = (await shipments.GetByRequisitionAsync(id, cancellationToken)).Where(s => s.Id != shipment.Id).Append(shipment);
+        requisition.Restate(all);
+    }
+}
+```
+
+
+> 📄 **`backend/src/Costing.Infrastructure/Persistence/InterBranchPersistence.cs`** — 215 سطر
+
+```csharp
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata.Builders;
+using Costing.Domain.Company;
+using Costing.Domain.InterBranch;
+using Costing.Domain.RawMaterials;
+using Costing.Infrastructure.Persistence.Configurations;
+
+namespace Costing.Infrastructure.Persistence;
+
+// The central kitchen's hub (مركز عمليات المطبخ المركزي): the branches' requisitions, the kitchen's
+// dispatches and their internal sales invoices, the branches' receipts and their internal purchase
+// invoices. Each is its branch's record, kept under the branch's own name: the requisition the
+// asking branch's, the sales invoice the kitchen's, the purchase invoice the receiving branch's.
+internal sealed class InterBranchConfiguration :
+    IEntityTypeConfiguration<InterBranchRequisition>, IEntityTypeConfiguration<InterBranchRequisitionLine>,
+    IEntityTypeConfiguration<InternalSalesInvoice>, IEntityTypeConfiguration<InternalSalesInvoiceLine>,
+    IEntityTypeConfiguration<InternalPurchaseInvoice>, IEntityTypeConfiguration<InternalPurchaseInvoiceLine>
+{
+    public void Configure(EntityTypeBuilder<InterBranchRequisition> builder)
+    {
+        builder.ToTable("InterBranchRequisitions", CostingDbContext.CostingSchema);
+        builder.Property(r => r.BranchId).HasColumnName("RequestingBranchId");
+        builder.Ignore(r => r.RequestingBranchId);
+        builder.Ignore(r => r.IsOpen);
+        builder.Property(r => r.Number).HasMaxLength(20);
+        builder.HasIndex(r => r.Number).IsUnique();
+        builder.Property(r => r.Status).IsEnumName();
+        builder.Property(r => r.Notes).HasMaxLength(InterBranchRequisition.MaxNotes);
+        Who(builder);
+        builder.Property(r => r.CancelledBy).HasMaxLength(200);
+        builder.HasIndex(r => new { r.BranchId, r.RequestDate });
+        builder.HasIndex(r => new { r.SupplyingBranchId, r.RequestDate });
+        builder.HasOne<Branch>().WithMany().HasForeignKey(r => r.BranchId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne<Branch>().WithMany().HasForeignKey(r => r.SupplyingBranchId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasMany(r => r.Lines).WithOne().HasForeignKey(l => l.InterBranchRequisitionId).OnDelete(DeleteBehavior.Cascade);
+        builder.Navigation(r => r.Lines).HasField("_lines").UsePropertyAccessMode(PropertyAccessMode.Field);
+    }
+
+    public void Configure(EntityTypeBuilder<InterBranchRequisitionLine> builder)
+    {
+        builder.ToTable("InterBranchRequisitionLines", CostingDbContext.CostingSchema);
+        builder.HasKey(l => l.Id);
+        builder.Property(l => l.Id).ValueGeneratedNever();
+        builder.Property(l => l.RequestedQuantity).IsQuantity();
+        builder.Property(l => l.DispatchedQuantity).IsQuantity();
+        builder.Property(l => l.ReceivedQuantity).IsQuantity();
+        builder.Property(l => l.Unit).HasMaxLength(20);
+        builder.Property(l => l.Notes).HasMaxLength(InterBranchRequisition.MaxLineNotes);
+        builder.HasOne<RawMaterial>().WithMany().HasForeignKey(l => l.RawMaterialId).OnDelete(DeleteBehavior.Restrict);
+    }
+
+    public void Configure(EntityTypeBuilder<InternalSalesInvoice> builder)
+    {
+        builder.ToTable("InternalSalesInvoices", CostingDbContext.CostingSchema);
+        builder.Property(s => s.BranchId).HasColumnName("SupplyingBranchId");
+        builder.Ignore(s => s.SupplyingBranchId);
+        builder.Property(s => s.Number).HasMaxLength(20);
+        builder.HasIndex(s => s.Number).IsUnique();
+        builder.Property(s => s.Pricing).IsEnumName();
+        builder.Property(s => s.Status).IsEnumName();
+        builder.Property(s => s.MarkupPercent).HasPrecision(9, 4);
+        builder.Property(s => s.Notes).HasMaxLength(InternalSalesInvoice.MaxNotes);
+        Who(builder);
+        builder.Property(s => s.VoidedBy).HasMaxLength(200);
+        builder.Property(s => s.TotalTransferRevenue).HasPrecision(18, 2);
+        builder.Property(s => s.TotalInternalCogs).HasPrecision(18, 2);
+        builder.Property(s => s.InternalMargin).HasPrecision(18, 2);
+        builder.HasIndex(s => new { s.BranchId, s.DispatchDate });
+        builder.HasIndex(s => new { s.ReceivingBranchId, s.DispatchDate });
+        builder.HasIndex(s => s.RequisitionId);
+        builder.HasOne<Branch>().WithMany().HasForeignKey(s => s.BranchId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne<Branch>().WithMany().HasForeignKey(s => s.ReceivingBranchId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne<InventoryLocation>().WithMany().HasForeignKey(s => s.FromLocationId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne<InterBranchRequisition>().WithMany().HasForeignKey(s => s.RequisitionId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasMany(s => s.Lines).WithOne().HasForeignKey(l => l.InternalSalesInvoiceId).OnDelete(DeleteBehavior.Cascade);
+        builder.Navigation(s => s.Lines).HasField("_lines").UsePropertyAccessMode(PropertyAccessMode.Field);
+    }
+
+    public void Configure(EntityTypeBuilder<InternalSalesInvoiceLine> builder)
+    {
+        builder.ToTable("InternalSalesInvoiceLines", CostingDbContext.CostingSchema);
+        builder.HasKey(l => l.Id);
+        builder.Property(l => l.Id).ValueGeneratedNever();
+        builder.Property(l => l.Quantity).IsQuantity();
+        builder.Property(l => l.ReceivedQuantity).IsQuantity();
+        builder.Property(l => l.Unit).HasMaxLength(20);
+        builder.Property(l => l.UnitCost).HasPrecision(18, 6);
+        builder.Property(l => l.TransferUnitPrice).HasPrecision(18, 6);
+        builder.Property(l => l.LineRevenue).HasPrecision(18, 2);
+        builder.Property(l => l.LineCogs).HasPrecision(18, 2);
+        builder.HasOne<RawMaterial>().WithMany().HasForeignKey(l => l.RawMaterialId).OnDelete(DeleteBehavior.Restrict);
+    }
+
+    public void Configure(EntityTypeBuilder<InternalPurchaseInvoice> builder)
+    {
+        builder.ToTable("InternalPurchaseInvoices", CostingDbContext.CostingSchema);
+        builder.Property(p => p.BranchId).HasColumnName("ReceivingBranchId");
+        builder.Ignore(p => p.ReceivingBranchId);
+        builder.Property(p => p.Number).HasMaxLength(20);
+        builder.HasIndex(p => p.Number).IsUnique();
+        builder.Property(p => p.Status).IsEnumName();
+        builder.Property(p => p.Notes).HasMaxLength(InternalPurchaseInvoice.MaxNotes);
+        Who(builder);
+        builder.Property(p => p.VoidedBy).HasMaxLength(200);
+        builder.Property(p => p.TotalBilled).HasPrecision(18, 2);
+        builder.Property(p => p.TotalReceivedValue).HasPrecision(18, 2);
+        builder.Property(p => p.TotalTransitLoss).HasPrecision(18, 2);
+        builder.HasIndex(p => new { p.BranchId, p.ReceiptDate });
+        builder.HasIndex(p => new { p.SupplyingBranchId, p.ReceiptDate });
+        // One receipt a shipment.
+        builder.HasIndex(p => p.InternalSalesInvoiceId).IsUnique();
+        builder.HasOne<Branch>().WithMany().HasForeignKey(p => p.BranchId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne<Branch>().WithMany().HasForeignKey(p => p.SupplyingBranchId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne<InventoryLocation>().WithMany().HasForeignKey(p => p.ToLocationId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne<InternalSalesInvoice>().WithMany().HasForeignKey(p => p.InternalSalesInvoiceId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne<InterBranchRequisition>().WithMany().HasForeignKey(p => p.RequisitionId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasMany(p => p.Lines).WithOne().HasForeignKey(l => l.InternalPurchaseInvoiceId).OnDelete(DeleteBehavior.Cascade);
+        builder.Navigation(p => p.Lines).HasField("_lines").UsePropertyAccessMode(PropertyAccessMode.Field);
+    }
+
+    public void Configure(EntityTypeBuilder<InternalPurchaseInvoiceLine> builder)
+    {
+        builder.ToTable("InternalPurchaseInvoiceLines", CostingDbContext.CostingSchema);
+        builder.HasKey(l => l.Id);
+        builder.Property(l => l.Id).ValueGeneratedNever();
+        builder.Property(l => l.DispatchedQuantity).IsQuantity();
+        builder.Property(l => l.ReceivedQuantity).IsQuantity();
+        builder.Property(l => l.ShortQuantity).IsQuantity();
+        builder.Property(l => l.Unit).HasMaxLength(20);
+        builder.Property(l => l.TransferUnitPrice).HasPrecision(18, 6);
+        builder.Property(l => l.LineTotal).HasPrecision(18, 2);
+        builder.Property(l => l.ReceivedValue).HasPrecision(18, 2);
+        builder.Property(l => l.TransitLoss).HasPrecision(18, 2);
+        builder.HasOne<RawMaterial>().WithMany().HasForeignKey(l => l.RawMaterialId).OnDelete(DeleteBehavior.Restrict);
+    }
+
+    private static void Who<T>(EntityTypeBuilder<T> builder) where T : class
+    {
+        builder.Property<string>("CreatedBy").HasMaxLength(200);
+        builder.Property<string?>("CreatedByUserId").HasMaxLength(100);
+    }
+}
+
+internal sealed class InterBranchRequisitionRepository(CostingDbContext db) : IInterBranchRequisitionRepository
+{
+    public Task<InterBranchRequisition?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default) =>
+        db.InterBranchRequisitions.Include(r => r.Lines).SingleOrDefaultAsync(r => r.Id == id, cancellationToken);
+
+    public void Add(InterBranchRequisition aggregate) => db.InterBranchRequisitions.Add(aggregate);
+
+    public async Task<IReadOnlyList<InterBranchRequisition>> GetForBranchAsync(Guid branchId, DateOnly from, DateOnly to, CancellationToken cancellationToken = default) =>
+        await db.InterBranchRequisitions.AsNoTracking().Include(r => r.Lines)
+            .Where(r => r.BranchId == branchId || r.SupplyingBranchId == branchId)
+            .Where(r => (r.RequestDate >= from && r.RequestDate <= to)
+                || r.Status == RequisitionStatus.Submitted || r.Status == RequisitionStatus.PartiallyDispatched || r.Status == RequisitionStatus.Dispatched)
+            .ToListAsync(cancellationToken);
+
+    public async Task<IReadOnlyList<InterBranchRequisition>> GetByIdsAsync(IReadOnlyCollection<Guid> ids, CancellationToken cancellationToken = default) =>
+        await db.InterBranchRequisitions.AsNoTracking().Where(r => ids.Contains(r.Id)).ToListAsync(cancellationToken);
+
+    public Task<int> CountInYearAsync(int year, CancellationToken cancellationToken = default)
+    {
+        var prefix = $"REQ-{year}-";
+        return db.InterBranchRequisitions.CountAsync(r => r.Number.StartsWith(prefix), cancellationToken);
+    }
+}
+
+internal sealed class InternalSalesInvoiceRepository(CostingDbContext db) : IInternalSalesInvoiceRepository
+{
+    public Task<InternalSalesInvoice?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default) =>
+        db.InternalSalesInvoices.Include(s => s.Lines).SingleOrDefaultAsync(s => s.Id == id, cancellationToken);
+
+    public void Add(InternalSalesInvoice aggregate) => db.InternalSalesInvoices.Add(aggregate);
+
+    public async Task<IReadOnlyList<InternalSalesInvoice>> GetForBranchAsync(Guid branchId, DateOnly from, DateOnly to, CancellationToken cancellationToken = default) =>
+        await db.InternalSalesInvoices.AsNoTracking().Include(s => s.Lines)
+            .Where(s => s.BranchId == branchId || s.ReceivingBranchId == branchId)
+            .Where(s => (s.DispatchDate >= from && s.DispatchDate <= to) || s.Status == ShipmentStatus.InTransit)
+            .ToListAsync(cancellationToken);
+
+    public async Task<IReadOnlyList<InternalSalesInvoice>> GetByRequisitionAsync(Guid requisitionId, CancellationToken cancellationToken = default) =>
+        await db.InternalSalesInvoices.Include(s => s.Lines).Where(s => s.RequisitionId == requisitionId).ToListAsync(cancellationToken);
+
+    public async Task<IReadOnlyList<InternalSalesInvoice>> GetByIdsAsync(IReadOnlyCollection<Guid> ids, CancellationToken cancellationToken = default) =>
+        await db.InternalSalesInvoices.AsNoTracking().Where(s => ids.Contains(s.Id)).ToListAsync(cancellationToken);
+
+    public Task<int> CountInYearAsync(int year, CancellationToken cancellationToken = default)
+    {
+        var prefix = $"ISI-{year}-";
+        return db.InternalSalesInvoices.CountAsync(s => s.Number.StartsWith(prefix), cancellationToken);
+    }
+}
+
+internal sealed class InternalPurchaseInvoiceRepository(CostingDbContext db) : IInternalPurchaseInvoiceRepository
+{
+    public Task<InternalPurchaseInvoice?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default) =>
+        db.InternalPurchaseInvoices.Include(p => p.Lines).SingleOrDefaultAsync(p => p.Id == id, cancellationToken);
+
+    public void Add(InternalPurchaseInvoice aggregate) => db.InternalPurchaseInvoices.Add(aggregate);
+
+    public async Task<IReadOnlyList<InternalPurchaseInvoice>> GetForBranchAsync(Guid branchId, DateOnly from, DateOnly to, CancellationToken cancellationToken = default) =>
+        await db.InternalPurchaseInvoices.AsNoTracking().Include(p => p.Lines)
+            .Where(p => p.BranchId == branchId || p.SupplyingBranchId == branchId)
+            .Where(p => p.ReceiptDate >= from && p.ReceiptDate <= to)
+            .ToListAsync(cancellationToken);
+
+    public async Task<IReadOnlyList<InternalPurchaseInvoice>> GetByIdsAsync(IReadOnlyCollection<Guid> ids, CancellationToken cancellationToken = default) =>
+        await db.InternalPurchaseInvoices.AsNoTracking().Where(p => ids.Contains(p.Id)).ToListAsync(cancellationToken);
+
+    public Task<int> CountInYearAsync(int year, CancellationToken cancellationToken = default)
+    {
+        var prefix = $"IPI-{year}-";
+        return db.InternalPurchaseInvoices.CountAsync(p => p.Number.StartsWith(prefix), cancellationToken);
+    }
+}
+```
+
+
+### 9.4 الـ API
+
+`api/inter-branch`: المركز بفترة، وورقة Excel، والطلب وإلغاؤه، والصرف وإلغاؤه، والاستلام؛ لمن يعمل في "الجرد" أو "الخامات" أو "المشتريات"، والإدخال بـ `inventory.manage`، وإلغاء شحنة مستلمة للمدير فقط (`approval.decide`)، والأسعار والإجماليات لمن له `costing.view`.
+
+> 📄 **`backend/src/Costing.Api/Controllers/InterBranchController.cs`** — 96 سطر
+
+```csharp
+using MediatR;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using Costing.Api.Auth;
+using Costing.Application.InterBranch;
+using Costing.Domain.Access;
+using Costing.Domain.InterBranch;
+using Costing.Infrastructure.Excel;
+
+namespace Costing.Api.Controllers;
+
+// The central kitchen's hub (المطبخ المركزي وتحويلات الفروع), for whoever keeps the stock or buys
+// it (Stock counts, Raw materials or Purchases), in the branch chosen: requisitions asked, shipments
+// dispatched and billed, receipts. Entered by whoever enters stock; a received shipment voided only
+// by a manager. Costs, prices and totals for whoever sees costs.
+[ApiController]
+[Route("api/inter-branch")]
+[CostingTab(CostingTabs.Counts | CostingTabs.Materials | CostingTabs.Purchases)]
+public sealed class InterBranchController(ISender sender, Costing.Application.Common.IBusinessCalendar calendar) : ControllerBase
+{
+    // The hub for the branch: the last 30 days unless a period is asked for, with whatever is open.
+    [HttpGet]
+    [Authorize(Policy = Permissions.InventoryView)]
+    public Task<InterBranchHubDto> Get([FromQuery] DateOnly? from, [FromQuery] DateOnly? to, CancellationToken cancellationToken)
+    {
+        var (start, end) = Period(from, to);
+        return sender.Send(new GetInterBranchHubQuery(start, end, SeesCosts), cancellationToken);
+    }
+
+    [HttpGet("sheet")]
+    [Authorize(Policy = Permissions.InventoryView)]
+    public async Task<IActionResult> GetSheet([FromQuery] DateOnly? from, [FromQuery] DateOnly? to, CancellationToken cancellationToken)
+    {
+        var (start, end) = Period(from, to);
+        var hub = await sender.Send(new GetInterBranchHubQuery(start, end, SeesCosts), cancellationToken);
+        return File(InterBranchWorkbook.Build(hub, start, end), SheetFiles.ContentType, $"inter-branch-{start:yyyy-MM-dd}-{end:yyyy-MM-dd}.xlsx");
+    }
+
+    // Asked of a central kitchen or warehouse by the branch worked in; its id made by the app.
+    [HttpPost("requisitions")]
+    [Authorize(Policy = Permissions.InventoryManage)]
+    public Task<RequisitionDto> Submit(RequisitionRequest request, CancellationToken cancellationToken) =>
+        sender.Send(new SubmitRequisitionCommand(
+            request.Id, request.SupplyingBranchId, request.RequestedDeliveryDate, request.Lines ?? [], request.Notes, UserClaims.IdOf(User) ?? string.Empty,
+            UserClaims.NameOf(User)), cancellationToken);
+
+    [HttpPost("requisitions/{id:guid}/cancel")]
+    [Authorize(Policy = Permissions.InventoryManage)]
+    public Task<RequisitionDto> Cancel(Guid id, CancellationToken cancellationToken) =>
+        sender.Send(new CancelRequisitionCommand(id, UserClaims.NameOf(User)), cancellationToken);
+
+    // Dispatched and billed by the central kitchen worked in.
+    [HttpPost("shipments")]
+    [Authorize(Policy = Permissions.InventoryManage)]
+    public Task<ShipmentDto> Dispatch(DispatchRequest request, CancellationToken cancellationToken) =>
+        sender.Send(new DispatchShipmentCommand(
+            request.Id, request.RequisitionId, request.ReceivingBranchId, request.FromLocationId, request.Pricing, request.MarkupPercent, request.Lines ?? [],
+            request.Notes, UserClaims.IdOf(User) ?? string.Empty, UserClaims.NameOf(User), SeesCosts), cancellationToken);
+
+    // Voided by the kitchen while it is on its way.
+    [HttpPost("shipments/{id:guid}/void")]
+    [Authorize(Policy = Permissions.InventoryManage)]
+    public Task<ShipmentDto> VoidShipment(Guid id, CancellationToken cancellationToken) =>
+        sender.Send(new VoidShipmentCommand(id, UserClaims.NameOf(User), SeesCosts), cancellationToken);
+
+    // Received by the branch worked in.
+    [HttpPost("receipts")]
+    [Authorize(Policy = Permissions.InventoryManage)]
+    public Task<ReceiptDto> Receive(ReceiveRequest request, CancellationToken cancellationToken) =>
+        sender.Send(new ReceiveShipmentCommand(
+            request.Id, request.ShipmentId, request.ToLocationId, request.Lines, request.Notes, UserClaims.IdOf(User) ?? string.Empty, UserClaims.NameOf(User),
+            SeesCosts), cancellationToken);
+
+    // A received shipment voided, with both its invoices: a manager's.
+    [HttpPost("receipts/{id:guid}/void")]
+    [Authorize(Policy = Permissions.ApprovalDecide)]
+    public Task<ReceiptDto> VoidReceipt(Guid id, CancellationToken cancellationToken) =>
+        sender.Send(new VoidReceiptCommand(id, UserClaims.NameOf(User), SeesCosts), cancellationToken);
+
+    private (DateOnly From, DateOnly To) Period(DateOnly? from, DateOnly? to)
+    {
+        var today = calendar.BusinessDateOf(DateTime.UtcNow);
+        return (from ?? today.AddDays(-30), to ?? today);
+    }
+
+    private bool SeesCosts => UserClaims.RoleOf(User) is { } role && RolePermissions.Has(role, Permissions.CostingView);
+}
+
+public sealed record RequisitionRequest(
+    Guid Id, Guid SupplyingBranchId, DateOnly? RequestedDeliveryDate, IReadOnlyList<RequisitionLineInput>? Lines, string? Notes);
+
+public sealed record DispatchRequest(
+    Guid Id, Guid? RequisitionId, Guid? ReceivingBranchId, Guid? FromLocationId, TransferPricing Pricing, decimal? MarkupPercent,
+    IReadOnlyList<DispatchLineInput>? Lines, string? Notes);
+
+public sealed record ReceiveRequest(Guid Id, Guid ShipmentId, Guid? ToLocationId, IReadOnlyList<ReceiptLineInput>? Lines, string? Notes);
 ```
 
 

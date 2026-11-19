@@ -5434,7 +5434,7 @@ public sealed class BurdenedCostService(CostingDbContext db, Application.Common.
 
 ولكل سطر **مصدره** ليُفتح بضغطة: `SourceId` في الحركة هو الفاتورة أو أمر الإنتاج أو الجرد كما هو، أما البيع فيحمل رقم **سطر** الإيصال (`PublicId`)، فيُترجم إلى الإيصال نفسه بـ `SelectMany` على السطور المملوكة (owned) ومعه يوم عمله. والتالف بلا كيان، فبيانه سببه (`Note`). و `HasSource` يقول إن السجل وُجد. الكميات بوحدة الشراء والأسعار لكل وحدة شراء، كما تعرضها الشاشات.
 
-> 📄 **`backend/src/Costing.Infrastructure/Reports/StockCardService.cs`** — 318 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Reports/StockCardService.cs`** — 346 سطر
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
@@ -5464,6 +5464,9 @@ public enum StockCardMovementType
     Sales = 4,
     Waste = 5,
     CountAdjustment = 6,
+
+    // Sent to or received from another branch (بين الفروع).
+    InterBranch = 7,
 }
 
 // What a line opens: the record that made the movement.
@@ -5474,6 +5477,9 @@ public enum StockCardSourceKind
     StockCount = 3,
     SalesReceipt = 4,
     Spoilage = 5,
+
+    // The central kitchen's internal sales invoice, or the branch's internal purchase invoice.
+    InterBranchShipment = 6,
 }
 
 // One movement. SourceId opens it: the invoice, the production order, the count, the sales receipt
@@ -5537,6 +5543,7 @@ public sealed class StockCardService(CostingDbContext db, IBusinessCalendar cloc
         StockMovementReason.Waste or StockMovementReason.Spoilage => StockCardMovementType.Waste,
         // Taken on purpose, kept apart from spoilage everywhere it is judged; here, out like waste.
         StockMovementReason.StaffMeal or StockMovementReason.Hospitality or StockMovementReason.RecipeTasting => StockCardMovementType.Waste,
+        StockMovementReason.InterBranchDispatchOut or StockMovementReason.InterBranchReceiptIn => StockCardMovementType.InterBranch,
         _ => StockCardMovementType.CountAdjustment,
     };
 
@@ -5547,6 +5554,7 @@ public sealed class StockCardService(CostingDbContext db, IBusinessCalendar cloc
         StockMovementReason.OpeningStock or StockMovementReason.CountAdjustment => StockCardSourceKind.StockCount,
         StockMovementReason.Spoilage => StockCardSourceKind.Spoilage,
         StockMovementReason.StaffMeal or StockMovementReason.Hospitality or StockMovementReason.RecipeTasting => StockCardSourceKind.Spoilage,
+        StockMovementReason.InterBranchDispatchOut or StockMovementReason.InterBranchReceiptIn => StockCardSourceKind.InterBranchShipment,
         _ => StockCardSourceKind.SalesReceipt,
     };
 
@@ -5632,7 +5640,7 @@ public sealed class StockCardService(CostingDbContext db, IBusinessCalendar cloc
     // also brings in a price typed in by hand. A reversal of anything else leaves it where it was.
     internal static decimal? AverageAfter(decimal? average, decimal onHand, StockMovement m, StockMovement? original)
     {
-        var averaging = m.Reason is StockMovementReason.Purchase or StockMovementReason.ProductionOutput;
+        var averaging = m.Reason is StockMovementReason.Purchase or StockMovementReason.ProductionOutput or StockMovementReason.InterBranchReceiptIn;
         if (m.ReversalOf is null)
         {
             if (m.UnitCost is not { } cost)
@@ -5728,6 +5736,24 @@ public sealed class StockCardService(CostingDbContext db, IBusinessCalendar cloc
             }
         }
 
+        // A shipment: the kitchen's sales invoice (sent) or the branch's purchase invoice (received).
+        var shipmentIds = Ids(StockCardSourceKind.InterBranchShipment);
+        if (shipmentIds.Count > 0)
+        {
+            var branchNames = await db.Branches.AsNoTracking().ToDictionaryAsync(b => b.Id, b => b.Name, cancellationToken);
+            var sent = await db.InternalSalesInvoices.AsNoTracking().Where(s => shipmentIds.Contains(s.Id))
+                .Select(s => new { s.Id, s.Number, s.DispatchDate, s.ReceivingBranchId, s.CreatedBy }).ToListAsync(cancellationToken);
+            foreach (var s in sent)
+                result[(s.Id, StockCardSourceKind.InterBranchShipment)] = new Source(
+                    s.Id, s.DispatchDate, $"Dispatch {s.Number} · صرف لفرع", $"To {branchNames.GetValueOrDefault(s.ReceivingBranchId) ?? "another branch"}", s.CreatedBy);
+            var received = await db.InternalPurchaseInvoices.AsNoTracking().Where(p => shipmentIds.Contains(p.Id))
+                .Select(p => new { p.Id, p.Number, p.ReceiptDate, p.SupplyingBranchId, p.CreatedBy }).ToListAsync(cancellationToken);
+            foreach (var p in received)
+                result[(p.Id, StockCardSourceKind.InterBranchShipment)] = new Source(
+                    p.Id, p.ReceiptDate, $"Receipt {p.Number} · استلام من المركزي", $"From {branchNames.GetValueOrDefault(p.SupplyingBranchId) ?? "the central kitchen"}",
+                    p.CreatedBy);
+        }
+
         foreach (var id in Ids(StockCardSourceKind.Spoilage))
         {
             var first = movements.First(m => m.SourceId == id && (m.Reason == StockMovementReason.Spoilage || StaffConsumption.Is(m.Reason)));
@@ -5748,6 +5774,8 @@ public sealed class StockCardService(CostingDbContext db, IBusinessCalendar cloc
         StockMovementReason.StaffMeal => "Staff meal · وجبات العاملين",
         StockMovementReason.Hospitality => "Hospitality · ضيافة",
         StockMovementReason.RecipeTasting => "Recipe tasting · تجربة وصفة",
+        StockMovementReason.InterBranchDispatchOut => "Dispatch to a branch · صرف لفرع",
+        StockMovementReason.InterBranchReceiptIn => "Receipt from the central kitchen · استلام من المركزي",
         _ => "Sale · فاتورة بيع",
     };
 

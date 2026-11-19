@@ -68,7 +68,9 @@ describe('the company structure', () => {
     ]);
     expect(cards.map((c) => c.getAttribute('aria-checked'))).toEqual(['true', 'false', 'false', 'false']);
     expect(text(cards[0].querySelector('.badges')!)).toBe('check_circle Current · الحاليDefault · الافتراضي');
-    expect(text(cards[3])).toContain('Soon · قريباً Requisitions, Dispatch & Bill, Receive');
+    // Every structure's features built: nothing marked as still to come.
+    expect(text(cards[3])).toContain('Requisitions, Dispatch & Bill, Receive');
+    expect(el.querySelectorAll('.soon')).toHaveLength(0);
     // One branch, its store implicit: no type, no new branch, no locations to keep.
     expect([...el.querySelectorAll('[aria-labelledby="branches-title"] tbody tr')].length).toBe(1);
     expect(el.querySelector('[aria-labelledby="branches-title"] mat-select')).toBeNull();

@@ -114,6 +114,9 @@ public static class DependencyInjection
         services.AddScoped<Costing.Application.Stock.IStockBalances, StockBalances>();
         services.AddScoped<Domain.Stock.IMaterialBranchStockRepository, MaterialBranchStockRepository>();
         services.AddScoped<Domain.Stock.IInternalTransferRepository, InternalTransferRepository>();
+        services.AddScoped<Domain.InterBranch.IInterBranchRequisitionRepository, InterBranchRequisitionRepository>();
+        services.AddScoped<Domain.InterBranch.IInternalSalesInvoiceRepository, InternalSalesInvoiceRepository>();
+        services.AddScoped<Domain.InterBranch.IInternalPurchaseInvoiceRepository, InternalPurchaseInvoiceRepository>();
         services.AddScoped<IExpenseItemRepository, ExpenseItemRepository>();
         services.AddScoped<IPrepRecipeRepository, PrepRecipeRepository>();
         services.AddScoped<IProductionOrderRepository, ProductionOrderRepository>();

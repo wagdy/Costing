@@ -115,6 +115,29 @@ describe('the costing navigation', () => {
     // Neither counting nor keeping the materials: not listed.
     expect((await shell('SingleBranch_WithSubStores', ['Sales'])).map((s) => s.path)).toEqual(['sales']);
 
+    // The central kitchen's hub: only in a company run with one, after the transfers.
+    const kitchen = async (mode: 'MultiBranch_Independent' | 'MultiBranch_CentralKitchen', tabs: CostingTab[]) => {
+      TestBed.resetTestingModule();
+      TestBed.configureTestingModule({
+        providers: [
+          provideRouter([]),
+          { provide: AuthService, useValue: { me: () => null, can: () => false } },
+          { provide: CostingAccess, useValue: { has: (t: CostingTab) => tabs.includes(t) } },
+          { provide: Approvals, useValue: { canApprove: () => false, pending: signal([]), refresh: vi.fn() } },
+        ],
+      });
+      TestBed.inject(Company).settings.update((s) => ({ ...s, operatingMode: mode }));
+      const fixture = TestBed.createComponent(CostingShell);
+      await fixture.whenStable();
+      return ((fixture.componentInstance as unknown as Record<string, any>)['sections']() as { path: string; en: string; ar: string }[]);
+    };
+    expect((await kitchen('MultiBranch_Independent', ['Purchases', 'Counts'])).map((s) => s.path)).toEqual(['purchases', 'counts', 'internal-transfers']);
+    const hub = await kitchen('MultiBranch_CentralKitchen', ['Purchases', 'Counts', 'Waste']);
+    expect(hub.map((s) => s.path)).toEqual(['purchases', 'counts', 'internal-transfers', 'inter-branch', 'waste']);
+    expect(hub[3]).toMatchObject({ en: 'Inter-branch hub', ar: 'المطبخ المركزي وتحويلات الفروع' });
+    expect((await kitchen('MultiBranch_CentralKitchen', ['Purchases'])).map((s) => s.path)).toEqual(['purchases', 'inter-branch']);
+    expect(find(routes, 'costing')!.children!.find((r) => r.path === 'inter-branch')!.canActivate).toHaveLength(1);
+
     const route = find(routes, 'costing')!.children!.find((r) => r.path === 'internal-transfers')!;
     expect(route.loadComponent).toBeDefined();
     expect(route.canActivate).toHaveLength(1);

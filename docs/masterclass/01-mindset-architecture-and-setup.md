@@ -705,7 +705,7 @@ internal sealed class ApplicationExceptionHandler(
 
 طبقة التطبيق: MediatR يجد الـ Handlers تلقائيًا، والخدمات الداخلية المشتركة (`TreasuryWriter`, `InvoicePoster`, `HrOutbox`, …) بعمر `Scoped`.
 
-> 📄 **`backend/src/Costing.Application/DependencyInjection.cs`** — 50 سطر
+> 📄 **`backend/src/Costing.Application/DependencyInjection.cs`** — 52 سطر
 
 ```csharp
 using Microsoft.Extensions.DependencyInjection;
@@ -729,6 +729,8 @@ public static class DependencyInjection
         services.AddScoped<Company.CompanyStructureReader>();
         services.AddScoped<Stock.StockPlaces>();
         services.AddScoped<Stock.TransferReading>();
+        services.AddScoped<InterBranch.InterBranchReading>();
+        services.AddScoped<InterBranch.InterBranchDesk>();
         // The days of the records each request names.
         foreach (var lookup in typeof(DependencyInjection).Assembly.GetTypes()
                      .Where(t => t is { IsClass: true, IsAbstract: false } && !t.IsGenericTypeDefinition))
@@ -763,7 +765,7 @@ public static class DependencyInjection
 
 البنية التحتية: كل "منفذ" يُربط بتطبيقه. `Singleton` للساعة وملف الشركة والتشفير؛ `Scoped` لكل ما يلمس `CostingDbContext`؛ `RetryOnConflictBehavior` يلف كل أمر؛ و `AddHttpClient` + `AddHostedService<HrSyncWorker>` للربط مع HR.
 
-> 📄 **`backend/src/Costing.Infrastructure/DependencyInjection.cs`** — 143 سطر
+> 📄 **`backend/src/Costing.Infrastructure/DependencyInjection.cs`** — 146 سطر
 
 ```csharp
 using MediatR;
@@ -882,6 +884,9 @@ public static class DependencyInjection
         services.AddScoped<Costing.Application.Stock.IStockBalances, StockBalances>();
         services.AddScoped<Domain.Stock.IMaterialBranchStockRepository, MaterialBranchStockRepository>();
         services.AddScoped<Domain.Stock.IInternalTransferRepository, InternalTransferRepository>();
+        services.AddScoped<Domain.InterBranch.IInterBranchRequisitionRepository, InterBranchRequisitionRepository>();
+        services.AddScoped<Domain.InterBranch.IInternalSalesInvoiceRepository, InternalSalesInvoiceRepository>();
+        services.AddScoped<Domain.InterBranch.IInternalPurchaseInvoiceRepository, InternalPurchaseInvoiceRepository>();
         services.AddScoped<IExpenseItemRepository, ExpenseItemRepository>();
         services.AddScoped<IPrepRecipeRepository, PrepRecipeRepository>();
         services.AddScoped<IProductionOrderRepository, ProductionOrderRepository>();
@@ -1483,6 +1488,7 @@ Costing/
                     FixedAssetsController.cs
                     HrIntegrationController.cs
                     IntelligenceController.cs
+                    InterBranchController.cs
                     InternalTransfersController.cs
                     InventoryController.cs
                     MenuSalesController.cs
@@ -1539,6 +1545,8 @@ Costing/
                 Integrations/
                     HrIntegration.cs
                     PosIntegration.cs
+                InterBranch/
+                    InterBranch.cs
                 Menu/
                     Combos.cs
                     Menu.cs
@@ -1616,6 +1624,10 @@ Costing/
                 Integrations/
                     HrIntegration.cs
                     PosIntegration.cs
+                InterBranch/
+                    InterBranchRequisition.cs
+                    InternalPurchaseInvoice.cs
+                    InternalSalesInvoice.cs
                 Menu/
                     ComboOffer.cs
                     MenuItem.cs
@@ -1703,6 +1715,7 @@ Costing/
                     EndOfDayRepositories.cs
                     FixedAssetPersistence.cs
                     HrIntegrationPersistence.cs
+                    InterBranchPersistence.cs
                     InventoryRepositories.cs
                     ItemConversions.cs
                     MaterialUnits.cs
@@ -1729,6 +1742,7 @@ Costing/
                         20261118122831_AddPeriodLockAndSecurityAudit.cs
                         20261118131754_AddCompanyStructure.cs
                         20261118184431_AddStockLocations.cs
+                        20261118193842_AddInterBranchHub.cs
                         CostingDbContextModelSnapshot.cs
                     PosIntegrationPersistence.cs
                     PurchaseOrderPersistence.cs
@@ -1772,6 +1786,7 @@ Costing/
                 DailyBreakEvenApiTests.cs
                 FixedAssetsApiTests.cs
                 HrIntegrationApiTests.cs
+                InterBranchApiTests.cs
                 InternalTransfersApiTests.cs
                 PeriodLockApiTests.cs
                 PosIntegrationApiTests.cs
@@ -1790,6 +1805,7 @@ Costing/
                 EndOfDayTests.cs
                 ExpenseItemImportTests.cs
                 HrIntegrationTests.cs
+                InterBranchTests.cs
                 InventoryTests.cs
                 KitchenStationTests.cs
                 MenuSalesFlowTests.cs
@@ -1813,6 +1829,7 @@ Costing/
                 EndOfDayTests.cs
                 FixedAssetTests.cs
                 IngredientSwapTests.cs
+                InterBranchTests.cs
                 KitchenStationTests.cs
                 MaterialExplosionTests.cs
                 MenuSalesTests.cs
@@ -1841,6 +1858,7 @@ Costing/
                 DatabaseTests.cs
                 FixedAssetsTests.cs
                 IntelligenceTests.cs
+                InterBranchTests.cs
                 PeriodLockTests.cs
                 PosIntegrationTests.cs
                 PurchaseOrdersTests.cs
@@ -1894,6 +1912,7 @@ Costing/
                         end-of-day.api.ts
                         hr-staff.api.ts
                         intelligence.api.ts
+                        inter-branch.api.ts
                         menu-sales.api.ts
                         staff.ts
                         stock.api.ts
@@ -1996,6 +2015,11 @@ Costing/
                         info-tips.ts
                         intelligence-shell.ts
                         intelligence.spec.ts
+                        inter-branch-dialogs.spec.ts
+                        inter-branch-dialogs.ts
+                        inter-branch-page.spec.ts
+                        inter-branch-page.ts
+                        inter-branch-paper.ts
                         internal-transfers-page.spec.ts
                         internal-transfers-page.ts
                         invoice-lines.spec.ts

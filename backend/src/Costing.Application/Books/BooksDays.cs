@@ -112,6 +112,28 @@ internal sealed class VoidInternalTransferDays(Costing.Domain.Stock.IInternalTra
         await transfers.GetByIdAsync(request.Id, cancellationToken) is { } transfer ? [transfer.TransferDate] : [];
 }
 
+// A shipment voided while on its way: the day it was dispatched.
+internal sealed class VoidShipmentDays(Costing.Domain.InterBranch.IInternalSalesInvoiceRepository shipments)
+    : IBooksDays<InterBranch.VoidShipmentCommand>
+{
+    public async Task<IEnumerable<DateOnly?>> DaysAsync(InterBranch.VoidShipmentCommand request, CancellationToken cancellationToken) =>
+        await shipments.GetByIdAsync(request.Id, cancellationToken) is { } shipment ? [shipment.DispatchDate] : [];
+}
+
+// A receipt voided with its shipment: the day it was received and the day it was dispatched.
+internal sealed class VoidReceiptDays(
+    Costing.Domain.InterBranch.IInternalPurchaseInvoiceRepository receipts, Costing.Domain.InterBranch.IInternalSalesInvoiceRepository shipments)
+    : IBooksDays<InterBranch.VoidReceiptCommand>
+{
+    public async Task<IEnumerable<DateOnly?>> DaysAsync(InterBranch.VoidReceiptCommand request, CancellationToken cancellationToken)
+    {
+        if (await receipts.GetByIdAsync(request.Id, cancellationToken) is not { } receipt)
+            return [];
+        var shipment = await shipments.GetByIdAsync(receipt.InternalSalesInvoiceId, cancellationToken);
+        return [receipt.ReceiptDate, shipment?.DispatchDate];
+    }
+}
+
 // A deletion, asked for or done at once: the record's own day.
 internal sealed class RequestDeletionDays(DeletionTargets deletions) : IBooksDays<RequestDeletionCommand>
 {

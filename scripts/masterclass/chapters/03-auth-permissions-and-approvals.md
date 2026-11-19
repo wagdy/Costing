@@ -213,7 +213,7 @@ request is IBooksEntry ∧ LockedUntil ≠ null
 
 ### 7.1 الفكرة
 
-النظام يتكيف مع حجم المكان الفعلي: محل بمساحة مفتوحة لا يرى شيئًا من الفروع أو المواقع، وسلسلة فروع بمطبخ مركزي ترى اختيار الفرع وتسجيل كل حركة باسم فرعها. أربعة أنماط (`SystemOperatingMode`) على إعدادات الشركة، والافتراضي `SingleBranch_OpenSpace`: النظام كما كان تمامًا (رصيد واحد ومتوسط تكلفة واحد لكل خامة). المرحلة الأولى هنا (7.1–7.5)، والثانية (الأرصدة حسب الموقع والتكلفة حسب الفرع والتحويلات الداخلية) في القسم 8؛ ثم المطبخ المركزي، ثم الأرباح والخسائر لكل فرع مع الحذف، في إصدارات تالية.
+النظام يتكيف مع حجم المكان الفعلي: محل بمساحة مفتوحة لا يرى شيئًا من الفروع أو المواقع، وسلسلة فروع بمطبخ مركزي ترى اختيار الفرع وتسجيل كل حركة باسم فرعها. أربعة أنماط (`SystemOperatingMode`) على إعدادات الشركة، والافتراضي `SingleBranch_OpenSpace`: النظام كما كان تمامًا (رصيد واحد ومتوسط تكلفة واحد لكل خامة). المرحلة الأولى هنا (7.1–7.5)، والثانية (الأرصدة حسب الموقع والتكلفة حسب الفرع والتحويلات الداخلية) في القسم 8، والثالثة (المطبخ المركزي وتحويلات الفروع) في القسم 9؛ ثم الأرباح والخسائر لكل فرع مع الحذف في إصدار تالٍ.
 
 ### 7.2 الدومين: الأنماط والفروع والمواقع
 
@@ -301,5 +301,43 @@ claim `branch` في التوكن، ويُقارن مع قاعدة البيانا
 `api/inventory/internal-transfers` (قائمة بفترة، واحد، ورقة Excel، إنشاء، إلغاء)، و `stock-locations`، و `location-stock`: لمن يعمل في "الجرد" أو "الخامات"، والإنشاء والإلغاء بـ `inventory.manage`، والتكاليف لمن له `costing.view`.
 
 @@file backend/src/Costing.Api/Controllers/InternalTransfersController.cs
+
+## 9. المطبخ المركزي وتحويلات الفروع (المرحلة الثالثة)
+
+### 9.1 الفكرة: ثلاث خطوات وفاتورتان متطابقتان
+
+```text
+1) الفرع يطلب        REQ-2026-0001   كميات فقط، لا قيود ولا مخزون (يُلغى قبل أي صرف)
+2) المركزي يصرف      ISI-2026-0001   خروج من موقع المركزي بمتوسطه + فاتورة بيع داخلية (إيراد/تكلفة/هامش)
+3) الفرع يستلم       IPI-2026-0001   دخول موقع الفرع بسعر التحويل + فاتورة شراء داخلية بنفس قيمة الصرف
+```
+
+بين الصرف والاستلام الشحنة "في الطريق": خرجت من المركزي ولم تدخل الفرع. الفرع يُفوتر بكل ما أُرسل حتى تتطابق الفاتورتان (لحذفهما في المرحلة الرابعة)، وما لم يصل لا يدخل مخزونه ويُسجل **عجز نقل** بسعر التحويل مع سببه (ملاحظة إلزامية). وكل خطوة تعمل في **الفرع المختار**: الطلب والاستلام في الفرع، والصرف في المطبخ المركزي (`InterBranchDesk.HereAsync`).
+
+### 9.2 الدومين
+
+- `InterBranchRequisition.Submit`: المورد مطبخ أو مخزن مركزي (`Supplies()`)، لا يطلب الفرع من نفسه، وتاريخ التوريد ليس قبل اليوم. و `Restate(shipments)` تحسب المصروف والمستلم لكل سطر والحالة من الشحنات غير الملغاة: لا شيء ⇐ مرسل؛ شحنة في الطريق ⇐ تم الصرف (أو صرف جزئي)؛ كلها مستلمة ⇐ تم الاستلام (أو صرف جزئي إن بقي سطر ناقص).
+- `InternalSalesInvoice.Dispatch`: يتحقق من **كل** السطور أولاً (الرصيد في الموقع، تكلفة موجودة) ثم يصرف؛ السعر = التكلفة (`AtCost`) أو سعر السطر أو التكلفة × (1 + الهامش٪). `RawMaterial.DispatchToBranch` حركة `InterBranchDispatchOut` بمتوسط الفرع (`UnitCostHere`).
+- `InternalPurchaseInvoice.Receive`: لا يزيد المستلم عن المرسل، والعجز يحتاج ملاحظة؛ `RawMaterial.ReceiveFromBranch` حركة `InterBranchReceiptIn` بسعر التحويل (والمصنّعات أيضاً). الإلغاء (`Void`) يلغي فاتورة المركزي معه.
+
+@@file backend/src/Costing.Domain/InterBranch/InterBranchRequisition.cs
+
+@@file backend/src/Costing.Domain/InterBranch/InternalSalesInvoice.cs
+
+@@file backend/src/Costing.Domain/InterBranch/InternalPurchaseInvoice.cs
+
+### 9.3 التطبيق والحفظ
+
+المعالجات تتبع نمط التحويلات: المعرّف من الواجهة (إعادة الإرسال لا تكرر)، `IRetryOnConflict` للترقيم، والصرف والاستلام `IBooksEntry` (اليوم)، وإلغاء الصرف بيومه وإلغاء الاستلام بيومَي الاستلام والصرف (`VoidShipmentDays`, `VoidReceiptDays`). و `InterBranchLedger.ReverseAsync` يعكس حركات المستند في فرعها وموقعها. وفي `StockLedgerInterceptor` صار `InterBranchReceiptIn` حركة واردة: **يحرك متوسط الفرع المستلم** كالشراء (5 كجم بـ 80 + 5 كجم بـ 110 ⇐ 95)، وعكسه يخرجه. وكل جدول يحفظ فرعه باسمه: `RequestingBranchId` و `SupplyingBranchId` و `ReceivingBranchId` (`HasColumnName` على `BranchId`).
+
+@@file backend/src/Costing.Application/InterBranch/InterBranch.cs
+
+@@file backend/src/Costing.Infrastructure/Persistence/InterBranchPersistence.cs
+
+### 9.4 الـ API
+
+`api/inter-branch`: المركز بفترة، وورقة Excel، والطلب وإلغاؤه، والصرف وإلغاؤه، والاستلام؛ لمن يعمل في "الجرد" أو "الخامات" أو "المشتريات"، والإدخال بـ `inventory.manage`، وإلغاء شحنة مستلمة للمدير فقط (`approval.decide`)، والأسعار والإجماليات لمن له `costing.view`.
+
+@@file backend/src/Costing.Api/Controllers/InterBranchController.cs
 
 [الفصل التالي: الخامات والوصفات والمصنعات والمنيو →](04-catalog-materials-recipes-and-menu.md)

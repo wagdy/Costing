@@ -19,6 +19,8 @@ public static class DependencyInjection
         services.AddScoped<Company.CompanyStructureReader>();
         services.AddScoped<Stock.StockPlaces>();
         services.AddScoped<Stock.TransferReading>();
+        services.AddScoped<InterBranch.InterBranchReading>();
+        services.AddScoped<InterBranch.InterBranchDesk>();
         // The days of the records each request names.
         foreach (var lookup in typeof(DependencyInjection).Assembly.GetTypes()
                      .Where(t => t is { IsClass: true, IsAbstract: false } && !t.IsGenericTypeDefinition))
