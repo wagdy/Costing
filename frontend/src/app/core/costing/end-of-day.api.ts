@@ -34,6 +34,9 @@ export interface EndOfDayInvoice {
   postedAtUtc: string | null;
   // The purchase order it delivers, when there was one: the batch receives it against it.
   purchaseOrderId?: string | null;
+  // Entered on the POS (POS-synced), and its shift.
+  fromPos?: boolean;
+  posShiftNumber?: number | null;
 }
 
 // Cash paid out of the till: to a supplier (إذن صرف مورد) or an employee as an advance (سلفة).
@@ -50,6 +53,61 @@ export interface EndOfDayPayout {
   addedAtUtc: string;
   voucher: EndOfDayVoucherState;
   voucheredAtUtc: string | null;
+  // Paid out at the POS (POS-synced), and its shift.
+  fromPos?: boolean;
+  posShiftNumber?: number | null;
+}
+
+// A shift the POS closed on the day, as its Z report gave it: its float, its sales before tax, the
+// cash it took with its tax, what its drawer should have held, what was counted and the difference;
+// resend: undone with the day, to be sent again from the POS.
+export interface EndOfDayPosShift {
+  shiftId: string;
+  number: number | null;
+  openingFloat: number;
+  cash: number;
+  card: number;
+  tax: number;
+  voids: number;
+  discounts: number;
+  cashCollected: number | null;
+  expectedCash: number | null;
+  countedCash: number | null;
+  overShort: number | null;
+  closedBy: string | null;
+  closedAtUtc: string | null;
+  receivedAtUtc: string;
+  resend: boolean;
+}
+
+// The POS's figures for the day, every shift's together.
+export interface EndOfDayPosFigures {
+  cash: number;
+  card: number;
+  tax: number;
+  voids: number;
+  openingFloat: number;
+  discounts: number;
+  discountReasons: DiscountReason[];
+  cashTax: number | null;
+}
+
+// What the POS sent for the day (Synced from POS): its shifts; whether the sales report is theirs and
+// locked; the POS's own figures; a manager's override and why; the drawers' counted cash together.
+export interface EndOfDayPos {
+  salesFromPos: boolean;
+  salesLocked: boolean;
+  shifts: string | null;
+  shiftList: EndOfDayPosShift[];
+  figures: EndOfDayPosFigures | null;
+  overriddenBy: string | null;
+  overriddenAtUtc: string | null;
+  overrideNote: string | null;
+  countedCash: number | null;
+  overShort: number | null;
+  invoices: number;
+  payouts: number;
+  resend: boolean;
 }
 
 export interface EndOfDay {
@@ -110,6 +168,8 @@ export interface EndOfDay {
   closedDayReason?: string | null;
   // What the system did to the day, a line each (سجل التدقيق): never changed.
   auditTrail?: string | null;
+  // From the POS: none when nothing on the day came from it.
+  pos?: EndOfDayPos | null;
 }
 
 // A draft dated after the day to close next (مسودة عالقة): moved there by a manager, with why.
@@ -206,10 +266,13 @@ export const voucherLabels: Record<EndOfDayVoucherState, { en: string; ar: strin
 
 // The cash that should be left in the drawer, as the API works it out: the float, and the cash
 // sales with their share of the tax collected, less all that was paid out of it (the cash invoices,
-// the suppliers paid, the advances). The Visa never reaches the drawer.
-export function netCash(sales: Pick<EndOfDaySales, 'cashAmount' | 'cardAmount' | 'taxAmount' | 'openingFloat'>, paidOut: number) {
+// the suppliers paid, the advances). The Visa never reaches the drawer. knownCashTax: the cash's own
+// share as the server has it (from the POS, as the drawer took it), for figures as they were saved.
+export function netCash(
+  sales: Pick<EndOfDaySales, 'cashAmount' | 'cardAmount' | 'taxAmount' | 'openingFloat'>, paidOut: number, knownCashTax?: number | null,
+) {
   const [cash, card, tax, float] = [Number(sales.cashAmount) || 0, Number(sales.cardAmount) || 0, Number(sales.taxAmount) || 0, Number(sales.openingFloat) || 0];
-  const cashTax = cash + card > 0 ? Math.round(((tax * cash) / (cash + card)) * 100) / 100 : 0;
+  const cashTax = knownCashTax ?? (cash + card > 0 ? Math.round(((tax * cash) / (cash + card)) * 100) / 100 : 0);
   const collected = Math.round((cash + cashTax) * 100) / 100;
   return { float, cashTax, collected, paidOut, net: Math.round((float + collected - paidOut) * 100) / 100 };
 }
@@ -296,6 +359,17 @@ export class EndOfDayApi {
   }
 
   // The days in their order: the next to close, and what undoing the last would reverse.
+  // A manager's (Unlock / Manual override): the sales report synced from the POS opened to correct
+  // it, with why (required, kept on the day's audit trail).
+  unlockSales(date: string, note: string): Observable<EndOfDay> {
+    return this.http.post<EndOfDay>(`/api/end-of-day/${date}/sales/unlock`, { note });
+  }
+
+  // A manager's: locked to the POS's figures again.
+  relockSales(date: string): Observable<EndOfDay> {
+    return this.http.post<EndOfDay>(`/api/end-of-day/${date}/sales/relock`, {});
+  }
+
   sequence(): Observable<EndOfDaySequence> {
     return this.http.get<EndOfDaySequence>('/api/end-of-day/sequence');
   }

@@ -23,10 +23,12 @@ namespace Costing.Application.Integrations;
 
 // The POS link (Settings → POS Integration): the key the POS proves itself by, the menu it reads
 // from here, and each shift's Z report it sends, made into the day's sales summary (its stock
-// taken by the recipes, what was voided after the kitchen taken as waste) and the day's takings in
-// the safe; all of a report or none of it. A report sent again changes nothing; sent changed, it
-// replaces what it made. A day whose sales or takings were entered by hand is left as it is: the
-// report is refused, naming it.
+// taken by the recipes, what was voided after the kitchen taken as waste) and the sales report of
+// the day's end of day (its section 6, every shift's together, locked as the POS gave it); all of a
+// report or none of it. The takings go into the safe from that sales report when the accountant
+// confirms the end of day (Review & confirm), once: never from the report itself. A report sent
+// again changes nothing; sent changed, it replaces what it made. A day whose sales or takings were
+// entered by hand, or whose end of day is handed in, is left as it is: the report is refused, naming it.
 
 // ---- The key ----
 
@@ -160,15 +162,90 @@ public sealed record ZReportTakings(
     decimal Cash, decimal Card, decimal Tax, decimal VoidsAmount, IReadOnlyList<ZReportVoidReason>? VoidReasons = null,
     decimal DiscountsAmount = 0, IReadOnlyList<DiscountReason>? DiscountReasons = null);
 
+// The shift's till as the POS closed it (day.closed's till): the float the drawer opened with, the
+// cash and card it took with their tax (what reached the drawer and the card machine), the cash the
+// drawer should have held, the cash counted in it and the difference (CashOverShort), who closed it
+// and when, what left the drawer, and the credit invoices taken at the till, which never did.
+public sealed record ZReportTill(
+    decimal OpeningFloat, decimal CashCollected, decimal CardCollected, decimal? ExpectedCash = null, decimal? CountedCash = null, decimal? OverShort = null,
+    string? ClosedBy = null, DateTime? ClosedAtUtc = null, decimal PaidOutOfDrawer = 0, decimal CreditInvoices = 0);
+
 // A shift's Z report: ZReportId is the POS's id for the shift, the same each time it is sent.
 // WastedItems: voided after the kitchen had made them (waste): their stock taken as waste.
 public sealed record ZReportInput(
     Guid ZReportId, DateOnly Date, int? ShiftNumber, ZReportTakings Takings, IReadOnlyList<ZReportItem> SoldItems,
-    IReadOnlyList<ZReportItem>? WastedItems = null);
+    IReadOnlyList<ZReportItem>? WastedItems = null, ZReportTill? Till = null);
 
+// TakingsId: the safe's takings of the day, once its end of day is confirmed (none until then);
+// EndOfDayId: the end of day its sales report filled in.
 public sealed record ZReportResultDto(
     Guid ZReportId, DateOnly Date, PosSyncOutcome Outcome, Guid? SaleId, Guid? TakingsId, int Items, int Quantity, int Wasted,
-    decimal SalesValue, decimal Cash, decimal Card, decimal Tax, IReadOnlyList<string> Warnings);
+    decimal SalesValue, decimal Cash, decimal Card, decimal Tax, IReadOnlyList<string> Warnings, Guid? EndOfDayId = null);
+
+// The day as the POS's Z reports give it, every shift's together: the end of day's sales report
+// (its section 6), the shifts' numbers, and the notes its takings go into the safe with.
+public static class PosDayFigures
+{
+    public static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web) { Converters = { new JsonStringEnumConverter() } };
+
+    public static ZReportInput Read(PosZReport report) => JsonSerializer.Deserialize<ZReportInput>(report.Payload, Json)!;
+
+    // None: no report is the day's.
+    public static Costing.Domain.EndOfDay.PosSalesFigures? Of(IReadOnlyList<ZReportInput> reports)
+    {
+        if (reports.Count == 0)
+            return null;
+        var discounts = reports.Sum(r => r.Takings.DiscountsAmount);
+        var cash = reports.Sum(r => r.Takings.Cash);
+        // The cash's own tax, as each drawer took it: what it collected less the cash before tax.
+        decimal? cashTax = reports.All(r => r.Till is not null) ? Math.Max(0, reports.Sum(r => r.Till!.CashCollected - r.Takings.Cash)) : null;
+        return new Costing.Domain.EndOfDay.PosSalesFigures(
+            cash, reports.Sum(r => r.Takings.Card), reports.Sum(r => r.Takings.Tax), reports.Sum(r => r.Takings.VoidsAmount),
+            reports.Sum(r => r.Till?.OpeningFloat ?? 0), discounts, Discounts.Clean(discounts, reports.SelectMany(r => r.Takings.DiscountReasons ?? [])),
+            cashTax);
+    }
+
+    public static string Shifts(IEnumerable<ZReportInput> reports) =>
+        string.Join(", ", reports.Select(r => r.ShiftNumber).OfType<int>().Distinct().Order());
+
+    // The takings' notes: from the POS, its shifts, the void reasons, who confirmed them.
+    public static string TakingsNotes(IReadOnlyList<ZReportInput> reports, string confirmedBy, string? overriddenBy)
+    {
+        var reasons = reports.SelectMany(r => r.Takings.VoidReasons ?? [])
+            .GroupBy(r => r.Reason.Trim(), StringComparer.OrdinalIgnoreCase)
+            .Select(g => $"{g.Key} ×{g.Sum(r => r.Count)} {g.Sum(r => r.Amount).ToString("N2", CultureInfo.InvariantCulture)}")
+            .ToList();
+        var shifts = Shifts(reports);
+        var notes = $"From the POS{(shifts.Length > 0 ? $", shift {shifts}" : "")}, confirmed on the end of day by {confirmedBy}"
+            + (overriddenBy is null ? "" : $" (figures overridden by {overriddenBy})")
+            + (reasons.Count > 0 ? $" · voids: {string.Join("; ", reasons)}" : "");
+        return notes.Length > SafeTransaction.MaxNotesLength ? notes[..SafeTransaction.MaxNotesLength] : notes;
+    }
+}
+
+// The end of day a POS document lands on: its business day's, started, or a new draft that waits
+// its turn to be handed in; never one handed in (undone in Costing, the POS sends it again), nor a
+// day before the last one closed.
+internal static class PosEndOfDay
+{
+    public static async Task<Costing.Domain.EndOfDay.EndOfDayReport> OpenAsync(
+        Costing.Domain.EndOfDay.IEndOfDayRepository days, DateOnly date, string by, CancellationToken cancellationToken)
+    {
+        var day = await days.GetByDateAsync(date, cancellationToken);
+        if (day is { IsSubmitted: true })
+            throw new DomainException(
+                $"The end of day of {Day(date)} is handed in already: undo it in Costing (End of the day → Undo & reopen day), then send the shift again. · تم تقفيل اليوم بالفعل.");
+        if (day is null)
+        {
+            if (await days.LastSubmittedDateAsync(cancellationToken) is { } last && date <= last)
+                throw new DomainException($"{Day(date)} is before the last day closed ({Day(last)}): its end of day cannot take it. · يوم مغلق.");
+            days.Add(day = new Costing.Domain.EndOfDay.EndOfDayReport(Guid.NewGuid(), date, by));
+        }
+        return day;
+    }
+
+    private static string Day(DateOnly date) => date.ToString("d MMM yyyy", CultureInfo.InvariantCulture);
+}
 
 public sealed record ReceiveZReportCommand(ZReportInput Report, string Source) : IRequest<ZReportResultDto>, IRetryOnConflict, IChecksBooksItself;
 
@@ -188,12 +265,13 @@ internal sealed class ReceiveZReportHandler(
     IPosSyncJournal journal,
     BooksGuard guard,
     Costing.Application.Company.ICurrentBranch branch,
+    Costing.Domain.EndOfDay.IEndOfDayRepository endOfDays,
     IUnitOfWork unitOfWork) : IRequestHandler<ReceiveZReportCommand, ZReportResultDto>
 {
     public const string By = "POS";
     public const int MaxLines = 2_000;
 
-    private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web) { Converters = { new JsonStringEnumConverter() } };
+    private static readonly JsonSerializerOptions Json = PosDayFigures.Json;
     private static readonly CultureInfo Invariant = CultureInfo.InvariantCulture;
 
     public async Task<ZReportResultDto> Handle(ReceiveZReportCommand request, CancellationToken cancellationToken)
@@ -245,11 +323,17 @@ internal sealed class ReceiveZReportHandler(
         {
             // Sent again: what it made stands.
             var day = await days.GetByDateAsync(existing.BusinessDate, cancellationToken);
-            return Result(report, PosSyncOutcome.Unchanged, day?.SaleId, day?.TakingsId, await SaleAsync(day?.SaleId, cancellationToken), []);
+            var handedIn = await endOfDays.GetByDateAsync(existing.BusinessDate, cancellationToken);
+            return Result(report, PosSyncOutcome.Unchanged, day?.SaleId, day?.TakingsId, await SaleAsync(day?.SaleId, cancellationToken), [], handedIn?.Id);
         }
 
         // A day in the books closed is not written, nor one a report moves off: refused, and logged.
         await guard.EnsureOpenAsync([report.Date, existing?.BusinessDate], cancellationToken);
+        // Nor a day handed in, or before the last closed: its end of day is as it was confirmed.
+        var endOfDay = await PosEndOfDay.OpenAsync(endOfDays, report.Date, By, cancellationToken);
+        var movedOff = existing is not null && existing.BusinessDate != report.Date
+            ? await PosEndOfDay.OpenAsync(endOfDays, existing.BusinessDate, By, cancellationToken)
+            : null;
 
         var known = await SaleWriter.Menu.LoadAsync(menu, cancellationToken);
         var targets = new MenuTargets(known.Items.Values.ToList(), known.AddOns.Values.ToList());
@@ -271,18 +355,20 @@ internal sealed class ReceiveZReportHandler(
         // The day's records from every one of its shifts' reports; a report moved to another day
         // takes its lines off the day it was on.
         if (moved is { } before)
-            await RebuildDayAsync(before, existing, targets, known, cancellationToken);
-        var (saleId, takingsId, warnings) = await RebuildDayAsync(report.Date, existing, targets, known, cancellationToken);
+            await RebuildDayAsync(before, existing, targets, known, movedOff!, cancellationToken);
+        var (saleId, takingsId, warnings) = await RebuildDayAsync(report.Date, existing, targets, known, endOfDay, cancellationToken);
 
         await unitOfWork.SaveChangesAsync(cancellationToken);
         var outcome = existing.Revision == 1 ? PosSyncOutcome.Recorded : PosSyncOutcome.Updated;
-        return Result(report, outcome, saleId, takingsId, await SaleAsync(saleId, cancellationToken), warnings);
+        return Result(report, outcome, saleId, takingsId, await SaleAsync(saleId, cancellationToken), warnings, endOfDay.Id);
     }
 
-    // The day's sales summary and takings, made again from the reports of that day: what the POS
-    // made of it before voided (its stock put back, its takings reversed), the new ones recorded.
+    // The day's sales summary and its end of day's sales report, made again from the reports of that
+    // day: what the POS made of it before voided (its stock put back; takings a report made before
+    // the end of day took them, reversed), the new ones recorded.
     private async Task<(Guid? SaleId, Guid? TakingsId, IReadOnlyList<string> Warnings)> RebuildDayAsync(
-        DateOnly date, PosZReport current, MenuTargets targets, SaleWriter.Menu known, CancellationToken cancellationToken)
+        DateOnly date, PosZReport current, MenuTargets targets, SaleWriter.Menu known, Costing.Domain.EndOfDay.EndOfDayReport endOfDay,
+        CancellationToken cancellationToken)
     {
         var day = await days.GetByDateAsync(date, cancellationToken);
         if (day is null)
@@ -319,6 +405,7 @@ internal sealed class ReceiveZReportHandler(
         if (dayReports.Count == 0)
         {
             day.Recorded(null, null);
+            endOfDay.SyncSalesFromPos(null, string.Empty, By);
             return (null, null, []);
         }
 
@@ -361,34 +448,14 @@ internal sealed class ReceiveZReportHandler(
             warnings.AddRange(await WithoutRecipesAsync(lines, known, cancellationToken));
         }
 
-        // The takings: the day's cash, card, tax and voids, every shift's together.
-        var cash = dayReports.Sum(r => r.Takings.Cash);
-        var card = dayReports.Sum(r => r.Takings.Card);
-        var tax = dayReports.Sum(r => r.Takings.Tax);
-        var voids = dayReports.Sum(r => r.Takings.VoidsAmount);
-        Guid? takingsId = null;
-        if (cash + card > 0)
-        {
-            var reasons = dayReports.SelectMany(r => r.Takings.VoidReasons ?? [])
-                .GroupBy(r => r.Reason.Trim(), StringComparer.OrdinalIgnoreCase)
-                .Select(g => $"{g.Key} ×{g.Sum(r => r.Count)} {g.Sum(r => r.Amount).ToString("N2", Invariant)}")
-                .ToList();
-            var notes = "From the POS" + (reasons.Count > 0 ? $" · voids: {string.Join("; ", reasons)}" : "");
-            if (notes.Length > SafeTransaction.MaxNotesLength)
-                notes = notes[..SafeTransaction.MaxNotesLength];
-            var entry = SafeTransaction.RevenueTransfer(
-                Guid.NewGuid(), cash, date, date, notes, By, null, null, await safe.PaidOutOfTakingsAsync(date, cancellationToken), card, tax, voids,
-                discounts, discountReasons);
-            safe.Add(entry);
-            takingsId = entry.Id;
-        }
-        else if (tax > 0)
-        {
+        // The end of day's sales report (section 6): the day's cash, card, tax, voids, floats and
+        // discounts, every shift's together, locked as the POS gave them. The takings go into the
+        // safe from it when the end of day is confirmed.
+        if (dayReports.Sum(r => r.Takings.Tax) > 0 && dayReports.Sum(r => r.Takings.Cash + r.Takings.Card) <= 0)
             throw new DomainException("Tax was collected on a day with no cash or card takings: check the Z report. · ضريبة بدون إيراد.");
-        }
-
-        day.Recorded(saleId, takingsId, discounts, discountReasons);
-        return (saleId, takingsId, warnings);
+        endOfDay.SyncSalesFromPos(PosDayFigures.Of(dayReports), PosDayFigures.Shifts(dayReports), By);
+        day.Recorded(saleId, null, discounts, discountReasons);
+        return (saleId, null, warnings);
     }
 
     // Each line on the menu, or the report refused naming every line that is not.
@@ -480,18 +547,19 @@ internal sealed class ReceiveZReportHandler(
     private async Task<SalesReceipt?> SaleAsync(Guid? id, CancellationToken cancellationToken) =>
         id is { } saleId ? await sales.GetByIdAsync(saleId, cancellationToken) : null;
 
-    private static ZReportResultDto Result(ZReportInput report, PosSyncOutcome outcome, Guid? saleId, Guid? takingsId, SalesReceipt? sale, IReadOnlyList<string> warnings) =>
+    private static ZReportResultDto Result(
+        ZReportInput report, PosSyncOutcome outcome, Guid? saleId, Guid? takingsId, SalesReceipt? sale, IReadOnlyList<string> warnings, Guid? endOfDayId) =>
         new(report.ZReportId, report.Date, outcome, saleId, takingsId,
             sale?.Lines.Count(l => l.OnBill) ?? 0, sale?.Lines.Where(l => l.OnBill).Sum(l => l.Quantity) ?? 0,
             sale?.Lines.Where(l => !l.OnBill).Sum(l => l.Quantity) ?? 0, sale?.BilledSubtotal ?? 0,
-            report.Takings.Cash, report.Takings.Card, report.Takings.Tax, warnings);
+            report.Takings.Cash, report.Takings.Card, report.Takings.Tax, warnings, endOfDayId);
 
     private static string Describe(ZReportResultDto r) => r.Outcome switch
     {
         PosSyncOutcome.Unchanged => $"Z report of {Day(r.Date)} sent again: nothing changed.",
         _ => $"Z report of {Day(r.Date)} {(r.Outcome == PosSyncOutcome.Updated ? "updated" : "recorded")}: {r.Quantity} sold of {r.Items} items" +
              (r.Wasted > 0 ? $", {r.Wasted} wasted" : "") +
-             $"; takings {r.Cash.ToString("N2", Invariant)} cash, {r.Card.ToString("N2", Invariant)} card, {r.Tax.ToString("N2", Invariant)} tax" +
+             $"; end of day's sales report {r.Cash.ToString("N2", Invariant)} cash, {r.Card.ToString("N2", Invariant)} card, {r.Tax.ToString("N2", Invariant)} tax" +
              (r.Warnings.Count > 0 ? $". {r.Warnings.Count} without a recipe." : "."),
     };
 
@@ -530,12 +598,30 @@ public static class PosEvents
                 .Where(r => r.Amount != 0 || r.Count != 0).ToList()
             : null;
 
+        // The till as the shift closed it: the float, the cash and card it took with their tax, what
+        // the drawer should have held and what was counted in it.
+        ZReportTill? till = null;
+        if (Child(data, "till") is { } drawer)
+            till = new ZReportTill(
+                Number(drawer, "openingFloat"),
+                Has(drawer, "cashCollected") ? Number(drawer, "cashCollected") : Number(takings, "cashTotal"),
+                Has(drawer, "cardCollected") ? Number(drawer, "cardCollected") : Number(takings, "cardTotal"),
+                Optional(drawer, "expectedCash"), Optional(drawer, "actualCountedCash"), Optional(drawer, "cashOverShort"),
+                Text(drawer, "closedBy"),
+                data.TryGetProperty("closedAtUtc", out var at) && at.ValueKind == JsonValueKind.String && at.TryGetDateTime(out var closed) ? closed : null,
+                Number(drawer, "paidOutOfDrawer"), Number(drawer, "creditInvoices"));
+
         return new ZReportInput(
             shiftId, date, data.TryGetProperty("shiftNumber", out var n) && n.ValueKind == JsonValueKind.Number ? n.GetInt32() : null,
             new ZReportTakings(Number(takings, "cash"), Number(takings, "card"), Number(takings, "tax"), before + Number(after, "amount"), reasons,
                 Number(takings, "discountsAmount"), discountReasons),
-            Items(data, "soldItems"), Items(data, "waste"));
+            Items(data, "soldItems"), Items(data, "waste"), till);
     }
+
+    private static bool Has(JsonElement element, string name) =>
+        element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Number;
+
+    private static decimal? Optional(JsonElement element, string name) => Has(element, name) ? element.GetProperty(name).GetDecimal() : null;
 
     // Lines of an item and size given once a channel (dine-in, takeaway, delivery, aggregators): one
     // line for the day, their quantities together.

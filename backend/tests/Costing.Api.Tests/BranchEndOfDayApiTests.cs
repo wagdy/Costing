@@ -109,7 +109,11 @@ public class BranchEndOfDayApiTests
         var tantaShift = Guid.NewGuid();
         Assert.Equal("Recorded", (await Json(await SendAsync(tantaKey, tantaShift, 900))).GetProperty("outcome").GetString());
         Assert.Equal("Recorded", (await Json(await SendAsync(firstKey, Guid.NewGuid(), 300))).GetProperty("outcome").GetString());
-        Assert.Equal([(first, (DateOnly?)today, 300m), (tanta, (DateOnly?)today, 900m)], (await TakingsAsync()).Where(t => t.Day == today).ToList());
+        // Each on its own branch's end of day, its sales report; the takings once each is confirmed.
+        Assert.Equal((300m, 900m),
+            ((await Json(await In(manager, first, HttpMethod.Get, $"/api/end-of-day/{Iso(today)}"))).GetProperty("cashAmount").GetDecimal(),
+             (await Json(await In(manager, tanta, HttpMethod.Get, $"/api/end-of-day/{Iso(today)}"))).GetProperty("cashAmount").GetDecimal()));
+        Assert.DoesNotContain(await TakingsAsync(), t => t.Day == today);
         Assert.Equal([first, tanta],
             await api.Db(db => db.PosDays.Where(d => d.Date == today).OrderBy(d => d.BranchId == tanta).Select(d => d.BranchId).ToListAsync(Cancel)));
         // Tanta's report is not the first branch's till's to change.

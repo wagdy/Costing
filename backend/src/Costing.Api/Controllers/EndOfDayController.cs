@@ -52,6 +52,21 @@ public sealed class EndOfDayController(ISender sender) : ControllerBase
             date, request.CashAmount, request.CardAmount, request.TaxAmount, request.VoidsAmount, request.Notes, StaffName, request.OpeningFloat,
             request.DiscountsAmount, request.DiscountReasons), cancellationToken);
 
+    // A manager's (Unlock / Manual override): the sales report synced from the POS opened to be
+    // corrected, the note why required (kept on the day's audit trail).
+    [HttpPost("{date}/sales/unlock")]
+    [CostingTab(CostingTabs.EndOfDay)]
+    [Authorize(Policy = Permissions.ApprovalDecide)]
+    public Task<EndOfDayDto> UnlockSales(DateOnly date, UnlockEndOfDaySalesRequest request, CancellationToken cancellationToken) =>
+        sender.Send(new OverrideEndOfDaySalesCommand(date, request.Note, StaffName), cancellationToken);
+
+    // A manager's: locked to the POS's figures again.
+    [HttpPost("{date}/sales/relock")]
+    [CostingTab(CostingTabs.EndOfDay)]
+    [Authorize(Policy = Permissions.ApprovalDecide)]
+    public Task<EndOfDayDto> RelockSales(DateOnly date, CancellationToken cancellationToken) =>
+        sender.Send(new RelockEndOfDaySalesCommand(date, StaffName), cancellationToken);
+
     // An invoice handed in, with its photo: a form of invoiceId (made by the till), kind (Cash or
     // Credit), supplierId, reportedTotal, note and file.
     [HttpPost("{date}/invoices")]
@@ -272,6 +287,8 @@ public sealed class EndOfDayPayoutForm
 }
 
 public sealed record SubmitEndOfDayRequest(bool ZeroSales = false);
+
+public sealed record UnlockEndOfDaySalesRequest(string? Note);
 
 public sealed record MarkClosedDayRequest(DateOnly TargetDate, string? Reason);
 

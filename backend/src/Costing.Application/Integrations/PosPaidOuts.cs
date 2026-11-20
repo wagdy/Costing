@@ -13,20 +13,28 @@ using Costing.Domain.Suppliers;
 
 namespace Costing.Application.Integrations;
 
-// ---- The POS's paid-outs (paid-out) into the end of day ----
+// ---- The POS's floor documents (paid-out, credit-invoice) into the end of day ----
 //
-// Cash a cashier paid out of the drawer during a shift, sent when the shift closes, each into the end
-// of day of its business day, in the branch whose till sent it (made as a draft if it is not started:
-// it waits its turn): an advance to an employee as the day's advance to them (the employee by HR's
-// id, as Costing has them from HR, or by name), handed to HR as the day is; an expense as a cash
-// invoice of its supplier, or of the POS's petty cash supplier when it named none. Its receipt's
-// photo comes with it; without one, a slip of what the POS recorded stands for it. Kept once by the
-// paid-out's id: sent again, it is what it was. A day handed in already refuses it: undone in
-// Costing, the POS sends it again.
+// Every document the floor records at the till, sent when the shift closes, each into the end of
+// day of its business day, in the branch whose till sent it (made as a draft if it is not started:
+// it waits its turn), so nothing is typed twice:
+//   Expense         cash out of the drawer: a cash invoice (section 2) of its supplier, or of the
+//                   POS's petty cash supplier when it named none
+//   Driver          cash handed to a delivery driver: a cash invoice (section 2) of the delivery
+//                   drivers' supplier, the driver named on it
+//   CreditInvoice   a supplier's invoice taken on credit at the till, never out of the drawer: a
+//                   credit invoice (section 3) of its supplier, required
+//   SupplierPayment cash out of the drawer to a supplier on account: the day's payment to them
+//                   (section 4), the supplier required
+//   StaffAdvance    cash out of the drawer to an employee: the day's advance to them (section 5),
+//                   by HR's id as Costing has them from HR, or by name; handed to HR as the day is
+// Its photo comes with it; without one, a slip of what the POS recorded stands for it. Kept once by
+// the document's id: sent again, it is what it was; taken off in Costing, it stays off. A day
+// handed in already refuses it: undone in Costing, the POS sends it again.
 
 public sealed record PosPaidOutInput(
     Guid PaidOutId, Guid? ShiftId, int? ShiftNumber, DateOnly Date, string Kind, decimal Amount, string? Note, Guid? EmployeeId, string? EmployeeName,
-    Guid? SupplierId, string? SupplierName, string? GivenBy, string? ReceiptContentType, byte[]? Receipt);
+    Guid? SupplierId, string? SupplierName, string? GivenBy, string? ReceiptContentType, byte[]? Receipt, string? DriverName = null);
 
 public sealed record PosPaidOutResultDto(Guid PaidOutId, PosSyncOutcome Outcome, DateOnly Date, string Entry, string Message);
 
@@ -44,39 +52,60 @@ internal sealed class ReceivePosPaidOutHandler(
     IUnitOfWork unitOfWork) : IRequestHandler<ReceivePosPaidOutCommand, PosPaidOutResultDto>
 {
     public const string PettyCashSupplier = "POS petty cash · نثريات نقطة البيع";
+    public const string DriversSupplier = "Delivery drivers · سائقو التوصيل";
     private static readonly CultureInfo Invariant = CultureInfo.InvariantCulture;
+
+    // What each kind becomes, and what it is called.
+    private enum Becomes
+    {
+        CashInvoice,
+        CreditInvoice,
+        SupplierPayment,
+        Advance,
+    }
 
     public async Task<PosPaidOutResultDto> Handle(ReceivePosPaidOutCommand request, CancellationToken cancellationToken)
     {
         var p = request.PaidOut;
+        var endpoint = p.Kind == PosPaidOutEvent.CreditInvoiceKind ? PosPaidOutEvent.CreditInvoiceEvent : PosPaidOutEvent.Kind;
         try
         {
             var result = await RecordAsync(p, cancellationToken);
-            await journal.WriteAsync(new PosSyncLog("paid-out", result.Outcome, result.Message, p.ShiftId, p.Date), cancellationToken);
+            await journal.WriteAsync(new PosSyncLog(endpoint, result.Outcome, result.Message, p.ShiftId, p.Date), cancellationToken);
             return result;
         }
         catch (Exception ex) when (ex is DomainException or NotFoundException)
         {
-            await journal.WriteAsync(new PosSyncLog("paid-out", PosSyncOutcome.Refused, ex.Message, p.ShiftId, p.Date), cancellationToken);
+            await journal.WriteAsync(new PosSyncLog(endpoint, PosSyncOutcome.Refused, ex.Message, p.ShiftId, p.Date), cancellationToken);
             throw;
         }
     }
 
     private async Task<PosPaidOutResultDto> RecordAsync(PosPaidOutInput p, CancellationToken cancellationToken)
     {
-        var advance = p.Kind switch
+        var becomes = p.Kind switch
         {
-            "StaffAdvance" => true,
-            "Expense" => false,
-            _ => throw new DomainException($"A paid-out of kind {p.Kind} is not one the end of day takes: expenses and advances. · نوع غير مدعوم."),
+            "Expense" or "Driver" => Becomes.CashInvoice,
+            PosPaidOutEvent.CreditInvoiceKind => Becomes.CreditInvoice,
+            "SupplierPayment" => Becomes.SupplierPayment,
+            "StaffAdvance" => Becomes.Advance,
+            _ => throw new DomainException(
+                $"A document of kind {p.Kind} is not one the end of day takes: expenses, driver payouts, credit invoices, supplier payments and advances. · نوع غير مدعوم."),
         };
-        var entry = advance ? "advance" : "cash invoice";
+        var entry = becomes switch
+        {
+            Becomes.CashInvoice => "cash invoice",
+            Becomes.CreditInvoice => "credit invoice",
+            Becomes.SupplierPayment => "supplier payment",
+            _ => "advance",
+        };
+        var payout = becomes is Becomes.SupplierPayment or Becomes.Advance;
         // Sent again: what it was.
-        if ((advance ? await days.GetByPayoutAsync(p.PaidOutId, cancellationToken) : await days.GetByInvoiceAsync(p.PaidOutId, cancellationToken)) is { } had)
+        if ((payout ? await days.GetByPayoutAsync(p.PaidOutId, cancellationToken) : await days.GetByInvoiceAsync(p.PaidOutId, cancellationToken)) is { } had)
             return new PosPaidOutResultDto(p.PaidOutId, PosSyncOutcome.Unchanged, had.Date, entry,
                 $"The {entry} of {Money(p.Amount)} is on the end of day of {Day(had.Date)} already.");
         if (p.Amount <= 0)
-            throw new DomainException("A paid-out is more than nothing. · المبلغ أكبر من صفر.");
+            throw new DomainException("A document's amount is more than nothing. · المبلغ أكبر من صفر.");
         await guard.EnsureOpenAsync([p.Date], cancellationToken);
         var today = new[] { calendar.BusinessDateOf(DateTime.UtcNow), calendar.LocalDateOf(DateTime.UtcNow) }.Max();
         if (p.Date > today)
@@ -84,32 +113,48 @@ internal sealed class ReceivePosPaidOutHandler(
 
         // Its day: the one started, or a new draft, which waits its turn to be handed in.
         var by = $"POS · {Clean(p.GivenBy) ?? "cashier"}";
-        var day = await days.GetByDateAsync(p.Date, cancellationToken);
-        if (day is { IsSubmitted: true })
-            throw new DomainException(
-                $"The end of day of {Day(p.Date)} is handed in already: undo it in Costing (Reports → Daily summaries), then send the shift again. · تم تقفيل اليوم بالفعل.");
-        if (day is null)
-        {
-            if (await days.LastSubmittedDateAsync(cancellationToken) is { } last && p.Date <= last)
-                throw new DomainException($"{Day(p.Date)} is before the last day closed ({Day(last)}): its end of day cannot take it. · يوم مغلق.");
-            days.Add(day = new EndOfDayReport(Guid.NewGuid(), p.Date, by));
-        }
+        if (await days.GetByDateAsync(p.Date, cancellationToken) is { IsSubmitted: false } open && open.WasTakenOff(p.PaidOutId))
+            return new PosPaidOutResultDto(p.PaidOutId, PosSyncOutcome.Unchanged, p.Date, entry,
+                $"The {entry} of {Money(p.Amount)} was taken off the end of day of {Day(p.Date)} in Costing: it stays off.");
+        var day = await PosEndOfDay.OpenAsync(days, p.Date, by, cancellationToken);
 
         var note = Note(p);
-        var (content, type, file) = Receipt(p, advance);
+        var (content, type, file) = Receipt(p, entry);
         var photo = EndOfDayPhoto.Of(file, type, content.Length);
+        var pos = new PosSource(p.ShiftNumber);
         string message;
-        if (advance)
+        switch (becomes)
         {
-            var employee = await EmployeeAsync(p, cancellationToken);
-            day.AddPayout(p.PaidOutId, EndOfDayPayoutKind.EmployeeAdvance, employee.Id, p.Amount, note, photo, by);
-            message = $"An advance of {Money(p.Amount)} to {employee.Name} is on the end of day of {Day(p.Date)}.";
-        }
-        else
-        {
-            var supplier = await SupplierAsync(p, cancellationToken);
-            day.AddInvoice(p.PaidOutId, EndOfDayInvoiceKind.Cash, supplier.Id, p.Amount, note, photo, by);
-            message = $"A cash invoice of {Money(p.Amount)} from {supplier.Name} is on the end of day of {Day(p.Date)}.";
+            case Becomes.Advance:
+            {
+                var employee = await EmployeeAsync(p, cancellationToken);
+                day.AddPayout(p.PaidOutId, EndOfDayPayoutKind.EmployeeAdvance, employee.Id, p.Amount, note, photo, by, pos);
+                message = $"An advance of {Money(p.Amount)} to {employee.Name} is on the end of day of {Day(p.Date)}.";
+                break;
+            }
+            case Becomes.SupplierPayment:
+            {
+                // Checked against what the supplier is owed when the day is confirmed.
+                var supplier = await NamedSupplierAsync(p, "a supplier payment", cancellationToken);
+                day.AddPayout(p.PaidOutId, EndOfDayPayoutKind.SupplierPayment, supplier.Id, p.Amount, note, photo, by, pos);
+                message = $"A payment of {Money(p.Amount)} to {supplier.Name} is on the end of day of {Day(p.Date)}.";
+                break;
+            }
+            case Becomes.CreditInvoice:
+            {
+                var supplier = await NamedSupplierAsync(p, "a credit invoice", cancellationToken);
+                day.AddInvoice(p.PaidOutId, EndOfDayInvoiceKind.Credit, supplier.Id, p.Amount, note, photo, by, pos: pos);
+                message = $"A credit invoice of {Money(p.Amount)} from {supplier.Name} is on the end of day of {Day(p.Date)}.";
+                break;
+            }
+            default:
+            {
+                var supplier = p.Kind == "Driver" ? await MadeSupplierAsync(DriversSupplier, "Cash handed to delivery drivers out of the POS drawer.", cancellationToken)
+                    : await SupplierAsync(p, cancellationToken);
+                day.AddInvoice(p.PaidOutId, EndOfDayInvoiceKind.Cash, supplier.Id, p.Amount, note, photo, by, pos: pos);
+                message = $"A cash invoice of {Money(p.Amount)} from {supplier.Name} is on the end of day of {Day(p.Date)}.";
+                break;
+            }
         }
         photos.Put(p.PaidOutId, content);
         await unitOfWork.SaveChangesAsync(cancellationToken);
@@ -132,16 +177,33 @@ internal sealed class ReceivePosPaidOutHandler(
     }
 
     // The supplier named (Costing's own id), or by name; none named: the POS's petty cash.
-    private async Task<Supplier> SupplierAsync(PosPaidOutInput p, CancellationToken cancellationToken)
+    private async Task<Supplier> SupplierAsync(PosPaidOutInput p, CancellationToken cancellationToken) =>
+        await KnownSupplierAsync(p, cancellationToken)
+        ?? await MadeSupplierAsync(PettyCashSupplier, "Cash expenses paid out of the POS drawer with no supplier named.", cancellationToken);
+
+    // A credit invoice's or a supplier payment's: the supplier is required, one of Costing's.
+    private async Task<Supplier> NamedSupplierAsync(PosPaidOutInput p, string what, CancellationToken cancellationToken) =>
+        await KnownSupplierAsync(p, cancellationToken)
+        ?? throw new DomainException(Clean(p.SupplierName) is { } name
+            ? $"{name} is not one of Costing's suppliers: add them on Costing (Suppliers), then send the shift again. · المورد غير موجود."
+            : $"Name the supplier of {what}. · اختر المورد.");
+
+    private async Task<Supplier?> KnownSupplierAsync(PosPaidOutInput p, CancellationToken cancellationToken)
     {
         if (p.SupplierId is { } id && await suppliers.GetByIdAsync(id, cancellationToken) is { } known)
             return known.IsArchived ? throw new DomainException($"{known.Name} is archived in Costing: bring them back first. · المورد مؤرشف.") : known;
         var name = Clean(p.SupplierName);
-        if (name is not null && await suppliers.GetByNormalizedNameAsync(Supplier.Normalize(name), cancellationToken) is { IsArchived: false } byName)
-            return byName;
-        if (await suppliers.GetByNormalizedNameAsync(Supplier.Normalize(PettyCashSupplier), cancellationToken) is { } petty)
-            return petty;
-        var made = new Supplier(Guid.NewGuid(), new SupplierDetails(PettyCashSupplier, Notes: "Cash expenses paid out of the POS drawer with no supplier named."));
+        return name is not null && await suppliers.GetByNormalizedNameAsync(Supplier.Normalize(name), cancellationToken) is { IsArchived: false } byName
+            ? byName
+            : null;
+    }
+
+    // One of the POS's own suppliers (petty cash, the drivers), made the first time it is needed.
+    private async Task<Supplier> MadeSupplierAsync(string name, string notes, CancellationToken cancellationToken)
+    {
+        if (await suppliers.GetByNormalizedNameAsync(Supplier.Normalize(name), cancellationToken) is { } kept)
+            return kept;
+        var made = new Supplier(Guid.NewGuid(), new SupplierDetails(name, Notes: notes));
         suppliers.Add(made);
         return made;
     }
@@ -150,29 +212,33 @@ internal sealed class ReceivePosPaidOutHandler(
     {
         var shift = p.ShiftNumber is { } n ? $"POS shift {n}" : "POS";
         var text = Clean(p.Note);
-        var supplier = p.SupplierId is null ? Clean(p.SupplierName) : null;
-        var full = string.Join(" · ", new[] { text, supplier, shift }.Where(t => t is not null));
+        var who = p.Kind == "Driver"
+            ? Clean(p.DriverName ?? p.EmployeeName) is { } driver ? $"Driver: {driver}" : null
+            : p.SupplierId is null ? Clean(p.SupplierName) : null;
+        var full = string.Join(" · ", new[] { who, text, shift }.Where(t => t is not null));
         return full.Length > EndOfDayReport.MaxPayoutNote ? full[..EndOfDayReport.MaxPayoutNote] : full;
     }
 
     // Its photo as sent, or a slip of what the POS recorded.
-    private static (byte[] Content, string Type, string File) Receipt(PosPaidOutInput p, bool advance)
+    private static (byte[] Content, string Type, string File) Receipt(PosPaidOutInput p, string entry)
     {
         if (p.Receipt is { Length: > 0 } bytes && p.ReceiptContentType is { } type)
             return (bytes, type.Trim().ToLowerInvariant(), $"pos-receipt-{p.PaidOutId:N}{Extension(type)}");
         var lines = new List<string>
         {
-            advance ? "POS paid-out: staff advance" : "POS paid-out: cash expense",
+            $"POS {(p.Kind == "Driver" ? "driver payout" : p.Kind == PosPaidOutEvent.CreditInvoiceKind ? "credit invoice (not out of the drawer)" : entry)}",
             $"Day: {p.Date:yyyy-MM-dd}" + (p.ShiftNumber is { } n ? $"   Shift: {n}" : ""),
             $"Amount: {p.Amount.ToString("N2", Invariant)}",
         };
-        if (advance)
+        if (p.Kind == "StaffAdvance")
             lines.Add($"Employee: {Clean(p.EmployeeName) ?? "-"}");
+        else if (p.Kind == "Driver")
+            lines.Add($"Driver: {Clean(p.DriverName ?? p.EmployeeName) ?? "-"}");
         else
             lines.Add($"Supplier: {Clean(p.SupplierName) ?? "none named"}");
         lines.Add($"For: {Clean(p.Note) ?? "-"}");
-        lines.Add($"Paid out by: {Clean(p.GivenBy) ?? "-"}");
-        lines.Add($"Paid-out id: {p.PaidOutId}");
+        lines.Add($"Recorded by: {Clean(p.GivenBy) ?? "-"}");
+        lines.Add($"POS document id: {p.PaidOutId}");
         lines.Add("No photo was taken at the till: this slip is what the POS recorded.");
         return (PosSlip.Pdf(lines), "application/pdf", $"pos-paid-out-{p.PaidOutId:N}.pdf");
     }
@@ -253,12 +319,15 @@ internal sealed class GetPosSuppliersHandler(ISupplierRepository suppliers) : IR
             .Select(s => new PosSupplierDto(s.Id, s.Name, null)).ToList();
 }
 
-// paid-out's data, as the POS sends it.
+// paid-out's and credit-invoice's data, as the POS sends them.
 public static class PosPaidOutEvent
 {
     public const string Kind = "paid-out";
+    public const string CreditInvoiceEvent = "credit-invoice";
+    public const string CreditInvoiceKind = "CreditInvoice";
 
-    public static PosPaidOutInput Read(JsonElement data)
+    // A credit invoice comes as its own event (it never leaves the drawer), its kind that.
+    public static PosPaidOutInput Read(JsonElement data, string eventKind = Kind)
     {
         string? Text(string name) => data.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
         Guid? Id(string name) => Guid.TryParse(Text(name), out var id) ? id : null;
@@ -273,9 +342,10 @@ public static class PosPaidOutEvent
             receipt = Convert.FromBase64String(b.GetString()!);
             type = r.TryGetProperty("contentType", out var t) && t.ValueKind == JsonValueKind.String ? t.GetString() : null;
         }
+        var kind = eventKind == CreditInvoiceEvent ? CreditInvoiceKind : Text("kind") ?? string.Empty;
         return new PosPaidOutInput(
             paidOutId, Id("shiftId"), data.TryGetProperty("shiftNumber", out var n) && n.ValueKind == JsonValueKind.Number ? n.GetInt32() : null, date,
-            Text("kind") ?? string.Empty, amount, Text("note"), Id("employeeId"), Text("employeeName"), Id("supplierId"), Text("supplierName"),
-            Text("givenBy"), type, receipt);
+            kind, amount, Text("note"), Id("employeeId"), Text("employeeName"), Id("supplierId"), Text("supplierName"),
+            Text("givenBy"), type, receipt, Text("driverName"));
     }
 }

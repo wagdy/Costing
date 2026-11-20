@@ -40,7 +40,7 @@ import { Company } from '../../core/settings/company';
 import { ItemPicker, PickItem } from '../shared/item-picker';
 import { Approvals } from './approvals';
 import { EodPayoutForm } from './end-of-day-payouts';
-import { ClosedDayData, ClosedDayDialog, ReassignDateData, ReassignDateDialog } from './end-of-day-reasons';
+import { ClosedDayData, ClosedDayDialog, ReassignDateData, ReassignDateDialog, SalesOverrideData, SalesOverrideDialog } from './end-of-day-reasons';
 import { EndOfDayUndo } from './end-of-day-undo';
 import { PhotoSource, PhotoThumb, viewPhoto } from './end-of-day-photo';
 import { BusinessDay, Treasury } from './financials';
@@ -479,7 +479,14 @@ export class EndOfDayZeroSalesDialog {
         <p class="muted small">Submitted, each payment and advance goes to the safe out of the day's takings{{ canApprove ? '' : ', once a manager approves it' }}.
           · عند الإرسال تُسجل المدفوعات والسلفيات في الخزنة{{ canApprove ? '' : ' بعد موافقة المدير' }}.</p>
       }
-      @if (!d.salesPhoto && !data.zeroSales) {
+      @if (d.pos?.salesFromPos) {
+        <p class="pos-note small" role="note">
+          <mat-icon inline aria-hidden="true">sync_alt</mat-icon>
+          From the POS (shift {{ d.pos!.shifts }}): confirmed, the takings go into the safe from this sales report, once; the sales and their stock are
+          the POS's already, never counted again; the {{ d.cashInvoices + d.creditInvoices }} invoices wait on the daily batch to be posted.
+          · يُورَّد الإيراد للخزنة مرة واحدة، والمبيعات مسجلة من نظام المبيعات، والفواتير في يومية المشتريات.
+        </p>
+      } @else if (!d.salesPhoto && !data.zeroSales) {
         <p class="muted small">No photo of the Z report: it is optional. · لا توجد صورة لتقرير Z.</p>
       }
       @if (data.zeroSales) {
@@ -583,6 +590,11 @@ export class EndOfDayZeroSalesDialog {
     }
     .warn {
       color: var(--app-warn);
+    }
+    .pos-note {
+      padding: 8px 12px;
+      border-radius: 10px;
+      background: color-mix(in srgb, var(--app-ok, #2e7d32) 9%, transparent);
     }
     .small {
       font-size: 0.85em;
@@ -740,6 +752,45 @@ export class EndOfDaySummaryDialog {
       </section>
     }
 
+    @if (day()?.pos; as p) {
+      <section class="pos-banner" role="status" aria-label="Synced from POS">
+        <mat-icon>sync_alt</mat-icon>
+        <div class="pos-text">
+          <strong>Synced from POS · مسحوب تلقائياً من نظام المبيعات{{ p.shifts ? ' (Shift ' + p.shifts + ')' : '' }}</strong>
+          <span class="muted small">
+            {{ p.invoices }} {{ p.invoices === 1 ? 'invoice' : 'invoices' }} and {{ p.payouts }} {{ p.payouts === 1 ? 'payment' : 'payments' }} from the till{{ p.salesFromPos ? ', and the sales report' : '' }}:
+            review them, fix a supplier if needed, add a back-office invoice the till never saw, and confirm. Nothing to type again.
+            <span class="line-ar" lang="ar" dir="rtl">راجع ما سجله الكاشير، صحح المورد إن لزم، أضف فاتورة لم تمر على الكاشير، ثم أكد. لا إعادة إدخال.</span>
+          </span>
+          @if (p.shiftList.length) {
+            <div class="shift-badges" aria-label="Shifts from the POS">
+              @for (x of p.shiftList; track x.shiftId) {
+                <span class="shift-badge" [class.short]="(x.overShort ?? 0) < 0" [class.over]="(x.overShort ?? 0) > 0" [class.resend]="x.resend">
+                  <strong>Shift {{ x.number ?? '—' }}</strong>
+                  @if (x.closedBy) {
+                    <span>{{ x.closedBy }}</span>
+                  }
+                  <span>float {{ x.openingFloat | money }}</span>
+                  <span>cash {{ x.cashCollected ?? x.cash | money }}</span>
+                  <span>card {{ x.card | money }}</span>
+                  @if (x.countedCash !== null) {
+                    <span>counted {{ x.countedCash | money }}</span>
+                    <span class="variance">{{ varianceLabel(x.overShort) }}</span>
+                  }
+                  @if (x.resend) {
+                    <span class="variance">send again · أعد الإرسال</span>
+                  }
+                </span>
+              }
+            </div>
+          }
+          @if (p.resend) {
+            <p class="error small" role="alert">A shift was undone with the day: send it again from the POS (Past shifts → Retry sync) before confirming. · أعد إرسال الوردية من نظام المبيعات.</p>
+          }
+        </div>
+      </section>
+    }
+
     @if (loading()) {
       <mat-progress-bar mode="indeterminate" />
     } @else if (error()) {
@@ -761,6 +812,9 @@ export class EndOfDaySummaryDialog {
                     <span class="amount">{{ inv.reportedTotal | money }}</span>
                     @if (inv.note) {
                       <span class="muted small note-lines" dir="auto">{{ inv.note }}</span>
+                    }
+                    @if (inv.fromPos) {
+                      <span class="tag pos" title="Entered at the till · من نظام المبيعات">POS{{ inv.posShiftNumber ? ' · shift ' + inv.posShiftNumber : '' }}</span>
                     }
                     @if (inv.purchaseInvoiceId) {
                       <a class="tag ok" [routerLink]="canBatch() ? ['/costing/purchases/invoices', inv.purchaseInvoiceId] : null">Posted<span class="ar">تم الترحيل</span></a>
@@ -812,6 +866,9 @@ export class EndOfDaySummaryDialog {
                     @if (p.note) {
                       <span class="muted small" dir="auto">{{ p.note }}</span>
                     }
+                    @if (p.fromPos) {
+                      <span class="tag pos" title="Paid out at the till · من نظام المبيعات">POS{{ p.posShiftNumber ? ' · shift ' + p.posShiftNumber : '' }}</span>
+                    }
                     @if (vouchers[p.voucher]; as v) {
                       <span class="tag" [class]="v.tone">{{ v.en }}<span class="ar">{{ v.ar }}</span></span>
                     }
@@ -847,43 +904,75 @@ export class EndOfDaySummaryDialog {
         </section>
       }
 
-      <section class="card step" aria-label="Daily sales report">
-        <h3><span class="step-no">6</span> Daily sales report / revenue <span class="inline-ar">تسجيل ريبورت المبيعات والإيراد</span></h3>
+      <section class="card step" [class.pos-locked]="salesLocked()" aria-label="Daily sales report">
+        <h3>
+          <span class="step-no">6</span> Daily sales report / revenue <span class="inline-ar">تسجيل ريبورت المبيعات والإيراد</span>
+          @if (salesLocked()) {
+            <span class="tag pos"><mat-icon inline aria-hidden="true">lock</mat-icon> Synced from POS<span class="ar">من نظام المبيعات</span></span>
+          }
+        </h3>
+        @if (day()?.pos; as p) {
+          @if (p.salesFromPos) {
+            <div class="pos-lock" [class.unlocked]="!p.salesLocked" role="note">
+              @if (p.salesLocked) {
+                <span class="muted small">
+                  Filled in from the POS's Z reports (shift {{ p.shifts }}), every shift together, and locked so it is never typed twice: the takings go
+                  into the safe from it when the day is confirmed.
+                  <span class="line-ar" lang="ar" dir="rtl">مسحوب من تقارير Z ومقفل، ويُورَّد الإيراد للخزنة منه عند التأكيد.</span>
+                </span>
+              } @else {
+                <span class="small">
+                  <strong>Unlocked by {{ p.overriddenBy }}</strong>{{ p.overrideNote ? ': ' + p.overrideNote : '' }}.
+                  The POS says cash {{ p.figures?.cash ?? 0 | money }}, Visa {{ p.figures?.card ?? 0 | money }}, tax {{ p.figures?.tax ?? 0 | money }},
+                  float {{ p.figures?.openingFloat ?? 0 | money }}.
+                  <span class="line-ar" lang="ar" dir="rtl">مفتوح للتعديل اليدوي بواسطة المدير.</span>
+                </span>
+              }
+              @if (canOverride()) {
+                @if (p.salesLocked) {
+                  <button mat-stroked-button (click)="unlockSales()" [disabled]="busy()"><mat-icon>lock_open</mat-icon> Unlock / Manual override · فتح للتعديل</button>
+                } @else {
+                  <button mat-stroked-button (click)="relockSales()" [disabled]="busy()"><mat-icon>lock</mat-icon> Lock to the POS again · إعادة القفل</button>
+                }
+              }
+            </div>
+          }
+        }
         <div class="sales">
           <mat-form-field subscriptSizing="dynamic" floatLabel="always">
             <mat-label>Opening float · العهدة / الفكة</mat-label>
             <input matInput type="number" min="0" step="any" inputmode="decimal" [ngModel]="sales().openingFloat" (ngModelChange)="setSale('openingFloat', $event)"
-              [disabled]="locked()" placeholder="0" data-western-digits aria-label="Opening float" />
+              [disabled]="figuresLocked()" placeholder="0" data-western-digits aria-label="Opening float" />
             <span matTextSuffix>&nbsp;{{ company.currency() }}</span>
           </mat-form-field>
           <mat-form-field subscriptSizing="dynamic" floatLabel="always">
             <mat-label>Cash · إيراد الكاش</mat-label>
             <input matInput type="number" min="0" step="any" inputmode="decimal" [ngModel]="sales().cashAmount" (ngModelChange)="setSale('cashAmount', $event)"
-              [disabled]="locked()" placeholder="0" data-western-digits aria-label="Cash" />
+              [disabled]="figuresLocked()" placeholder="0" data-western-digits aria-label="Cash" />
             <span matTextSuffix>&nbsp;{{ company.currency() }}</span>
           </mat-form-field>
           <mat-form-field subscriptSizing="dynamic" floatLabel="always">
             <mat-label>Visa / card · إيراد الفيزا</mat-label>
             <input matInput type="number" min="0" step="any" inputmode="decimal" [ngModel]="sales().cardAmount" (ngModelChange)="setSale('cardAmount', $event)"
-              [disabled]="locked()" placeholder="0" data-western-digits aria-label="Visa" />
+              [disabled]="figuresLocked()" placeholder="0" data-western-digits aria-label="Visa" />
             <span matTextSuffix>&nbsp;{{ company.currency() }}</span>
           </mat-form-field>
           <mat-form-field subscriptSizing="dynamic" floatLabel="always">
             <mat-label>Tax collected · الضريبة المحصلة</mat-label>
             <input matInput type="number" min="0" step="any" inputmode="decimal" [ngModel]="sales().taxAmount" (ngModelChange)="setSale('taxAmount', $event)"
-              [disabled]="locked()" placeholder="0" data-western-digits aria-label="Tax" />
+              [disabled]="figuresLocked()" placeholder="0" data-western-digits aria-label="Tax" />
             <span matTextSuffix>&nbsp;{{ company.currency() }}</span>
           </mat-form-field>
           <mat-form-field subscriptSizing="dynamic" floatLabel="always">
             <mat-label>Voids &amp; refunds · الفويد والمرتجعات</mat-label>
             <input matInput type="number" min="0" step="any" inputmode="decimal" [ngModel]="sales().voidsAmount" (ngModelChange)="setSale('voidsAmount', $event)"
-              [disabled]="locked()" placeholder="0" data-western-digits aria-label="Voids" />
+              [disabled]="figuresLocked()" placeholder="0" data-western-digits aria-label="Voids" />
             <span matTextSuffix>&nbsp;{{ company.currency() }}</span>
           </mat-form-field>
           <mat-form-field subscriptSizing="dynamic" floatLabel="always" class="discounts">
             <mat-label>Discounts &amp; promos · الخصومات والعروض</mat-label>
             <input matInput type="number" min="0" step="any" inputmode="decimal" [ngModel]="sales().discountsAmount" (ngModelChange)="setSale('discountsAmount', $event)"
-              [disabled]="locked()" placeholder="0" data-western-digits aria-label="Discounts and promos" />
+              [disabled]="figuresLocked()" placeholder="0" data-western-digits aria-label="Discounts and promos" />
             <span matTextSuffix>&nbsp;{{ company.currency() }}</span>
             <mat-hint>Never collected: not in the till · لا تدخل الدرج</mat-hint>
           </mat-form-field>
@@ -903,21 +992,21 @@ export class EndOfDaySummaryDialog {
               @for (r of sales().discountReasons ?? []; track $index; let i = $index) {
                 <div class="reason">
                   <mat-form-field subscriptSizing="dynamic">
-                    <input matInput [ngModel]="r.reason" (ngModelChange)="setReason(i, { reason: $event })" [disabled]="locked()" maxlength="60"
+                    <input matInput [ngModel]="r.reason" (ngModelChange)="setReason(i, { reason: $event })" [disabled]="figuresLocked()" maxlength="60"
                       list="discount-reasons" placeholder="Loyalty, Staff…" [attr.aria-label]="'Discount reason ' + (i + 1)" />
                   </mat-form-field>
                   <mat-form-field subscriptSizing="dynamic" class="amount">
                     <input matInput type="number" min="0" step="any" inputmode="decimal" [ngModel]="r.amount || null"
-                      (ngModelChange)="setReason(i, { amount: $event === null || $event === '' ? 0 : +$event })" [disabled]="locked()" placeholder="0"
+                      (ngModelChange)="setReason(i, { amount: $event === null || $event === '' ? 0 : +$event })" [disabled]="figuresLocked()" placeholder="0"
                       data-western-digits [attr.aria-label]="'Discount reason amount ' + (i + 1)" />
                     <span matTextSuffix>&nbsp;{{ company.currency() }}</span>
                   </mat-form-field>
-                  @if (!locked()) {
+                  @if (!figuresLocked()) {
                     <button mat-icon-button type="button" (click)="removeReason(i)" [attr.aria-label]="'Remove reason ' + (i + 1)"><mat-icon>close</mat-icon></button>
                   }
                 </div>
               }
-              @if (!locked()) {
+              @if (!figuresLocked()) {
                 <button mat-button type="button" (click)="addReason()"><mat-icon>add</mat-icon> Reason · سبب</button>
               }
               <datalist id="discount-reasons">
@@ -955,7 +1044,7 @@ export class EndOfDaySummaryDialog {
 
       <!-- The cash that should be in the drawer: counted against it -->
       @let till = netCashInTill();
-      <section class="card till" [class.short]="till.net < 0" aria-label="Net cash expected in till">
+      <section class="card till" [class.short]="till.net < 0" [class.off]="tillOff()" aria-label="Net cash expected in till">
         <div class="till-head">
           <mat-icon>point_of_sale</mat-icon>
           <div>
@@ -976,6 +1065,19 @@ export class EndOfDaySummaryDialog {
         @if ((sales().discountsAmount ?? 0) > 0) {
           <p class="muted small discount-note">Discounts &amp; promos of {{ sales().discountsAmount! | money }} are not in it: they were never collected (the cash is after them).
             <span class="line-ar" lang="ar" dir="rtl">الخصومات لا تدخل الدرج: لم تُحصّل أصلًا.</span></p>
+        }
+        @if (day()?.pos; as p) {
+          @if (p.countedCash !== null) {
+            <p class="counted small" [class.exact]="!tillOff()" role="status">
+              <mat-icon inline aria-hidden="true">{{ tillOff() ? 'error_outline' : 'verified' }}</mat-icon>
+              Counted at the till{{ p.shiftList.length > 1 ? ', every shift together' : '' }}: <strong>{{ p.countedCash | money }}</strong>
+              @if (tillOff()) {
+                · {{ varianceLabel(round(p.countedCash - till.net)) }} against the cash expected
+              } @else {
+                · exact · مطابق
+              }
+            </p>
+          }
         }
         @if (till.net < 0) {
           <p class="error small" role="status">More was paid out than the drawer took in: check the amounts. · المصروف أكبر من الكاش.</p>
@@ -1148,12 +1250,112 @@ export class EndOfDaySummaryDialog {
       unicode-bidi: isolate;
     }
 
+    // Synced from the POS: the banner over the day, its shifts as badges, and what came from it tagged.
+    .pos-banner {
+      display: flex;
+      gap: 10px 14px;
+      align-items: flex-start;
+      margin: 0 0 14px;
+      padding: 12px 16px;
+      border-radius: 14px;
+      background: color-mix(in srgb, var(--app-ok, #2e7d32) 8%, var(--mat-sys-surface-container-lowest));
+      border: 1px solid color-mix(in srgb, var(--app-ok, #2e7d32) 30%, transparent);
+
+      > mat-icon {
+        flex: none;
+        color: var(--app-ok, #2e7d32);
+      }
+      .pos-text {
+        display: grid;
+        gap: 4px;
+        min-width: 0;
+        flex: 1;
+      }
+      p {
+        margin: 4px 0 0;
+      }
+    }
+    .shift-badges {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 4px;
+    }
+    .shift-badge {
+      display: inline-flex;
+      flex-wrap: wrap;
+      gap: 2px 8px;
+      align-items: baseline;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: var(--mat-sys-surface-container-lowest);
+      border: 1px solid var(--app-line);
+      font: var(--mat-sys-label-medium);
+      font-variant-numeric: tabular-nums;
+
+      .variance {
+        color: var(--app-ok, #2e7d32);
+      }
+      &.short .variance,
+      &.resend .variance {
+        color: var(--mat-sys-error);
+      }
+      &.over .variance {
+        color: var(--app-warn);
+      }
+    }
+    .tag.pos {
+      background: var(--mat-sys-secondary-container);
+      color: var(--mat-sys-on-secondary-container);
+
+      mat-icon {
+        vertical-align: -2px;
+      }
+    }
+    h3 .tag.pos {
+      margin-inline-start: 8px;
+      vertical-align: middle;
+      font: var(--mat-sys-label-medium);
+    }
+    .pos-lock {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px 12px;
+      margin: -4px 0 12px;
+      padding: 8px 12px;
+      border-radius: 12px;
+      background: var(--mat-sys-surface-container);
+
+      > span {
+        flex: 1;
+        min-width: min(100%, 280px);
+      }
+      &.unlocked {
+        background: var(--tag-warn-bg);
+        color: var(--tag-warn-fg);
+      }
+    }
+    .counted {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 4px;
+      margin: 10px 0 0 !important;
+      color: var(--mat-sys-error);
+
+      &.exact {
+        color: var(--app-ok, #2e7d32);
+      }
+    }
+
     // The cash that should be in the drawer: the day's figure that matters at the close.
     .till {
       border: 2px solid color-mix(in srgb, var(--app-ok, #2e7d32) 45%, transparent);
       background: color-mix(in srgb, var(--app-ok, #2e7d32) 7%, var(--mat-sys-surface-container-lowest));
 
-      &.short {
+      &.short,
+      &.off {
         border-color: color-mix(in srgb, var(--mat-sys-error) 55%, transparent);
         background: color-mix(in srgb, var(--mat-sys-error) 6%, var(--mat-sys-surface-container-lowest));
 
@@ -1537,6 +1739,16 @@ export class EndOfDayPage {
   private readonly photos = new Map<string, PhotoSource>();
 
   protected readonly locked = computed(() => this.day()?.status === 'Submitted');
+  // Synced from the POS: its figures as it gave them, until a manager unlocks them.
+  protected readonly salesLocked = computed(() => !!this.day()?.pos?.salesLocked);
+  protected readonly figuresLocked = computed(() => this.locked() || this.salesLocked());
+  protected readonly canOverride = computed(() => this.approvals.canApprove() && !this.locked());
+  // The drawers as counted at the POS, apart from the cash expected in the till.
+  protected readonly tillOff = computed(() => {
+    const counted = this.day()?.pos?.countedCash;
+    return counted !== null && counted !== undefined && Math.abs(counted - this.netCashInTill().net) >= 0.005;
+  });
+  protected readonly round = round;
   protected readonly canBatch = computed(() => this.access.has('Purchases'));
   protected readonly canTakings = computed(() => this.access.has('Financials'));
   // Locked to the next day in order once a day is closed (the days before it are opened from Recent days).
@@ -1595,7 +1807,8 @@ export class EndOfDayPage {
   protected readonly netCashInTill = computed(() => {
     const day = this.day();
     const paidOut = day ? (day.cashInvoicesTotal ?? 0) + (day.supplierPaymentsTotal ?? 0) + (day.advancesTotal ?? 0) : 0;
-    return netCash(this.sales(), round(paidOut));
+    // As saved, the server's own share of the tax: the POS's, to the piastre.
+    return netCash(this.sales(), round(paidOut), day && !this.salesDirty() ? day.cashTax : null);
   });
   protected readonly salesState = computed(() =>
     this.savingSales() ? 'Saving… · جارٍ الحفظ' : this.salesDirty() ? 'Not saved yet · لم يُحفظ' : this.day()?.netSales ? 'Saved · تم الحفظ' : '',
@@ -1782,10 +1995,15 @@ export class EndOfDayPage {
       }
     }
     if (await this.run(() => this.api.submit(date, zeroSales), 'The end of day could not be submitted.')) {
-      const asked = (this.day()?.payouts ?? []).filter((p) => p.voucher === 'Requested').length;
-      this.handedInWarnings.set(this.day()?.warnings ?? []);
+      const handedIn = this.day();
+      const asked = (handedIn?.payouts ?? []).filter((p) => p.voucher === 'Requested').length;
+      this.handedInWarnings.set(handedIn?.warnings ?? []);
+      // From the POS: the takings are in the safe now, once; the invoices wait on the daily batch.
+      const fromPos = handedIn?.pos?.salesFromPos && handedIn.takingsEntered !== null
+        ? `: the takings are in the safe (${this.company.money(handedIn.takingsEntered)}) and ${handedIn.invoices.length} ${handedIn.invoices.length === 1 ? 'invoice waits' : 'invoices wait'} on the daily batch`
+        : '';
       this.notify.info(
-        `The end of day of ${date} is submitted${zeroSales ? ' with no sales' : ''}${asked ? `: ${asked} ${asked === 1 ? 'payment waits' : 'payments wait'} for a manager's approval` : ''}. · تم إرسال التقفيل.`,
+        `The end of day of ${date} is submitted${zeroSales ? ' with no sales' : ''}${fromPos}${asked ? `; ${asked} ${asked === 1 ? 'payment waits' : 'payments wait'} for a manager's approval` : ''}. · تم إرسال التقفيل.`,
       );
       await this.fetchSequence();
     }
@@ -1873,6 +2091,34 @@ export class EndOfDayPage {
       }
     } finally {
       this.busy.set(false);
+    }
+  }
+
+  // Short (عجز) or over (زيادة) by how much, or exact.
+  protected varianceLabel(amount: number | null): string {
+    if (amount === null || Math.abs(amount) < 0.005) {
+      return 'exact · مطابق';
+    }
+    return `${amount < 0 ? 'short · عجز' : 'over · زيادة'} ${this.company.money(Math.abs(amount))}`;
+  }
+
+  // A manager's: the POS's figures opened to correct them, why required.
+  protected async unlockSales(): Promise<void> {
+    const p = this.day()?.pos;
+    const note = await firstValueFrom(
+      this.dialog
+        .open<SalesOverrideDialog, SalesOverrideData, string>(SalesOverrideDialog, { data: { date: this.date(), shifts: p?.shifts ?? null }, width: '520px', maxWidth: '96vw' })
+        .afterClosed(),
+    );
+    if (note && (await this.run(() => this.api.unlockSales(this.date(), note), 'The sales report could not be unlocked.'))) {
+      this.notify.info('Unlocked: correct the figures, then confirm. · تم الفتح للتعديل.');
+    }
+  }
+
+  // A manager's: the POS's figures back, locked.
+  protected async relockSales(): Promise<void> {
+    if (await this.run(() => this.api.relockSales(this.date()), 'The sales report could not be locked again.')) {
+      this.notify.info("Locked to the POS's figures again. · تمت إعادة القفل.");
     }
   }
 

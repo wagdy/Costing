@@ -83,7 +83,11 @@ public sealed class PosIntegrationApiTests
         // Read as the same report, the envelope's own fields aside: nothing changes.
         var resentBody = await Json(resent);
         Assert.Equal("Unchanged", resentBody.GetProperty("outcome").GetString());
-        Assert.Equal(1, await api.Db(db => db.SafeTransactions.CountAsync(t => t.ReversalOf == null && t.VoidedAtUtc == null && t.RevenueDate != null, Cancel)));
+        // On the day's end of day, its sales report, locked; nothing in the safe until it is confirmed.
+        var day = await Json(await manager.GetAsync($"/api/end-of-day/{date}", Cancel));
+        Assert.Equal((400m, 100m, 70m, true), (day.GetProperty("cashAmount").GetDecimal(), day.GetProperty("cardAmount").GetDecimal(),
+            day.GetProperty("taxAmount").GetDecimal(), day.GetProperty("pos").GetProperty("salesLocked").GetBoolean()));
+        Assert.Equal(0, await api.Db(db => db.SafeTransactions.CountAsync(t => t.ReversalOf == null && t.VoidedAtUtc == null && t.RevenueDate != null, Cancel)));
 
         // An event Costing does not use: answered, left.
         Assert.Equal(HttpStatusCode.Accepted,

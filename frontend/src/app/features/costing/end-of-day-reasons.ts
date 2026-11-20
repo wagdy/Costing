@@ -155,3 +155,66 @@ export class ReassignDateDialog {
     }
   }
 }
+
+export interface SalesOverrideData {
+  date: string;
+  shifts: string | null;
+}
+
+// A manager's Unlock / Manual override (فتح للتعديل اليدوي): the sales report synced from the POS
+// opened to correct what the POS got wrong, the note why required (kept on the day's audit trail).
+// Gives back the note, or nothing when cancelled.
+@Component({
+  selector: 'app-sales-override-dialog',
+  imports: [DatePipe, FormsModule, MatButtonModule, MatDialogModule, MatFormFieldModule, MatIconModule, MatInputModule],
+  template: `
+    <h2 mat-dialog-title>Unlock the POS's figures? <span class="inline-ar">فتح أرقام نظام المبيعات للتعديل</span></h2>
+    <mat-dialog-content>
+      <p class="muted">{{ data.date | date: 'EEEE d MMMM y' }}{{ data.shifts ? ' · shift ' + data.shifts : '' }}</p>
+      <p>
+        The sales report came from the POS's Z reports and is locked so it is never typed twice. Unlock it only to correct what the POS got
+        wrong: the takings go into the safe as you leave them, and the note stays on the day.
+        <span class="line-ar" lang="ar" dir="rtl">الريبورت مسحوب من نظام المبيعات ومقفل لمنع الإدخال المزدوج. افتحه فقط لتصحيح خطأ، ويُحفظ السبب في سجل اليوم.</span>
+      </p>
+      <mat-form-field class="full" subscriptSizing="dynamic">
+        <mat-label>Why · سبب التعديل</mat-label>
+        <textarea matInput rows="2" [maxlength]="max" [(ngModel)]="note" placeholder="The card machine charged a guest twice" aria-label="Why the POS's figures are overridden" required></textarea>
+      </mat-form-field>
+      @if (missing) {
+        <p class="error small" role="alert">Say why the POS's figures are overridden. · سبب التعديل إجباري.</p>
+      }
+    </mat-dialog-content>
+    <mat-dialog-actions align="end">
+      <button mat-button [mat-dialog-close]="undefined">Cancel · إلغاء</button>
+      <button mat-flat-button (click)="done()"><mat-icon>lock_open</mat-icon> Unlock · فتح للتعديل</button>
+    </mat-dialog-actions>
+  `,
+  styleUrl: './costing.scss',
+  styles: `
+    .full {
+      width: 100%;
+    }
+    .line-ar {
+      display: block;
+      margin-top: 4px;
+    }
+    .small {
+      font-size: 0.85em;
+    }
+  `,
+})
+export class SalesOverrideDialog {
+  protected readonly data = inject<SalesOverrideData>(MAT_DIALOG_DATA);
+  private readonly ref = inject<MatDialogRef<SalesOverrideDialog, string>>(MatDialogRef);
+  protected readonly max = maxAuditReason;
+  protected note = '';
+  protected missing = false;
+
+  protected done(): void {
+    const note = this.note.trim();
+    this.missing = !note;
+    if (note) {
+      this.ref.close(note);
+    }
+  }
+}

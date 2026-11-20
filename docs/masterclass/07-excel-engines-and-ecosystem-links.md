@@ -4403,9 +4403,9 @@ export const recipeSheetRules: { en: string; ar: string }[] = [
 | --- | --- |
 | `GET /api/integrations/pos/ping` | اختبار الربط |
 | `GET /api/integrations/pos/menu` | المنيو: الفئات، الأصناف بأرقامها وأسعارها، الأحجام بأكوادها (`6101-17`)، الإضافات (`A3`)، وهل للصنف وصفة (`hasRecipe`) |
-| `GET /api/integrations/pos/suppliers` | الموردون غير المؤرشفين، لمصروف يُصرف من الدرج |
+| `GET /api/integrations/pos/suppliers` | الموردون غير المؤرشفين، لمصروف أو فاتورة آجلة أو سداد مورد من الكاشير |
 | `POST /api/integrations/pos/z-report` | تقرير وردية |
-| `POST /api/integrations/pos/events` | ظرف أحداث الـ POS: `day.closed` يُقرأ كتقرير Z، و `paid-out` كمصروف أو سلفة من الدرج، وغيرهما يُرد بـ 202 ويُترك |
+| `POST /api/integrations/pos/events` | ظرف أحداث الـ POS: `day.closed` يُقرأ كتقرير Z، و `paid-out` و `credit-invoice` كمستندات الصالة، وغيرهما يُرد بـ 202 ويُترك |
 
 ### 2.2 المفتاح
 
@@ -4417,35 +4417,57 @@ export const recipeSheetRules: { en: string; ar: string }[] = [
 تقرير Z (وردية) ──► PosDay (يجمع كل ورديات اليوم)
                       ├─► ملخص مبيعات اليوم (DailySummary): كل صنف مُباع يخصم مخزونه بالوصفة
                       │      والأصناف الملغاة بعد المطبخ (wastedItems) ⇐ تخصم مخزونها كهالك (Waste)، بلا تحصيل
-                      └─► توريد اليوم في الخزنة (RevenueTransfer): الكاش والفيزا قبل الضريبة + الضريبة،
-                             والإلغاءات وأسبابها في الملاحظات
+                      └─► ريبورت المبيعات في تقفيل اليوم (القسم 6): العهدة + الكاش + الفيزا + الضريبة + الإلغاءات
+                             + الخصومات، مجموع كل الورديات، ومقفل كما أرسله الـ POS
+مراجعة وتأكيد التقفيل ──► توريد اليوم في الخزنة (RevenueTransfer) من القسم 6، مرة واحدة فقط
 ```
+
+لماذا لا يُورَّد الإيراد مع تقرير Z؟ لأن مصدر الحقيقة الواحد هو تقفيل اليوم: المحاسب يراجع ويؤكد،
+فيدخل الإيراد للخزنة مرة واحدة، ثم تُصرف منه مدفوعات الموردين والسلف. المبيعات والمخزون سُجّلت مع
+تقرير Z بالفعل، فالتأكيد لا يسجلها مرة ثانية أبدًا.
 
 قواعد الـ Idempotency والتعديل:
 
 1. **`zReportId`** معرّف الوردية في الـ POS، ثابت في كل إرسال.
 2. **نفس المحتوى مرة أخرى** (نفس `PayloadHash`) ⇐ `Unchanged`، لا شيء يتغير.
-3. **تقرير معدّل** (صُحّحت الوردية) ⇐ ما صنعه يُلغى (المخزون يعود، التوريد يُعكس) ويُعاد صنع اليوم كاملًا ⇐ `Updated`.
-4. **ورديتان في يوم واحد** ⇐ ملخص واحد وتوريد واحد من كل تقارير اليوم؛ الوردية الثانية تعيد صنع اليوم بالاثنتين.
-5. **الكل أو لا شيء:** الملخص والتوريد في حفظ واحد. سطر لا يُطابق المنيو (كود غير موجود، صنف بالأحجام بلا حجم) يرفض التقرير كله 422 مع تسمية كل سطر.
+3. **تقرير معدّل** (صُحّحت الوردية) ⇐ ما صنعه يُلغى (المخزون يعود) ويُعاد صنع اليوم كاملًا ⇐ `Updated`.
+4. **ورديتان في يوم واحد** ⇐ ملخص واحد وريبورت مبيعات واحد من كل تقارير اليوم؛ العهد تُجمع (كل درج يُعد بعهدته)، فيطابق "الصافي المتبقي في الكاش" ما سلمته كل الورديات معًا.
+5. **الكل أو لا شيء:** الملخص والريبورت في حفظ واحد. سطر لا يُطابق المنيو (كود غير موجود، صنف بالأحجام بلا حجم) يرفض التقرير كله 422 مع تسمية كل سطر.
 6. **يوم أُدخل يدويًا يُترك:** إن كان ملخص اليوم أو توريده مُدخلًا يدويًا (أو بالشيت)، يُرفض التقرير 422 مع تسمية ما يمنعه. ألغِ اليدوي لتسمح بالتقرير.
 7. تصادم مع تعديل آخر في نفس اللحظة ⇐ يُعاد تلقائيًا؛ إن استمر ⇐ 503 فيعيد الـ POS الإرسال لاحقًا.
-8. **أسطر القنوات:** الـ POS يرسل الصنف سطرًا لكل قناة (صالة، تيك أواي، دليفري)؛ تُجمع هنا في سطر واحد للصنف والحجم. والخصومات تأتي بأسبابها (`discountReasons`) فتُحفظ مع التوريد.
+8. **أسطر القنوات:** الـ POS يرسل الصنف سطرًا لكل قناة (صالة، تيك أواي، دليفري)؛ تُجمع هنا في سطر واحد للصنف والحجم. والخصومات تأتي بأسبابها (`discountReasons`) فتُحفظ مع الريبورت.
+9. **يوم تم تأكيده يُترك:** بعد تأكيد التقفيل، تقرير معدّل أو وردية جديدة لنفس اليوم ⇐ مرفوض 422 حتى يلغي المدير تقفيل اليوم.
+10. **الدرج (`till`):** العهدة، والكاش المحصل بالضريبة، والمتوقع، والمعدود، والعجز أو الزيادة. ضريبة الكاش تؤخذ كما حصلها الدرج (وليست نسبة)، فيطابق المتوقع الدرج بالقرش.
 
-### 2.4 المصروفات والسلف من الدرج (`paid-out`)
+### 2.4 مستندات الصالة (`paid-out` و `credit-invoice`)
 
-عند إغلاق الوردية، قبل تقرير Z، يرسل الـ POS كل مصروف وكل سلفة صُرفت من الدرج (مصروف السائق يبقى في الـ POS):
+الكاشير يسجل كل مستند مرة واحدة في شاشة "الصرف والفواتير"، وعند إغلاق الوردية، قبل تقرير Z، يصل كل
+مستند إلى قسمه في تقفيل اليوم:
 
 ```text
-paid-out ──► نهاية يوم الفرع لذلك اليوم (مسودة تُنشأ إن لم يكن له يوم، حتى قبل تسلسل الإغلاق)
-              ├─ StaffAdvance ⇐ سلفة موظف (EmployeeAdvance): الموظف المربوط بمعرّف HR، أو الموظف النشط الوحيد بالاسم؛ غير ذلك 422
-              └─ Expense      ⇐ فاتورة كاش من المورد: بمعرّفه، أو باسمه، أو "نثريات نقطة البيع" (تُنشأ أول مرة)
+مستند الصالة ──► نهاية يوم الفرع لذلك اليوم (مسودة تُنشأ إن لم يكن له يوم، حتى قبل تسلسل الإغلاق)
+  ├─ Expense         (paid-out)       ⇐ القسم 2: فاتورة كاش من المورد، أو "نثريات نقطة البيع"
+  ├─ Driver          (paid-out)       ⇐ القسم 2: فاتورة كاش من "سائقو التوصيل" واسم السائق في الملاحظة
+  ├─ CreditInvoice   (credit-invoice) ⇐ القسم 3: فاتورة آجلة، المورد إجباري، لا تخصم من الدرج
+  ├─ SupplierPayment (paid-out)       ⇐ القسم 4: سداد نقدي للمورد، المورد إجباري
+  └─ StaffAdvance    (paid-out)       ⇐ القسم 5: سلفة موظف بمعرّف HR أو بالاسم؛ غير ذلك 422
 الصورة: إيصال الـ POS (صورة أو PDF)؛ وبدونه ورقة PDF بما سجّله الـ POS
 ```
 
-المفتاح هو `paidOutId` نفسه: إرسال ثانٍ ⇐ `Unchanged`. يوم سُلّم بالفعل، أو في يوم مغلق أو فترة مقفلة ⇐ مرفوض، ويظهر في الـ POS "فشل" حتى يُعاد الإرسال من "الورديات السابقة".
+المفتاح هو `paidOutId` نفسه: إرسال ثانٍ ⇐ `Unchanged`؛ وما حذفه المحاسب يبقى محذوفًا (سجل التدقيق يحفظه).
+يوم سُلّم بالفعل، أو في يوم مغلق أو فترة مقفلة ⇐ مرفوض، ويظهر في الـ POS "فشل" حتى يُعاد الإرسال من
+"الورديات السابقة". سداد المورد يُراجع على المستحق للمورد عند التأكيد.
 
-> 📄 **`backend/src/Costing.Application/Integrations/PosPaidOuts.cs`** — 281 سطر
+### 2.5 تقفيل اليوم المسحوب من الـ POS (مراجعة واستلام)
+
+- شريط "مسحوب تلقائياً من نظام المبيعات" مع شارة لكل وردية (العهدة، الكاش، الفيزا، المعدود، العجز أو الزيادة)، وعلامة **POS** على كل مستند.
+- الأقسام 2 إلى 5 للمراجعة: الصور، تصحيح المورد، إضافة فاتورة لم تمر على الكاشير.
+- القسم 6 **مقفل**؛ يفتحه المدير فقط (فتح للتعديل اليدوي) مع سبب إجباري في سجل التدقيق، ويعيد قفله على أرقام الـ POS.
+- "الصافي المتبقي في الكاش" يُطابق المعدود في الدرج (كل الورديات): مطابق بالأخضر، أو عجز/زيادة.
+- **مراجعة وتأكيد:** التسلسل أولًا، ثم في حفظ واحد: توريد الإيراد من القسم 6 مرة واحدة، ثم مدفوعات الموردين والسلف من الخزنة (والسلف إلى HR)، ويومية المشتريات تفتح بكل الفواتير النقدية والآجلة.
+- بدون ربط الـ POS: التقفيل يدوي كما كان.
+
+> 📄 **`backend/src/Costing.Application/Integrations/PosPaidOuts.cs`** — 351 سطر
 
 ```csharp
 using System.Globalization;
@@ -4463,20 +4485,28 @@ using Costing.Domain.Suppliers;
 
 namespace Costing.Application.Integrations;
 
-// ---- The POS's paid-outs (paid-out) into the end of day ----
+// ---- The POS's floor documents (paid-out, credit-invoice) into the end of day ----
 //
-// Cash a cashier paid out of the drawer during a shift, sent when the shift closes, each into the end
-// of day of its business day, in the branch whose till sent it (made as a draft if it is not started:
-// it waits its turn): an advance to an employee as the day's advance to them (the employee by HR's
-// id, as Costing has them from HR, or by name), handed to HR as the day is; an expense as a cash
-// invoice of its supplier, or of the POS's petty cash supplier when it named none. Its receipt's
-// photo comes with it; without one, a slip of what the POS recorded stands for it. Kept once by the
-// paid-out's id: sent again, it is what it was. A day handed in already refuses it: undone in
-// Costing, the POS sends it again.
+// Every document the floor records at the till, sent when the shift closes, each into the end of
+// day of its business day, in the branch whose till sent it (made as a draft if it is not started:
+// it waits its turn), so nothing is typed twice:
+//   Expense         cash out of the drawer: a cash invoice (section 2) of its supplier, or of the
+//                   POS's petty cash supplier when it named none
+//   Driver          cash handed to a delivery driver: a cash invoice (section 2) of the delivery
+//                   drivers' supplier, the driver named on it
+//   CreditInvoice   a supplier's invoice taken on credit at the till, never out of the drawer: a
+//                   credit invoice (section 3) of its supplier, required
+//   SupplierPayment cash out of the drawer to a supplier on account: the day's payment to them
+//                   (section 4), the supplier required
+//   StaffAdvance    cash out of the drawer to an employee: the day's advance to them (section 5),
+//                   by HR's id as Costing has them from HR, or by name; handed to HR as the day is
+// Its photo comes with it; without one, a slip of what the POS recorded stands for it. Kept once by
+// the document's id: sent again, it is what it was; taken off in Costing, it stays off. A day
+// handed in already refuses it: undone in Costing, the POS sends it again.
 
 public sealed record PosPaidOutInput(
     Guid PaidOutId, Guid? ShiftId, int? ShiftNumber, DateOnly Date, string Kind, decimal Amount, string? Note, Guid? EmployeeId, string? EmployeeName,
-    Guid? SupplierId, string? SupplierName, string? GivenBy, string? ReceiptContentType, byte[]? Receipt);
+    Guid? SupplierId, string? SupplierName, string? GivenBy, string? ReceiptContentType, byte[]? Receipt, string? DriverName = null);
 
 public sealed record PosPaidOutResultDto(Guid PaidOutId, PosSyncOutcome Outcome, DateOnly Date, string Entry, string Message);
 
@@ -4494,39 +4524,60 @@ internal sealed class ReceivePosPaidOutHandler(
     IUnitOfWork unitOfWork) : IRequestHandler<ReceivePosPaidOutCommand, PosPaidOutResultDto>
 {
     public const string PettyCashSupplier = "POS petty cash · نثريات نقطة البيع";
+    public const string DriversSupplier = "Delivery drivers · سائقو التوصيل";
     private static readonly CultureInfo Invariant = CultureInfo.InvariantCulture;
+
+    // What each kind becomes, and what it is called.
+    private enum Becomes
+    {
+        CashInvoice,
+        CreditInvoice,
+        SupplierPayment,
+        Advance,
+    }
 
     public async Task<PosPaidOutResultDto> Handle(ReceivePosPaidOutCommand request, CancellationToken cancellationToken)
     {
         var p = request.PaidOut;
+        var endpoint = p.Kind == PosPaidOutEvent.CreditInvoiceKind ? PosPaidOutEvent.CreditInvoiceEvent : PosPaidOutEvent.Kind;
         try
         {
             var result = await RecordAsync(p, cancellationToken);
-            await journal.WriteAsync(new PosSyncLog("paid-out", result.Outcome, result.Message, p.ShiftId, p.Date), cancellationToken);
+            await journal.WriteAsync(new PosSyncLog(endpoint, result.Outcome, result.Message, p.ShiftId, p.Date), cancellationToken);
             return result;
         }
         catch (Exception ex) when (ex is DomainException or NotFoundException)
         {
-            await journal.WriteAsync(new PosSyncLog("paid-out", PosSyncOutcome.Refused, ex.Message, p.ShiftId, p.Date), cancellationToken);
+            await journal.WriteAsync(new PosSyncLog(endpoint, PosSyncOutcome.Refused, ex.Message, p.ShiftId, p.Date), cancellationToken);
             throw;
         }
     }
 
     private async Task<PosPaidOutResultDto> RecordAsync(PosPaidOutInput p, CancellationToken cancellationToken)
     {
-        var advance = p.Kind switch
+        var becomes = p.Kind switch
         {
-            "StaffAdvance" => true,
-            "Expense" => false,
-            _ => throw new DomainException($"A paid-out of kind {p.Kind} is not one the end of day takes: expenses and advances. · نوع غير مدعوم."),
+            "Expense" or "Driver" => Becomes.CashInvoice,
+            PosPaidOutEvent.CreditInvoiceKind => Becomes.CreditInvoice,
+            "SupplierPayment" => Becomes.SupplierPayment,
+            "StaffAdvance" => Becomes.Advance,
+            _ => throw new DomainException(
+                $"A document of kind {p.Kind} is not one the end of day takes: expenses, driver payouts, credit invoices, supplier payments and advances. · نوع غير مدعوم."),
         };
-        var entry = advance ? "advance" : "cash invoice";
+        var entry = becomes switch
+        {
+            Becomes.CashInvoice => "cash invoice",
+            Becomes.CreditInvoice => "credit invoice",
+            Becomes.SupplierPayment => "supplier payment",
+            _ => "advance",
+        };
+        var payout = becomes is Becomes.SupplierPayment or Becomes.Advance;
         // Sent again: what it was.
-        if ((advance ? await days.GetByPayoutAsync(p.PaidOutId, cancellationToken) : await days.GetByInvoiceAsync(p.PaidOutId, cancellationToken)) is { } had)
+        if ((payout ? await days.GetByPayoutAsync(p.PaidOutId, cancellationToken) : await days.GetByInvoiceAsync(p.PaidOutId, cancellationToken)) is { } had)
             return new PosPaidOutResultDto(p.PaidOutId, PosSyncOutcome.Unchanged, had.Date, entry,
                 $"The {entry} of {Money(p.Amount)} is on the end of day of {Day(had.Date)} already.");
         if (p.Amount <= 0)
-            throw new DomainException("A paid-out is more than nothing. · المبلغ أكبر من صفر.");
+            throw new DomainException("A document's amount is more than nothing. · المبلغ أكبر من صفر.");
         await guard.EnsureOpenAsync([p.Date], cancellationToken);
         var today = new[] { calendar.BusinessDateOf(DateTime.UtcNow), calendar.LocalDateOf(DateTime.UtcNow) }.Max();
         if (p.Date > today)
@@ -4534,32 +4585,48 @@ internal sealed class ReceivePosPaidOutHandler(
 
         // Its day: the one started, or a new draft, which waits its turn to be handed in.
         var by = $"POS · {Clean(p.GivenBy) ?? "cashier"}";
-        var day = await days.GetByDateAsync(p.Date, cancellationToken);
-        if (day is { IsSubmitted: true })
-            throw new DomainException(
-                $"The end of day of {Day(p.Date)} is handed in already: undo it in Costing (Reports → Daily summaries), then send the shift again. · تم تقفيل اليوم بالفعل.");
-        if (day is null)
-        {
-            if (await days.LastSubmittedDateAsync(cancellationToken) is { } last && p.Date <= last)
-                throw new DomainException($"{Day(p.Date)} is before the last day closed ({Day(last)}): its end of day cannot take it. · يوم مغلق.");
-            days.Add(day = new EndOfDayReport(Guid.NewGuid(), p.Date, by));
-        }
+        if (await days.GetByDateAsync(p.Date, cancellationToken) is { IsSubmitted: false } open && open.WasTakenOff(p.PaidOutId))
+            return new PosPaidOutResultDto(p.PaidOutId, PosSyncOutcome.Unchanged, p.Date, entry,
+                $"The {entry} of {Money(p.Amount)} was taken off the end of day of {Day(p.Date)} in Costing: it stays off.");
+        var day = await PosEndOfDay.OpenAsync(days, p.Date, by, cancellationToken);
 
         var note = Note(p);
-        var (content, type, file) = Receipt(p, advance);
+        var (content, type, file) = Receipt(p, entry);
         var photo = EndOfDayPhoto.Of(file, type, content.Length);
+        var pos = new PosSource(p.ShiftNumber);
         string message;
-        if (advance)
+        switch (becomes)
         {
-            var employee = await EmployeeAsync(p, cancellationToken);
-            day.AddPayout(p.PaidOutId, EndOfDayPayoutKind.EmployeeAdvance, employee.Id, p.Amount, note, photo, by);
-            message = $"An advance of {Money(p.Amount)} to {employee.Name} is on the end of day of {Day(p.Date)}.";
-        }
-        else
-        {
-            var supplier = await SupplierAsync(p, cancellationToken);
-            day.AddInvoice(p.PaidOutId, EndOfDayInvoiceKind.Cash, supplier.Id, p.Amount, note, photo, by);
-            message = $"A cash invoice of {Money(p.Amount)} from {supplier.Name} is on the end of day of {Day(p.Date)}.";
+            case Becomes.Advance:
+            {
+                var employee = await EmployeeAsync(p, cancellationToken);
+                day.AddPayout(p.PaidOutId, EndOfDayPayoutKind.EmployeeAdvance, employee.Id, p.Amount, note, photo, by, pos);
+                message = $"An advance of {Money(p.Amount)} to {employee.Name} is on the end of day of {Day(p.Date)}.";
+                break;
+            }
+            case Becomes.SupplierPayment:
+            {
+                // Checked against what the supplier is owed when the day is confirmed.
+                var supplier = await NamedSupplierAsync(p, "a supplier payment", cancellationToken);
+                day.AddPayout(p.PaidOutId, EndOfDayPayoutKind.SupplierPayment, supplier.Id, p.Amount, note, photo, by, pos);
+                message = $"A payment of {Money(p.Amount)} to {supplier.Name} is on the end of day of {Day(p.Date)}.";
+                break;
+            }
+            case Becomes.CreditInvoice:
+            {
+                var supplier = await NamedSupplierAsync(p, "a credit invoice", cancellationToken);
+                day.AddInvoice(p.PaidOutId, EndOfDayInvoiceKind.Credit, supplier.Id, p.Amount, note, photo, by, pos: pos);
+                message = $"A credit invoice of {Money(p.Amount)} from {supplier.Name} is on the end of day of {Day(p.Date)}.";
+                break;
+            }
+            default:
+            {
+                var supplier = p.Kind == "Driver" ? await MadeSupplierAsync(DriversSupplier, "Cash handed to delivery drivers out of the POS drawer.", cancellationToken)
+                    : await SupplierAsync(p, cancellationToken);
+                day.AddInvoice(p.PaidOutId, EndOfDayInvoiceKind.Cash, supplier.Id, p.Amount, note, photo, by, pos: pos);
+                message = $"A cash invoice of {Money(p.Amount)} from {supplier.Name} is on the end of day of {Day(p.Date)}.";
+                break;
+            }
         }
         photos.Put(p.PaidOutId, content);
         await unitOfWork.SaveChangesAsync(cancellationToken);
@@ -4582,16 +4649,33 @@ internal sealed class ReceivePosPaidOutHandler(
     }
 
     // The supplier named (Costing's own id), or by name; none named: the POS's petty cash.
-    private async Task<Supplier> SupplierAsync(PosPaidOutInput p, CancellationToken cancellationToken)
+    private async Task<Supplier> SupplierAsync(PosPaidOutInput p, CancellationToken cancellationToken) =>
+        await KnownSupplierAsync(p, cancellationToken)
+        ?? await MadeSupplierAsync(PettyCashSupplier, "Cash expenses paid out of the POS drawer with no supplier named.", cancellationToken);
+
+    // A credit invoice's or a supplier payment's: the supplier is required, one of Costing's.
+    private async Task<Supplier> NamedSupplierAsync(PosPaidOutInput p, string what, CancellationToken cancellationToken) =>
+        await KnownSupplierAsync(p, cancellationToken)
+        ?? throw new DomainException(Clean(p.SupplierName) is { } name
+            ? $"{name} is not one of Costing's suppliers: add them on Costing (Suppliers), then send the shift again. · المورد غير موجود."
+            : $"Name the supplier of {what}. · اختر المورد.");
+
+    private async Task<Supplier?> KnownSupplierAsync(PosPaidOutInput p, CancellationToken cancellationToken)
     {
         if (p.SupplierId is { } id && await suppliers.GetByIdAsync(id, cancellationToken) is { } known)
             return known.IsArchived ? throw new DomainException($"{known.Name} is archived in Costing: bring them back first. · المورد مؤرشف.") : known;
         var name = Clean(p.SupplierName);
-        if (name is not null && await suppliers.GetByNormalizedNameAsync(Supplier.Normalize(name), cancellationToken) is { IsArchived: false } byName)
-            return byName;
-        if (await suppliers.GetByNormalizedNameAsync(Supplier.Normalize(PettyCashSupplier), cancellationToken) is { } petty)
-            return petty;
-        var made = new Supplier(Guid.NewGuid(), new SupplierDetails(PettyCashSupplier, Notes: "Cash expenses paid out of the POS drawer with no supplier named."));
+        return name is not null && await suppliers.GetByNormalizedNameAsync(Supplier.Normalize(name), cancellationToken) is { IsArchived: false } byName
+            ? byName
+            : null;
+    }
+
+    // One of the POS's own suppliers (petty cash, the drivers), made the first time it is needed.
+    private async Task<Supplier> MadeSupplierAsync(string name, string notes, CancellationToken cancellationToken)
+    {
+        if (await suppliers.GetByNormalizedNameAsync(Supplier.Normalize(name), cancellationToken) is { } kept)
+            return kept;
+        var made = new Supplier(Guid.NewGuid(), new SupplierDetails(name, Notes: notes));
         suppliers.Add(made);
         return made;
     }
@@ -4600,29 +4684,33 @@ internal sealed class ReceivePosPaidOutHandler(
     {
         var shift = p.ShiftNumber is { } n ? $"POS shift {n}" : "POS";
         var text = Clean(p.Note);
-        var supplier = p.SupplierId is null ? Clean(p.SupplierName) : null;
-        var full = string.Join(" · ", new[] { text, supplier, shift }.Where(t => t is not null));
+        var who = p.Kind == "Driver"
+            ? Clean(p.DriverName ?? p.EmployeeName) is { } driver ? $"Driver: {driver}" : null
+            : p.SupplierId is null ? Clean(p.SupplierName) : null;
+        var full = string.Join(" · ", new[] { who, text, shift }.Where(t => t is not null));
         return full.Length > EndOfDayReport.MaxPayoutNote ? full[..EndOfDayReport.MaxPayoutNote] : full;
     }
 
     // Its photo as sent, or a slip of what the POS recorded.
-    private static (byte[] Content, string Type, string File) Receipt(PosPaidOutInput p, bool advance)
+    private static (byte[] Content, string Type, string File) Receipt(PosPaidOutInput p, string entry)
     {
         if (p.Receipt is { Length: > 0 } bytes && p.ReceiptContentType is { } type)
             return (bytes, type.Trim().ToLowerInvariant(), $"pos-receipt-{p.PaidOutId:N}{Extension(type)}");
         var lines = new List<string>
         {
-            advance ? "POS paid-out: staff advance" : "POS paid-out: cash expense",
+            $"POS {(p.Kind == "Driver" ? "driver payout" : p.Kind == PosPaidOutEvent.CreditInvoiceKind ? "credit invoice (not out of the drawer)" : entry)}",
             $"Day: {p.Date:yyyy-MM-dd}" + (p.ShiftNumber is { } n ? $"   Shift: {n}" : ""),
             $"Amount: {p.Amount.ToString("N2", Invariant)}",
         };
-        if (advance)
+        if (p.Kind == "StaffAdvance")
             lines.Add($"Employee: {Clean(p.EmployeeName) ?? "-"}");
+        else if (p.Kind == "Driver")
+            lines.Add($"Driver: {Clean(p.DriverName ?? p.EmployeeName) ?? "-"}");
         else
             lines.Add($"Supplier: {Clean(p.SupplierName) ?? "none named"}");
         lines.Add($"For: {Clean(p.Note) ?? "-"}");
-        lines.Add($"Paid out by: {Clean(p.GivenBy) ?? "-"}");
-        lines.Add($"Paid-out id: {p.PaidOutId}");
+        lines.Add($"Recorded by: {Clean(p.GivenBy) ?? "-"}");
+        lines.Add($"POS document id: {p.PaidOutId}");
         lines.Add("No photo was taken at the till: this slip is what the POS recorded.");
         return (PosSlip.Pdf(lines), "application/pdf", $"pos-paid-out-{p.PaidOutId:N}.pdf");
     }
@@ -4703,12 +4791,15 @@ internal sealed class GetPosSuppliersHandler(ISupplierRepository suppliers) : IR
             .Select(s => new PosSupplierDto(s.Id, s.Name, null)).ToList();
 }
 
-// paid-out's data, as the POS sends it.
+// paid-out's and credit-invoice's data, as the POS sends them.
 public static class PosPaidOutEvent
 {
     public const string Kind = "paid-out";
+    public const string CreditInvoiceEvent = "credit-invoice";
+    public const string CreditInvoiceKind = "CreditInvoice";
 
-    public static PosPaidOutInput Read(JsonElement data)
+    // A credit invoice comes as its own event (it never leaves the drawer), its kind that.
+    public static PosPaidOutInput Read(JsonElement data, string eventKind = Kind)
     {
         string? Text(string name) => data.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
         Guid? Id(string name) => Guid.TryParse(Text(name), out var id) ? id : null;
@@ -4723,16 +4814,17 @@ public static class PosPaidOutEvent
             receipt = Convert.FromBase64String(b.GetString()!);
             type = r.TryGetProperty("contentType", out var t) && t.ValueKind == JsonValueKind.String ? t.GetString() : null;
         }
+        var kind = eventKind == CreditInvoiceEvent ? CreditInvoiceKind : Text("kind") ?? string.Empty;
         return new PosPaidOutInput(
             paidOutId, Id("shiftId"), data.TryGetProperty("shiftNumber", out var n) && n.ValueKind == JsonValueKind.Number ? n.GetInt32() : null, date,
-            Text("kind") ?? string.Empty, amount, Text("note"), Id("employeeId"), Text("employeeName"), Id("supplierId"), Text("supplierName"),
-            Text("givenBy"), type, receipt);
+            kind, amount, Text("note"), Id("employeeId"), Text("employeeName"), Id("supplierId"), Text("supplierName"),
+            Text("givenBy"), type, receipt, Text("driverName"));
     }
 }
 ```
 
 
-> 📄 **`backend/src/Costing.Domain/Integrations/PosIntegration.cs`** — 233 سطر
+> 📄 **`backend/src/Costing.Domain/Integrations/PosIntegration.cs`** — 240 سطر
 
 ```csharp
 using Costing.Domain.Common;
@@ -4838,9 +4930,9 @@ public sealed class PosZReport : AggregateRoot, IBranchOwned
     }
 }
 
-// A business day as the POS made it: the sales summary and the takings recorded from that day's Z
-// reports (every shift's, together), so a report sent again or changed replaces exactly these and
-// nothing a person entered.
+// A business day as the POS made it: the sales summary recorded from that day's Z reports (every
+// shift's, together), and the takings its end of day put into the safe from them once confirmed, so
+// a report sent again or changed replaces exactly these and nothing a person entered.
 public sealed class PosDay : AggregateRoot, IBranchOwned
 {
     private readonly List<DiscountReason> _discountReasons = [];
@@ -4869,6 +4961,13 @@ public sealed class PosDay : AggregateRoot, IBranchOwned
 
     // Its end of day undone: what it made voided, nothing recorded until a report comes again.
     public void Undone() => Recorded(null, null);
+
+    // Its end of day confirmed: the takings it put into the safe from the POS's sales report.
+    public void TakingsIn(Guid takingsId)
+    {
+        TakingsId = takingsId;
+        UpdatedAtUtc = DateTime.UtcNow;
+    }
 
     public void Recorded(Guid? saleId, Guid? takingsId, decimal discounts = 0, IReadOnlyList<DiscountReason>? discountReasons = null)
     {
@@ -4971,7 +5070,7 @@ public interface IPosSyncJournal
 ```
 
 
-> 📄 **`backend/src/Costing.Application/Integrations/PosIntegration.cs`** — 563 سطر
+> 📄 **`backend/src/Costing.Application/Integrations/PosIntegration.cs`** — 649 سطر
 
 ```csharp
 using System.Globalization;
@@ -4999,10 +5098,12 @@ namespace Costing.Application.Integrations;
 
 // The POS link (Settings → POS Integration): the key the POS proves itself by, the menu it reads
 // from here, and each shift's Z report it sends, made into the day's sales summary (its stock
-// taken by the recipes, what was voided after the kitchen taken as waste) and the day's takings in
-// the safe; all of a report or none of it. A report sent again changes nothing; sent changed, it
-// replaces what it made. A day whose sales or takings were entered by hand is left as it is: the
-// report is refused, naming it.
+// taken by the recipes, what was voided after the kitchen taken as waste) and the sales report of
+// the day's end of day (its section 6, every shift's together, locked as the POS gave it); all of a
+// report or none of it. The takings go into the safe from that sales report when the accountant
+// confirms the end of day (Review & confirm), once: never from the report itself. A report sent
+// again changes nothing; sent changed, it replaces what it made. A day whose sales or takings were
+// entered by hand, or whose end of day is handed in, is left as it is: the report is refused, naming it.
 
 // ---- The key ----
 
@@ -5136,15 +5237,90 @@ public sealed record ZReportTakings(
     decimal Cash, decimal Card, decimal Tax, decimal VoidsAmount, IReadOnlyList<ZReportVoidReason>? VoidReasons = null,
     decimal DiscountsAmount = 0, IReadOnlyList<DiscountReason>? DiscountReasons = null);
 
+// The shift's till as the POS closed it (day.closed's till): the float the drawer opened with, the
+// cash and card it took with their tax (what reached the drawer and the card machine), the cash the
+// drawer should have held, the cash counted in it and the difference (CashOverShort), who closed it
+// and when, what left the drawer, and the credit invoices taken at the till, which never did.
+public sealed record ZReportTill(
+    decimal OpeningFloat, decimal CashCollected, decimal CardCollected, decimal? ExpectedCash = null, decimal? CountedCash = null, decimal? OverShort = null,
+    string? ClosedBy = null, DateTime? ClosedAtUtc = null, decimal PaidOutOfDrawer = 0, decimal CreditInvoices = 0);
+
 // A shift's Z report: ZReportId is the POS's id for the shift, the same each time it is sent.
 // WastedItems: voided after the kitchen had made them (waste): their stock taken as waste.
 public sealed record ZReportInput(
     Guid ZReportId, DateOnly Date, int? ShiftNumber, ZReportTakings Takings, IReadOnlyList<ZReportItem> SoldItems,
-    IReadOnlyList<ZReportItem>? WastedItems = null);
+    IReadOnlyList<ZReportItem>? WastedItems = null, ZReportTill? Till = null);
 
+// TakingsId: the safe's takings of the day, once its end of day is confirmed (none until then);
+// EndOfDayId: the end of day its sales report filled in.
 public sealed record ZReportResultDto(
     Guid ZReportId, DateOnly Date, PosSyncOutcome Outcome, Guid? SaleId, Guid? TakingsId, int Items, int Quantity, int Wasted,
-    decimal SalesValue, decimal Cash, decimal Card, decimal Tax, IReadOnlyList<string> Warnings);
+    decimal SalesValue, decimal Cash, decimal Card, decimal Tax, IReadOnlyList<string> Warnings, Guid? EndOfDayId = null);
+
+// The day as the POS's Z reports give it, every shift's together: the end of day's sales report
+// (its section 6), the shifts' numbers, and the notes its takings go into the safe with.
+public static class PosDayFigures
+{
+    public static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web) { Converters = { new JsonStringEnumConverter() } };
+
+    public static ZReportInput Read(PosZReport report) => JsonSerializer.Deserialize<ZReportInput>(report.Payload, Json)!;
+
+    // None: no report is the day's.
+    public static Costing.Domain.EndOfDay.PosSalesFigures? Of(IReadOnlyList<ZReportInput> reports)
+    {
+        if (reports.Count == 0)
+            return null;
+        var discounts = reports.Sum(r => r.Takings.DiscountsAmount);
+        var cash = reports.Sum(r => r.Takings.Cash);
+        // The cash's own tax, as each drawer took it: what it collected less the cash before tax.
+        decimal? cashTax = reports.All(r => r.Till is not null) ? Math.Max(0, reports.Sum(r => r.Till!.CashCollected - r.Takings.Cash)) : null;
+        return new Costing.Domain.EndOfDay.PosSalesFigures(
+            cash, reports.Sum(r => r.Takings.Card), reports.Sum(r => r.Takings.Tax), reports.Sum(r => r.Takings.VoidsAmount),
+            reports.Sum(r => r.Till?.OpeningFloat ?? 0), discounts, Discounts.Clean(discounts, reports.SelectMany(r => r.Takings.DiscountReasons ?? [])),
+            cashTax);
+    }
+
+    public static string Shifts(IEnumerable<ZReportInput> reports) =>
+        string.Join(", ", reports.Select(r => r.ShiftNumber).OfType<int>().Distinct().Order());
+
+    // The takings' notes: from the POS, its shifts, the void reasons, who confirmed them.
+    public static string TakingsNotes(IReadOnlyList<ZReportInput> reports, string confirmedBy, string? overriddenBy)
+    {
+        var reasons = reports.SelectMany(r => r.Takings.VoidReasons ?? [])
+            .GroupBy(r => r.Reason.Trim(), StringComparer.OrdinalIgnoreCase)
+            .Select(g => $"{g.Key} ×{g.Sum(r => r.Count)} {g.Sum(r => r.Amount).ToString("N2", CultureInfo.InvariantCulture)}")
+            .ToList();
+        var shifts = Shifts(reports);
+        var notes = $"From the POS{(shifts.Length > 0 ? $", shift {shifts}" : "")}, confirmed on the end of day by {confirmedBy}"
+            + (overriddenBy is null ? "" : $" (figures overridden by {overriddenBy})")
+            + (reasons.Count > 0 ? $" · voids: {string.Join("; ", reasons)}" : "");
+        return notes.Length > SafeTransaction.MaxNotesLength ? notes[..SafeTransaction.MaxNotesLength] : notes;
+    }
+}
+
+// The end of day a POS document lands on: its business day's, started, or a new draft that waits
+// its turn to be handed in; never one handed in (undone in Costing, the POS sends it again), nor a
+// day before the last one closed.
+internal static class PosEndOfDay
+{
+    public static async Task<Costing.Domain.EndOfDay.EndOfDayReport> OpenAsync(
+        Costing.Domain.EndOfDay.IEndOfDayRepository days, DateOnly date, string by, CancellationToken cancellationToken)
+    {
+        var day = await days.GetByDateAsync(date, cancellationToken);
+        if (day is { IsSubmitted: true })
+            throw new DomainException(
+                $"The end of day of {Day(date)} is handed in already: undo it in Costing (End of the day → Undo & reopen day), then send the shift again. · تم تقفيل اليوم بالفعل.");
+        if (day is null)
+        {
+            if (await days.LastSubmittedDateAsync(cancellationToken) is { } last && date <= last)
+                throw new DomainException($"{Day(date)} is before the last day closed ({Day(last)}): its end of day cannot take it. · يوم مغلق.");
+            days.Add(day = new Costing.Domain.EndOfDay.EndOfDayReport(Guid.NewGuid(), date, by));
+        }
+        return day;
+    }
+
+    private static string Day(DateOnly date) => date.ToString("d MMM yyyy", CultureInfo.InvariantCulture);
+}
 
 public sealed record ReceiveZReportCommand(ZReportInput Report, string Source) : IRequest<ZReportResultDto>, IRetryOnConflict, IChecksBooksItself;
 
@@ -5164,12 +5340,13 @@ internal sealed class ReceiveZReportHandler(
     IPosSyncJournal journal,
     BooksGuard guard,
     Costing.Application.Company.ICurrentBranch branch,
+    Costing.Domain.EndOfDay.IEndOfDayRepository endOfDays,
     IUnitOfWork unitOfWork) : IRequestHandler<ReceiveZReportCommand, ZReportResultDto>
 {
     public const string By = "POS";
     public const int MaxLines = 2_000;
 
-    private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web) { Converters = { new JsonStringEnumConverter() } };
+    private static readonly JsonSerializerOptions Json = PosDayFigures.Json;
     private static readonly CultureInfo Invariant = CultureInfo.InvariantCulture;
 
     public async Task<ZReportResultDto> Handle(ReceiveZReportCommand request, CancellationToken cancellationToken)
@@ -5221,11 +5398,17 @@ internal sealed class ReceiveZReportHandler(
         {
             // Sent again: what it made stands.
             var day = await days.GetByDateAsync(existing.BusinessDate, cancellationToken);
-            return Result(report, PosSyncOutcome.Unchanged, day?.SaleId, day?.TakingsId, await SaleAsync(day?.SaleId, cancellationToken), []);
+            var handedIn = await endOfDays.GetByDateAsync(existing.BusinessDate, cancellationToken);
+            return Result(report, PosSyncOutcome.Unchanged, day?.SaleId, day?.TakingsId, await SaleAsync(day?.SaleId, cancellationToken), [], handedIn?.Id);
         }
 
         // A day in the books closed is not written, nor one a report moves off: refused, and logged.
         await guard.EnsureOpenAsync([report.Date, existing?.BusinessDate], cancellationToken);
+        // Nor a day handed in, or before the last closed: its end of day is as it was confirmed.
+        var endOfDay = await PosEndOfDay.OpenAsync(endOfDays, report.Date, By, cancellationToken);
+        var movedOff = existing is not null && existing.BusinessDate != report.Date
+            ? await PosEndOfDay.OpenAsync(endOfDays, existing.BusinessDate, By, cancellationToken)
+            : null;
 
         var known = await SaleWriter.Menu.LoadAsync(menu, cancellationToken);
         var targets = new MenuTargets(known.Items.Values.ToList(), known.AddOns.Values.ToList());
@@ -5247,18 +5430,20 @@ internal sealed class ReceiveZReportHandler(
         // The day's records from every one of its shifts' reports; a report moved to another day
         // takes its lines off the day it was on.
         if (moved is { } before)
-            await RebuildDayAsync(before, existing, targets, known, cancellationToken);
-        var (saleId, takingsId, warnings) = await RebuildDayAsync(report.Date, existing, targets, known, cancellationToken);
+            await RebuildDayAsync(before, existing, targets, known, movedOff!, cancellationToken);
+        var (saleId, takingsId, warnings) = await RebuildDayAsync(report.Date, existing, targets, known, endOfDay, cancellationToken);
 
         await unitOfWork.SaveChangesAsync(cancellationToken);
         var outcome = existing.Revision == 1 ? PosSyncOutcome.Recorded : PosSyncOutcome.Updated;
-        return Result(report, outcome, saleId, takingsId, await SaleAsync(saleId, cancellationToken), warnings);
+        return Result(report, outcome, saleId, takingsId, await SaleAsync(saleId, cancellationToken), warnings, endOfDay.Id);
     }
 
-    // The day's sales summary and takings, made again from the reports of that day: what the POS
-    // made of it before voided (its stock put back, its takings reversed), the new ones recorded.
+    // The day's sales summary and its end of day's sales report, made again from the reports of that
+    // day: what the POS made of it before voided (its stock put back; takings a report made before
+    // the end of day took them, reversed), the new ones recorded.
     private async Task<(Guid? SaleId, Guid? TakingsId, IReadOnlyList<string> Warnings)> RebuildDayAsync(
-        DateOnly date, PosZReport current, MenuTargets targets, SaleWriter.Menu known, CancellationToken cancellationToken)
+        DateOnly date, PosZReport current, MenuTargets targets, SaleWriter.Menu known, Costing.Domain.EndOfDay.EndOfDayReport endOfDay,
+        CancellationToken cancellationToken)
     {
         var day = await days.GetByDateAsync(date, cancellationToken);
         if (day is null)
@@ -5295,6 +5480,7 @@ internal sealed class ReceiveZReportHandler(
         if (dayReports.Count == 0)
         {
             day.Recorded(null, null);
+            endOfDay.SyncSalesFromPos(null, string.Empty, By);
             return (null, null, []);
         }
 
@@ -5337,34 +5523,14 @@ internal sealed class ReceiveZReportHandler(
             warnings.AddRange(await WithoutRecipesAsync(lines, known, cancellationToken));
         }
 
-        // The takings: the day's cash, card, tax and voids, every shift's together.
-        var cash = dayReports.Sum(r => r.Takings.Cash);
-        var card = dayReports.Sum(r => r.Takings.Card);
-        var tax = dayReports.Sum(r => r.Takings.Tax);
-        var voids = dayReports.Sum(r => r.Takings.VoidsAmount);
-        Guid? takingsId = null;
-        if (cash + card > 0)
-        {
-            var reasons = dayReports.SelectMany(r => r.Takings.VoidReasons ?? [])
-                .GroupBy(r => r.Reason.Trim(), StringComparer.OrdinalIgnoreCase)
-                .Select(g => $"{g.Key} ×{g.Sum(r => r.Count)} {g.Sum(r => r.Amount).ToString("N2", Invariant)}")
-                .ToList();
-            var notes = "From the POS" + (reasons.Count > 0 ? $" · voids: {string.Join("; ", reasons)}" : "");
-            if (notes.Length > SafeTransaction.MaxNotesLength)
-                notes = notes[..SafeTransaction.MaxNotesLength];
-            var entry = SafeTransaction.RevenueTransfer(
-                Guid.NewGuid(), cash, date, date, notes, By, null, null, await safe.PaidOutOfTakingsAsync(date, cancellationToken), card, tax, voids,
-                discounts, discountReasons);
-            safe.Add(entry);
-            takingsId = entry.Id;
-        }
-        else if (tax > 0)
-        {
+        // The end of day's sales report (section 6): the day's cash, card, tax, voids, floats and
+        // discounts, every shift's together, locked as the POS gave them. The takings go into the
+        // safe from it when the end of day is confirmed.
+        if (dayReports.Sum(r => r.Takings.Tax) > 0 && dayReports.Sum(r => r.Takings.Cash + r.Takings.Card) <= 0)
             throw new DomainException("Tax was collected on a day with no cash or card takings: check the Z report. · ضريبة بدون إيراد.");
-        }
-
-        day.Recorded(saleId, takingsId, discounts, discountReasons);
-        return (saleId, takingsId, warnings);
+        endOfDay.SyncSalesFromPos(PosDayFigures.Of(dayReports), PosDayFigures.Shifts(dayReports), By);
+        day.Recorded(saleId, null, discounts, discountReasons);
+        return (saleId, null, warnings);
     }
 
     // Each line on the menu, or the report refused naming every line that is not.
@@ -5456,18 +5622,19 @@ internal sealed class ReceiveZReportHandler(
     private async Task<SalesReceipt?> SaleAsync(Guid? id, CancellationToken cancellationToken) =>
         id is { } saleId ? await sales.GetByIdAsync(saleId, cancellationToken) : null;
 
-    private static ZReportResultDto Result(ZReportInput report, PosSyncOutcome outcome, Guid? saleId, Guid? takingsId, SalesReceipt? sale, IReadOnlyList<string> warnings) =>
+    private static ZReportResultDto Result(
+        ZReportInput report, PosSyncOutcome outcome, Guid? saleId, Guid? takingsId, SalesReceipt? sale, IReadOnlyList<string> warnings, Guid? endOfDayId) =>
         new(report.ZReportId, report.Date, outcome, saleId, takingsId,
             sale?.Lines.Count(l => l.OnBill) ?? 0, sale?.Lines.Where(l => l.OnBill).Sum(l => l.Quantity) ?? 0,
             sale?.Lines.Where(l => !l.OnBill).Sum(l => l.Quantity) ?? 0, sale?.BilledSubtotal ?? 0,
-            report.Takings.Cash, report.Takings.Card, report.Takings.Tax, warnings);
+            report.Takings.Cash, report.Takings.Card, report.Takings.Tax, warnings, endOfDayId);
 
     private static string Describe(ZReportResultDto r) => r.Outcome switch
     {
         PosSyncOutcome.Unchanged => $"Z report of {Day(r.Date)} sent again: nothing changed.",
         _ => $"Z report of {Day(r.Date)} {(r.Outcome == PosSyncOutcome.Updated ? "updated" : "recorded")}: {r.Quantity} sold of {r.Items} items" +
              (r.Wasted > 0 ? $", {r.Wasted} wasted" : "") +
-             $"; takings {r.Cash.ToString("N2", Invariant)} cash, {r.Card.ToString("N2", Invariant)} card, {r.Tax.ToString("N2", Invariant)} tax" +
+             $"; end of day's sales report {r.Cash.ToString("N2", Invariant)} cash, {r.Card.ToString("N2", Invariant)} card, {r.Tax.ToString("N2", Invariant)} tax" +
              (r.Warnings.Count > 0 ? $". {r.Warnings.Count} without a recipe." : "."),
     };
 
@@ -5506,12 +5673,30 @@ public static class PosEvents
                 .Where(r => r.Amount != 0 || r.Count != 0).ToList()
             : null;
 
+        // The till as the shift closed it: the float, the cash and card it took with their tax, what
+        // the drawer should have held and what was counted in it.
+        ZReportTill? till = null;
+        if (Child(data, "till") is { } drawer)
+            till = new ZReportTill(
+                Number(drawer, "openingFloat"),
+                Has(drawer, "cashCollected") ? Number(drawer, "cashCollected") : Number(takings, "cashTotal"),
+                Has(drawer, "cardCollected") ? Number(drawer, "cardCollected") : Number(takings, "cardTotal"),
+                Optional(drawer, "expectedCash"), Optional(drawer, "actualCountedCash"), Optional(drawer, "cashOverShort"),
+                Text(drawer, "closedBy"),
+                data.TryGetProperty("closedAtUtc", out var at) && at.ValueKind == JsonValueKind.String && at.TryGetDateTime(out var closed) ? closed : null,
+                Number(drawer, "paidOutOfDrawer"), Number(drawer, "creditInvoices"));
+
         return new ZReportInput(
             shiftId, date, data.TryGetProperty("shiftNumber", out var n) && n.ValueKind == JsonValueKind.Number ? n.GetInt32() : null,
             new ZReportTakings(Number(takings, "cash"), Number(takings, "card"), Number(takings, "tax"), before + Number(after, "amount"), reasons,
                 Number(takings, "discountsAmount"), discountReasons),
-            Items(data, "soldItems"), Items(data, "waste"));
+            Items(data, "soldItems"), Items(data, "waste"), till);
     }
+
+    private static bool Has(JsonElement element, string name) =>
+        element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Number;
+
+    private static decimal? Optional(JsonElement element, string name) => Has(element, name) ? element.GetProperty(name).GetDecimal() : null;
 
     // Lines of an item and size given once a channel (dine-in, takeaway, delivery, aggregators): one
     // line for the day, their quantities together.
@@ -5689,7 +5874,7 @@ internal sealed class PosSyncJournal(
 
 `PosIntegrationController`: `PosKeyFilter` (Action Filter يتحقق من المفتاح ويسجل الرفض بلا المفتاح نفسه)، ونماذج الطلب، و `PosIntegrationSettingsController` لصفحة الإعدادات.
 
-> 📄 **`backend/src/Costing.Api/Controllers/PosIntegrationController.cs`** — 206 سطر
+> 📄 **`backend/src/Costing.Api/Controllers/PosIntegrationController.cs`** — 208 سطر
 
 ```csharp
 using System.Text.Json;
@@ -5711,7 +5896,9 @@ namespace Costing.Api.Controllers;
 //   GET  ping       the link test
 //   GET  menu       the menu, for the POS to take as its own
 //   POST z-report   a shift's Z report
-//   POST events     the POS's own envelope; day.closed is a shift's Z report
+//   POST events     the POS's own envelope: day.closed is a shift's Z report; paid-out (an
+//                   expense, a driver's payout, a supplier payment, an advance) and credit-invoice
+//                   are the floor's documents, each into its day's end of day
 // No user signs in for these. A wrong key, or none, is refused and logged.
 [ApiController]
 [Route("api/integrations/pos")]
@@ -5753,18 +5940,18 @@ public sealed class PosIntegrationController(ISender sender, IPosSyncJournal jou
     public async Task<IActionResult> Event(JsonElement envelope, CancellationToken cancellationToken)
     {
         var kind = envelope.TryGetProperty("kind", out var k) && k.ValueKind == JsonValueKind.String ? k.GetString() : null;
-        // A paid-out from the drawer: into the end of day of its business day.
-        if (kind == PosPaidOutEvent.Kind && envelope.TryGetProperty("data", out var paidOut))
+        // A floor document (a paid-out from the drawer, a credit invoice): into the end of day of its business day.
+        if (kind is PosPaidOutEvent.Kind or PosPaidOutEvent.CreditInvoiceEvent && envelope.TryGetProperty("data", out var paidOut))
         {
             PosPaidOutInput input;
             try
             {
-                input = PosPaidOutEvent.Read(paidOut);
+                input = PosPaidOutEvent.Read(paidOut, kind);
             }
             catch (Exception ex) when (ex is DomainException or FormatException or InvalidOperationException)
             {
-                await journal.WriteAsync(new PosSyncLog("paid-out", PosSyncOutcome.Refused, "paid-out could not be read: " + ex.Message), cancellationToken);
-                return UnprocessableEntity(new { errors = new[] { "paid-out could not be read: " + ex.Message } });
+                await journal.WriteAsync(new PosSyncLog(kind, PosSyncOutcome.Refused, $"{kind} could not be read: " + ex.Message), cancellationToken);
+                return UnprocessableEntity(new { errors = new[] { $"{kind} could not be read: " + ex.Message } });
             }
             try
             {

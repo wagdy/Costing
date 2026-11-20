@@ -1481,9 +1481,9 @@ the answer is 401 and the call is logged.
 | --- | --- |
 | `GET /api/integrations/pos/ping` | The link test: `{ ok, system, company, atUtc }` |
 | `GET /api/integrations/pos/menu` | The menu: categories, items by their number (6101) with price and availability, sizes by their code (6101-17), add-ons (A3), and whether each has a recipe (`hasRecipe`) |
-| `GET /api/integrations/pos/suppliers` | The suppliers not archived, for an expense paid from the drawer: `[{ id, name, nameAr }]` |
+| `GET /api/integrations/pos/suppliers` | The suppliers not archived, for an expense, a credit invoice or a supplier payment at the till: `[{ id, name, nameAr }]` |
 | `POST /api/integrations/pos/z-report` | A shift's Z report (below) |
-| `POST /api/integrations/pos/events` | The POS's own event envelope (`{ id, kind, branchCode, occurredAtUtc, data }`): `day.closed` is read as a Z report, `paid-out` as a paid-out (below); any other kind is answered 202 and left |
+| `POST /api/integrations/pos/events` | The POS's own event envelope (`{ id, kind, branchCode, occurredAtUtc, data }`): `day.closed` is read as a Z report, `paid-out` and `credit-invoice` as the floor's documents (below); any other kind is answered 202 and left |
 
 A Z report:
 
@@ -1500,8 +1500,12 @@ A Z report:
 
 As a `day.closed` event the same report comes in the POS's own words: `soldItems` one line per
 item, size and channel (`{ itemCode, size, quantity, channel }`), which are added together here
-into one line an item; `waste`; and `takings` with `cash`, `card`, `tax`, `discountsAmount` and
-`discountReasons` (`[{ reason, count, amount }]`), and the voids before and after the kitchen.
+into one line an item; `waste`; `takings` with `cash`, `card`, `tax`, `discountsAmount` and
+`discountReasons` (`[{ reason, count, amount }]`), and the voids before and after the kitchen; and
+`till`, the drawer as the shift closed it: `openingFloat`, `cashCollected` and `cardCollected`
+(with their tax), `expectedCash`, `actualCountedCash`, `cashOverShort` and `closedBy` (with the
+POS's `cashSales`, `cardSales`, `taxCollected`, `voidsAndRefunds`, `discountsAndPromos`,
+`paidOutOfDrawer` and `creditInvoices` beside them).
 
 `zReportId` is the POS's id for the shift, the same each time it is sent. Cash and card are
 before tax, with the tax collected on them apart, as the day's takings are kept. An item is found
@@ -1518,21 +1522,32 @@ reason, amount, count }`. A combo is sold by its code, as any item.
   report, 422, naming every such line, and nothing is recorded. Each item sold takes its stock by
   its recipe (`Sale`); each wasted one is a line voided after the kitchen, its stock taken as waste
   (`Waste`), not charged. An item with no recipe is recorded and the answer warns of it.
-- **The day's takings in the safe** (توريد إيراد يومية): the cash and card before tax, the tax,
-  the voids and their reasons in the notes, and the discounts with their reasons (every shift's
-  together, each reason once), for that business day.
+- **The end of day's sales report** (section 6, *Daily sales report / revenue*), on that business
+  day's end of day (a draft is made for it if the day has none yet), every shift of the day added
+  together: the floats the drawers opened with, the cash and card before tax, the tax, the voids,
+  the discounts and their reasons (each reason once). With the till, the cash's own share of the tax
+  is the drawers' (what they took less the cash before tax), so *Net cash expected in till* is what
+  the drawers should hold to the piastre. The report is **locked** (below).
+- **No takings yet.** The takings go into the safe from that sales report when the accountant
+  confirms the end of day, once (below). A report made before this version put them in itself;
+  sent again, it reverses them, and the end of day puts them in on confirmation.
 - **The discounts on the sales summary too**: its lines are at the menu's prices, and the day's
   discounts come off them (`DiscountAmount`, with the reasons), never more than they come to (the
-  answer warns if they were; the takings keep all of them). The POS day keeps them as well.
+  answer warns if they were; the sales report keeps all of them). The POS day keeps them as well.
 - **All of it or none**: both are written in one save.
 - **Sent again as it was**: nothing changes (`Unchanged`). **Sent changed** (the shift corrected
-  on the POS): what it made is voided, the stock put back and the takings reversed, and the day
-  made again (`Updated`).
-- **A day's shifts together**: each day has one sales summary and one takings, made from all of
-  that day's reports; a second shift's report remakes the day with both.
+  on the POS): what it made is voided, the stock put back, and the day made again (`Updated`).
+- **A day's shifts together**: each day has one sales summary and one sales report, made from all
+  of that day's reports; a second shift's report remakes the day with both. The end of day keeps
+  each shift's own figures beside them (its float, cash, card, the cash expected and counted, over
+  or short, who closed it).
 - **A day entered by hand is left alone**: if its sales summary or its takings were entered here
   by hand (or by sheet), the report is refused, 422, naming which. Void them here to let the POS's
-  report in.
+  report in. Figures typed into the end of day's sales report before the POS sent any are replaced,
+  and its audit trail says so.
+- **A day confirmed is left alone**: once its end of day is handed in, a changed report (or a new
+  shift, or a document) for it is refused, 422, until a manager undoes the day; sent again as it
+  was, it is answered *unchanged*.
 - **A day in the books closed** (Settings → Period lock) is not written: the report is refused,
   **423 Locked**, with the lock's day, and the sync log shows it refused. Sent again unchanged, it
   is answered *unchanged* as before.
@@ -1540,38 +1555,80 @@ reason, amount, count }`. A combo is sold by its code, as any item.
   cannot be saved, the answer is 503 so the POS sends it again later.
 
 The answer says what was done: `{ zReportId, date, outcome, saleId, takingsId, items, quantity,
-wasted, salesValue, cash, card, tax, warnings }`.
+wasted, salesValue, cash, card, tax, warnings, endOfDayId }` (`takingsId` none until the day is
+confirmed).
 
-### A paid-out from the drawer (`paid-out`)
+### The floor's documents (`paid-out`, `credit-invoice`)
 
-The POS sends each expense and each staff advance its shift paid from the drawer, at the shift's
-close, ahead of its `day.closed`:
+The POS sends each document its floor recorded on the shift (**Paid out & Invoices · الصرف
+والفواتير**), at the shift's close, ahead of its `day.closed`, each into its section of the end of
+day:
+
+| `kind` | Event | Becomes | Section |
+| --- | --- | --- | --- |
+| `Expense` | `paid-out` | A cash invoice of `supplierId`, else the supplier of `supplierName`, else **POS petty cash · نثريات نقطة البيع** | 2 |
+| `Driver` | `paid-out` | A cash invoice of **Delivery drivers · سائقو التوصيل**, the driver (`driverName`) in its note | 2 |
+| `CreditInvoice` | `credit-invoice` | A credit invoice of its supplier, which is required | 3 |
+| `SupplierPayment` | `paid-out` | A cash payment to its supplier, which is required | 4 |
+| `StaffAdvance` | `paid-out` | An advance (`EmployeeAdvance`) to the staff member synced from HR's `employeeId`, else the one active staff member of `employeeName`; anyone else is refused, 422 | 5 |
 
 ```json
 {
   "paidOutId": "…", "shiftId": "…", "shiftNumber": 3, "businessDate": "2026-11-10",
-  "kind": "Expense", "amount": 80.0, "note": "Ice", "givenBy": "Mona",
-  "employeeId": null, "employeeName": null, "supplierId": "…", "supplierName": "Nile Farms",
-  "receipt": { "contentType": "image/jpeg", "fileName": "r.jpg", "base64": "…" }
+  "kind": "CreditInvoice", "amount": 1500.0, "note": "Vegetables", "givenBy": "Mona",
+  "employeeId": null, "employeeName": null, "driverName": null, "supplierId": "…", "supplierName": "Nile Farms",
+  "fromDrawer": false, "receipt": { "contentType": "image/jpeg", "fileName": "r.jpg", "base64": "…" }
 }
 ```
 
 - It goes on that business day's **end of day** (a draft is made for it if the day has none
   yet, ahead of the closing sequence), on the till's branch, under the POS's own id
-  (`paidOutId`): sent again, it is answered `Unchanged`.
-- **A staff advance** (`StaffAdvance`) is a payout to the employee (`EmployeeAdvance`): the staff
-  member synced from HR's `employeeId`, else the one active staff member of `employeeName`;
-  anyone else is refused, 422. With the HR link on, it goes on to HR as any advance does.
-- **An expense** (`Expense`) is a cash invoice from its supplier: `supplierId`, else the supplier
-  of `supplierName`, else **POS petty cash · نثريات نقطة البيع** (made the first time it is
-  needed).
-- **The photo** an end of day needs is the receipt the POS took (an image or a PDF); with none, a
+  (`paidOutId`), tagged **POS · shift n**: sent again, it is answered `Unchanged`. One the
+  accountant takes off here stays off when it is sent again (the audit trail keeps it).
+- A credit invoice or a supplier payment whose supplier Costing does not have, or has archived, is
+  refused, 422. A supplier payment is checked against what the supplier is owed when the day is
+  confirmed, as any payment on the end of day is.
+- **The photo** an end of day needs is the one the POS took (an image or a PDF); with none, a
   one-page PDF slip of what the POS recorded (the shift, who gave it, for what, how much).
 - A day already handed in (submitted), one at or before the last closed day, or one in a closed
   period is refused, 422 (or 423), and the POS shows it failed until it is sent again.
 
-The answer: `{ paidOutId, date, outcome, entry, entryId }`, `entry` being `advance` or
-`invoice`.
+The answer: `{ paidOutId, date, outcome, entry, message }`, `entry` being `cash invoice`,
+`credit invoice`, `supplier payment` or `advance`.
+
+### The end of day synced from the POS (Review & receive)
+
+With the POS linked, **End of the day** is the accountant's receiving and audit screen, not a form
+to type the till's documents into again:
+
+- **Synced from POS · مسحوب تلقائياً من نظام المبيعات (Shift 1, 2)**: a banner over the day with a
+  badge for each shift (who closed it, its float, cash, card, the cash counted, and over or short),
+  and a **POS** tag on every invoice and payment that came from the till.
+- **Sections 2 to 5** hold the till's documents, each with its photo: the accountant looks at them,
+  fixes a supplier, and adds a back-office invoice that never went through the till.
+- **Section 6 is locked** as the POS gave it. A manager's **Unlock / Manual override** opens it, with
+  why (required, written in the audit trail); the POS's own figures stay shown beside the manager's,
+  and **Lock to the POS again** puts them back. A shift sent while it is unlocked leaves the
+  manager's figures as they are. The notes stay the day's own.
+- **Net cash expected in till** is the floats plus the cash the drawers took, less the cash
+  invoices, the supplier payments and the advances (never a credit invoice, never the card), and it
+  is checked against the cash counted at the till, every shift together: *exact* in green, or
+  short or over by how much.
+- **Review & confirm · مراجعة وتأكيد**: the day is checked to be the next in order, as any day is;
+  a shift undone with the day must be sent again from the POS first. Then, in one save: the
+  takings go into the safe from section 6 (cash, card, tax, voids, discounts), once, recorded by the
+  accountant and noted *From the POS, shift 1, 2*; the supplier payments and advances go into the
+  safe out of them (each advance on to HR); and the daily batch of that date opens with every cash
+  and credit invoice, each with its photo, to post. The sales and their stock were recorded by the
+  Z reports already: confirming never records them again. Takings already in the safe for the day
+  are kept when they are what the report says, the POS's own made again when a manager corrected
+  the figures, and any others refused (one source).
+- **Undo & reopen day** reverses all of it as for any day (the takings, the POS's sales summary,
+  the posted invoices, the payments); the shifts are then sent again from the POS (**Past shifts →
+  Retry sync**, or **Send to Costing again**), and the day confirmed again.
+- **Without the POS** (no link, or a day it sent nothing for), the end of day is typed in and handed
+  in exactly as before, its takings entered on Financials.
+
 The tables are `PosLinks` (the key's hash), `PosZReports` (each report as last received, with
 its hash), `PosDays` (what the POS made of each day) and `PosSyncLogs`.
 

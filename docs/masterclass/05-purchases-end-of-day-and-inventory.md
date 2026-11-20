@@ -2696,7 +2696,7 @@ EndOfDaySequence.Check(date, lastClosed, today, lockedUntil):
 
 **لماذا `MoveTo` قبل الفواتير؟** في الاختبار ظهر أن محاولة مرفوضة (بلا سبب) غيّرت تاريخ الفاتورة قبل أن يُفحص السبب: EF لا يحفظها، لكن التحقق يجب أن يسبق أي تغيير. **ولماذا `AuditTrail` منفصل؟** الملاحظات يكتب فيها المستخدم ويمكنه مسح السطر؛ السجل لا يغيره أحد. وُسّعت الملاحظات (2000 لليوم، 1000 للفاتورة) لتتسع لأسطر التدقيق، وبقيت ملاحظة الدفعة 200. حذف اليوم الفارغ وتغيير تاريخ المسودة إلى نفس التاريخ (فهرس فريد على `Date`) في `SaveChanges` واحد: EF يرتب الحذف قبل التحديث، واختُبر على قاعدة حقيقية.
 
-> 📄 **`backend/src/Costing.Application/EndOfDay/EndOfDays.cs`** — 1010 سطر
+> 📄 **`backend/src/Costing.Application/EndOfDay/EndOfDays.cs`** — 1162 سطر
 
 ```csharp
 using System.Globalization;
@@ -2729,6 +2729,14 @@ namespace Costing.Application.EndOfDay;
 //
 // An advance is deducted from the employee's pay in the payroll month it is paid in, as every
 // advance out of the safe is.
+//
+// With the POS linked, the floor's documents come from the till (POS-synced review): its expenses
+// and drivers' payouts as cash invoices, its credit invoices, its supplier payments and advances,
+// each with its photo or a slip, and the day's sales report from its Z reports, every shift's
+// together, locked as the POS gave it (a manager unlocks it, with why, to correct it). The
+// accountant reviews, fixes a supplier, adds a back-office invoice, and confirms: the takings go into
+// the safe from the sales report then, once (the Z report never puts them there itself), the
+// payments and advances into the safe out of them, and the daily batch opens with the invoices.
 
 public sealed record EndOfDayPhotoDto(string FileName, string ContentType, int Bytes)
 {
@@ -2748,7 +2756,10 @@ public sealed record EndOfDayInvoiceDto(
     Guid? PurchaseInvoiceId,
     DateTime? PostedAtUtc,
     // The purchase order it delivers, when there was one: the batch receives it against it.
-    Guid? PurchaseOrderId = null);
+    Guid? PurchaseOrderId = null,
+    // Entered on the POS, and its shift.
+    bool FromPos = false,
+    int? PosShiftNumber = null);
 
 // Where a payment's safe entry is: none yet (the day not handed in), asked of a manager, in the
 // safe, or refused by a manager (it can then be taken off, and entered again).
@@ -2772,7 +2783,35 @@ public sealed record EndOfDayPayoutDto(
     EndOfDayPhotoDto Receipt,
     DateTime AddedAtUtc,
     EndOfDayVoucherState Voucher,
-    DateTime? VoucheredAtUtc);
+    DateTime? VoucheredAtUtc,
+    // Paid out at the POS, and its shift.
+    bool FromPos = false,
+    int? PosShiftNumber = null);
+
+// A shift the POS closed on the day, as its Z report gave it: its float, its sales before tax, tax,
+// voids and discounts, the cash it took with its tax, the cash its drawer should have held, what was
+// counted and the difference; Resend: undone with the day, to be sent again from the POS.
+public sealed record EndOfDayPosShiftDto(
+    Guid ShiftId, int? Number, decimal OpeningFloat, decimal Cash, decimal Card, decimal Tax, decimal Voids, decimal Discounts, decimal? CashCollected,
+    decimal? ExpectedCash, decimal? CountedCash, decimal? OverShort, string? ClosedBy, DateTime? ClosedAtUtc, DateTime ReceivedAtUtc, bool Resend);
+
+// What the POS sent for the day (Synced from POS): its shifts; whether the sales report is theirs
+// and locked; the POS's figures (as they stand, whatever a manager overrode); the override and why;
+// every drawer's counted cash together and its difference from what they should have held.
+public sealed record EndOfDayPosDto(
+    bool SalesFromPos,
+    bool SalesLocked,
+    string? Shifts,
+    IReadOnlyList<EndOfDayPosShiftDto> ShiftList,
+    PosSalesFigures? Figures,
+    string? OverriddenBy,
+    DateTime? OverriddenAtUtc,
+    string? OverrideNote,
+    decimal? CountedCash,
+    decimal? OverShort,
+    int Invoices,
+    int Payouts,
+    bool Resend);
 
 public sealed record EndOfDayDto(
     Guid Id,
@@ -2831,7 +2870,9 @@ public sealed record EndOfDayDto(
     // A day the restaurant did not trade, and why; what the system did to the day, a line each.
     bool IsClosedDay = false,
     string? ClosedDayReason = null,
-    string? AuditTrail = null);
+    string? AuditTrail = null,
+    // From the POS: none when nothing on the day came from it.
+    EndOfDayPosDto? Pos = null);
 
 // The days in their order (التسلسل الزمني): the last one closed and the one to close next (none
 // before the first is ever closed: any day up to today starts the sequence), today as the till
@@ -2890,6 +2931,19 @@ public sealed record SaveEndOfDaySalesCommand(
     DateOnly Date, decimal? CashAmount, decimal? CardAmount, decimal? TaxAmount, decimal? VoidsAmount, string? Notes, string StaffName = "",
     decimal? OpeningFloat = null, decimal? DiscountsAmount = null, IReadOnlyList<DiscountReason>? DiscountReasons = null)
     : IRequest<EndOfDayDto>, IBooksEntry
+{
+    IEnumerable<DateOnly?> IBooksEntry.BooksDays => [Date];
+}
+
+// A manager's (Unlock / Manual override): the sales report synced from the POS opened to correct
+// it, the note why required and kept on the day.
+public sealed record OverrideEndOfDaySalesCommand(DateOnly Date, string? Note, string StaffName = "") : IRequest<EndOfDayDto>, IBooksEntry
+{
+    IEnumerable<DateOnly?> IBooksEntry.BooksDays => [Date];
+}
+
+// A manager's: the sales report locked to the POS again, its figures back.
+public sealed record RelockEndOfDaySalesCommand(DateOnly Date, string StaffName = "") : IRequest<EndOfDayDto>, IBooksEntry
 {
     IEnumerable<DateOnly?> IBooksEntry.BooksDays => [Date];
 }
@@ -3022,9 +3076,77 @@ internal sealed class EndOfDayDays(
     TreasuryWriter treasury,
     IBooksLock books,
     Costing.Domain.Purchases.IPurchaseInvoiceRepository invoices,
-    ISalesReceiptRepository sales)
+    ISalesReceiptRepository sales,
+    Costing.Domain.Integrations.IPosZReportRepository zReports,
+    Costing.Domain.Integrations.IPosDayRepository posDays)
 {
     private static readonly CultureInfo Invariant = CultureInfo.InvariantCulture;
+
+    // The POS's Z reports of the day, as they were sent, and the shifts undone with it since.
+    public async Task<(IReadOnlyList<Costing.Application.Integrations.ZReportInput> Reports, IReadOnlyList<Costing.Domain.Integrations.PosZReport> Kept)> PosReportsAsync(
+        DateOnly date, CancellationToken cancellationToken)
+    {
+        var kept = await zReports.GetByDateAsync(date, cancellationToken);
+        return (kept.Select(Costing.Application.Integrations.PosDayFigures.Read).ToList(), kept);
+    }
+
+    // Confirmed with its sales report from the POS: the takings into the safe from it, once, dated
+    // the day, the payments out of them after. Takings there already are kept when they are what the
+    // report says (the POS's before, or typed in as they are), the POS's own made again when a
+    // manager corrected the figures, and any others refused: one source.
+    public async Task PosTakingsAsync(EndOfDayReport day, string by, CancellationToken cancellationToken)
+    {
+        var (reports, kept) = await PosReportsAsync(day.Date, cancellationToken);
+        if (kept.Any(r => r.PayloadHash.Length == 0))
+            throw new DomainException(
+                $"The POS's shift of {Day(day.Date)} was undone with the day: send it again from the POS (Past shifts → Retry sync), then confirm. " +
+                "· أعد إرسال الوردية من نظام المبيعات ثم أكد.");
+        if (day.NetSales <= 0)
+            return;
+        var posDay = await posDays.GetByDateAsync(day.Date, cancellationToken);
+        if (await safe.GetTakingsAsync(day.Date, cancellationToken) is { } there)
+        {
+            if (there.GrossAmount == day.CashAmount && there.CardAmount == (day.CardAmount ?? 0) && there.TaxAmount == (day.TaxAmount ?? 0))
+            {
+                posDay?.TakingsIn(there.Id);
+                return;
+            }
+            if (posDay?.TakingsId != there.Id)
+                throw new DomainException(
+                    $"The takings of {Day(day.Date)} were entered on Financials ({CompanyMoney.Text(there.TakingsTotal)}), not as the POS's sales report says: " +
+                    "void them in the safe, then confirm: the POS's go in with it. · إيراد هذا اليوم مُدخل يدويًا: ألغه من الخزنة.");
+            await treasury.VoidAsync(there, by, cancellationToken);
+        }
+        var entry = SafeTransaction.RevenueTransfer(
+            Guid.NewGuid(), day.CashAmount ?? 0, day.Date, day.Date,
+            Costing.Application.Integrations.PosDayFigures.TakingsNotes(reports, by, day.SalesOverriddenBy), by, null, null,
+            await safe.PaidOutOfTakingsAsync(day.Date, cancellationToken), day.CardAmount ?? 0, day.TaxAmount ?? 0, day.VoidsAmount ?? 0,
+            day.DiscountsAmount ?? 0, day.DiscountReasons);
+        safe.Add(entry);
+        posDay?.TakingsIn(entry.Id);
+    }
+
+    // The POS's part of the day as shown: none when nothing came from it.
+    private async Task<EndOfDayPosDto?> PosAsync(EndOfDayReport day, CancellationToken cancellationToken)
+    {
+        if (!day.FromPos)
+            return null;
+        var (reports, kept) = await PosReportsAsync(day.Date, cancellationToken);
+        var shifts = reports.Zip(kept).OrderBy(x => x.First.ShiftNumber).ThenBy(x => x.Second.ReceivedAtUtc).Select(x =>
+        {
+            var (r, k) = x;
+            return new EndOfDayPosShiftDto(
+                r.ZReportId, r.ShiftNumber, r.Till?.OpeningFloat ?? 0, r.Takings.Cash, r.Takings.Card, r.Takings.Tax, r.Takings.VoidsAmount,
+                r.Takings.DiscountsAmount, r.Till?.CashCollected, r.Till?.ExpectedCash, r.Till?.CountedCash, r.Till?.OverShort, r.Till?.ClosedBy,
+                r.Till?.ClosedAtUtc, k.ReceivedAtUtc, k.PayloadHash.Length == 0);
+        }).ToList();
+        var counted = shifts.Count > 0 && shifts.All(x => x.CountedCash is not null) ? shifts.Sum(x => x.CountedCash!.Value) : (decimal?)null;
+        var overShort = shifts.Count > 0 && shifts.All(x => x.OverShort is not null) ? shifts.Sum(x => x.OverShort!.Value) : (decimal?)null;
+        return new EndOfDayPosDto(
+            day.SalesFromPos, day.SalesLocked, day.PosShifts, shifts, Costing.Application.Integrations.PosDayFigures.Of(reports), day.SalesOverriddenBy,
+            day.SalesOverriddenAtUtc, day.SalesOverrideNote, counted, overShort, day.Invoices.Count(i => i.FromPos), day.Payouts.Count(p => p.FromPos),
+            shifts.Any(x => x.Resend));
+    }
 
     // Cash handed out with no one named, older than this, is said before a day is closed.
     public static readonly TimeSpan CustodyAge = TimeSpan.FromHours(48);
@@ -3258,14 +3380,14 @@ internal sealed class EndOfDayDays(
                     : staff.GetValueOrDefault(p.PayeeId, "A removed employee");
                 payouts.Add(new EndOfDayPayoutDto(
                     p.Id, p.Kind, p.SupplierId, p.EmployeeId, payee, p.Amount, p.Note, EndOfDayPhotoDto.From(p.Receipt)!, p.AddedAtUtc,
-                    await VoucherStateAsync(p, cancellationToken), p.VoucheredAtUtc));
+                    await VoucherStateAsync(p, cancellationToken), p.VoucheredAtUtc, p.FromPos, p.PosShiftNumber));
             }
             dtos.Add(new EndOfDayDto(
                 day.Id, day.Date, day.Status, day.CashAmount, day.CardAmount, day.TaxAmount, day.VoidsAmount, day.Notes,
                 EndOfDayPhotoDto.From(day.SalesPhoto),
                 day.Invoices.Select(i => new EndOfDayInvoiceDto(
                     i.Id, i.Kind, i.SupplierId, names.GetValueOrDefault(i.SupplierId, "A removed supplier"), i.ReportedTotal, i.Note,
-                    EndOfDayPhotoDto.From(i.Photo)!, i.AddedAtUtc, i.PurchaseInvoiceId, i.PostedAtUtc, i.PurchaseOrderId)).ToList(),
+                    EndOfDayPhotoDto.From(i.Photo)!, i.AddedAtUtc, i.PurchaseInvoiceId, i.PostedAtUtc, i.PurchaseOrderId, i.FromPos, i.PosShiftNumber)).ToList(),
                 day.CountOf(EndOfDayInvoiceKind.Cash), day.TotalOf(EndOfDayInvoiceKind.Cash),
                 day.CountOf(EndOfDayInvoiceKind.Credit), day.TotalOf(EndOfDayInvoiceKind.Credit),
                 day.NetSales, day.TotalRevenue, day.CashAfterInvoices, day.ExpectedIntoSafe,
@@ -3275,7 +3397,7 @@ internal sealed class EndOfDayDays(
                 day.CountOf(EndOfDayPayoutKind.SupplierPayment), day.TotalOf(EndOfDayPayoutKind.SupplierPayment),
                 day.CountOf(EndOfDayPayoutKind.EmployeeAdvance), day.TotalOf(EndOfDayPayoutKind.EmployeeAdvance),
                 day.CashTax, day.CashSalesCollected, day.CashPaidOut, day.NetCashInTill, day.DiscountsAmount, day.DiscountReasons.ToList(),
-                day.ReopenReason, null, day.IsClosedDay, day.ClosedDayReason, day.AuditTrail));
+                day.ReopenReason, null, day.IsClosedDay, day.ClosedDayReason, day.AuditTrail, await PosAsync(day, cancellationToken)));
         }
         return dtos;
     }
@@ -3308,6 +3430,32 @@ internal sealed class SaveEndOfDaySalesCommandHandler(EndOfDayDays shared, IUnit
         day.RecordSales(
             request.CashAmount, request.CardAmount, request.TaxAmount, request.VoidsAmount, request.Notes, request.StaffName, request.OpeningFloat,
             request.DiscountsAmount, request.DiscountReasons);
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+        return await shared.DtoAsync(day, cancellationToken);
+    }
+}
+
+internal sealed class OverrideEndOfDaySalesCommandHandler(EndOfDayDays shared, IUnitOfWork unitOfWork)
+    : IRequestHandler<OverrideEndOfDaySalesCommand, EndOfDayDto>
+{
+    public async Task<EndOfDayDto> Handle(OverrideEndOfDaySalesCommand request, CancellationToken cancellationToken)
+    {
+        var day = await shared.GetAsync(request.Date, cancellationToken);
+        day.OverrideSales(request.StaffName, request.Note);
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+        return await shared.DtoAsync(day, cancellationToken);
+    }
+}
+
+internal sealed class RelockEndOfDaySalesCommandHandler(EndOfDayDays shared, IUnitOfWork unitOfWork)
+    : IRequestHandler<RelockEndOfDaySalesCommand, EndOfDayDto>
+{
+    public async Task<EndOfDayDto> Handle(RelockEndOfDaySalesCommand request, CancellationToken cancellationToken)
+    {
+        var day = await shared.GetAsync(request.Date, cancellationToken);
+        var (reports, _) = await shared.PosReportsAsync(day.Date, cancellationToken);
+        day.RelockSales(Costing.Application.Integrations.PosDayFigures.Of(reports)
+            ?? throw new DomainException("The POS has sent no shift for this day: there is nothing to lock it to. · لا توجد ورديات."), request.StaffName);
         await unitOfWork.SaveChangesAsync(cancellationToken);
         return await shared.DtoAsync(day, cancellationToken);
     }
@@ -3417,6 +3565,10 @@ internal sealed class SubmitEndOfDayCommandHandler(EndOfDayDays shared, IUnitOfW
             await shared.EnsureNothingSoldAsync(day.Date, "enter the day's sales report instead of closing it with none", cancellationToken);
         var warnings = await shared.WarningsAsync(day.Date, cancellationToken);
         day.Submit(request.StaffName, request.ZeroSales);
+        // Synced from the POS: its takings into the safe from the sales report, first, so the day's
+        // payments come out of them.
+        if (day.SalesFromPos)
+            await shared.PosTakingsAsync(day, request.StaffName, cancellationToken);
         await shared.VoucherPayoutsAsync(day, request.StaffId, request.StaffName, request.CanApprove, cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
         return await shared.DtoAsync(day, cancellationToken) with { Warnings = warnings };
@@ -3714,7 +3866,7 @@ internal sealed class GetEndOfDayPhotoQueryHandler(IEndOfDayRepository days, IEn
 
 `EndOfDayController`: `multipart/form-data` لإضافة البنود بصورها، و `GET {date}` يعيد 204 إن لم يوجد يوم، والقراءة لأقسام عدة (`Readers`) والتعديل لقسم تقفيل اليوم، و `GET sequence` للقراء، وإلغاء آخر يوم (`void-last`) بصلاحية القرار. وفي `FinancialsController`: `PUT books-lock` للمدير.
 
-> 📄 **`backend/src/Costing.Api/Controllers/EndOfDayController.cs`** — 296 سطر
+> 📄 **`backend/src/Costing.Api/Controllers/EndOfDayController.cs`** — 313 سطر
 
 ```csharp
 using System.Globalization;
@@ -3770,6 +3922,21 @@ public sealed class EndOfDayController(ISender sender) : ControllerBase
         sender.Send(new SaveEndOfDaySalesCommand(
             date, request.CashAmount, request.CardAmount, request.TaxAmount, request.VoidsAmount, request.Notes, StaffName, request.OpeningFloat,
             request.DiscountsAmount, request.DiscountReasons), cancellationToken);
+
+    // A manager's (Unlock / Manual override): the sales report synced from the POS opened to be
+    // corrected, the note why required (kept on the day's audit trail).
+    [HttpPost("{date}/sales/unlock")]
+    [CostingTab(CostingTabs.EndOfDay)]
+    [Authorize(Policy = Permissions.ApprovalDecide)]
+    public Task<EndOfDayDto> UnlockSales(DateOnly date, UnlockEndOfDaySalesRequest request, CancellationToken cancellationToken) =>
+        sender.Send(new OverrideEndOfDaySalesCommand(date, request.Note, StaffName), cancellationToken);
+
+    // A manager's: locked to the POS's figures again.
+    [HttpPost("{date}/sales/relock")]
+    [CostingTab(CostingTabs.EndOfDay)]
+    [Authorize(Policy = Permissions.ApprovalDecide)]
+    public Task<EndOfDayDto> RelockSales(DateOnly date, CancellationToken cancellationToken) =>
+        sender.Send(new RelockEndOfDaySalesCommand(date, StaffName), cancellationToken);
 
     // An invoice handed in, with its photo: a form of invoiceId (made by the till), kind (Cash or
     // Credit), supplierId, reportedTotal, note and file.
@@ -3991,6 +4158,8 @@ public sealed class EndOfDayPayoutForm
 }
 
 public sealed record SubmitEndOfDayRequest(bool ZeroSales = false);
+
+public sealed record UnlockEndOfDaySalesRequest(string? Note);
 
 public sealed record MarkClosedDayRequest(DateOnly TargetDate, string? Reason);
 

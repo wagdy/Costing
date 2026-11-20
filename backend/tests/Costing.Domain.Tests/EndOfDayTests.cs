@@ -210,4 +210,65 @@ public class EndOfDayTests
         day.Submit("Ali", zeroSales: true);
         Assert.Equal((EndOfDayStatus.Submitted, 0m), (day.Status, day.NetSales));
     }
+
+    private static PosSalesFigures Pos(decimal cash, decimal card, decimal tax, decimal openingFloat, decimal? cashTax = null) =>
+        new(cash, card, tax, 0, openingFloat, 50, [new Costing.Domain.Sales.DiscountReason("Loyalty", 50, 1)], cashTax);
+
+    // Synced from the POS: the sales report is its, locked (the notes the day's own); the cash's tax
+    // as the drawer took it; typed figures before it are replaced, and the trail says so.
+    [Fact]
+    public void Synced_from_the_POS_its_sales_report_is_locked_and_the_till_is_the_drawers_to_the_piastre()
+    {
+        var day = new EndOfDayReport(Guid.NewGuid(), Day, "Ali");
+        day.RecordSales(10, 0, 0, 0, null, "Ali");
+        day.SyncSalesFromPos(Pos(877.19m, 200, 150.81m, 500, cashTax: 122.81m), "1", "POS");
+
+        Assert.Equal((true, true, "1"), (day.SalesFromPos, day.SalesLocked, day.PosShifts));
+        // 877.19 before tax and its own 122.81: the 1,000.00 the drawer took, not a proportional share.
+        Assert.Equal((122.81m, 1000m, 1500m), (day.CashTax, day.CashSalesCollected, day.NetCashInTill));
+        Assert.Contains("over the figures typed by Ali", day.AuditTrail);
+        Assert.Contains("synced from the POS", Assert.Throws<DomainException>(() => day.RecordSales(900, 200, 150.81m, 0, null, "Ali", 500, 50)).Message);
+        day.RecordSales(877.19m, 200, 150.81m, null, "Busy", "Ali", 500, 50);
+        Assert.Equal(("Busy", 877.19m), (day.Notes, day.CashAmount!.Value));
+
+        // Its paid-outs from the POS move nothing to another date.
+        Assert.Contains("came from the POS", Assert.Throws<DomainException>(() => day.MoveTo(Day.AddDays(1), "Boss", "Wrong date")).Message);
+    }
+
+    [Fact]
+    public void A_manager_unlocks_the_POS_figures_with_why_and_locks_them_again()
+    {
+        var day = new EndOfDayReport(Guid.NewGuid(), Day, "Ali");
+        Assert.Throws<DomainException>(() => day.OverrideSales("Boss", "Typed in here"));
+        day.SyncSalesFromPos(Pos(1000, 0, 0, 500, cashTax: 0), "1, 2", "POS");
+        Assert.Contains("why", Assert.Throws<DomainException>(() => day.OverrideSales("Boss", "  ")).Message);
+
+        day.OverrideSales("Boss", "Cashier rang a void as cash");
+        day.RecordSales(950, 0, 0, 0, null, "Boss", 500, 50);
+        Assert.Equal((false, 950m, 1450m), (day.SalesLocked, day.CashAmount!.Value, day.NetCashInTill));
+        // A shift sent again while unlocked leaves the manager's figures as they are.
+        day.SyncSalesFromPos(Pos(1000, 0, 0, 500, cashTax: 0), "1, 2", "POS");
+        Assert.Equal(950m, day.CashAmount!.Value);
+
+        day.RelockSales(Pos(1000, 0, 0, 500, cashTax: 0), "Boss");
+        Assert.Equal((true, 1000m, (string?)null), (day.SalesLocked, day.CashAmount!.Value, day.SalesOverriddenBy));
+        Assert.Contains("unlocked from the POS by Boss: Cashier rang a void as cash", day.AuditTrail);
+        Assert.Contains("locked to the POS again by Boss", day.AuditTrail);
+    }
+
+    [Fact]
+    public void A_POS_document_taken_off_is_written_down_so_it_stays_off()
+    {
+        var day = new EndOfDayReport(Guid.NewGuid(), Day, "POS");
+        var fromTill = day.AddInvoice(Guid.NewGuid(), EndOfDayInvoiceKind.Cash, Guid.NewGuid(), 40, null, Photo, "POS", pos: new PosSource(3));
+        var byHand = day.AddInvoice(Guid.NewGuid(), EndOfDayInvoiceKind.Credit, Guid.NewGuid(), 90, null, Photo, "Ali");
+        Assert.Equal((true, (int?)3, false), (fromTill.FromPos, fromTill.PosShiftNumber, byHand.FromPos));
+        Assert.True(day.FromPos);
+
+        day.RemoveInvoice(fromTill.Id, "Ali");
+        day.RemoveInvoice(byHand.Id, "Ali");
+        Assert.True(day.WasTakenOff(fromTill.Id));
+        Assert.False(day.WasTakenOff(byHand.Id));
+        Assert.Contains("POS cash invoice of 40.00 (shift 3) taken off by Ali", day.AuditTrail);
+    }
 }

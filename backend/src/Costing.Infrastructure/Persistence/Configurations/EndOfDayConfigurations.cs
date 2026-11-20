@@ -20,6 +20,13 @@ internal sealed class EndOfDayReportConfiguration : IEntityTypeConfiguration<End
         builder.Property(d => d.DiscountsAmount).HasPrecision(18, 2);
         builder.HasDiscountReasons();
         builder.Property(d => d.OpeningFloat).HasPrecision(18, 2);
+        // From the POS: its shifts, the cash's own tax, and a manager's override of its figures.
+        builder.Property(d => d.PosShifts).HasMaxLength(200);
+        builder.Property(d => d.CashTaxAmount).HasPrecision(18, 2);
+        builder.Property(d => d.SalesOverriddenBy).HasMaxLength(200);
+        builder.Property(d => d.SalesOverrideNote).HasMaxLength(EndOfDayReport.MaxAuditReason);
+        builder.Ignore(d => d.SalesLocked);
+        builder.Ignore(d => d.FromPos);
         builder.Property(d => d.Notes).HasMaxLength(EndOfDayReport.MaxDayNotes);
         builder.Property(d => d.ClosedDayReason).HasMaxLength(EndOfDayReport.MaxAuditReason);
         builder.Property(d => d.SalesPhotoFileName).HasMaxLength(200);

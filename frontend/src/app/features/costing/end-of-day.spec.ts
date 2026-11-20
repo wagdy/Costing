@@ -20,7 +20,7 @@ import { Employee } from '../../core/costing/staff';
 import { NotifyService } from '../../core/ui/notify.service';
 import { Approvals } from './approvals';
 import { EndOfDayPage, EndOfDaySummaryDialog, EndOfDayZeroSalesDialog, EodInvoiceForm } from './end-of-day-page';
-import { ClosedDayDialog, ReassignDateDialog } from './end-of-day-reasons';
+import { ClosedDayDialog, ReassignDateDialog, SalesOverrideDialog } from './end-of-day-reasons';
 import { EndOfDayUndo } from './end-of-day-undo';
 import { EodPayoutForm } from './end-of-day-payouts';
 import { HrStaffApi } from '../../core/costing/hr-staff.api';
@@ -116,6 +116,8 @@ describe('the end of the day', () => {
     changePayout: vi.fn(),
     replacePayoutReceipt: vi.fn(),
     removePayout: vi.fn(),
+    unlockSales: vi.fn(),
+    relockSales: vi.fn(),
   };
   const open = vi.fn();
   const enter = vi.fn();
@@ -729,5 +731,91 @@ describe('the end of the day', () => {
       'Net cash expected in till الصافي الفعلي المتبقي في الكاشcount the drawer against this: the Visa is not in itL.E 4,340.00',
     ]);
     expect([...el.querySelectorAll('button')].map(text)).toEqual(['Back · رجوع', 'task_alt Confirm & submit · تأكيد وإرسال التقفيل']);
+  });
+
+  // A day the POS filled in: five documents and one shift's till, 1,100 left in the drawer.
+  function posDay(over: Partial<EndOfDay> = {}, locked = true): EndOfDay {
+    const pos = { fromPos: true, posShiftNumber: 1 };
+    return day({
+      invoices: [handedIn('p1', 'Cash', nile, 300, pos), handedIn('p2', 'Credit', nile, 1_500, pos)],
+      payouts: [paidOut('p3', 'SupplierPayment', 'nile', 200, pos), paidOut('p4', 'EmployeeAdvance', 'mona', 100, pos)],
+      cashAmount: 1_200, cardAmount: 800, taxAmount: 0, voidsAmount: 0, openingFloat: 500, discountsAmount: 100,
+      pos: {
+        salesFromPos: true, salesLocked: locked, shifts: '1',
+        shiftList: [{
+          shiftId: 's1', number: 1, openingFloat: 500, cash: 1_200, card: 800, tax: 0, voids: 0, discounts: 100, cashCollected: 1_200, expectedCash: 1_100,
+          countedCash: 1_100, overShort: 0, closedBy: 'Mona', closedAtUtc: '2026-11-04T22:00:00Z', receivedAtUtc: '2026-11-04T22:00:05Z', resend: false,
+        }],
+        figures: { cash: 1_200, card: 800, tax: 0, voids: 0, openingFloat: 500, discounts: 100, discountReasons: [], cashTax: 0 },
+        overriddenBy: locked ? null : 'Boss', overriddenAtUtc: null, overrideNote: locked ? null : 'Card machine double-charged',
+        countedCash: 1_100, overShort: 0, invoices: 2, payouts: 2, resend: false,
+      },
+      ...over,
+    });
+  }
+
+  it('shows a day synced from the POS: its shifts, each document tagged, its sales report locked and the drawer counted against the cash expected', async () => {
+    api.day.mockReturnValue(of(posDay()));
+    const { el } = await render();
+
+    const banner = el.querySelector('.pos-banner')!;
+    expect(text(banner.querySelector('strong')!)).toBe('Synced from POS · مسحوب تلقائياً من نظام المبيعات (Shift 1)');
+    expect([...banner.querySelector('.shift-badge')!.children].map(text)).toEqual(
+      ['Shift 1', 'Mona', 'float L.E 500.00', 'cash L.E 1,200.00', 'card L.E 800.00', 'counted L.E 1,100.00', 'exact · مطابق']);
+    expect([...el.querySelectorAll('article .tag.pos')].map(text)).toEqual(['POS · shift 1', 'POS · shift 1', 'POS · shift 1', 'POS · shift 1']);
+    // Section 6 locked as the POS gave it, the notes still the day's own; no unlock but a manager's.
+    expect(text(el.querySelector('section[aria-label="Daily sales report"] h3 .tag.pos')!)).toBe('lock Synced from POSمن نظام المبيعات');
+    for (const label of ['Opening float', 'Cash', 'Visa', 'Tax', 'Voids', 'Discounts and promos']) {
+      expect(el.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`)!.disabled).toBe(true);
+    }
+    expect(el.querySelector<HTMLTextAreaElement>('textarea[aria-label="Sales notes"]')!.disabled).toBe(false);
+    expect([...el.querySelectorAll('button')].some((b) => text(b).includes('Unlock'))).toBe(false);
+    // 500 + 1,200 − 300 − 200 − 100, the credit invoice not in it: as counted, exactly.
+    const till = el.querySelector('section.till')!;
+    expect(text(till.querySelector('.till-net')!)).toBe('L.E 1,100.00');
+    expect(till.classList.contains('off')).toBe(false);
+    expect(text(till.querySelector('.counted')!)).toBe('verified Counted at the till: L.E 1,100.00 · exact · مطابق');
+  });
+
+  it('lets a manager unlock the POS’s figures only with why, and lock them to the POS again', async () => {
+    manager = true;
+    api.day.mockReturnValue(of(posDay()));
+    open.mockReturnValue({ afterClosed: () => of('Card machine double-charged') });
+    api.unlockSales.mockReturnValue(of(posDay({}, false)));
+    const { fixture, el } = await render();
+
+    [...el.querySelectorAll('button')].find((b) => text(b).includes('Unlock / Manual override'))!.click();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+
+    expect(open.mock.lastCall![0]).toBe(SalesOverrideDialog);
+    expect(open.mock.lastCall![1].data).toEqual({ date: '2026-11-04', shifts: '1' });
+    expect(api.unlockSales).toHaveBeenCalledWith('2026-11-04', 'Card machine double-charged');
+    expect(el.querySelector<HTMLInputElement>('input[aria-label="Cash"]')!.disabled).toBe(false);
+    expect(text(el.querySelector('.pos-lock.unlocked')!)).toContain('Unlocked by Boss: Card machine double-charged.');
+
+    api.relockSales.mockReturnValue(of(posDay()));
+    [...el.querySelectorAll('button')].find((b) => text(b).includes('Lock to the POS again'))!.click();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(api.relockSales).toHaveBeenCalledWith('2026-11-04');
+  });
+
+  it('asks why before it unlocks the POS’s figures, and gives nothing back without it', () => {
+    const close = vi.fn();
+    TestBed.configureTestingModule({
+      providers: [{ provide: MAT_DIALOG_DATA, useValue: { date: '2026-11-04', shifts: '1, 2' } }, { provide: MatDialogRef, useValue: { close } }],
+    });
+    const fixture = TestBed.createComponent(SalesOverrideDialog);
+    fixture.detectChanges();
+    const dialog = fixture.componentInstance as unknown as Record<string, any>;
+    dialog['note'] = '  ';
+    dialog['done']();
+    expect(close).not.toHaveBeenCalled();
+    dialog['note'] = ' Card machine double-charged ';
+    dialog['done']();
+    expect(close).toHaveBeenCalledWith('Card machine double-charged');
   });
 });

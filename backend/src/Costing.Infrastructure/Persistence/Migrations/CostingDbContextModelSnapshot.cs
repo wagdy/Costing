@@ -350,6 +350,9 @@ namespace Costing.Infrastructure.Persistence.Migrations
                     b.Property<DateTime>("AddedAtUtc")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<bool>("FromPos")
+                        .HasColumnType("boolean");
+
                     b.Property<string>("Kind")
                         .IsRequired()
                         .HasMaxLength(32)
@@ -371,6 +374,9 @@ namespace Costing.Infrastructure.Persistence.Migrations
                         .IsRequired()
                         .HasMaxLength(200)
                         .HasColumnType("character varying(200)");
+
+                    b.Property<int?>("PosShiftNumber")
+                        .HasColumnType("integer");
 
                     b.Property<DateTime?>("PostedAtUtc")
                         .HasColumnType("timestamp with time zone");
@@ -420,6 +426,9 @@ namespace Costing.Infrastructure.Persistence.Migrations
                     b.Property<Guid?>("EmployeeId")
                         .HasColumnType("uuid");
 
+                    b.Property<bool>("FromPos")
+                        .HasColumnType("boolean");
+
                     b.Property<string>("Kind")
                         .IsRequired()
                         .HasMaxLength(32)
@@ -428,6 +437,9 @@ namespace Costing.Infrastructure.Persistence.Migrations
                     b.Property<string>("Note")
                         .HasMaxLength(200)
                         .HasColumnType("character varying(200)");
+
+                    b.Property<int?>("PosShiftNumber")
+                        .HasColumnType("integer");
 
                     b.Property<int>("ReceiptBytes")
                         .HasColumnType("integer");
@@ -489,6 +501,10 @@ namespace Costing.Infrastructure.Persistence.Migrations
                         .HasPrecision(18, 2)
                         .HasColumnType("numeric(18,2)");
 
+                    b.Property<decimal?>("CashTaxAmount")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)");
+
                     b.Property<string>("ClosedDayReason")
                         .HasMaxLength(300)
                         .HasColumnType("character varying(300)");
@@ -519,6 +535,10 @@ namespace Costing.Infrastructure.Persistence.Migrations
                         .HasPrecision(18, 2)
                         .HasColumnType("numeric(18,2)");
 
+                    b.Property<string>("PosShifts")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
                     b.Property<string>("ReopenReason")
                         .HasMaxLength(500)
                         .HasColumnType("character varying(500)");
@@ -529,6 +549,20 @@ namespace Costing.Infrastructure.Persistence.Migrations
                     b.Property<string>("ReopenedBy")
                         .HasMaxLength(200)
                         .HasColumnType("character varying(200)");
+
+                    b.Property<bool>("SalesFromPos")
+                        .HasColumnType("boolean");
+
+                    b.Property<DateTime?>("SalesOverriddenAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("SalesOverriddenBy")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<string>("SalesOverrideNote")
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
 
                     b.Property<int?>("SalesPhotoBytes")
                         .HasColumnType("integer");

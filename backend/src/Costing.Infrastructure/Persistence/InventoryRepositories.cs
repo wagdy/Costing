@@ -261,10 +261,16 @@ internal sealed class SafeTransactionRepository(CostingDbContext db, Costing.App
             .Where(t => t.Fund == CashFund.Safe && (through == null || t.BusinessDate <= through))
             .SumAsync(t => t.Amount, cancellationToken);
 
-    // Tracked: voiding it marks it. The branch worked in's: each branch's Z report is its own.
+    // Tracked: voiding it marks it. The branch worked in's: each branch's Z report is its own. Those
+    // entered in this unit of work count (a day confirmed puts its takings in, then its payments
+    // out of them), given the branch as they are saved.
     public async Task<SafeTransaction?> GetTakingsAsync(DateOnly revenueDate, CancellationToken cancellationToken = default)
     {
         var here = await branch.BranchIdAsync(cancellationToken);
+        if (db.ChangeTracker.Entries<SafeTransaction>().FirstOrDefault(e => e.State == EntityState.Added
+                && e.Entity is { Kind: SafeTransactionKind.RevenueTransfer, ReversalOf: null, VoidedAtUtc: null } t && t.RevenueDate == revenueDate
+                && (t.BranchId == here || t.BranchId == Guid.Empty)) is { } added)
+            return added.Entity;
         return await db.SafeTransactions.FirstOrDefaultAsync(
             t => t.Kind == SafeTransactionKind.RevenueTransfer && t.RevenueDate == revenueDate && t.ReversalOf == null && t.VoidedAtUtc == null
                 && t.BranchId == here,

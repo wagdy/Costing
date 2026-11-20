@@ -17,7 +17,9 @@ namespace Costing.Api.Controllers;
 //   GET  ping       the link test
 //   GET  menu       the menu, for the POS to take as its own
 //   POST z-report   a shift's Z report
-//   POST events     the POS's own envelope; day.closed is a shift's Z report
+//   POST events     the POS's own envelope: day.closed is a shift's Z report; paid-out (an
+//                   expense, a driver's payout, a supplier payment, an advance) and credit-invoice
+//                   are the floor's documents, each into its day's end of day
 // No user signs in for these. A wrong key, or none, is refused and logged.
 [ApiController]
 [Route("api/integrations/pos")]
@@ -59,18 +61,18 @@ public sealed class PosIntegrationController(ISender sender, IPosSyncJournal jou
     public async Task<IActionResult> Event(JsonElement envelope, CancellationToken cancellationToken)
     {
         var kind = envelope.TryGetProperty("kind", out var k) && k.ValueKind == JsonValueKind.String ? k.GetString() : null;
-        // A paid-out from the drawer: into the end of day of its business day.
-        if (kind == PosPaidOutEvent.Kind && envelope.TryGetProperty("data", out var paidOut))
+        // A floor document (a paid-out from the drawer, a credit invoice): into the end of day of its business day.
+        if (kind is PosPaidOutEvent.Kind or PosPaidOutEvent.CreditInvoiceEvent && envelope.TryGetProperty("data", out var paidOut))
         {
             PosPaidOutInput input;
             try
             {
-                input = PosPaidOutEvent.Read(paidOut);
+                input = PosPaidOutEvent.Read(paidOut, kind);
             }
             catch (Exception ex) when (ex is DomainException or FormatException or InvalidOperationException)
             {
-                await journal.WriteAsync(new PosSyncLog("paid-out", PosSyncOutcome.Refused, "paid-out could not be read: " + ex.Message), cancellationToken);
-                return UnprocessableEntity(new { errors = new[] { "paid-out could not be read: " + ex.Message } });
+                await journal.WriteAsync(new PosSyncLog(kind, PosSyncOutcome.Refused, $"{kind} could not be read: " + ex.Message), cancellationToken);
+                return UnprocessableEntity(new { errors = new[] { $"{kind} could not be read: " + ex.Message } });
             }
             try
             {

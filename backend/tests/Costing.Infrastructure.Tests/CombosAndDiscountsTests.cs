@@ -112,7 +112,13 @@ public class CombosAndDiscountsTests
         Assert.Empty(result.Warnings);
         Assert.Equal(10_000m - 7 * 250m, await OnHand(node, k.Dough));
 
-        var takings = await node.Db(db => db.SafeTransactions.SingleAsync(t => t.Id == result.TakingsId));
+        // On the end of day's sales report, both shifts together; in the safe once it is confirmed.
+        Assert.Null(result.TakingsId);
+        var handedIn = await node.Send(new Costing.Application.EndOfDay.GetEndOfDayQuery(today));
+        Assert.Equal((650m, 100m, 120m, true), (handedIn!.CashAmount!.Value, handedIn.CardAmount!.Value, handedIn.DiscountsAmount!.Value, handedIn.Pos!.SalesLocked));
+        await node.Send(new Costing.Application.EndOfDay.SubmitEndOfDayCommand(today, "Omar", "staff-omar", CanApprove: true));
+        var posDay = await node.Db(db => db.PosDays.SingleAsync(d => d.Date == today));
+        var takings = await node.Db(db => db.SafeTransactions.SingleAsync(t => t.Id == posDay.TakingsId));
         Assert.Equal((750m, 120m), (takings.NetAmount, takings.DiscountsAmount));
         Assert.Equal([new DiscountReason("Loyalty", 80, 2), new DiscountReason("Staff", 40, 1)], takings.DiscountReasons);
         var summary = await node.Db(db => db.SalesReceipts.SingleAsync(r => r.Id == result.SaleId));

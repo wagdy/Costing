@@ -75,6 +75,9 @@ public class CombosAndDiscountsApiTests
             soldItems = new[] { new { itemCode = 9001, quantitySold = 2 } },
         }, Cancel));
         Assert.Equal("Recorded", report.GetProperty("outcome").GetString());
+        // On the end of day, locked as the POS gave it; confirmed, its takings go into the safe.
+        var handedIn = await Json(await manager.PostAsync($"/api/end-of-day/{today:yyyy-MM-dd}/submit", null, Cancel));
+        Assert.Equal(300m, handedIn.GetProperty("takingsEntered").GetDecimal());
 
         // The KPIs: 140 of food on 300 collected, 400 at the menu's prices.
         var kpis = await Json(await manager.GetAsync($"/api/costing/kpis?year={today.Year}&month={today.Month}", Cancel));
@@ -85,13 +88,9 @@ public class CombosAndDiscountsApiTests
                 discounts.GetProperty("erosionPoints").GetDecimal()));
         Assert.Equal(["Loyalty", "Staff"], discounts.GetProperty("reasons").EnumerateArray().Select(r => r.GetProperty("reason").GetString()));
 
-        // A day's end with its discounts: the cash expected in the till is the same without them.
-        var day = await Json(await manager.PutAsJsonAsync($"/api/end-of-day/{today:yyyy-MM-dd}/sales", new
-        {
-            cashAmount = 300m, cardAmount = 0m, taxAmount = 0m, voidsAmount = 0m, openingFloat = 200m, discountsAmount = 100m,
-            discountReasons = new[] { new { reason = "Loyalty", amount = 60m, count = 2 } },
-        }, Cancel));
-        Assert.Equal((100m, 500m), (day.GetProperty("discountsAmount").GetDecimal(), day.GetProperty("netCashInTill").GetDecimal()));
+        // The day's end with its discounts: the cash expected in the till is the same without them.
+        var day = await Json(await manager.GetAsync($"/api/end-of-day/{today:yyyy-MM-dd}", Cancel));
+        Assert.Equal((100m, 300m), (day.GetProperty("discountsAmount").GetDecimal(), day.GetProperty("netCashInTill").GetDecimal()));
 
         Assert.Equal(HttpStatusCode.NoContent, (await manager.DeleteAsync($"/api/inventory/combos/{combo}", Cancel)).StatusCode);
         Assert.Empty((await Json(await manager.GetAsync("/api/costing/combos", Cancel))).GetProperty("combos").EnumerateArray());

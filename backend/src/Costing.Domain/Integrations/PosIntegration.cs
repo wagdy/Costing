@@ -101,9 +101,9 @@ public sealed class PosZReport : AggregateRoot, IBranchOwned
     }
 }
 
-// A business day as the POS made it: the sales summary and the takings recorded from that day's Z
-// reports (every shift's, together), so a report sent again or changed replaces exactly these and
-// nothing a person entered.
+// A business day as the POS made it: the sales summary recorded from that day's Z reports (every
+// shift's, together), and the takings its end of day put into the safe from them once confirmed, so
+// a report sent again or changed replaces exactly these and nothing a person entered.
 public sealed class PosDay : AggregateRoot, IBranchOwned
 {
     private readonly List<DiscountReason> _discountReasons = [];
@@ -132,6 +132,13 @@ public sealed class PosDay : AggregateRoot, IBranchOwned
 
     // Its end of day undone: what it made voided, nothing recorded until a report comes again.
     public void Undone() => Recorded(null, null);
+
+    // Its end of day confirmed: the takings it put into the safe from the POS's sales report.
+    public void TakingsIn(Guid takingsId)
+    {
+        TakingsId = takingsId;
+        UpdatedAtUtc = DateTime.UtcNow;
+    }
 
     public void Recorded(Guid? saleId, Guid? takingsId, decimal discounts = 0, IReadOnlyList<DiscountReason>? discountReasons = null)
     {

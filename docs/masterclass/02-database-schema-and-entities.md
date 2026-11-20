@@ -4733,7 +4733,7 @@ ExpectedIntoSafe   = إجمالي الإيراد − CashPaidOut                
 
 **التسلسل:** `EndOfDaySequence` دالة نقية تفحص ترتيب الأيام (الفصل 05)، و `Undo` يعيد اليوم مسودة بسببه (`ReopenReason`) ويفك ربط الفواتير (`Unposted`) والمدفوعات (`Unvouchered`، بـ `VoucherId` جديد عليه فهرس فريد). و `MarkClosed` يقفل يومًا بلا تجارة (`IsClosedDay`, `ClosedDayReason`)، و `MoveTo` ينقل مسودة لتاريخ آخر بسطر تدقيق في `Notes` وملاحظة كل فاتورة و `AuditTrail` (نص بلا حد، لا يُعدَّل).
 
-> 📄 **`backend/src/Costing.Domain/EndOfDay/EndOfDayReport.cs`** — 680 سطر
+> 📄 **`backend/src/Costing.Domain/EndOfDay/EndOfDayReport.cs`** — 827 سطر
 
 ```csharp
 using System.Globalization;
@@ -4771,6 +4771,16 @@ public enum EndOfDayPayoutKind
     SupplierPayment = 1,
     EmployeeAdvance = 2,
 }
+
+// The day's sales report as the POS's Z reports give it, every shift's together: the cash and card
+// before tax, the tax, the voids, the float the drawers opened with, the discounts and why, and the
+// cash sales' own share of the tax (CashTax), so the drawer reconciles to the piastre.
+public sealed record PosSalesFigures(
+    decimal Cash, decimal Card, decimal Tax, decimal Voids, decimal OpeningFloat, decimal Discounts, IReadOnlyList<DiscountReason> DiscountReasons,
+    decimal? CashTax = null);
+
+// Where an invoice or a payment handed in came from: the POS's shift (ShiftNumber), entered once there.
+public sealed record PosSource(int? ShiftNumber);
 
 // A photo or scan handed in, described; its bytes are kept apart (IEndOfDayPhotoStore).
 public sealed record EndOfDayPhoto(string FileName, string ContentType, int Bytes)
@@ -4852,6 +4862,24 @@ public sealed class EndOfDayReport : AggregateRoot, IBranchOwned
     // The cash the drawer opened the day with (العهدة / الفكة).
     public decimal? OpeningFloat { get; private set; }
 
+    // ---- From the POS (مسحوب تلقائياً من نظام المبيعات) ----
+    // The sales report filled in from the POS's Z reports of the day, every shift's together, the
+    // shifts' numbers in PosShifts ("1, 2"): locked as the POS gave it (SalesLocked), unless a
+    // manager unlocked it with why (OverrideSales), to correct what the POS got wrong. With the POS's
+    // figures, the tax on the cash sales is the POS's own (CashTaxAmount): the cash it put in the
+    // drawer, to the piastre. Handed in, its takings go into the safe from it (one source).
+    public bool SalesFromPos { get; private set; }
+    public string? PosShifts { get; private set; }
+    public decimal? CashTaxAmount { get; private set; }
+    public string? SalesOverriddenBy { get; private set; }
+    public DateTime? SalesOverriddenAtUtc { get; private set; }
+    public string? SalesOverrideNote { get; private set; }
+
+    public bool SalesLocked => SalesFromPos && SalesOverriddenAtUtc is null;
+
+    // Anything the POS sent for the day: its sales, or an invoice or a payment.
+    public bool FromPos => SalesFromPos || _invoices.Any(i => i.FromPos) || _payouts.Any(p => p.FromPos);
+
     // The Z report's own photo, if one was handed in.
     public string? SalesPhotoFileName { get; private set; }
     public string? SalesPhotoContentType { get; private set; }
@@ -4909,7 +4937,9 @@ public sealed class EndOfDayReport : AggregateRoot, IBranchOwned
 
     // The tax collected on the cash sales: the Z report gives the tax on the cash and Visa together,
     // the cash's share of it is in proportion, as the safe splits a day's tax.
-    public decimal CashTax => NetSales > 0 ? Math.Round((TaxAmount ?? 0) * (CashAmount ?? 0) / NetSales, 2, MidpointRounding.AwayFromZero) : 0;
+    // From the POS, its own share (CashTaxAmount): the cash it took less the cash before tax.
+    public decimal CashTax => CashTaxAmount
+        ?? (NetSales > 0 ? Math.Round((TaxAmount ?? 0) * (CashAmount ?? 0) / NetSales, 2, MidpointRounding.AwayFromZero) : 0);
 
     // The cash the sales put in the drawer: the cash sales with the tax collected on them.
     public decimal CashSalesCollected => (CashAmount ?? 0) + CashTax;
@@ -4934,6 +4964,22 @@ public sealed class EndOfDayReport : AggregateRoot, IBranchOwned
         decimal? discounts = null, IReadOnlyList<DiscountReason>? discountReasons = null)
     {
         EnsureDraft();
+        if (SalesLocked)
+        {
+            // Synced from the POS: its figures stand, the notes are the day's own.
+            static bool Differs(decimal? given, decimal? kept) => (Money(given) ?? 0) != (kept ?? 0);
+            if (Differs(cash, CashAmount) || Differs(card, CardAmount) || Differs(tax, TaxAmount) || Differs(voids, VoidsAmount)
+                || Differs(openingFloat, OpeningFloat) || Differs(discounts, DiscountsAmount))
+                throw new DomainException(
+                    $"The sales report is synced from the POS (shift {PosShifts}): a manager unlocks it, with why, to change a figure. " +
+                    "· ريبورت المبيعات مسحوب من نظام المبيعات: يفتحه المدير مع ذكر السبب.");
+            var note = Clean(notes);
+            if (note?.Length > MaxDayNotes)
+                throw new DomainException("Keep the notes under 2,000 characters. · الملاحظات 2000 حرف على الأكثر.");
+            Notes = note;
+            Touch(by);
+            return;
+        }
         var reasons = Discounts.Clean(discounts ?? 0, discountReasons);
         if (new[] { cash, card, tax, voids }.Any(n => n < 0))
             throw new DomainException("The cash, Visa, tax and voids are zero or more. · المبالغ صفر أو أكثر.");
@@ -4942,6 +4988,10 @@ public sealed class EndOfDayReport : AggregateRoot, IBranchOwned
         var cleaned = Clean(notes);
         if (cleaned?.Length > MaxDayNotes)
             throw new DomainException("Keep the notes under 2,000 characters. · الملاحظات 2000 حرف على الأكثر.");
+        // A manager's figures over the POS's: the cash's tax as the POS had it only while the cash,
+        // the card and the tax are.
+        if (Money(cash) != CashAmount || Money(card) != CardAmount || Money(tax) != TaxAmount)
+            CashTaxAmount = null;
         CashAmount = Money(cash);
         CardAmount = Money(card);
         TaxAmount = Money(tax);
@@ -4954,15 +5004,86 @@ public sealed class EndOfDayReport : AggregateRoot, IBranchOwned
         Touch(by);
     }
 
+    // The POS's Z reports of the day, every shift's together (figures; none: no report is the day's
+    // any more): the sales report is them, locked. Typed in before, those figures are replaced, and
+    // the audit trail says so; unlocked by a manager, the manager's stand until it is locked again.
+    public void SyncSalesFromPos(PosSalesFigures? figures, string shifts, string by)
+    {
+        EnsureDraft();
+        if (figures is null)
+        {
+            if (SalesLocked)
+                Apply(null);
+            (SalesFromPos, PosShifts) = (false, null);
+            Touch(by);
+            return;
+        }
+        var typed = !SalesFromPos && new[] { CashAmount, CardAmount, TaxAmount, VoidsAmount, OpeningFloat, DiscountsAmount }.Any(n => n is > 0);
+        var typedBy = UpdatedBy;
+        (SalesFromPos, PosShifts) = (true, shifts);
+        if (SalesOverriddenAtUtc is null)
+        {
+            Apply(figures);
+            if (typed)
+                Audit($"Sales report filled in from the POS (shift {shifts}), over the figures typed by {typedBy}");
+        }
+        Touch(by);
+    }
+
+    // A manager's (Unlock / Manual override): the POS's figures opened to be corrected, why required
+    // and kept on the day.
+    public void OverrideSales(string by, string? note)
+    {
+        EnsureDraft();
+        if (!SalesFromPos)
+            throw new DomainException("The sales report is typed in here, not synced from the POS: nothing to unlock. · الريبورت غير مسحوب من نظام المبيعات.");
+        if (SalesOverriddenAtUtc is not null)
+            throw new DomainException($"Unlocked already, by {SalesOverriddenBy}. · مفتوح بالفعل.");
+        var why = Reason(note, "Say why the POS's figures are overridden: it is kept on the day. · سبب التعديل إجباري.");
+        (SalesOverriddenBy, SalesOverriddenAtUtc, SalesOverrideNote) = (by, DateTime.UtcNow, why);
+        Audit($"Sales report unlocked from the POS by {by}: {why}");
+        Touch(by);
+    }
+
+    // Locked to the POS again: its figures back, the manager's gone.
+    public void RelockSales(PosSalesFigures figures, string by)
+    {
+        EnsureDraft();
+        if (!SalesFromPos || SalesOverriddenAtUtc is null)
+            throw new DomainException("The sales report is not unlocked. · الريبورت غير مفتوح.");
+        (SalesOverriddenBy, SalesOverriddenAtUtc, SalesOverrideNote) = (null, null, null);
+        Apply(figures);
+        Audit($"Sales report locked to the POS again by {by}");
+        Touch(by);
+    }
+
+    private void Apply(PosSalesFigures? figures)
+    {
+        var reasons = figures is null ? [] : Discounts.Clean(figures.Discounts, figures.DiscountReasons);
+        CashAmount = Money(figures?.Cash);
+        CardAmount = Money(figures?.Card);
+        TaxAmount = Money(figures?.Tax);
+        VoidsAmount = Money(figures?.Voids);
+        OpeningFloat = Money(figures?.OpeningFloat);
+        DiscountsAmount = Money(figures?.Discounts);
+        CashTaxAmount = Money(figures?.CashTax);
+        _discountReasons.Clear();
+        _discountReasons.AddRange(reasons);
+    }
+
+    // A POS invoice or payment taken off here: the POS sending it again does not put it back.
+    public bool WasTakenOff(Guid id) => AuditTrail?.Contains($"[pos:{id}]", StringComparison.Ordinal) == true;
+
     public EndOfDayInvoice AddInvoice(
-        Guid id, EndOfDayInvoiceKind kind, Guid supplierId, decimal reportedTotal, string? note, EndOfDayPhoto photo, string by, Guid? purchaseOrderId = null)
+        Guid id, EndOfDayInvoiceKind kind, Guid supplierId, decimal reportedTotal, string? note, EndOfDayPhoto photo, string by, Guid? purchaseOrderId = null,
+        PosSource? pos = null)
     {
         EnsureDraft();
         if (_invoices.Any(i => i.Id == id))
             throw new DomainException("This invoice is handed in already.");
         if (_invoices.Count >= MaxInvoices)
             throw new DomainException($"A day holds at most {MaxInvoices} invoices. · {MaxInvoices} فاتورة على الأكثر في اليوم.");
-        var invoice = new EndOfDayInvoice(id, Id, kind, supplierId, reportedTotal, note, photo, purchaseOrderId);
+        var invoice = new EndOfDayInvoice(id, Id, kind, supplierId, reportedTotal, note, photo, purchaseOrderId, pos);
         _invoices.Add(invoice);
         Touch(by);
         return invoice;
@@ -4986,7 +5107,11 @@ public sealed class EndOfDayReport : AggregateRoot, IBranchOwned
     public void RemoveInvoice(Guid invoiceId, string by)
     {
         EnsureDraft();
-        _invoices.Remove(Unposted(invoiceId));
+        var invoice = Unposted(invoiceId);
+        _invoices.Remove(invoice);
+        if (invoice.FromPos)
+            Audit($"POS {(invoice.Kind == EndOfDayInvoiceKind.Cash ? "cash" : "credit")} invoice of {invoice.ReportedTotal.ToString("N2", CultureInfo.InvariantCulture)} " +
+                $"(shift {invoice.PosShiftNumber}) taken off by {by} [pos:{invoice.Id}]");
         Touch(by);
     }
 
@@ -4995,14 +5120,15 @@ public sealed class EndOfDayReport : AggregateRoot, IBranchOwned
 
     // Cash handed out of the till: to a supplier (payee: the supplier) or an employee (payee: the
     // employee), with its receipt.
-    public EndOfDayPayout AddPayout(Guid id, EndOfDayPayoutKind kind, Guid payeeId, decimal amount, string? note, EndOfDayPhoto receipt, string by)
+    public EndOfDayPayout AddPayout(
+        Guid id, EndOfDayPayoutKind kind, Guid payeeId, decimal amount, string? note, EndOfDayPhoto receipt, string by, PosSource? pos = null)
     {
         EnsureDraft();
         if (_payouts.Any(p => p.Id == id))
             throw new DomainException("This payment is handed in already.");
         if (_payouts.Count >= MaxPayouts)
             throw new DomainException($"A day holds at most {MaxPayouts} payments and advances. · {MaxPayouts} على الأكثر في اليوم.");
-        var payout = new EndOfDayPayout(id, Id, kind, payeeId, amount, note, receipt);
+        var payout = new EndOfDayPayout(id, Id, kind, payeeId, amount, note, receipt, pos);
         _payouts.Add(payout);
         Touch(by);
         return payout;
@@ -5027,7 +5153,11 @@ public sealed class EndOfDayReport : AggregateRoot, IBranchOwned
     public void RemovePayout(Guid payoutId, string by, bool voucherRefused = false)
     {
         EnsureDraft();
-        _payouts.Remove(voucherRefused ? Payout(payoutId) : Unvouchered(payoutId));
+        var payout = voucherRefused ? Payout(payoutId) : Unvouchered(payoutId);
+        _payouts.Remove(payout);
+        if (payout.FromPos)
+            Audit($"POS {(payout.Kind == EndOfDayPayoutKind.SupplierPayment ? "supplier payment" : "advance")} of {payout.Amount.ToString("N2", CultureInfo.InvariantCulture)} " +
+                $"(shift {payout.PosShiftNumber}) taken off by {by} [pos:{payout.Id}]");
         Touch(by);
     }
 
@@ -5122,6 +5252,9 @@ public sealed class EndOfDayReport : AggregateRoot, IBranchOwned
     {
         EnsureDraft();
         var why = Reason(reason, "Give the reason for moving the day to another date: it is kept on it. · سبب التعديل إجباري.");
+        if (FromPos)
+            throw new DomainException(
+                $"Its sales or paid-outs came from the POS for {Day(Date)}: they stay on that day. · بيانات نظام المبيعات تبقى في يومها.");
         if (date == Date)
             throw new DomainException($"It is dated {Day(date)} already. · التاريخ نفسه.");
         var line = $"System Audit: Migrated from {Date.ToString("dd/MM/yyyy", CultureInfo.InvariantCulture)} to "
@@ -5206,16 +5339,24 @@ public sealed class EndOfDayInvoice : Entity
     private EndOfDayInvoice() { }
 
     internal EndOfDayInvoice(
-        Guid id, Guid reportId, EndOfDayInvoiceKind kind, Guid supplierId, decimal reportedTotal, string? note, EndOfDayPhoto photo, Guid? purchaseOrderId = null)
+        Guid id, Guid reportId, EndOfDayInvoiceKind kind, Guid supplierId, decimal reportedTotal, string? note, EndOfDayPhoto photo, Guid? purchaseOrderId = null,
+        PosSource? pos = null)
     {
         Id = id;
         ReportId = reportId;
         AddedAtUtc = DateTime.UtcNow;
+        FromPos = pos is not null;
+        PosShiftNumber = pos?.ShiftNumber;
         Change(kind, supplierId, reportedTotal, note, purchaseOrderId);
         Photographed(photo);
     }
 
     public Guid ReportId { get; private set; }
+
+    // Entered on the POS (its shift's number): sent with the shift, by the POS's own id.
+    public bool FromPos { get; private set; }
+    public int? PosShiftNumber { get; private set; }
+
     public EndOfDayInvoiceKind Kind { get; private set; }
     public Guid SupplierId { get; private set; }
     public decimal ReportedTotal { get; private set; }
@@ -5284,7 +5425,7 @@ public sealed class EndOfDayPayout : Entity
 {
     private EndOfDayPayout() { }
 
-    internal EndOfDayPayout(Guid id, Guid reportId, EndOfDayPayoutKind kind, Guid payeeId, decimal amount, string? note, EndOfDayPhoto receipt)
+    internal EndOfDayPayout(Guid id, Guid reportId, EndOfDayPayoutKind kind, Guid payeeId, decimal amount, string? note, EndOfDayPhoto receipt, PosSource? pos = null)
     {
         if (!Enum.IsDefined(kind))
             throw new DomainException("Say whether a supplier was paid or an employee advanced. · مورد أم سلفة.");
@@ -5293,11 +5434,17 @@ public sealed class EndOfDayPayout : Entity
         ReportId = reportId;
         Kind = kind;
         AddedAtUtc = DateTime.UtcNow;
+        FromPos = pos is not null;
+        PosShiftNumber = pos?.ShiftNumber;
         Change(payeeId, amount, note);
         Photographed(receipt);
     }
 
     public Guid ReportId { get; private set; }
+
+    // Paid out at the POS (its shift's number): sent with the shift, by the POS's own id.
+    public bool FromPos { get; private set; }
+    public int? PosShiftNumber { get; private set; }
 
     // The id of the safe entry (or the request to a manager) it is made when its day is handed in:
     // its own to begin with, a new one each time its day is undone, as the voided entry keeps the old.
@@ -6742,7 +6889,7 @@ internal sealed class UserTabAccessConfiguration : IEntityTypeConfiguration<User
 
 `EndOfDayConfigurations.cs`: تقرير واحد لكل يوم تجاري (فهرس فريد على التاريخ)، والصور في جدول منفصل.
 
-> 📄 **`backend/src/Costing.Infrastructure/Persistence/Configurations/EndOfDayConfigurations.cs`** — 100 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Persistence/Configurations/EndOfDayConfigurations.cs`** — 107 سطر
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
@@ -6767,6 +6914,13 @@ internal sealed class EndOfDayReportConfiguration : IEntityTypeConfiguration<End
         builder.Property(d => d.DiscountsAmount).HasPrecision(18, 2);
         builder.HasDiscountReasons();
         builder.Property(d => d.OpeningFloat).HasPrecision(18, 2);
+        // From the POS: its shifts, the cash's own tax, and a manager's override of its figures.
+        builder.Property(d => d.PosShifts).HasMaxLength(200);
+        builder.Property(d => d.CashTaxAmount).HasPrecision(18, 2);
+        builder.Property(d => d.SalesOverriddenBy).HasMaxLength(200);
+        builder.Property(d => d.SalesOverrideNote).HasMaxLength(EndOfDayReport.MaxAuditReason);
+        builder.Ignore(d => d.SalesLocked);
+        builder.Ignore(d => d.FromPos);
         builder.Property(d => d.Notes).HasMaxLength(EndOfDayReport.MaxDayNotes);
         builder.Property(d => d.ClosedDayReason).HasMaxLength(EndOfDayReport.MaxAuditReason);
         builder.Property(d => d.SalesPhotoFileName).HasMaxLength(200);
@@ -7259,7 +7413,7 @@ internal sealed class FinancialSettingsConfiguration : IEntityTypeConfiguration<
 
 قراءات العرض `AsNoTracking`، وقراءات التعديل متتبَّعة؛ ودوال بأسماء دقيقة بدل `IQueryable` يتسرب للأعلى.
 
-> 📄 **`backend/src/Costing.Infrastructure/Persistence/InventoryRepositories.cs`** — 501 سطر
+> 📄 **`backend/src/Costing.Infrastructure/Persistence/InventoryRepositories.cs`** — 507 سطر
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
@@ -7525,10 +7679,16 @@ internal sealed class SafeTransactionRepository(CostingDbContext db, Costing.App
             .Where(t => t.Fund == CashFund.Safe && (through == null || t.BusinessDate <= through))
             .SumAsync(t => t.Amount, cancellationToken);
 
-    // Tracked: voiding it marks it. The branch worked in's: each branch's Z report is its own.
+    // Tracked: voiding it marks it. The branch worked in's: each branch's Z report is its own. Those
+    // entered in this unit of work count (a day confirmed puts its takings in, then its payments
+    // out of them), given the branch as they are saved.
     public async Task<SafeTransaction?> GetTakingsAsync(DateOnly revenueDate, CancellationToken cancellationToken = default)
     {
         var here = await branch.BranchIdAsync(cancellationToken);
+        if (db.ChangeTracker.Entries<SafeTransaction>().FirstOrDefault(e => e.State == EntityState.Added
+                && e.Entity is { Kind: SafeTransactionKind.RevenueTransfer, ReversalOf: null, VoidedAtUtc: null } t && t.RevenueDate == revenueDate
+                && (t.BranchId == here || t.BranchId == Guid.Empty)) is { } added)
+            return added.Entity;
         return await db.SafeTransactions.FirstOrDefaultAsync(
             t => t.Kind == SafeTransactionKind.RevenueTransfer && t.RevenueDate == revenueDate && t.ReversalOf == null && t.VoidedAtUtc == null
                 && t.BranchId == here,
@@ -8079,6 +8239,7 @@ dotnet ef migrations add <Name> \
 | 22 | `20261118193842_AddInterBranchHub` | Add Inter Branch Hub |
 | 23 | `20261119091320_AddConsolidatedPnl` | Add Consolidated Pnl |
 | 24 | `20261119094824_AddBranchEndOfDay` | Add Branch End Of Day |
+| 25 | `20261120084130_AddPosSyncedEndOfDay` | Add Pos Synced End Of Day |
 
 
 ### 14.1 `UnifySafeTakings`: migration تحوّل بيانات لا شكلًا فقط

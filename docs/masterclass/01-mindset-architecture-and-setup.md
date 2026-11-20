@@ -1746,6 +1746,7 @@ Costing/
                         20261118193842_AddInterBranchHub.cs
                         20261119091320_AddConsolidatedPnl.cs
                         20261119094824_AddBranchEndOfDay.cs
+                        20261120084130_AddPosSyncedEndOfDay.cs
                         CostingDbContextModelSnapshot.cs
                     PosIntegrationPersistence.cs
                     PurchaseOrderPersistence.cs
